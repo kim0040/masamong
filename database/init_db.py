@@ -41,19 +41,18 @@ def initialize_database():
 
         # 시스템 카운터 초기값 설정
         print("시스템 카운터 초기값을 확인하고 설정합니다...")
-        now_date_str = datetime.utcnow().isoformat()
+        now_iso_str = datetime.utcnow().isoformat()
         counters_to_initialize = {
-            'kma_daily_calls': 0,
-            'gemini_daily_calls': 0
+            'kma_daily_calls': (0, now_iso_str),
+            'gemini_daily_calls': (0, now_iso_str)
         }
-        for name, value in counters_to_initialize.items():
+        for name, (value, date_str) in counters_to_initialize.items():
             cursor.execute("""
                 INSERT OR IGNORE INTO system_counters (counter_name, counter_value, last_reset_at)
                 VALUES (?, ?, ?)
-            """, (name, value, now_date_str))
+            """, (name, value, date_str))
 
         print("시스템 카운터 초기화가 완료되었습니다.")
-
 
         # 변경사항 저장 및 연결 종료
         conn.commit()

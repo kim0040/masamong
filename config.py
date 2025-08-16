@@ -36,6 +36,9 @@ ERROR_LOG_FILE_NAME = "error_logs.txt"
 DISCORD_LOG_CHANNEL_ID = 0 
 DISCORD_LOG_LEVEL = "INFO" 
 
+# --- 데이터베이스 설정 ---
+DATABASE_FILE = "database/remasamong.db"
+
 # --- AI 설정 ---
 GEMINI_API_KEY = load_config_value('GEMINI_API_KEY')
 AI_MODEL_NAME = "gemini-2.5-flash-lite"
@@ -63,9 +66,6 @@ AI_PROACTIVE_RESPONSE_CONFIG = { "enabled": True, "keywords": ["마사몽", "마
 AI_CREATIVE_PROMPTS = { "fortune": "사용자 '{user_name}'를 위한 오늘의 운세를 재치있게 알려줘.", "summarize": "다음 대화 내용을 분석해서, 핵심 내용을 3가지 항목으로 요약해줘.\n--- 대화 내용 ---\n{conversation}", "ranking": "다음 서버 활동 랭킹을 보고, 1등을 축하하고 다른 사람들을 독려하는 발표 멘트를 작성해줘.\n--- 활동 랭킹 ---\n{ranking_list}" }
 AI_SUMMARY_MAX_CHARS = 8000
 FUN_KEYWORD_TRIGGERS = { "enabled": True, "cooldown_seconds": 60, "triggers": { "fortune": ["운세", "오늘 운", "운세 좀"], "summarize": ["요약해줘", "무슨 얘기했어", "무슨 얘기함", "요약 좀", "지금까지 뭔 얘기"] } }
-
-# --- 데이터베이스 설정 ---
-DATABASE_FILE = "database/remasamong.db"
 
 # --- 기상청 API 설정 (새로운 좌표 시스템으로 변경) ---
 KMA_API_KEY = load_config_value('KMA_API_KEY')
