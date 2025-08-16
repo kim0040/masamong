@@ -48,13 +48,10 @@ class ReMasamongBot(commands.Bot):
         try:
             self.db = await aiosqlite.connect(self.db_path)
             await self.db.enable_load_extension(True)
-            # sync 함수인 sqlite_vss.load를 run_in_executor로 비동기 실행
-            await asyncio.get_running_loop().run_in_executor(
-                None,
-                lambda: sqlite_vss.load(self.db)
-            )
+            # aiosqlite의 네이티브 load_extension 사용
+            await self.db.load_extension(sqlite_vss.vss_loadable_path())
             await self.db.enable_load_extension(False)
-            logger.info(f"데이터베이스 연결 및 VSS 확장 로드 성공: {self.db_path}")
+            logger.info(f"데이터베이스 연결 및 VSS 확장 로드 성공: {sqlite_vss.vss_loadable_path()}")
         except Exception as e:
             logger.critical(f"데이터베이스 연결 또는 VSS 확장 로드 실패: {e}", exc_info=True)
             await self.close()

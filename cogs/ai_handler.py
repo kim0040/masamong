@@ -2,7 +2,6 @@
 import discord
 from discord.ext import commands
 import google.generativeai as genai
-from google.generativeai.types import content_types
 
 from datetime import datetime, timedelta, time
 import asyncio
@@ -56,7 +55,9 @@ class AIHandler(commands.Cog):
                 cog_instance = self.bot.get_cog(cog_name_pascal)
                 if cog_instance: self.tool_map[func_name] = getattr(cog_instance, func_name)
             except Exception as e: logger.error(f"도구 등록 실패: '{tool_path}'. 오류: {e}")
-        if self.tool_map: self.tools = [content_types.Tool.from_function(func) for func in self.tool_map.values()]
+        if self.tool_map:
+            # The google-generativeai SDK can directly use the function objects
+            self.tools = list(self.tool_map.values())
         logger.info(f"AI 도구 등록 완료: {list(self.tool_map.keys())}")
 
     @property
