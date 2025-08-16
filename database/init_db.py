@@ -45,7 +45,8 @@ def initialize_database():
         now_iso_str = datetime.now(pytz.utc).isoformat()
         counters_to_initialize = {
             'kma_daily_calls': (0, now_iso_str),
-            'gemini_daily_calls': (0, now_iso_str)
+            'gemini_daily_calls': (0, now_iso_str),
+            'gemini_embedding_calls': (0, now_iso_str)
         }
         for name, (value, date_str) in counters_to_initialize.items():
             cursor.execute("""

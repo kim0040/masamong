@@ -124,11 +124,12 @@ class EventListeners(commands.Cog):
         if self.activity_cog: self.activity_cog.record_message(message)
         if self.ai_handler: self.ai_handler.add_message_to_history(message)
 
-        ctx = await self.bot.get_context(message)
-        if ctx.command:
+        # 봇의 접두사로 시작하는 메시지는 명령어 처리를 우선 시도
+        if message.content.startswith(self.bot.command_prefix):
             await self.bot.process_commands(message)
             return
 
+        # 명령어가 아닐 경우, 키워드 및 AI 상호작용 처리
         if await self._handle_keyword_triggers(message):
             return
         await self._handle_ai_interaction(message)
