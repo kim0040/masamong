@@ -17,10 +17,16 @@ DISCORD_LOG_LEVEL = "INFO"
 
 # --- AI 설정 ---
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
-AI_MODEL_NAME = "gemini-2.5-flash"
-AI_INTENT_MODEL_NAME = "gemini-2.5-flash"
-API_RPM_LIMIT = 10
-API_RPD_LIMIT = 200
+# 무료 티어에서 더 관대한 gemini-2.5-flash-lite를 기본 모델로 사용
+AI_MODEL_NAME = "gemini-2.5-flash-lite"
+AI_INTENT_MODEL_NAME = "gemini-2.5-flash-lite" # 의도 분석 모델도 통일
+
+# Gemini API 무료 티어 제한량 (2025년 8월 기준)
+# https://ai.google.dev/gemini-api/docs/rate-limits
+API_RPM_LIMIT = 15  # 분당 요청 수 (RPM)
+API_TPM_LIMIT = 250000 # 분당 토큰 수 (TPM)
+API_RPD_LIMIT = 1000 # 일일 요청 수 (RPD)
+
 AI_COOLDOWN_SECONDS = 3
 AI_MEMORY_ENABLED = True
 AI_MEMORY_MAX_MESSAGES = 50
