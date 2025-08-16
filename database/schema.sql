@@ -2,15 +2,13 @@
 -- init_db.py 스크립트를 통해 이 스키마를 기반으로 DB 파일이 생성됩니다.
 
 -- 서버(길드)별 설정을 관리하는 테이블
+-- 서버(길드)별 설정을 관리하는 테이블 (Key-Value 방식)
 CREATE TABLE IF NOT EXISTS guild_settings (
-    guild_id INTEGER PRIMARY KEY,
-    ai_enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    ai_allowed_channels TEXT, -- JSON 배열 형태의 채널 ID 목록
-    proactive_response_probability REAL NOT NULL DEFAULT 0.05,
-    proactive_response_cooldown INTEGER NOT NULL DEFAULT 300, -- 초 단위
-    default_persona_id INTEGER,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc')),
-    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc'))
+    guild_id INTEGER NOT NULL,
+    setting_name TEXT NOT NULL,
+    setting_value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc')),
+    PRIMARY KEY (guild_id, setting_name)
 );
 
 -- 사용자별 활동을 기록하는 테이블

@@ -18,9 +18,8 @@ if not config.TOKEN:
     sys.exit(1)
 
 # AI 또는 날씨 기능 활성화 시 API 키 확인
-is_any_ai_channel_enabled = any(settings.get("allowed", False) for settings in config.CHANNEL_AI_CONFIG.values())
-if is_any_ai_channel_enabled and not config.GEMINI_API_KEY:
-    logger.warning("AI 채널이 설정되었지만 GEMINI_API_KEY 환경 변수가 없습니다. AI 기능이 작동하지 않습니다.")
+if not config.GEMINI_API_KEY:
+    logger.warning("GEMINI_API_KEY 환경 변수가 없습니다. AI 기능이 작동하지 않습니다.")
 if not config.KMA_API_KEY or config.KMA_API_KEY == 'YOUR_KMA_API_KEY':
     logger.warning("KMA_API_KEY가 설정되지 않았습니다. 날씨 기능이 작동하지 않을 수 있습니다.")
 
@@ -47,15 +46,9 @@ class ReMasamongBot(commands.Bot):
 
         try:
             self.db = await aiosqlite.connect(self.db_path)
-            # VSS 확장을 로드하기 위해 DB 연결에서 extension 로딩을 활성화합니다.
             await self.db.enable_load_extension(True)
-            # sqlite_vss.load는 동기 함수이므로, run_in_executor를 사용해 비동기 이벤트 루프를 막지 않도록 실행합니다.
-            # 이 함수는 vector0와 vss0 모듈을 순서에 맞게 로드해줍니다.
-            await asyncio.get_running_loop().run_in_executor(
-                None,
-                sqlite_vss.load,
-                self.db
-            )
+            # vss0은 vector0에 의존하므로, vector0를 먼저 로드해야 합니다.
+            sqlite_vss.load(self.db)
             logger.info(f"데이터베이스 연결 및 VSS 확장 로드 성공.")
         except Exception as e:
             logger.critical(f"데이터베이스 연결 또는 VSS 확장 로드 실패: {e}", exc_info=True)
@@ -66,8 +59,6 @@ class ReMasamongBot(commands.Bot):
         cog_list = ['events', 'commands', 'ai_handler', 'weather_cog', 'fun_cog', 'activity_cog', 'poll_cog', 'settings_cog', 'logging_cog']
         for cog_name in cog_list:
             try:
-                # 각 Cog에 데이터베이스 연결 객체(self.db)를 전달할 수 있도록 준비
-                # 실제 전달은 각 Cog의 __init__에서 bot 인스턴스를 통해 이루어짐
                 await self.load_extension(f'cogs.{cog_name}')
                 logger.info(f"Cog 로드 성공: {cog_name}")
             except Exception as e:
