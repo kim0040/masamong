@@ -1,13 +1,34 @@
 # -*- coding: utf-8 -*-
 import os
+import json
 from dotenv import load_dotenv
 import discord
 
 # .env 파일에서 환경 변수 로드
 load_dotenv()
 
+# 설정 값 로드 함수
+def load_config_value(key, default=None):
+    """ .env 파일, config.json, 환경 변수 순으로 설정 값을 로드. """
+    value = os.environ.get(key)
+    if value:
+        return value
+
+    try:
+        with open('config.json', 'r', encoding='utf-8') as f:
+            config_json = json.load(f)
+        value = config_json.get(key)
+        if value:
+            return value
+    except FileNotFoundError:
+        pass # config.json이 없어도 괜찮음
+    except json.JSONDecodeError:
+        print("경고: config.json 파일이 유효한 JSON 형식이 아닙니다.")
+
+    return default
+
 # --- Discord 봇 설정 ---
-TOKEN = os.environ.get('DISCORD_BOT_TOKEN')
+TOKEN = load_config_value('DISCORD_BOT_TOKEN')
 
 # --- 로깅 설정 ---
 LOG_FILE_NAME = "discord_logs.txt"
@@ -16,43 +37,22 @@ DISCORD_LOG_CHANNEL_ID = 0
 DISCORD_LOG_LEVEL = "INFO" 
 
 # --- AI 설정 ---
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
-# 무료 티어에서 더 관대한 gemini-2.5-flash-lite를 기본 모델로 사용
-AI_MODEL_NAME = "gemini-2.5-flash-lite"
-AI_INTENT_MODEL_NAME = "gemini-2.5-flash-lite" # 의도 분석 모델도 통일
-
-# Gemini API 무료 티어 제한량 (2025년 8월 기준)
-# https://ai.google.dev/gemini-api/docs/rate-limits
-AI_EMBEDDING_MODEL_NAME = "models/embedding-001"
-# 생성 모델(flash-lite)용 제한
-GENERATIVE_API_RPM_LIMIT = 15
-GENERATIVE_API_TPM_LIMIT = 250000
-GENERATIVE_API_RPD_LIMIT = 1000
-# 임베딩 모델(embedding-001)용 제한
-EMBEDDING_API_RPM_LIMIT = 100
-EMBEDDING_API_TPM_LIMIT = 30000
-EMBEDDING_API_RPD_LIMIT = 1000
-
+GEMINI_API_KEY = load_config_value('GEMINI_API_KEY')
+AI_MODEL_NAME = "gemini-1.5-flash" # 모델명 변경
+AI_INTENT_MODEL_NAME = "gemini-1.5-flash"
+API_RPM_LIMIT = 10
+API_RPD_LIMIT = 200
 AI_COOLDOWN_SECONDS = 3
 AI_MEMORY_ENABLED = True
 AI_MEMORY_MAX_MESSAGES = 50
 AI_INTENT_ANALYSIS_ENABLED = True
-
-# --- AI 함수 호출(Tools) 설정 ---
-# AI가 사용할 수 있는 도구 목록을 정의합니다.
-# 형식: 'cogs.cog_name.function_name'
-AI_TOOLS = [
-    'cogs.weather_cog.get_weather_forecast',
-    'cogs.fun_cog.get_conversation_for_summary',
-    'cogs.poll_cog.create_poll',
-]
-
 AI_INTENT_PERSONA = """너는 사용자의 메시지를 분석해서 그 의도를 다음 중 하나로 분류하는 역할을 맡았어.
+- 'Time': 메시지가 현재 시간, 날짜, 요일 등 시간에 대해 명확히 물을 때. (예: "지금 몇 시야?", "오늘 며칠이야?")
 - 'Weather': 메시지가 날씨(기온, 비, 눈, 바람 등)에 대해 명확히 묻거나 언급할 때.
 - 'Command': 메시지가 명백한 명령어 형식일 때 (예: !로 시작).
 - 'Chat': 메시지가 일반적인 대화, 질문, 잡담일 때.
 - 'Mixed': 메시지에 두 가지 이상의 의도가 섞여 있을 때 (예: "오늘 날씨도 좋은데 뭐 재밌는 거 없을까?").
-다른 설명은 절대 붙이지 말고, 'Weather', 'Chat', 'Command', 'Mixed' 넷 중 가장 적절한 하나로만 대답해야 해."""
+다른 설명은 절대 붙이지 말고, 'Time', 'Weather', 'Chat', 'Command', 'Mixed' 넷 중 가장 적절한 하나로만 대답해야 해."""
 AI_PROACTIVE_RESPONSE_CONFIG = { "enabled": True, "keywords": ["마사몽", "마사모", "봇", "챗봇"], "probability": 0.6, "cooldown_seconds": 90, "gatekeeper_persona": """너는 대화의 흐름을 분석하는 '눈치 빠른' AI야. 주어진 최근 대화 내용과 마지막 메시지를 보고, AI 챗봇('마사몽')이 지금 대화에 참여하는 것이 자연스럽고 대화를 더 재미있게 만들지를 판단해야 해.
 - 판단 기준:
   1. 긍정적이거나 중립적인 맥락에서 챗봇을 언급하는가?
@@ -67,7 +67,7 @@ ACTIVITY_SAVE_INTERVAL_SECONDS = 300
 FUN_KEYWORD_TRIGGERS = { "enabled": True, "cooldown_seconds": 60, "triggers": { "fortune": ["운세", "오늘 운", "운세 좀"], "summarize": ["요약해줘", "무슨 얘기했어", "무슨 얘기함", "요약 좀", "지금까지 뭔 얘기"] } }
 
 # --- 기상청 API 설정 (새로운 좌표 시스템으로 변경) ---
-KMA_API_KEY = os.environ.get('KMA_API_KEY', 'YOUR_KMA_API_KEY')
+KMA_API_KEY = load_config_value('KMA_API_KEY')
 KMA_API_DAILY_CALL_LIMIT = 10000 # 새 API는 호출 제한이 더 엄격할 수 있음
 DEFAULT_LOCATION_NAME = "광양"
 DEFAULT_NX = "70"

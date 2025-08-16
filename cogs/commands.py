@@ -2,11 +2,21 @@
 import discord
 from discord.ext import commands
 import os
+from datetime import datetime
+import pytz
 
 # 설정, 로거, 유틸리티 가져오기
 import config
 from logger_config import logger
 import utils
+
+def get_current_time() -> str:
+    """
+    현재 시간을 '년-월-일 시:분:초' 형식의 문자열로 반환합니다.
+    항상 대한민국 표준시(KST, UTC+9)를 기준으로 시간을 반환합니다.
+    """
+    now_kst = datetime.now(pytz.timezone('Asia/Seoul'))
+    return now_kst.strftime("%Y년 %m월 %d일 %H시 %M분 %S초")
 
 class UserCommands(commands.Cog):
     """사용자가 호출할 수 있는 명령어를 포함하는 Cog"""
