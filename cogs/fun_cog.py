@@ -48,18 +48,18 @@ class FunCog(commands.Cog):
             await ctx.reply("죄송합니다, AI 기능이 현재 준비되지 않았습니다.", mention_author=False)
             return
 
-        # AI에게 직접 운세를 생성하도록 요청
-        # process_ai_message가 context를 자동으로 처리하므로, 간단한 프롬프트만 전달
-        prompt = f"{ctx.author.display_name}님의 오늘의 운세를 알려줘."
+        async with ctx.typing():
+            prompt = config.AI_CREATIVE_PROMPTS.get('fortune', "").format(user_name=ctx.author.display_name)
+            if not prompt:
+                await ctx.reply("오류: 운세 프롬프트를 찾을 수 없습니다.", mention_author=False)
+                return
 
-        # AI 핸들러에 직접 처리를 위임하기 위해 가짜 메시지 객체 생성
-        fake_message = discord.Object(id=ctx.message.id)
-        fake_message.author = ctx.author
-        fake_message.channel = ctx.channel
-        fake_message.guild = ctx.guild
-        fake_message.content = f"<@{self.bot.user.id}> {prompt}"
-
-        await self.ai_handler.process_ai_message(fake_message)
+            response = await self.ai_handler.process_direct_prompt_task(
+                prompt=prompt,
+                author=ctx.author,
+                channel=ctx.channel
+            )
+            await ctx.reply(response, mention_author=False)
 
 
     @commands.command(name='요약', aliases=['summarize', 'summary'])
@@ -75,16 +75,17 @@ class FunCog(commands.Cog):
                 await ctx.reply(conversation_text, mention_author=False)
                 return
 
-            # AI에게 요약을 요청하는 프롬프트 구성
-            prompt = f"다음 대화 내용을 3가지 항목으로 요약해줘.\n--- 대화 내용 ---\n{conversation_text}"
+            prompt = config.AI_CREATIVE_PROMPTS.get('summarize', "").format(conversation=conversation_text)
+            if not prompt:
+                await ctx.reply("오류: 요약 프롬프트를 찾을 수 없습니다.", mention_author=False)
+                return
 
-            fake_message = discord.Object(id=ctx.message.id)
-            fake_message.author = ctx.author
-            fake_message.channel = ctx.channel
-            fake_message.guild = ctx.guild
-            fake_message.content = f"<@{self.bot.user.id}> {prompt}"
-
-            await self.ai_handler.process_ai_message(fake_message)
+            response = await self.ai_handler.process_direct_prompt_task(
+                prompt=prompt,
+                author=ctx.author,
+                channel=ctx.channel
+            )
+            await ctx.reply(response, mention_author=False)
 
 
 async def setup(bot: commands.Bot):

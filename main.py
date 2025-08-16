@@ -61,7 +61,7 @@ class ReMasamongBot(commands.Bot):
             return
 
         # cogs 폴더 내의 모든 .py 파일을 동적으로 로드
-        cog_list = ['events', 'commands', 'ai_handler', 'weather_cog', 'fun_cog', 'activity_cog', 'poll_cog']
+        cog_list = ['events', 'commands', 'ai_handler', 'weather_cog', 'fun_cog', 'activity_cog', 'poll_cog', 'settings_cog']
         for cog_name in cog_list:
             try:
                 # 각 Cog에 데이터베이스 연결 객체(self.db)를 전달할 수 있도록 준비
