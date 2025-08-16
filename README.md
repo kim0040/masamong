@@ -62,7 +62,6 @@
       * **현재의 AI 로직:** 현재 봇은 `Gemini 2.5 Flash`를 사용하여 사용자의 멘션에 응답하고, 대화의 의도('날씨 질문', '일반 대화' 등)를 분석하는 안정적인 기반을 갖추고 있습니다.
       * **미래의 AI 아키텍처 (구현 목표):**
           * **`sentence-transformers` (RAG 임베딩):** 단순히 최근 대화 몇 개만 기억하는 단기 기억의 한계를 넘어, 서버의 모든 대화 기록을 벡터로 변환하여 '장기 기억'을 구축합니다. 이를 통해 봇은 과거의 대화 내용을 검색하고 참조하여 답변하는 **검색 증강 생성(RAG)** 능력을 갖추게 됩니다.
-          * **`konlpy` (한국어 형태소 분석):** AI의 한국어 이해도를 극대화하기 위한 보조 엔진입니다. 대화 내용을 벡터로 변환하기 전에 형태소 분석을 통해 핵심 의미 단위(명사, 동사 등)를 추출하여, RAG의 검색 정확도를 한 단계 더 끌어올립니다.
   * **데이터베이스 (영속성 계층):** `SQLite` + `aiosqlite`. 별도의 서버 프로세스 없이, 단일 파일로 모든 데이터를 관리하여 저사양 환경의 리소스 소모를 최소화합니다.
   * **배포 환경:** `Python 3.11`, `Ubuntu Server`, `systemd` (서비스 관리)
 
@@ -155,7 +154,6 @@ python3 -m venv venv
 source venv/bin/activate
 
 # 3. 필수 라이브러리 설치
-# (Windows에서는 requirements_windows.txt 사용)
 pip install -r requirements.txt
 
 # 4. 환경 변수 설정
@@ -170,14 +168,6 @@ python database/init_db.py
 # 6. 봇 실행
 python main.py
 ```
-
-### 3\. Windows 환경에서의 테스트
-
-Windows에서 테스트할 경우, `mecab-ko` 라이브러리 설치를 위해 몇 가지 추가 단계가 필요합니다.
-
-1.  **Microsoft C++ Build Tools** 설치 ([다운로드 링크](https://www.google.com/search?q=https://visualstudio.microsoft.com/ko/visualstudio-web-installer/current/launch.exe))
-2.  **SWIG for Windows** 설치 및 환경 변수(PATH) 설정 ([다운로드 링크](https://www.swig.org/download.html))
-3.  `requirements_windows.txt` 파일을 사용하여 라이브러리를 설치합니다. (`pip install -r requirements_windows.txt`)
 
 ## 🔒 API 사용 및 안전장치
 

@@ -12,11 +12,7 @@ sentence-transformers>=2.2.0
 aiosqlite>=0.19.0
 
 # --- 한국어 자연어 처리 (NLP) ---
-# 한국어 형태소 분석기 라이브러리 (3단계에서 사용)
-konlpy>=0.6.0
-
-# KoNLPy와 함께 사용할 Mecab 형태소 분석기 (3단계에서 사용)
-mecab-ko>=1.0.0
+# (konlpy, mecab-ko 등은 현재 버전에서 사용되지 않음)
 
 # --- 기타 유틸리티 ---
 # .env 파일을 읽기 위한 라이브러리
