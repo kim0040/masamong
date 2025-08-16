@@ -29,7 +29,6 @@ class AIHandler(commands.Cog):
 
         if config.GEMINI_API_KEY:
             try:
-                # (API 설정 부분은 변경 없음)
                 genai.configure(api_key=config.GEMINI_API_KEY)
                 self.model = genai.GenerativeModel(config.AI_MODEL_NAME)
                 self.intent_model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME)
@@ -38,7 +37,6 @@ class AIHandler(commands.Cog):
             except Exception as e:
                 logger.critical(f"Gemini API 설정 실패: {e}. AI 기능 비활성화됨.", exc_info=True)
 
-    # (내부 헬퍼 함수 _get_next_kst_midnight, _check_global_rate_limit 등은 변경 없음)
     @property
     def is_ready(self) -> bool:
         """AI 핸들러가 모든 기능을 수행할 준비가 되었는지 확인합니다."""
@@ -103,15 +101,28 @@ class AIHandler(commands.Cog):
         logger.info(f"채널({channel_id}) 자발적 응답 쿨다운 시작.")
 
     def add_message_to_history(self, message: discord.Message):
+        """대화 기록에 메시지를 추가합니다."""
         if not config.AI_MEMORY_ENABLED: return
+        
         channel_id = message.channel.id
         channel_config = config.CHANNEL_AI_CONFIG.get(channel_id)
-        if channel_config and channel_config.get("allowed", True):
+        
+        # AI 설정이 있는 채널의 메시지만 기록
+        if channel_config and channel_config.get("allowed", False):
             if channel_id not in self.conversation_histories:
                 self.conversation_histories[channel_id] = deque(maxlen=config.AI_MEMORY_MAX_MESSAGES)
-            role = "model" if message.author == self.bot.user else "user"
-            user_identifier = f"User({message.author.id}|{message.author.display_name})"
-            formatted_content = f"{user_identifier}: {message.content}"
+
+            # [개선] 봇의 메시지와 사용자의 메시지를 구분하여 저장
+            if message.author == self.bot.user:
+                role = "model"
+                # 봇의 메시지는 'User(ID|이름):' 접두사 없이 순수 내용만 저장
+                formatted_content = message.content
+            else:
+                role = "user"
+                # 사용자의 메시지는 누가 말했는지 식별자를 붙여서 저장
+                user_identifier = f"User({message.author.id}|{message.author.display_name})"
+                formatted_content = f"{user_identifier}: {message.content}"
+            
             self.conversation_histories[channel_id].append({"role": role, "parts": [{"text": formatted_content}]})
             logger.debug(f"채널({channel_id}) 메모리에 메시지 추가: {formatted_content[:50]}...")
 
@@ -119,13 +130,18 @@ class AIHandler(commands.Cog):
         if not self.is_ready: return False
         history = self.conversation_histories.get(message.channel.id)
         if not history or len(history) < 2: return False
+        
+        # [개선] 대화 기록 포맷에 맞춰 프롬프트 수정
         formatted_history = "\n".join([item['parts'][0]['text'] for item in history])
+        
         try:
             is_limited, _ = await self._check_global_rate_limit()
             if is_limited: return False
+            
             prompt = (f"{config.AI_PROACTIVE_RESPONSE_CONFIG['gatekeeper_persona']}\n\n"
                       f"--- 최근 대화 내용 ---\n{formatted_history}\n\n"
                       "이 상황에서 챗봇이 끼어들어도 될까? (Yes/No)")
+            
             logger.debug(f"자발적 응답 여부 판단 요청 (채널: {message.channel.id})...")
             async with self.api_call_lock:
                 self._record_api_call()
@@ -139,31 +155,31 @@ class AIHandler(commands.Cog):
 
     async def analyze_intent(self, message: discord.Message) -> str:
         if not config.AI_INTENT_ANALYSIS_ENABLED or not self.is_ready: return "Chat"
+        
         user_query = message.content.replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
         if not user_query: return "Chat"
+        
         try:
             is_limited, _ = await self._check_global_rate_limit()
             if is_limited: return "Chat"
+            
             prompt = f"{config.AI_INTENT_PERSONA}\n\n사용자 메시지: \"{user_query}\""
             logger.debug(f"의도 분석 요청: {user_query[:50]}...")
+            
             async with self.api_call_lock:
                 self._record_api_call()
                 response = await self.intent_model.generate_content_async(prompt)
+            
             intent = response.text.strip()
             logger.info(f"의도 분석 결과: '{intent}' (원본: '{user_query[:50]}...')")
-            valid_intents = ['Weather', 'Command', 'Chat', 'Mixed']
+            
+            valid_intents = ['Time', 'Weather', 'Command', 'Chat', 'Mixed']
             return intent if intent in valid_intents else 'Chat'
         except Exception as e:
             logger.error(f"AI 의도 분석 중 오류 발생: {e}", exc_info=True)
             return "Chat"
 
-    # [로직 개선] generate_creative_text 함수를 _generate_gemini_response를 재사용하도록 통합.
-    # 이제 모든 AI 응답 생성이 단일화된 페르소나 로직을 따름.
     async def generate_creative_text(self, channel: discord.TextChannel, author: discord.User, prompt_key: str, context: Dict[str, Any] | None = None) -> str | None:
-        """
-        config.py에 정의된 작업 지시를 사용하여 창의적인 텍스트를 생성합니다.
-        항상 채널의 기본 페르소나를 기반으로 응답합니다.
-        """
         if not self.is_ready:
             logger.warning(f"창의적 텍스트 생성 불가({prompt_key}): AI 핸들러 미준비.")
             return config.MSG_AI_ERROR
@@ -173,19 +189,15 @@ class AIHandler(commands.Cog):
             logger.error(f"창의적 텍스트 생성 불가: config에서 프롬프트 키 '{prompt_key}'를 찾을 수 없음.")
             return config.MSG_CMD_ERROR
 
-        # 작업 지시 프롬프트 생성
         task_prompt = prompt_template.format(**(context or {}))
-
-        # 채널 설정 가져오기
         channel_config = config.CHANNEL_AI_CONFIG.get(channel.id, {})
 
-        # 핵심 응답 생성 로직 재사용
         return await self._generate_gemini_response(
             channel_id=channel.id,
-            user_query=task_prompt, # 일반 채팅 대신 '작업 지시'를 쿼리로 전달
+            user_query=task_prompt,
             author=author,
             persona_config=channel_config,
-            is_task=True # 이 호출이 일반 채팅이 아닌 작업임을 명시
+            is_task=True
         )
 
     async def _generate_gemini_response(
@@ -195,12 +207,10 @@ class AIHandler(commands.Cog):
         author: discord.User,
         persona_config: dict,
         weather_info_str: str | None = None,
-        is_task: bool = False # 작업 요청과 일반 채팅을 구분하기 위한 플래그
+        is_task: bool = False
     ) -> str | None:
-        """Gemini API를 호출하여 응답을 생성하는 통합된 핵심 로직."""
         if not self.is_ready: return config.MSG_AI_ERROR
 
-        # 작업 요청(is_task=True)이 아닐 때만 사용자 쿨다운 체크
         if not is_task:
             on_cooldown, remaining_time = self._is_on_cooldown(author.id)
             if on_cooldown:
@@ -223,23 +233,23 @@ class AIHandler(commands.Cog):
         history = list(self.conversation_histories.get(channel_id, []))
 
         try:
-            # [로직 개선] 모델과 세션 생성을 try 블록 안으로 이동하여 안정성 확보
             model = genai.GenerativeModel(
                 config.AI_MODEL_NAME,
                 safety_settings=config.GEMINI_SAFETY_SETTINGS,
                 system_instruction="\n".join(filter(None, system_instructions))
             )
-            chat_session = model.start_chat(history=history if not is_task else []) # 작업 요청 시에는 이전 대화 무시
+            
+            # [개선] 작업 요청 시에는 이전 대화를 무시하고, 일반 대화 시에만 대화 기록을 사용
+            chat_session = model.start_chat(history=history if not is_task else [])
 
-            user_identifier = f"User({author.id}|{author.display_name})"
-            # 작업 요청일 경우, 사용자 식별자를 붙이지 않고 순수 작업 내용만 전달
-            final_query = user_query if is_task else f"{user_identifier}: {user_query}"
-
+            # [개선] 작업 요청 시에는 사용자 식별자 없이 순수 작업 내용만 전달
+            final_query = user_query if is_task else f"User({author.id}|{author.display_name}): {user_query}"
+            
             logger.debug(f"AI 처리 시작 | {final_query[:80]}...")
 
             async with self.api_call_lock:
                 self._record_api_call()
-                response = await chat_session.send_message_async(final_query)
+                response = await chat_session.send_message_async(final_query, stream=False)
 
             ai_response_text = response.text.strip()
             logger.info(f"AI 응답 생성 성공 (길이: {len(ai_response_text)}): {ai_response_text[:50]}...")
@@ -247,7 +257,11 @@ class AIHandler(commands.Cog):
 
         except (genai.types.BlockedPromptException, genai.types.StopCandidateException) as security_exception:
             logger.warning(f"AI 요청/응답 차단됨 | 오류: {security_exception}")
-            return config.MSG_AI_BLOCKED_PROMPT
+            # [개선] 사용자에게 어떤 종류의 오류인지 명확히 전달
+            if 'prompt' in str(security_exception).lower():
+                return config.MSG_AI_BLOCKED_PROMPT
+            else:
+                return config.MSG_AI_BLOCKED_RESPONSE
         except Exception as e:
             logger.error(f"AI 응답 생성 중 예기치 않은 오류: {e}", exc_info=True)
             return config.MSG_AI_ERROR
@@ -256,8 +270,11 @@ class AIHandler(commands.Cog):
         if not self.is_ready: return
 
         channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id)
+        # [수정] 'allowed' 키를 정확히 확인하도록 로직 변경
         if not channel_config or not channel_config.get("allowed", False):
-            if weather_info: await message.reply(f"📍 {weather_info}", mention_author=False)
+            # AI가 허용되지 않은 채널이라도, 날씨 정보가 있다면 날씨만이라도 알려주도록 처리
+            if weather_info:
+                await message.reply(f"📍 {weather_info}", mention_author=False)
             return
 
         user_query = message.content.replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
@@ -275,10 +292,8 @@ class AIHandler(commands.Cog):
             )
 
             if ai_response_text:
-                # [FIX] Send the message first to get a real discord.Message object
+                # [수정] AI 응답이 비어있지 않은 경우에만 메시지 전송 및 기록
                 bot_response_message = await message.reply(ai_response_text[:2000], mention_author=False)
-
-                # Now add the real message object to history
                 self.add_message_to_history(bot_response_message)
 
     async def generate_system_alert_message(self, channel_id: int, alert_context_info: str, alert_type: str = "일반 알림") -> str | None:
@@ -290,9 +305,9 @@ class AIHandler(commands.Cog):
         logger.info(f"시스템 {alert_type} 생성 요청: 채널={channel_id}, 내용='{alert_context_info[:100]}...'")
 
         user_query_for_alert = f"다음 상황을 너의 페르소나에 맞게 채널에 알려줘: '{alert_context_info}'"
-
-        system_author = discord.Object(id=self.bot.user.id)
-        system_author.display_name = self.bot.user.name
+        
+        # 시스템 메시지는 봇 자신이 보내는 것이므로, 봇 정보를 author로 사용
+        system_author = self.bot.user
 
         generated_text = await self._generate_gemini_response(
             channel_id=channel_id,
