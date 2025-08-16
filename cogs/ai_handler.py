@@ -151,7 +151,7 @@ class AIHandler(commands.Cog):
                 response = await self.intent_model.generate_content_async(prompt)
             intent = response.text.strip()
             logger.info(f"의도 분석 결과: '{intent}' (원본: '{user_query[:50]}...')")
-            valid_intents = ['Weather', 'Command', 'Chat', 'Mixed']
+            valid_intents = ['Time', 'Weather', 'Command', 'Chat', 'Mixed']
             return intent if intent in valid_intents else 'Chat'
         except Exception as e:
             logger.error(f"AI 의도 분석 중 오류 발생: {e}", exc_info=True)
