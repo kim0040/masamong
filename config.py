@@ -25,6 +25,16 @@ AI_COOLDOWN_SECONDS = 3
 AI_MEMORY_ENABLED = True
 AI_MEMORY_MAX_MESSAGES = 50
 AI_INTENT_ANALYSIS_ENABLED = True
+
+# --- AI 함수 호출(Tools) 설정 ---
+# AI가 사용할 수 있는 도구 목록을 정의합니다.
+# 형식: 'cogs.cog_name.function_name'
+AI_TOOLS = [
+    'cogs.weather_cog.get_weather_forecast',
+    'cogs.fun_cog.get_conversation_for_summary',
+    'cogs.poll_cog.create_poll',
+]
+
 AI_INTENT_PERSONA = """너는 사용자의 메시지를 분석해서 그 의도를 다음 중 하나로 분류하는 역할을 맡았어.
 - 'Weather': 메시지가 날씨(기온, 비, 눈, 바람 등)에 대해 명확히 묻거나 언급할 때.
 - 'Command': 메시지가 명백한 명령어 형식일 때 (예: !로 시작).

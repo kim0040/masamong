@@ -158,70 +158,75 @@ class WeatherCog(commands.Cog):
 
     @tasks.loop(minutes=config.WEATHER_CHECK_INTERVAL_MINUTES)
     async def rain_notification_loop(self):
-        await self.bot.wait_until_ready()
-        if not utils.get_kma_api_key(): return
-        
-        alert_channel_id = config.RAIN_NOTIFICATION_CHANNEL_ID
-        notification_channel = self.bot.get_channel(alert_channel_id)
-        if not notification_channel: return
-        
-        nx, ny = config.DEFAULT_NX, config.DEFAULT_NY
-        forecast_data = await utils.get_short_term_forecast_from_kma(nx, ny)
-        
-        if not forecast_data or forecast_data.get("error"): return
+        try:
+            await self.bot.wait_until_ready()
+            if not utils.get_kma_api_key(): return
 
-        precipitation_periods = self._parse_rain_periods(forecast_data)
-        now_kst = datetime.now(KST)
-        
-        cutoff_time = now_kst - timedelta(days=1)
-        self.notified_rain_event_starts = {key for key in self.notified_rain_event_starts if KST.localize(datetime.strptime(f"{key[0]}{key[1]}", "%Y%m%d%H%M")) >= cutoff_time}
+            alert_channel_id = config.RAIN_NOTIFICATION_CHANNEL_ID
+            notification_channel = self.bot.get_channel(alert_channel_id)
+            if not notification_channel: return
 
-        for period in precipitation_periods:
-            if period["start_dt"] >= now_kst and period["key"] not in self.notified_rain_event_starts:
-                start_display = period["start_dt"].strftime("%m월 %d일 %H시")
-                end_display = (period["end_dt"] + timedelta(hours=1)).strftime("%H시")
-                if period["start_dt"].date() != period["end_dt"].date():
-                    end_display = (period["end_dt"] + timedelta(hours=1)).strftime("%m월 %d일 %H시")
-                
-                precip_type_kor = "눈❄️" if period["type"] == "눈" else "비☔"
-                weather_alert_info = f"{config.DEFAULT_LOCATION_NAME}에 '{start_display}'부터 '{end_display}'까지 {precip_type_kor}가 올 것으로 예상됩니다. 최대 강수/강설 확률은 {period['max_pop']}%입니다."
-                
-                final_message_to_send = f"{precip_type_kor} **{config.DEFAULT_LOCATION_NAME} {precip_type_kor} 예보 알림**\n{weather_alert_info}"
-                if self.ai_handler and self.ai_handler.is_ready:
-                    # AI를 통해 페르소나에 맞는 말투로 변경
-                    final_message_to_send = await self.ai_handler.generate_system_message(
-                        text_to_rephrase=weather_alert_info,
-                        channel_id=alert_channel_id
-                    )
-                
-                await notification_channel.send(final_message_to_send)
-                self.notified_rain_event_starts.add(period["key"])
+            nx, ny = config.DEFAULT_NX, config.DEFAULT_NY
+            forecast_data = await utils.get_short_term_forecast_from_kma(nx, ny)
+
+            if not forecast_data or forecast_data.get("error"): return
+
+            precipitation_periods = self._parse_rain_periods(forecast_data)
+            now_kst = datetime.now(KST)
+
+            cutoff_time = now_kst - timedelta(days=1)
+            self.notified_rain_event_starts = {key for key in self.notified_rain_event_starts if KST.localize(datetime.strptime(f"{key[0]}{key[1]}", "%Y%m%d%H%M")) >= cutoff_time}
+
+            for period in precipitation_periods:
+                if period["start_dt"] >= now_kst and period["key"] not in self.notified_rain_event_starts:
+                    start_display = period["start_dt"].strftime("%m월 %d일 %H시")
+                    end_display = (period["end_dt"] + timedelta(hours=1)).strftime("%H시")
+                    if period["start_dt"].date() != period["end_dt"].date():
+                        end_display = (period["end_dt"] + timedelta(hours=1)).strftime("%m월 %d일 %H시")
+
+                    precip_type_kor = "눈❄️" if period["type"] == "눈" else "비☔"
+                    weather_alert_info = f"{config.DEFAULT_LOCATION_NAME}에 '{start_display}'부터 '{end_display}'까지 {precip_type_kor}가 올 것으로 예상됩니다. 최대 강수/강설 확률은 {period['max_pop']}%입니다."
+
+                    final_message_to_send = f"{precip_type_kor} **{config.DEFAULT_LOCATION_NAME} {precip_type_kor} 예보 알림**\n{weather_alert_info}"
+                    if self.ai_handler and self.ai_handler.is_ready:
+                        final_message_to_send = await self.ai_handler.generate_system_message(
+                            text_to_rephrase=weather_alert_info,
+                            channel_id=alert_channel_id
+                        )
+
+                    await notification_channel.send(final_message_to_send)
+                    self.notified_rain_event_starts.add(period["key"])
+        except Exception as e:
+            logger.error(f"주기적 비 알림 루프에서 예기치 않은 오류 발생: {e}", exc_info=True)
 
     async def _send_greeting_notification(self, greeting_type: str):
-        await self.bot.wait_until_ready()
-        if not utils.get_kma_api_key(): return
-        greeting_channel_id = getattr(config, 'GREETING_NOTIFICATION_CHANNEL_ID', 0) or config.RAIN_NOTIFICATION_CHANNEL_ID
-        notification_channel = self.bot.get_channel(greeting_channel_id)
-        if not notification_channel: return
+        try:
+            await self.bot.wait_until_ready()
+            if not utils.get_kma_api_key(): return
+            greeting_channel_id = getattr(config, 'GREETING_NOTIFICATION_CHANNEL_ID', 0) or config.RAIN_NOTIFICATION_CHANNEL_ID
+            notification_channel = self.bot.get_channel(greeting_channel_id)
+            if not notification_channel: return
 
-        nx, ny = config.DEFAULT_NX, config.DEFAULT_NY
-        today_forecast_raw = await utils.get_short_term_forecast_from_kma(nx, ny)
-        weather_summary = utils.format_short_term_forecast(today_forecast_raw, datetime.now(KST).date())
-        
-        alert_context = ""
-        if greeting_type == "아침":
-            alert_context = f"좋은 아침! ☀️ 오늘 {config.DEFAULT_LOCATION_NAME} 날씨는 이렇대.\n\n> {weather_summary}\n\n오늘 하루도 활기차게 시작해보자고! 💪"
-        else:
-            alert_context = f"오늘 하루도 수고했어! 참고로 오늘 {config.DEFAULT_LOCATION_NAME} 날씨는 이랬어.\n\n> {weather_summary}\n\n이제 편안한 밤 보내고, 내일 또 보자! 잘 자! 🌙"
+            nx, ny = config.DEFAULT_NX, config.DEFAULT_NY
+            today_forecast_raw = await utils.get_short_term_forecast_from_kma(nx, ny)
+            weather_summary = utils.format_short_term_forecast(today_forecast_raw, datetime.now(KST).date())
 
-        final_message_to_send = alert_context
-        if self.ai_handler and self.ai_handler.is_ready:
-            final_message_to_send = await self.ai_handler.generate_system_message(
-                text_to_rephrase=alert_context,
-                channel_id=greeting_channel_id
-            )
+            alert_context = ""
+            if greeting_type == "아침":
+                alert_context = f"좋은 아침! ☀️ 오늘 {config.DEFAULT_LOCATION_NAME} 날씨는 이렇대.\n\n> {weather_summary}\n\n오늘 하루도 활기차게 시작해보자고! 💪"
+            else:
+                alert_context = f"오늘 하루도 수고했어! 참고로 오늘 {config.DEFAULT_LOCATION_NAME} 날씨는 이랬어.\n\n> {weather_summary}\n\n이제 편안한 밤 보내고, 내일 또 보자! 잘 자! 🌙"
 
-        await notification_channel.send(final_message_to_send)
+            final_message_to_send = alert_context
+            if self.ai_handler and self.ai_handler.is_ready:
+                final_message_to_send = await self.ai_handler.generate_system_message(
+                    text_to_rephrase=alert_context,
+                    channel_id=greeting_channel_id
+                )
+
+            await notification_channel.send(final_message_to_send)
+        except Exception as e:
+            logger.error(f"주기적 {greeting_type} 인사 루프에서 예기치 않은 오류 발생: {e}", exc_info=True)
 
     @tasks.loop(time=dt_time(hour=config.MORNING_GREETING_TIME["hour"], minute=config.MORNING_GREETING_TIME["minute"], tzinfo=KST))
     async def morning_greeting_loop(self):
