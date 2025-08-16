@@ -34,16 +34,16 @@ class UserCommands(commands.Cog):
             if os.path.exists(log_filename):
                 os.remove(log_filename)
                 await ctx.send(config.MSG_DELETE_LOG_SUCCESS.format(filename=log_filename))
-                logger.info(f"[{ctx.guild.name}/{ctx.channel.name}] 로그 파일 삭제됨 | 요청자:{ctx.author}")
+                logger.info(f"로그 파일 삭제됨 | 요청자:{ctx.author}({ctx.author.id}) | 서버:{ctx.guild.name}({ctx.guild.id})")
                 # 주기적 로그 출력 태스크의 위치 초기화 (필요 시)
                 if hasattr(utils.print_log_periodically_task, 'last_pos'):
                     utils.print_log_periodically_task.last_pos = 0
             else:
                 await ctx.send(config.MSG_DELETE_LOG_NOT_FOUND.format(filename=log_filename))
-                logger.warning(f"[{ctx.guild.name}/{ctx.channel.name}] 로그 파일 삭제 시도 - 파일 없음 | 요청자:{ctx.author}")
+                logger.warning(f"로그 파일 삭제 시도 - 파일 없음 | 요청자:{ctx.author}({ctx.author.id})")
         except Exception as e:
             await ctx.send(config.MSG_DELETE_LOG_ERROR)
-            logger.error(f"[{ctx.guild.name}/{ctx.channel.name}] 로그 파일 삭제 중 오류 발생 | 요청자:{ctx.author} | 오류: {e}", exc_info=True)
+            logger.error(f"로그 파일 삭제 중 오류 발생 | 요청자:{ctx.author}({ctx.author.id}) | 오류: {e}", exc_info=True)
 
     # delete_log 명령어의 에러 핸들러
     @delete_log.error
@@ -51,14 +51,14 @@ class UserCommands(commands.Cog):
         """delete_log 명령어 처리 중 발생하는 오류를 핸들링합니다."""
         if isinstance(error, commands.MissingPermissions):
             await ctx.send(config.MSG_CMD_NO_PERM)
-            logger.warning(f"[{ctx.guild.name}/{ctx.channel.name}] 권한 없는 로그 삭제 시도 | 요청자:{ctx.author}")
+            logger.warning(f"권한 없는 로그 삭제 시도 | 요청자:{ctx.author}({ctx.author.id}) | 서버:{ctx.guild.name}({ctx.guild.id})")
         elif isinstance(error, commands.NoPrivateMessage):
             await ctx.send(config.MSG_CMD_GUILD_ONLY)
         elif isinstance(error, commands.CheckFailure): # has_permissions 외 다른 Check 실패 시
              await ctx.send(config.MSG_CMD_NO_PERM) # 일단 동일 메시지 사용
-             logger.warning(f"[{ctx.guild.name}/{ctx.channel.name}] 로그 삭제 권한 확인 실패 (CheckFailure) | 요청자:{ctx.author}")
+             logger.warning(f"로그 삭제 권한 확인 실패 (CheckFailure) | 요청자:{ctx.author}({ctx.author.id})")
         else:
-            logger.error(f"[{ctx.guild.name}/{ctx.channel.name}] delete_log 명령어 처리 중 예기치 않은 오류 발생: {error}", exc_info=True)
+            logger.error(f"delete_log 명령어 처리 중 예기치 않은 오류 발생: {error}", exc_info=True)
             await ctx.send(config.MSG_CMD_ERROR)
 
 # Cog를 로드하기 위한 setup 함수 (main.py에서 호출)

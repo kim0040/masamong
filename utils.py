@@ -64,6 +64,9 @@ async def increment_api_counter(counter_name: str):
         if conn:
             conn.close()
 
+# --- KMA API v3 (단기예보) ---
+KMA_API_BASE_URL = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0"
+
 def get_kma_api_key():
     """config.py에서 기상청 API 키를 가져옵니다."""
     api_key = config.KMA_API_KEY
@@ -72,16 +75,12 @@ def get_kma_api_key():
         return None
     return api_key
 
-# --- KMA API v3 (단기예보) ---
-KMA_API_BASE_URL = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0"
-
 async def _fetch_kma_api(endpoint: str, params: dict) -> dict | None:
     """새로운 기상청 API를 호출하고 응답을 파싱하는 통합 함수."""
     api_key = get_kma_api_key()
     if not api_key:
         return {"error": "api_key_missing", "message": config.MSG_WEATHER_API_KEY_MISSING}
 
-    # DB 기반으로 일일 호출량 제한 확인
     if await is_api_limit_reached('kma_daily_calls', config.KMA_API_DAILY_CALL_LIMIT):
         return {"error": "limit_reached", "message": config.MSG_KMA_API_DAILY_LIMIT_REACHED}
 
@@ -205,7 +204,6 @@ def format_short_term_forecast(forecast_data: dict | None, day_name: str, target
         if not all_items:
             return config.MSG_WEATHER_NO_DATA
 
-        # 해당 날짜의 데이터만 필터링
         target_date = datetime.now(KST).date() + timedelta(days=target_day_offset)
         target_date_str = target_date.strftime("%Y%m%d")
 
@@ -213,24 +211,20 @@ def format_short_term_forecast(forecast_data: dict | None, day_name: str, target
         if not day_items:
             return f"{day_name} 날씨: 해당 날짜의 예보 데이터가 없습니다."
 
-        # 최저/최고 기온 찾기 (TMN, TMX)
         min_temps = [float(item['fcstValue']) for item in day_items if item['category'] == 'TMN']
         max_temps = [float(item['fcstValue']) for item in day_items if item['category'] == 'TMX']
         min_temp = min(min_temps) if min_temps else None
         max_temp = max(max_temps) if max_temps else None
 
-        # 특정 시간대(예: 정오)의 하늘 상태 찾기
         sky_map = {"1": "맑음☀️", "3": "구름많음☁️", "4": "흐림🌥️"}
         noon_sky_item = next((item for item in day_items if item['category'] == 'SKY' and item['fcstTime'] == '1200'), None)
         noon_sky = sky_map.get(noon_sky_item['fcstValue'], "정보없음") if noon_sky_item else "정보없음"
 
-        # 하루 중 최대 강수확률
         pops = [int(item['fcstValue']) for item in day_items if item['category'] == 'POP']
         max_pop = max(pops) if pops else 0
 
         temp_range_str = ""
         if min_temp is not None and max_temp is not None:
-            # TMX/TMN은 소수점 1자리까지 오므로 포맷팅
             temp_range_str = f"(최저 {min_temp:.1f}°C / 최고 {max_temp:.1f}°C)"
         elif max_temp is not None:
             temp_range_str = f"(최고 {max_temp:.1f}°C)"

@@ -10,6 +10,7 @@ from typing import Dict, Any, Tuple
 
 import config
 from logger_config import logger
+import utils
 
 KST = pytz.timezone('Asia/Seoul')
 
@@ -51,7 +52,6 @@ class AIHandler(commands.Cog):
                 logger.warning(f"분당 Gemini API 호출 제한 도달 ({len(self.minute_request_timestamps)}/{config.API_RPM_LIMIT}).")
                 return True, config.MSG_AI_RATE_LIMITED
 
-        # 일일 호출 제한 (DB 확인)
         if await utils.is_api_limit_reached('gemini_daily_calls', config.API_RPD_LIMIT):
             return True, config.MSG_AI_DAILY_LIMITED
 
@@ -61,7 +61,6 @@ class AIHandler(commands.Cog):
         """API 호출을 기록합니다 (분당 제한용)."""
         now = datetime.now()
         self.minute_request_timestamps.append(now)
-        # 일일 카운터는 DB에서 직접 증가시키므로 여기서는 분당 카운트만 로깅
         logger.debug(f"Gemini API 호출 기록됨. (지난 1분간: {len(self.minute_request_timestamps)}회)")
 
 
@@ -97,19 +96,15 @@ class AIHandler(commands.Cog):
         channel_id = message.channel.id
         channel_config = config.CHANNEL_AI_CONFIG.get(channel_id)
         
-        # AI 설정이 있는 채널의 메시지만 기록
         if channel_config and channel_config.get("allowed", False):
             if channel_id not in self.conversation_histories:
                 self.conversation_histories[channel_id] = deque(maxlen=config.AI_MEMORY_MAX_MESSAGES)
 
-            # [개선] 봇의 메시지와 사용자의 메시지를 구분하여 저장
             if message.author == self.bot.user:
                 role = "model"
-                # 봇의 메시지는 'User(ID|이름):' 접두사 없이 순수 내용만 저장
                 formatted_content = message.content
             else:
                 role = "user"
-                # 사용자의 메시지는 누가 말했는지 식별자를 붙여서 저장
                 user_identifier = f"User({message.author.id}|{message.author.display_name})"
                 formatted_content = f"{user_identifier}: {message.content}"
             
@@ -121,7 +116,6 @@ class AIHandler(commands.Cog):
         history = self.conversation_histories.get(message.channel.id)
         if not history or len(history) < 2: return False
         
-        # [개선] 대화 기록 포맷에 맞춰 프롬프트 수정
         formatted_history = "\n".join([item['parts'][0]['text'] for item in history])
         
         try:
@@ -136,6 +130,7 @@ class AIHandler(commands.Cog):
             async with self.api_call_lock:
                 self._record_api_call()
                 response = await self.intent_model.generate_content_async(prompt)
+                await utils.increment_api_counter('gemini_daily_calls')
             decision = response.text.strip().lower()
             logger.info(f"자발적 응답 판단 결과: '{decision}'")
             return 'yes' in decision
@@ -159,6 +154,7 @@ class AIHandler(commands.Cog):
             async with self.api_call_lock:
                 self._record_api_call()
                 response = await self.intent_model.generate_content_async(prompt)
+                await utils.increment_api_counter('gemini_daily_calls')
             
             intent = response.text.strip()
             logger.info(f"의도 분석 결과: '{intent}' (원본: '{user_query[:50]}...')")
@@ -229,10 +225,7 @@ class AIHandler(commands.Cog):
                 system_instruction="\n".join(filter(None, system_instructions))
             )
             
-            # [개선] 작업 요청 시에는 이전 대화를 무시하고, 일반 대화 시에만 대화 기록을 사용
             chat_session = model.start_chat(history=history if not is_task else [])
-
-            # [개선] 작업 요청 시에는 사용자 식별자 없이 순수 작업 내용만 전달
             final_query = user_query if is_task else f"User({author.id}|{author.display_name}): {user_query}"
             
             logger.debug(f"AI 처리 시작 | {final_query[:80]}...")
@@ -248,7 +241,6 @@ class AIHandler(commands.Cog):
 
         except (genai.types.BlockedPromptException, genai.types.StopCandidateException) as security_exception:
             logger.warning(f"AI 요청/응답 차단됨 | 오류: {security_exception}")
-            # [개선] 사용자에게 어떤 종류의 오류인지 명확히 전달
             if 'prompt' in str(security_exception).lower():
                 return config.MSG_AI_BLOCKED_PROMPT
             else:
@@ -261,9 +253,7 @@ class AIHandler(commands.Cog):
         if not self.is_ready: return
 
         channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id)
-        # [수정] 'allowed' 키를 정확히 확인하도록 로직 변경
         if not channel_config or not channel_config.get("allowed", False):
-            # AI가 허용되지 않은 채널이라도, 날씨 정보가 있다면 날씨만이라도 알려주도록 처리
             if weather_info:
                 await message.reply(f"📍 {weather_info}", mention_author=False)
             return
@@ -283,7 +273,6 @@ class AIHandler(commands.Cog):
             )
 
             if ai_response_text:
-                # [수정] AI 응답이 비어있지 않은 경우에만 메시지 전송 및 기록
                 bot_response_message = await message.reply(ai_response_text[:2000], mention_author=False)
                 self.add_message_to_history(bot_response_message)
 
@@ -297,7 +286,6 @@ class AIHandler(commands.Cog):
 
         user_query_for_alert = f"다음 상황을 너의 페르소나에 맞게 채널에 알려줘: '{alert_context_info}'"
         
-        # 시스템 메시지는 봇 자신이 보내는 것이므로, 봇 정보를 author로 사용
         system_author = self.bot.user
 
         generated_text = await self._generate_gemini_response(
