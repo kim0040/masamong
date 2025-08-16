@@ -26,13 +26,12 @@ class AIHandler(commands.Cog):
         self.gemini_configured = False
         self.api_call_lock = asyncio.Lock()
 
-        # 생성 모델용 Rate Limiter
+        # Rate Limiter deques
         self.gen_minute_req_ts = deque()
         self.gen_minute_token_ts = deque()
         self.gen_daily_req_count = 0
         self.gen_daily_limit_reset = self._get_next_kst_midnight()
 
-        # 임베딩 모델용 Rate Limiter
         self.emb_minute_req_ts = deque()
         self.emb_minute_token_ts = deque()
         self.emb_daily_req_count = 0
@@ -65,7 +64,7 @@ class AIHandler(commands.Cog):
                 cog_instance = self.bot.get_cog(cog_name_pascal)
                 if cog_instance: self.tool_map[func_name] = getattr(cog_instance, func_name)
             except Exception as e: logger.error(f"도구 등록 실패: '{tool_path}'. 오류: {e}")
-        if self.tool_map: self.tools = [content_types.Tool.from_function(func) for func in self.tool_map.values()]
+        if self.tool_map: self.tools = list(self.tool_map.values())
         logger.info(f"AI 도구 등록 완료: {list(self.tool_map.keys())}")
 
     @property
@@ -93,16 +92,18 @@ class AIHandler(commands.Cog):
             current_tpm = sum(t[1] for t in token_ts if t[0] >= one_minute_ago)
             if current_tpm + tokens_to_use > TPM: return True, config.MSG_AI_RATE_LIMITED
 
-            if now.astimezone(KST) >= reset_time: daily_count = 0; reset_time = self._get_next_kst_midnight()
-            if daily_count >= RPD: return True, config.MSG_AI_DAILY_LIMITED
+            if now.astimezone(KST) >= reset_time:
+                if limit_type == 'gen': self.gen_daily_req_count = 0; self.gen_daily_limit_reset = self._get_next_kst_midnight()
+                else: self.emb_daily_req_count = 0; self.emb_daily_limit_reset = self._get_next_kst_midnight()
 
+            if daily_count >= RPD: return True, config.MSG_AI_DAILY_LIMITED
             return False, None
 
     def _record_api_call(self, limit_type: str, tokens_used: int):
         now = datetime.now()
         if limit_type == 'gen':
             self.gen_minute_req_ts.append(now); self.gen_minute_token_ts.append((now, tokens_used)); self.gen_daily_req_count += 1
-        else: # 'emb'
+        else:
             self.emb_minute_req_ts.append(now); self.emb_minute_token_ts.append((now, tokens_used)); self.emb_daily_req_count += 1
         logger.debug(f"Gemini API 호출({limit_type}). 토큰: {tokens_used}")
 
@@ -113,14 +114,14 @@ class AIHandler(commands.Cog):
         return False, 0.0
     def _update_cooldown(self, user_id: int): self.ai_user_cooldowns[user_id] = datetime.now()
 
-    async def _create_and_save_embedding(self, message_id, content):
+    async def _create_and_save_embedding(self, message_id: int, content: str):
         if not self.is_ready or not content: return
         try:
-            token_count = await genai.count_tokens_async(model=config.AI_EMBEDDING_MODEL_NAME, contents=content)
-            is_limited, msg = await self._check_rate_limit('emb', token_count.total_tokens)
+            token_count_result = await genai.count_tokens_async(model=config.AI_EMBEDDING_MODEL_NAME, contents=content)
+            is_limited, msg = await self._check_rate_limit('emb', token_count_result.total_tokens)
             if is_limited: logger.warning(f"임베딩 생성 건너뜀 (API 제한): {msg}"); return
 
-            self._record_api_call('emb', token_count.total_tokens)
+            self._record_api_call('emb', token_count_result.total_tokens)
             result = await genai.embed_content_async(model=config.AI_EMBEDDING_MODEL_NAME, content=content, task_type="retrieval_document", output_dimensionality=768)
             embedding_bytes = np.array(result['embedding'], dtype=np.float32).tobytes()
 
@@ -131,50 +132,58 @@ class AIHandler(commands.Cog):
                 await self.bot.db.commit()
         except Exception as e: logger.error(f"임베딩 생성/저장 오류: {e}", exc_info=True)
 
-    async def add_message_to_history(self, message):
+    async def add_message_to_history(self, message: discord.Message):
         if not config.AI_MEMORY_ENABLED or not self.is_ready or not config.CHANNEL_AI_CONFIG.get(message.channel.id): return
         sql = "INSERT INTO conversation_history (message_id, guild_id, channel_id, user_id, user_name, content, is_bot, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?);"
         params = (message.id, message.guild.id, message.channel.id, message.author.id, message.author.display_name, message.content, message.author.bot, message.created_at.isoformat())
         try:
             await self.bot.db.execute(sql, params); await self.bot.db.commit()
-            if not message.author.bot and len(message.content) > 10: asyncio.create_task(self._create_and_save_embedding(message.id, message.content))
+            if not message.author.bot and len(message.content) > 10:
+                asyncio.create_task(self._create_and_save_embedding(message.id, message.content))
         except Exception as e:
             if "UNIQUE" not in str(e): logger.error(f"대화기록 저장 오류: {e}", exc_info=True)
 
-    async def _find_similar_history(self, user_query, limit=3):
+    async def _find_similar_history(self, user_query: str, guild_id: int, limit: int = 3) -> str:
         if not self.is_ready: return ""
         try:
-            token_count = await genai.count_tokens_async(model=config.AI_EMBEDDING_MODEL_NAME, contents=user_query)
-            is_limited, _ = await self._check_rate_limit('emb', token_count.total_tokens)
+            token_count_result = await genai.count_tokens_async(model=config.AI_EMBEDDING_MODEL_NAME, contents=user_query)
+            is_limited, _ = await self._check_rate_limit('emb', token_count_result.total_tokens)
             if is_limited: return ""
 
-            self._record_api_call('emb', token_count.total_tokens)
+            self._record_api_call('emb', token_count_result.total_tokens)
             result = await genai.embed_content_async(model=config.AI_EMBEDDING_MODEL_NAME, content=user_query, task_type="retrieval_query", output_dimensionality=768)
-            query_bytes = np.array(result['embedding'], dtype=np.float32).tobytes()
-            sql = "SELECT rowid, distance FROM vss_conversations WHERE vss_search(embedding, ?) AND distance < 0.5 LIMIT ?"
-            cursor = await self.bot.db.execute(sql, (query_bytes, limit)); similar_rows = await cursor.fetchall()
-            if not similar_rows: return ""
-            rowids = [row[0] for row in similar_rows]; placeholders = ','.join('?' for _ in rowids)
-            sql = f"SELECT user_name, content FROM conversation_history WHERE rowid IN ({placeholders}) ORDER BY created_at"
-            cursor = await self.bot.db.execute(sql, rowids); results = await cursor.fetchall()
-            return "\n".join([f"- {r[0]}: {r[1]}" for r in results])
+            query_embedding_bytes = np.array(result['embedding'], dtype=np.float32).tobytes()
+
+            vss_sql = "SELECT rowid, distance FROM vss_conversations WHERE vss_search(embedding, ?) AND distance < 0.5 LIMIT 20"
+            cursor = await self.bot.db.execute(vss_sql, (query_embedding_bytes,)); similar_rowids_all = [row[0] for row in await cursor.fetchall()]
+            if not similar_rowids_all: return ""
+
+            placeholders = ','.join('?' for _ in similar_rowids_all)
+            history_sql = f"SELECT user_name, content FROM conversation_history WHERE rowid IN ({placeholders}) AND guild_id = ? ORDER BY created_at DESC LIMIT ?"
+            params = similar_rowids_all + [guild_id, limit]
+
+            cursor = await self.bot.db.execute(history_sql, params); results = await cursor.fetchall()
+            if not results: return ""
+
+            results.reverse()
+            logger.info(f"유사도 검색(Guild: {guild_id}) 결과 {len(results)}건 발견.")
+            return "\n".join([f"- {row[0]}: {row[1]}" for row in results])
         except Exception as e: logger.error(f"유사도 검색 오류: {e}", exc_info=True); return ""
 
-    async def _get_history_from_db(self, channel_id):
+    async def _get_history_from_db(self, channel_id: int) -> list:
         sql = "SELECT user_id, user_name, is_bot, content FROM conversation_history WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?"
         cursor = await self.bot.db.execute(sql, (channel_id, config.AI_MEMORY_MAX_MESSAGES)); rows = await cursor.fetchall(); rows.reverse()
         return [{"role": "model" if row[2] else "user", "parts": [{"text": f"User({r[0]}|{r[1]}): {r[3]}"}]} for r in rows]
 
-    async def _get_persona_for_channel(self, guild_id, channel_id):
+    async def _get_persona_for_channel(self, guild_id: int, channel_id: int) -> str:
         cursor = await self.bot.db.execute("SELECT value FROM guild_settings WHERE guild_id = ? AND setting_name = 'persona'", (guild_id,)); row = await cursor.fetchone()
         return row[0] if row and row[0] else config.CHANNEL_AI_CONFIG.get(channel_id, {}).get("persona", "")
 
     async def generate_system_message(self, text_to_rephrase, channel_id, guild_id):
-        # (This function now mainly relies on process_direct_prompt_task)
+        if not self.is_ready: return text_to_rephrase
         prompt = f"다음 문장을 너의 말투로 자연스럽게 바꿔서 말해줘: \"{text_to_rephrase}\""
-        system_author = self.bot.user
         channel = self.bot.get_channel(channel_id)
-        return await self.process_direct_prompt_task(prompt, system_author, channel)
+        return await self.process_direct_prompt_task(prompt, self.bot.user, channel)
 
     async def process_direct_prompt_task(self, prompt, author, channel):
         if not self.is_ready: return config.MSG_AI_ERROR
@@ -185,10 +194,11 @@ class AIHandler(commands.Cog):
         model = genai.GenerativeModel(config.AI_MODEL_NAME, system_instruction=persona)
         try:
             prompt_tokens = await model.count_tokens_async(prompt)
-            is_limited, msg = await self._check_rate_limit('gen', prompt_tokens)
+            is_limited, msg = await self._check_rate_limit('gen', prompt_tokens.total_tokens)
             if is_limited: return msg
-            self._record_api_call('gen', prompt_tokens)
+
             response = await model.generate_content_async(prompt)
+            self._record_api_call('gen', response.usage_metadata.total_token_count)
             return response.text.strip()
         except Exception as e: logger.error(f"직접 프롬프트 처리 오류: {e}", exc_info=True); return config.MSG_AI_ERROR
 
@@ -202,7 +212,7 @@ class AIHandler(commands.Cog):
 
         async with message.channel.typing():
             try:
-                rag_context = await self._find_similar_history(user_query)
+                rag_context = await self._find_similar_history(user_query, message.guild.id)
                 persona = await self._get_persona_for_channel(message.guild.id, message.channel.id)
                 rules = config.CHANNEL_AI_CONFIG.get(message.channel.id, {}).get("rules", "")
                 system_instructions = [persona, rules]
@@ -214,11 +224,11 @@ class AIHandler(commands.Cog):
                 final_query = f"User({message.author.id}|{message.author.display_name}): {user_query}"
 
                 prompt_tokens = await model_with_tools.count_tokens_async(chat_session.history + [content_types.to_content(final_query)])
-                is_limited, msg = await self._check_rate_limit('gen', prompt_tokens)
+                is_limited, msg = await self._check_rate_limit('gen', prompt_tokens.total_tokens)
                 if is_limited: await message.reply(msg, mention_author=False); return
 
                 response = await chat_session.send_message_async(final_query)
-                self._record_api_call('gen', response.usage_metadata.prompt_token_count) # Record prompt tokens
+                self._record_api_call('gen', response.usage_metadata.prompt_token_count)
 
                 if (function_call := response.candidates[0].content.parts[0].function_call):
                     tool_name = function_call.name; tool_args = {key: value for key, value in function_call.args.items()}
@@ -226,9 +236,10 @@ class AIHandler(commands.Cog):
                     if tool_function:
                         if 'channel_id' in tool_function.__code__.co_varnames: tool_args['channel_id'] = message.channel.id
                         if 'author_name' in tool_function.__code__.co_varnames: tool_args['author_name'] = message.author.display_name
-                        response = await chat_session.send_message_async(content_types.Part.from_function_response(name=tool_name, response={"result": await tool_function(**tool_args)}))
+                        function_result = await tool_function(**tool_args)
+                        response = await chat_session.send_message_async(content_types.Part.from_function_response(name=tool_name, response={"result": function_result}))
 
-                self._record_api_call('gen', response.usage_metadata.candidates_token_count) # Record completion tokens
+                self._record_api_call('gen', response.usage_metadata.candidates_token_count)
                 final_text = response.text.strip()
                 await message.reply(final_text, mention_author=False)
 
