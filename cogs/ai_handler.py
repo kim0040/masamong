@@ -117,8 +117,7 @@ class AIHandler(commands.Cog):
     async def _create_and_save_embedding(self, message_id: int, content: str):
         if not self.is_ready or not content: return
         try:
-            # Use the top-level genai module for embedding
-            token_count_result = await self.model.count_tokens_async(content) # FIX: Use model object
+            token_count_result = await self.model.count_tokens_async(content)
             is_limited, msg = await self._check_rate_limit('emb', token_count_result.total_tokens)
             if is_limited: logger.warning(f"임베딩 생성 건너뜀 (API 제한): {msg}"); return
 
@@ -147,7 +146,7 @@ class AIHandler(commands.Cog):
     async def _find_similar_history(self, user_query: str, guild_id: int, limit: int = 3) -> str:
         if not self.is_ready: return ""
         try:
-            token_count_result = await self.model.count_tokens_async(user_query) # FIX: Use model object
+            token_count_result = await self.model.count_tokens_async(user_query)
             is_limited, _ = await self._check_rate_limit('emb', token_count_result.total_tokens)
             if is_limited: return ""
 
@@ -174,7 +173,7 @@ class AIHandler(commands.Cog):
     async def _get_history_from_db(self, channel_id: int) -> list:
         sql = "SELECT user_id, user_name, is_bot, content FROM conversation_history WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?"
         cursor = await self.bot.db.execute(sql, (channel_id, config.AI_MEMORY_MAX_MESSAGES)); rows = await cursor.fetchall(); rows.reverse()
-        return [{"role": "model" if row[2] else "user", "parts": [{"text": f"User({r[0]}|{r[1]}): {r[3]}"}]} for r in rows]
+        return [{"role": "model" if r[2] else "user", "parts": [{"text": f"User({r[0]}|{r[1]}): {r[3]}"}]} for r in rows]
 
     async def _get_persona_for_channel(self, guild_id: int, channel_id: int) -> str:
         """DB에서 서버별 커스텀 페르소나를 조회하고, 없으면 config의 기본값을 반환합니다."""
@@ -210,7 +209,7 @@ class AIHandler(commands.Cog):
         persona = await self._get_persona_for_channel(channel.guild.id, channel.id)
         model = genai.GenerativeModel(config.AI_MODEL_NAME, system_instruction=persona)
         try:
-            prompt_tokens_result = await model.count_tokens_async(prompt) # FIX: Use model object
+            prompt_tokens_result = await model.count_tokens_async(prompt)
             is_limited, msg = await self._check_rate_limit('gen', prompt_tokens_result.total_tokens)
             if is_limited: return msg
 

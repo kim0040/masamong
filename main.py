@@ -17,7 +17,6 @@ if not config.TOKEN:
     logger.critical("DISCORD_BOT_TOKEN 환경 변수가 설정되지 않았습니다. 봇을 실행할 수 없습니다.")
     sys.exit(1)
 
-# AI 또는 날씨 기능 활성화 시 API 키 확인
 if not config.GEMINI_API_KEY:
     logger.warning("GEMINI_API_KEY 환경 변수가 없습니다. AI 기능이 작동하지 않습니다.")
 if not config.KMA_API_KEY or config.KMA_API_KEY == 'YOUR_KMA_API_KEY':
@@ -47,8 +46,12 @@ class ReMasamongBot(commands.Bot):
         try:
             self.db = await aiosqlite.connect(self.db_path)
             await self.db.enable_load_extension(True)
+
             # vss0은 vector0에 의존하므로, vector0를 먼저 로드해야 합니다.
-            sqlite_vss.load(self.db)
+            # aiosqlite의 네이티브 load_extension을 사용하여 각 모듈을 직접 로드합니다.
+            await self.db.load_extension(sqlite_vss.vector_loadable_path())
+            await self.db.load_extension(sqlite_vss.vss_loadable_path())
+
             logger.info(f"데이터베이스 연결 및 VSS 확장 로드 성공.")
         except Exception as e:
             logger.critical(f"데이터베이스 연결 또는 VSS 확장 로드 실패: {e}", exc_info=True)
