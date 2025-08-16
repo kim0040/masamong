@@ -11,6 +11,7 @@ from typing import Dict, Any, Tuple
 import sqlite3
 import numpy as np
 import pickle
+import random
 
 import config
 from logger_config import logger
@@ -231,7 +232,89 @@ class AIHandler(commands.Cog):
                 conn.close()
 
     async def should_proactively_respond(self, message: discord.Message) -> bool:
-        return False
+        # 1. 기본 조건 확인
+        conf = config.AI_PROACTIVE_RESPONSE_CONFIG
+        if not conf.get("enabled"): return False
+        if message.author.bot or not message.guild: return False
+        if len(message.content) < conf.get("min_message_length", 10): return False
+
+        # 2. 서버/채널 설정 확인
+        is_guild_ai_enabled = utils.get_guild_setting(message.guild.id, 'ai_enabled', default=True)
+        if not is_guild_ai_enabled: return False
+
+        allowed_channels = utils.get_guild_setting(message.guild.id, 'ai_allowed_channels')
+        is_ai_allowed_channel = False
+        if allowed_channels:
+            is_ai_allowed_channel = message.channel.id in allowed_channels
+        else: # DB에 설정 없으면 config.py 따름
+            channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
+            is_ai_allowed_channel = channel_config.get("allowed", False)
+
+        if not is_ai_allowed_channel: return False
+
+        # 3. 쿨다운 및 확률 확인
+        if self.is_proactive_on_cooldown(message.channel.id): return False
+
+        # 키워드가 포함되어 있으면 확률 체크 없이 진행
+        found_keyword = any(keyword in message.content for keyword in conf.get("keywords", []))
+        if found_keyword:
+            logger.info(f"자발적 응답 키워드 발견. 확률 체크 건너뜁니다.")
+        elif random.random() > conf.get("probability", 0.5):
+            logger.debug(f"자발적 응답 확률({conf.get('probability', 0.5)}) 체크 실패. 응답하지 않음.")
+            return False
+
+        # 4. 대화 기록 가져오기
+        conn = None
+        try:
+            conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=ro", uri=True)
+            cursor = conn.cursor()
+            look_back = conf.get("look_back_count", 5)
+
+            cursor.execute("""
+                SELECT user_name, content FROM conversation_history
+                WHERE channel_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?;
+            """, (message.channel.id, look_back))
+
+            rows = await asyncio.to_thread(cursor.fetchall)
+            if not rows: return False
+
+            # 5. AI 판단 요청
+            recent_conversation_text = "\n".join([f"{row[0]}: {row[1]}" for row in reversed(rows)])
+
+            is_limited, _ = await self._check_global_rate_limit('gemini_lite_daily_calls', config.API_LITE_RPD_LIMIT)
+            if is_limited: return False
+
+            gatekeeper_prompt = conf.get("gatekeeper_persona", "")
+            prompt = f"{gatekeeper_prompt}\n\n[최근 대화 내용]\n{recent_conversation_text}"
+
+            logger.debug(f"자발적 응답 여부 AI 판단 요청...")
+
+            async with self.api_call_lock:
+                self._record_api_call()
+                response = await self.intent_model.generate_content_async(prompt)
+                await utils.increment_api_counter('gemini_lite_daily_calls')
+
+            decision = response.text.strip().upper()
+            logger.info(f"자발적 응답 AI 판단 결과: '{decision}'")
+
+            if "YES" not in decision:
+                return False
+
+            # 모든 조건을 통과하면 True 반환
+            logger.info(f"모든 자발적 응답 조건을 통과하여 응답 실행. (채널: {message.channel.name})")
+            return True
+
+        except sqlite3.Error as e:
+            logger.error(f"자발적 응답을 위한 대화 기록 조회 중 DB 오류: {e}", exc_info=True)
+            return False
+        except Exception as e:
+            logger.error(f"자발적 응답 여부 판단 중 예기치 않은 오류: {e}", exc_info=True)
+            return False
+        finally:
+            if conn:
+                conn.close()
 
     async def analyze_intent(self, message: discord.Message) -> str:
         if not config.AI_INTENT_ANALYSIS_ENABLED or not self.is_ready: return "Chat"
