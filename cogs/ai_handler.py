@@ -107,7 +107,6 @@ class AIHandler(commands.Cog):
         if not config.AI_MEMORY_ENABLED or not message.guild:
             return
 
-        # DB에서 동적으로 설정 확인
         is_guild_ai_enabled = utils.get_guild_setting(message.guild.id, 'ai_enabled', default=True)
         if not is_guild_ai_enabled:
             return
@@ -264,7 +263,8 @@ class AIHandler(commands.Cog):
             user_query=task_prompt,
             author=author,
             persona_config=channel_config,
-            is_task=True
+            is_task=True,
+            intent=prompt_key
         )
 
     async def _generate_gemini_response(
@@ -274,7 +274,8 @@ class AIHandler(commands.Cog):
         author: discord.User,
         persona_config: dict,
         weather_info_str: str | None = None,
-        is_task: bool = False
+        is_task: bool = False,
+        intent: str = "Chat"
     ) -> str | None:
         if not self.is_ready: return config.MSG_AI_ERROR
 
@@ -295,8 +296,6 @@ class AIHandler(commands.Cog):
         if user_persona_override:
             persona_cfg = user_persona_override
         elif custom_persona_text:
-            # DB에 저장된 페르소나를 사용. rules는 기본값을 따르거나 비워둘 수 있음.
-            # 이 예시에서는 persona 텍스트만 교체하고 rules는 config.py의 것을 따르도록 함.
             fallback_rules = persona_config.get("rules", "")
             persona_cfg = {"persona": custom_persona_text, "rules": fallback_rules}
         else:
@@ -338,10 +337,11 @@ class AIHandler(commands.Cog):
             try:
                 usage_metadata = response.usage_metadata
                 details = {
-                    "guild_id": self.bot.get_channel(channel_id).guild.id,
+                    "guild_id": guild_id,
                     "user_id": author.id,
                     "channel_id": channel_id,
                     "model_name": config.AI_MODEL_NAME,
+                    "intent": intent,
                     "prompt_tokens": usage_metadata.prompt_token_count,
                     "response_tokens": usage_metadata.candidates_token_count,
                     "total_tokens": usage_metadata.total_token_count,
@@ -364,11 +364,9 @@ class AIHandler(commands.Cog):
             logger.error(f"AI 응답 생성 중 예기치 않은 오류: {e}", exc_info=True)
             return config.MSG_AI_ERROR
 
-    async def process_ai_message(self, message: discord.Message, weather_info: str | None = None):
+    async def process_ai_message(self, message: discord.Message, weather_info: str | None = None, intent: str = "Chat"):
         if not self.is_ready: return
 
-        # 동적 설정 확인 로직은 add_message_to_history와 _handle_ai_interaction에 이미 포함됨
-        # 여기서는 AI 응답 생성에만 집중
         user_query = message.content.replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
         if not user_query and not weather_info:
             await message.reply(config.MSG_AI_NO_CONTENT.format(bot_name=self.bot.user.name), mention_author=False)
@@ -381,7 +379,8 @@ class AIHandler(commands.Cog):
                 user_query=user_query,
                 author=message.author,
                 persona_config=channel_config,
-                weather_info_str=weather_info
+                weather_info_str=weather_info,
+                intent=intent
             )
 
             if ai_response_text:
@@ -405,7 +404,8 @@ class AIHandler(commands.Cog):
             user_query=user_query_for_alert,
             author=system_author,
             persona_config=channel_config,
-            is_task=True
+            is_task=True,
+            intent=alert_type
         )
         return generated_text
 
