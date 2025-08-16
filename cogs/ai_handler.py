@@ -22,8 +22,6 @@ class AIHandler(commands.Cog):
         self.gemini_configured = False
         self.api_call_lock = asyncio.Lock()
         self.minute_request_timestamps = deque()
-        self.daily_request_count = 0
-        self.daily_limit_reset_time = self._get_next_kst_midnight()
         self.conversation_histories: Dict[int, deque] = {}
         self.last_proactive_response_times: Dict[int, datetime] = {}
 
@@ -42,11 +40,6 @@ class AIHandler(commands.Cog):
         """AI 핸들러가 모든 기능을 수행할 준비가 되었는지 확인합니다."""
         return self.gemini_configured
 
-    def _get_next_kst_midnight(self) -> datetime:
-        now_kst = datetime.now(KST)
-        tomorrow = now_kst.date() + timedelta(days=1)
-        return KST.localize(datetime.combine(tomorrow, time(0, 0)))
-
     async def _check_global_rate_limit(self) -> Tuple[bool, str | None]:
         async with self.api_call_lock:
             now = datetime.now()
@@ -58,22 +51,19 @@ class AIHandler(commands.Cog):
                 logger.warning(f"분당 Gemini API 호출 제한 도달 ({len(self.minute_request_timestamps)}/{config.API_RPM_LIMIT}).")
                 return True, config.MSG_AI_RATE_LIMITED
 
-            now_kst = now.astimezone(KST)
-            if now_kst >= self.daily_limit_reset_time:
-                logger.info(f"KST 자정 도달. Gemini API 일일 카운트 초기화 (이전: {self.daily_request_count}).")
-                self.daily_request_count = 0
-                self.daily_limit_reset_time = self._get_next_kst_midnight()
+        # 일일 호출 제한 (DB 확인)
+        if await utils.is_api_limit_reached('gemini_daily_calls', config.API_RPD_LIMIT):
+            return True, config.MSG_AI_DAILY_LIMITED
 
-            if self.daily_request_count >= config.API_RPD_LIMIT:
-                logger.warning(f"일일 Gemini API 호출 제한 도달 ({self.daily_request_count}/{config.API_RPD_LIMIT}).")
-                return True, config.MSG_AI_DAILY_LIMITED
-            return False, None
+        return False, None
 
     def _record_api_call(self):
+        """API 호출을 기록합니다 (분당 제한용)."""
         now = datetime.now()
         self.minute_request_timestamps.append(now)
-        self.daily_request_count += 1
-        logger.debug(f"Gemini API 호출 기록됨. 분당: {len(self.minute_request_timestamps)}, 일일: {self.daily_request_count}")
+        # 일일 카운터는 DB에서 직접 증가시키므로 여기서는 분당 카운트만 로깅
+        logger.debug(f"Gemini API 호출 기록됨. (지난 1분간: {len(self.minute_request_timestamps)}회)")
+
 
     def _is_on_cooldown(self, user_id: int) -> Tuple[bool, float]:
         now = datetime.now()
@@ -250,6 +240,7 @@ class AIHandler(commands.Cog):
             async with self.api_call_lock:
                 self._record_api_call()
                 response = await chat_session.send_message_async(final_query, stream=False)
+                await utils.increment_api_counter('gemini_daily_calls')
 
             ai_response_text = response.text.strip()
             logger.info(f"AI 응답 생성 성공 (길이: {len(ai_response_text)}): {ai_response_text[:50]}...")
