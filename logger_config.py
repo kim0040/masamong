@@ -21,21 +21,25 @@ class DiscordLogHandler(logging.Handler):
         self.bot = None
         self.channel_id = 0
         self.log_queue = asyncio.Queue()
+        self.task = None
 
     def set_bot(self, bot: discord.Client, channel_id: int):
         """봇 인스턴스와 채널 ID를 설정하고, 로그 전송 태스크를 시작합니다."""
         self.bot = bot
         self.channel_id = channel_id
-        if self.channel_id != 0:
-            self.bot.loop.create_task(self._send_logs())
+        if self.channel_id != 0 and self.task is None:
+            print(f"[정보] DiscordLogHandler가 채널 ID {self.channel_id}에 대해 활성화됩니다.")
+            self.task = self.bot.loop.create_task(self._send_logs())
 
     async def _send_logs(self):
         """큐에 쌓인 로그를 비동기적으로 디스코드 채널에 전송합니다."""
         await self.bot.wait_until_ready()
         channel = self.bot.get_channel(self.channel_id)
         if not channel:
-            print(f"[심각] 디스코드 로그 채널(ID: {self.channel_id})을 찾을 수 없습니다. 채널 전송이 비활성화됩니다.", file=sys.stderr)
+            print(f"[심각] DiscordLogHandler: 로그 채널(ID: {self.channel_id})을 찾을 수 없습니다. 채널 전송이 비활성화됩니다.", file=sys.stderr)
             return
+
+        print(f"[정보] DiscordLogHandler: '{channel.name}' 채널로 로그 전송을 시작합니다.")
 
         while not self.bot.is_closed():
             try:
@@ -53,9 +57,11 @@ class DiscordLogHandler(logging.Handler):
 
                 embed = discord.Embed(description=f"```\n{log_entry}\n```", color=color)
                 await channel.send(embed=embed)
+            except discord.errors.Forbidden:
+                print(f"[심각] DiscordLogHandler: 채널(ID: {self.channel_id})에 메시지를 보낼 권한이 없습니다.", file=sys.stderr)
             except Exception as e:
                 # 디스코드 전송 실패 시, 콘솔에 오류 출력 (무한 루프 방지)
-                print(f"DiscordLogHandler 오류: {e}", file=sys.stderr)
+                print(f"[심각] DiscordLogHandler: 로그 전송 중 예기치 않은 오류 발생: {e}", file=sys.stderr)
 
     def emit(self, record):
         """로그 레코드를 큐에 추가합니다."""
