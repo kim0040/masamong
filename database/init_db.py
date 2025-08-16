@@ -2,6 +2,7 @@
 import sqlite3
 import os
 from datetime import datetime
+import pytz
 
 # 이 스크립트는 봇을 시작하기 전에 한번만 실행하여
 # database/schema.sql 파일에 정의된 대로 데이터베이스와 테이블을 생성합니다.
@@ -41,7 +42,7 @@ def initialize_database():
 
         # 시스템 카운터 초기값 설정
         print("시스템 카운터 초기값을 확인하고 설정합니다...")
-        now_iso_str = datetime.utcnow().isoformat()
+        now_iso_str = datetime.now(pytz.utc).isoformat()
         counters_to_initialize = {
             'kma_daily_calls': (0, now_iso_str),
             'gemini_daily_calls': (0, now_iso_str)
