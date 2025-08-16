@@ -117,7 +117,8 @@ class AIHandler(commands.Cog):
     async def _create_and_save_embedding(self, message_id: int, content: str):
         if not self.is_ready or not content: return
         try:
-            token_count_result = await genai.count_tokens_async(model=config.AI_EMBEDDING_MODEL_NAME, contents=content)
+            # Use the top-level genai module for embedding
+            token_count_result = await self.model.count_tokens_async(content) # FIX: Use model object
             is_limited, msg = await self._check_rate_limit('emb', token_count_result.total_tokens)
             if is_limited: logger.warning(f"임베딩 생성 건너뜀 (API 제한): {msg}"); return
 
@@ -146,7 +147,7 @@ class AIHandler(commands.Cog):
     async def _find_similar_history(self, user_query: str, guild_id: int, limit: int = 3) -> str:
         if not self.is_ready: return ""
         try:
-            token_count_result = await genai.count_tokens_async(model=config.AI_EMBEDDING_MODEL_NAME, contents=user_query)
+            token_count_result = await self.model.count_tokens_async(user_query) # FIX: Use model object
             is_limited, _ = await self._check_rate_limit('emb', token_count_result.total_tokens)
             if is_limited: return ""
 
@@ -154,7 +155,7 @@ class AIHandler(commands.Cog):
             result = await genai.embed_content_async(model=config.AI_EMBEDDING_MODEL_NAME, content=user_query, task_type="retrieval_query", output_dimensionality=768)
             query_embedding_bytes = np.array(result['embedding'], dtype=np.float32).tobytes()
 
-            vss_sql = "SELECT rowid, distance FROM vss_conversations WHERE vss_search(embedding, ?) AND distance < 0.5 LIMIT 20"
+            vss_sql = "SELECT rowid FROM vss_conversations WHERE vss_search(embedding, ?) LIMIT 20"
             cursor = await self.bot.db.execute(vss_sql, (query_embedding_bytes,)); similar_rowids_all = [row[0] for row in await cursor.fetchall()]
             if not similar_rowids_all: return ""
 
@@ -176,14 +177,30 @@ class AIHandler(commands.Cog):
         return [{"role": "model" if row[2] else "user", "parts": [{"text": f"User({r[0]}|{r[1]}): {r[3]}"}]} for r in rows]
 
     async def _get_persona_for_channel(self, guild_id: int, channel_id: int) -> str:
-        cursor = await self.bot.db.execute("SELECT value FROM guild_settings WHERE guild_id = ? AND setting_name = 'persona'", (guild_id,)); row = await cursor.fetchone()
-        return row[0] if row and row[0] else config.CHANNEL_AI_CONFIG.get(channel_id, {}).get("persona", "")
+        """DB에서 서버별 커스텀 페르소나를 조회하고, 없으면 config의 기본값을 반환합니다."""
+        if not self.is_ready:
+            return config.CHANNEL_AI_CONFIG.get(channel_id, {}).get("persona", "")
+
+        try:
+            sql = "SELECT setting_value FROM guild_settings WHERE guild_id = ? AND setting_name = 'persona'"
+            async with self.bot.db.execute(sql, (guild_id,)) as cursor:
+                result = await cursor.fetchone()
+
+            if result and result[0]:
+                logger.debug(f"서버({guild_id})의 커스텀 페르소나를 사용합니다.")
+                return result[0]
+        except Exception as e:
+            logger.error(f"DB에서 페르소나 조회 중 오류 발생: {e}", exc_info=True)
+
+        # DB에 설정이 없거나 오류 발생 시, config.py의 기본 페르소나 사용
+        return config.CHANNEL_AI_CONFIG.get(channel_id, {}).get("persona", "")
 
     async def generate_system_message(self, text_to_rephrase, channel_id, guild_id):
         if not self.is_ready: return text_to_rephrase
         prompt = f"다음 문장을 너의 말투로 자연스럽게 바꿔서 말해줘: \"{text_to_rephrase}\""
         channel = self.bot.get_channel(channel_id)
-        return await self.process_direct_prompt_task(prompt, self.bot.user, channel)
+        author = self.bot.user
+        return await self.process_direct_prompt_task(prompt, author, channel)
 
     async def process_direct_prompt_task(self, prompt, author, channel):
         if not self.is_ready: return config.MSG_AI_ERROR
@@ -193,8 +210,8 @@ class AIHandler(commands.Cog):
         persona = await self._get_persona_for_channel(channel.guild.id, channel.id)
         model = genai.GenerativeModel(config.AI_MODEL_NAME, system_instruction=persona)
         try:
-            prompt_tokens = await model.count_tokens_async(prompt)
-            is_limited, msg = await self._check_rate_limit('gen', prompt_tokens.total_tokens)
+            prompt_tokens_result = await model.count_tokens_async(prompt) # FIX: Use model object
+            is_limited, msg = await self._check_rate_limit('gen', prompt_tokens_result.total_tokens)
             if is_limited: return msg
 
             response = await model.generate_content_async(prompt)
@@ -223,8 +240,8 @@ class AIHandler(commands.Cog):
                 chat_session = model_with_tools.start_chat(history=history)
                 final_query = f"User({message.author.id}|{message.author.display_name}): {user_query}"
 
-                prompt_tokens = await model_with_tools.count_tokens_async(chat_session.history + [content_types.to_content(final_query)])
-                is_limited, msg = await self._check_rate_limit('gen', prompt_tokens.total_tokens)
+                prompt_tokens_result = await model_with_tools.count_tokens_async(chat_session.history + [content_types.to_content(final_query)])
+                is_limited, msg = await self._check_rate_limit('gen', prompt_tokens_result.total_tokens)
                 if is_limited: await message.reply(msg, mention_author=False); return
 
                 response = await chat_session.send_message_async(final_query)
