@@ -45,7 +45,8 @@ def initialize_database():
         now_iso_str = datetime.now(pytz.utc).isoformat()
         counters_to_initialize = {
             'kma_daily_calls': (0, now_iso_str),
-            'gemini_daily_calls': (0, now_iso_str),
+            'gemini_lite_daily_calls': (0, now_iso_str),
+            'gemini_flash_daily_calls': (0, now_iso_str),
             'gemini_embedding_calls': (0, now_iso_str)
         }
         for name, (value, date_str) in counters_to_initialize.items():
@@ -53,6 +54,10 @@ def initialize_database():
                 INSERT OR IGNORE INTO system_counters (counter_name, counter_value, last_reset_at)
                 VALUES (?, ?, ?)
             """, (name, value, date_str))
+
+        # 이전 카운터 삭제 (마이그레이션)
+        cursor.execute("DELETE FROM system_counters WHERE counter_name = 'gemini_daily_calls'")
+        print("이전 카운터(gemini_daily_calls)를 삭제했습니다.")
 
         print("시스템 카운터 초기화가 완료되었습니다.")
 
