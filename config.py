@@ -23,6 +23,7 @@ AI_INTENT_MODEL_NAME = "gemini-2.5-flash-lite" # 의도 분석 모델도 통일
 
 # Gemini API 무료 티어 제한량 (2025년 8월 기준)
 # https://ai.google.dev/gemini-api/docs/rate-limits
+AI_EMBEDDING_MODEL_NAME = "models/text-embedding-004" # 최신 모델은 gemini-embedding-001 이지만, text-embedding-004가 더 범용적일 수 있음.
 API_RPM_LIMIT = 15  # 분당 요청 수 (RPM)
 API_TPM_LIMIT = 250000 # 분당 토큰 수 (TPM)
 API_RPD_LIMIT = 1000 # 일일 요청 수 (RPD)
