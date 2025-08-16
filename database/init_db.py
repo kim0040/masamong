@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import sqlite3
 import os
-import sqlite_vss
 
 # 이 스크립트는 봇을 시작하기 전에 한번만 실행하여
 # database/schema.sql 파일에 정의된 대로 데이터베이스와 테이블을 생성합니다.
@@ -12,45 +11,42 @@ SCHEMA_PATH = os.path.join(DB_DIR, 'schema.sql')
 
 def initialize_database():
     """
-    스키마 파일을 읽어 데이터베이스를 초기화하고 VSS 확장을 로드합니다.
+    스키마 파일을 읽어 데이터베이스를 초기화합니다.
     """
+    # 데이터베이스 디렉토리 생성
     if not os.path.exists(DB_DIR):
         os.makedirs(DB_DIR)
         print(f"'{DB_DIR}' 디렉토리를 생성했습니다.")
 
+    # 스키마 파일 존재 여부 확인
     if not os.path.exists(SCHEMA_PATH):
         print(f"[오류] 스키마 파일 '{SCHEMA_PATH}'을(를) 찾을 수 없습니다.")
+        print("프로젝트 루트에 database/schema.sql 파일이 있는지 확인해주세요.")
         return
 
-    conn = None
     try:
+        # 데이터베이스 연결
         conn = sqlite3.connect(DB_PATH)
-        conn.enable_load_extension(True)
-
-        # sqlite_vss.load() 대신, 의존성 순서에 맞춰 직접 로드
-        conn.load_extension(sqlite_vss.vector_loadable_path())
-        conn.load_extension(sqlite_vss.vss_loadable_path())
-
-        print("데이터베이스 연결 및 VSS 확장 로드 성공.")
-
         cursor = conn.cursor()
+        print(f"데이터베이스에 연결되었습니다: {DB_PATH}")
 
+        # 스키마 파일 읽기
         with open(SCHEMA_PATH, 'r', encoding='utf-8') as f:
             schema_sql = f.read()
 
+        # SQL 스크립트 실행 (여러 CREATE 문을 한번에 실행)
         cursor.executescript(schema_sql)
         print("스키마를 성공적으로 적용하여 테이블을 생성/확인했습니다.")
 
+        # 변경사항 저장 및 연결 종료
         conn.commit()
+        conn.close()
         print("데이터베이스 초기화가 완료되었습니다.")
 
     except sqlite3.Error as e:
         print(f"데이터베이스 초기화 중 오류가 발생했습니다: {e}")
     except Exception as e:
         print(f"예기치 않은 오류가 발생했습니다: {e}")
-    finally:
-        if conn:
-            conn.close()
 
 if __name__ == '__main__':
     initialize_database()

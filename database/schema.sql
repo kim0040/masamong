@@ -2,13 +2,15 @@
 -- init_db.py 스크립트를 통해 이 스키마를 기반으로 DB 파일이 생성됩니다.
 
 -- 서버(길드)별 설정을 관리하는 테이블
--- 서버(길드)별 설정을 관리하는 테이블 (Key-Value 방식)
 CREATE TABLE IF NOT EXISTS guild_settings (
-    guild_id INTEGER NOT NULL,
-    setting_name TEXT NOT NULL,
-    setting_value TEXT NOT NULL,
-    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc')),
-    PRIMARY KEY (guild_id, setting_name)
+    guild_id INTEGER PRIMARY KEY,
+    ai_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    ai_allowed_channels TEXT, -- JSON 배열 형태의 채널 ID 목록
+    proactive_response_probability REAL NOT NULL DEFAULT 0.05,
+    proactive_response_cooldown INTEGER NOT NULL DEFAULT 300, -- 초 단위
+    default_persona_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc'))
 );
 
 -- 사용자별 활동을 기록하는 테이블
@@ -30,14 +32,7 @@ CREATE TABLE IF NOT EXISTS conversation_history (
     user_name TEXT NOT NULL,
     content TEXT NOT NULL,
     is_bot BOOLEAN NOT NULL,
-    created_at TEXT NOT NULL,
-    embedding BLOB
-);
-
--- 대화 내용 벡터 검색을 위한 VSS(Vector Search) 가상 테이블
--- `conversation_history`의 rowid와 연결하여 사용
-CREATE VIRTUAL TABLE IF NOT EXISTS vss_conversations USING vss0(
-    embedding(768)
+    created_at TEXT NOT NULL
 );
 
 -- 시스템 전체의 카운터(예: API 호출 횟수)를 관리하는 테이블
