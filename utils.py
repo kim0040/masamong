@@ -8,8 +8,42 @@ import asyncio
 import sqlite3
 from logger_config import logger
 import config
+from typing import Any
 
 KST = pytz.timezone('Asia/Seoul')
+
+def get_guild_setting(guild_id: int, setting_name: str, default: Any = None) -> Any:
+    """DB에서 특정 서버(guild)의 설정 값을 가져옵니다."""
+    conn = None
+    try:
+        conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=ro", uri=True)
+        cursor = conn.cursor()
+
+        allowed_columns = ["ai_enabled", "ai_allowed_channels", "proactive_response_probability", "proactive_response_cooldown", "default_persona_id"]
+        if setting_name not in allowed_columns:
+            logger.error(f"허용되지 않은 설정 이름에 대한 접근 시도: {setting_name}")
+            return default
+
+        cursor.execute(f"SELECT {setting_name} FROM guild_settings WHERE guild_id = ?", (guild_id,))
+        result = cursor.fetchone()
+
+        if result:
+            if setting_name == 'ai_allowed_channels' and result[0]:
+                try:
+                    return json.loads(result[0])
+                except json.JSONDecodeError:
+                    logger.error(f"Guild({guild_id})의 ai_allowed_channels JSON 파싱 오류.")
+                    return default
+            return result[0]
+        else:
+            return default
+
+    except sqlite3.Error as e:
+        logger.error(f"Guild 설정({setting_name}) 조회 중 DB 오류: {e}", exc_info=True)
+        return default
+    finally:
+        if conn:
+            conn.close()
 
 async def is_api_limit_reached(counter_name: str, limit: int) -> bool:
     """DB의 API 카운터가 한도에 도달했는지 확인하고, 필요시 리셋합니다."""
