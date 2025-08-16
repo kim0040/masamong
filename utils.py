@@ -12,6 +12,14 @@ from typing import Any
 
 KST = pytz.timezone('Asia/Seoul')
 
+def get_current_time() -> str:
+    """
+    현재 시간을 '년-월-일 시:분:초' 형식의 문자열로 반환합니다.
+    항상 대한민국 표준시(KST, UTC+9)를 기준으로 시간을 반환합니다.
+    """
+    now_kst = datetime.now(KST)
+    return now_kst.strftime("%Y년 %m월 %d일 %H시 %M분 %S초")
+
 def log_analytics(event_type: str, details: dict):
     """분석 이벤트를 DB에 기록합니다."""
     conn = None
