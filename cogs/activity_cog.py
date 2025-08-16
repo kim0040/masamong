@@ -1,146 +1,116 @@
 # -*- coding: utf-8 -*-
 import discord
-from discord.ext import commands, tasks
-import json
-from collections import Counter
-import re
+from discord.ext import commands
+import sqlite3
+from datetime import datetime
 
 import config
 from logger_config import logger
 from .ai_handler import AIHandler
 
 class ActivityCog(commands.Cog):
-    """서버 멤버의 활동량을 기록하고 랭킹을 보여주는 Cog - 개인화 기능 추가"""
+    """서버 멤버의 활동량을 DB에 기록하고 랭킹을 보여주는 Cog"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.ai_handler: AIHandler | None = None
-        self.activity_data = {}
-        self.bot.loop.create_task(self.initialize())
-
-    async def initialize(self):
-        """Cog 초기화 작업을 수행합니다."""
-        await self.bot.wait_until_ready()
-        self.load_activity_data()
-        self.save_activity_loop.start()
         logger.info("ActivityCog 초기화 완료.")
 
-    def load_activity_data(self):
-        """
-        파일에서 활동 데이터를 불러옵니다.
-        [수정] 이전 버전의 데이터 형식과 호환되도록 로직 개선
-        """
-        try:
-            with open(config.ACTIVITY_DATA_FILE, 'r', encoding='utf-8') as f:
-                loaded_data = json.load(f)
-
-            # 새로운 데이터 구조로 변환
-            converted_data = {}
-            for gid_str, gdata in loaded_data.items():
-                gid = int(gid_str)
-                converted_data[gid] = {}
-                for uid_str, udata in gdata.items():
-                    # 옛날 데이터 형식 (값이 정수인 경우) 감지
-                    if isinstance(udata, int):
-                        converted_data[gid][uid_str] = {
-                            'message_count': udata,
-                            'keywords': Counter() # 키워드는 새로 시작
-                        }
-                    # 새로운 데이터 형식 (값이 딕셔너리인 경우)
-                    elif isinstance(udata, dict):
-                         converted_data[gid][uid_str] = {
-                            'message_count': udata.get('message_count', 0),
-                            'keywords': Counter(udata.get('keywords', {}))
-                        }
-            self.activity_data = converted_data
-            logger.info("활동 데이터를 파일에서 성공적으로 불러왔습니다 (호환성 모드).")
-        except FileNotFoundError:
-            logger.warning("활동 데이터 파일이 없어 새로 시작합니다.")
-            self.activity_data = {}
-        except (json.JSONDecodeError, TypeError, AttributeError) as e:
-            logger.error(f"활동 데이터 파일 파싱 오류 또는 형식 오류. 데이터를 초기화합니다. 오류: {e}")
-            self.activity_data = {}
-
-
-    def save_activity_data(self):
-        """활동 데이터를 파일에 저장합니다."""
-        try:
-            with open(config.ACTIVITY_DATA_FILE, 'w', encoding='utf-8') as f:
-                # Counter 객체는 json으로 직접 저장되지 않으므로 dict로 변환
-                serializable_data = {
-                    gid: {
-                        uid: {
-                            'message_count': udata['message_count'],
-                            'keywords': dict(udata['keywords'])
-                        } for uid, udata in gdata.items()
-                    } for gid, gdata in self.activity_data.items()
-                }
-                json.dump(serializable_data, f, ensure_ascii=False, indent=4)
-            logger.debug("활동 데이터를 파일에 저장했습니다.")
-        except Exception as e:
-            logger.error(f"활동 데이터 저장 중 오류: {e}", exc_info=True)
-
-    @tasks.loop(seconds=config.ACTIVITY_SAVE_INTERVAL_SECONDS)
-    async def save_activity_loop(self):
-        """주기적으로 활동 데이터를 파일에 저장합니다."""
-        self.save_activity_data()
-
     def record_message(self, message: discord.Message):
-        """메시지 활동(메시지 수, 키워드)을 기록합니다."""
-        if not message.guild: return
+        """메시지 활동을 DB에 기록합니다."""
+        if not message.guild or message.author.bot:
+            return
 
-        guild_id = message.guild.id
-        user_id = str(message.author.id)
+        conn = None
+        try:
+            # WAL 모드를 사용하면 동시 읽기/쓰기 성능이 향상됩니다.
+            conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=rw", uri=True)
+            conn.execute("PRAGMA journal_mode=WAL;")
+            cursor = conn.cursor()
 
-        if guild_id not in self.activity_data:
-            self.activity_data[guild_id] = {}
-        if user_id not in self.activity_data[guild_id]:
-            self.activity_data[guild_id][user_id] = {
-                'message_count': 0,
-                'keywords': Counter()
-            }
+            guild_id = message.guild.id
+            user_id = message.author.id
+            # DB는 UTC 시간으로 통일하여 저장
+            now_utc_str = datetime.utcnow().isoformat()
 
-        self.activity_data[guild_id][user_id]['message_count'] += 1
-        keywords = re.findall(r'\b[가-힣]{2,}\b', message.content)
-        self.activity_data[guild_id][user_id]['keywords'].update(keywords)
+            # ON CONFLICT를 사용하여 INSERT 또는 UPDATE를 한 번에 처리
+            cursor.execute("""
+                INSERT INTO user_activity (user_id, guild_id, message_count, last_active_at)
+                VALUES (?, ?, 1, ?)
+                ON CONFLICT(user_id, guild_id) DO UPDATE SET
+                    message_count = message_count + 1,
+                    last_active_at = excluded.last_active_at;
+            """, (user_id, guild_id, now_utc_str))
 
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            # DB 파일이 없거나 경로 문제일 수 있습니다.
+            logger.error(f"[ActivityCog] DB 파일을 찾을 수 없거나 쓰기 권한이 없습니다. '{config.DATABASE_FILE}' 경로를 확인하세요. 오류: {e}")
+        except sqlite3.Error as e:
+            logger.error(f"[ActivityCog] 활동 기록 중 DB 오류 발생: {e}", exc_info=True)
+        finally:
+            if conn:
+                conn.close()
 
     @commands.command(name='랭킹', aliases=['수다왕', 'ranking'])
     @commands.guild_only()
     async def ranking(self, ctx: commands.Context):
-        """서버 활동 랭킹(메시지 수 기준)을 보여줍니다."""
+        """서버 활동 랭킹(메시지 수 기준)을 DB에서 조회하여 보여줍니다."""
         if not self.ai_handler:
             await ctx.send("죄송합니다, AI 기능이 현재 준비되지 않았습니다.")
             return
 
-        guild_data = self.activity_data.get(ctx.guild.id)
-        if not guild_data:
-            await ctx.send("아직 서버 활동 데이터가 충분하지 않아. 다들 분발하라구!")
+        conn = None
+        try:
+            conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=ro", uri=True) # 읽기 전용으로 연결
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT user_id, message_count FROM user_activity
+                WHERE guild_id = ?
+                ORDER BY message_count DESC
+                LIMIT 5;
+            """, (ctx.guild.id,))
+
+            top_users = cursor.fetchall()
+
+        except sqlite3.OperationalError as e:
+            logger.error(f"[{ctx.guild.name}/{ctx.channel.name}] 랭킹 조회 중 DB 파일을 찾을 수 없습니다. '{config.DATABASE_FILE}' 경로를 확인하세요. 오류: {e}")
+            await ctx.send(config.MSG_CMD_ERROR)
             return
+        except sqlite3.Error as e:
+            logger.error(f"[{ctx.guild.name}/{ctx.channel.name}] 랭킹 조회 중 DB 오류 발생: {e}", exc_info=True)
+            await ctx.send(config.MSG_CMD_ERROR)
+            return
+        finally:
+            if conn:
+                conn.close()
 
-        sorted_users = sorted(
-            guild_data.items(),
-            key=lambda item: item[1].get('message_count', 0),
-            reverse=True
-        )[:5]
-
-        if not sorted_users:
-            await ctx.send("아직 랭킹을 매길 만큼 데이터가 쌓이지 않았어.")
+        if not top_users:
+            await ctx.send("아직 서버 활동 데이터가 충분하지 않아. 다들 분발하라구!")
             return
 
         async with ctx.typing():
             ranking_list = []
-            for i, (user_id, data) in enumerate(sorted_users):
+            for i, (user_id, count) in enumerate(top_users):
                 try:
-                    user = await self.bot.fetch_user(int(user_id))
+                    # fetch_user는 cache에 없으면 API call을 하므로, get_user를 먼저 시도하는 것이 효율적입니다.
+                    user = self.bot.get_user(int(user_id)) or await self.bot.fetch_user(int(user_id))
                     user_name = user.display_name
                 except discord.NotFound:
-                    user_name = f"알수없는유저({user_id[-4:]})"
+                    user_name = f"알수없는유저({str(user_id)[-4:]})"
+                except (ValueError, TypeError):
+                    user_name = f"잘못된ID({user_id})"
 
-                count = data.get('message_count', 0)
                 ranking_list.append(f"{i+1}위: {user_name} ({count}회)")
 
             ranking_str = "\n".join(ranking_list)
+
+            # AI 핸들러가 준비되었는지 다시 한번 확인
+            if not self.ai_handler or not self.ai_handler.is_ready:
+                 await ctx.send(f"**🏆 이번 주 수다왕 랭킹! 🏆**\n\n{ranking_str}")
+                 return
+
             response_text = await self.ai_handler.generate_creative_text(
                 channel=ctx.channel,
                 author=ctx.author,
@@ -148,10 +118,11 @@ class ActivityCog(commands.Cog):
                 context={'ranking_list': ranking_str}
             )
 
-            if response_text and response_text not in [config.MSG_AI_ERROR, config.MSG_CMD_ERROR]:
-                await ctx.send(response_text)
-            else:
-                await ctx.send(response_text or f"**🏆 이번 주 수다왕 랭킹! 🏆**\n\n{ranking_str}")
+            final_response = response_text
+            if not response_text or response_text in [config.MSG_AI_ERROR, config.MSG_CMD_ERROR]:
+                final_response = f"**🏆 이번 주 수다왕 랭킹! 🏆**\n\n{ranking_str}"
+
+            await ctx.send(final_response)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ActivityCog(bot))

@@ -68,11 +68,11 @@ class WeatherCog(commands.Cog):
                 else:
                     # 성공 시 데이터 포맷팅
                     current_weather_str = utils.format_current_weather(current_weather_data)
-                    short_term_data = await utils.get_short_term_forecast_from_kma(nx, ny, target_day_offset=0)
-                    formatted_forecast = utils.format_short_term_forecast(short_term_data, day_name)
+                    short_term_data = await utils.get_short_term_forecast_from_kma(nx, ny)
+                    formatted_forecast = utils.format_short_term_forecast(short_term_data, day_name, target_day_offset=0)
                     weather_data_str = f"{location_name} {day_name} 날씨 정보: 현재 {current_weather_str}\n{formatted_forecast}".strip()
             else:
-                forecast_data = await utils.get_short_term_forecast_from_kma(nx, ny, target_day_offset=day_offset)
+                forecast_data = await utils.get_short_term_forecast_from_kma(nx, ny)
                 # API 에러 처리
                 if isinstance(forecast_data, dict) and forecast_data.get("error"):
                     fallback_message_content = forecast_data.get("message", config.MSG_WEATHER_FETCH_ERROR)
@@ -80,7 +80,7 @@ class WeatherCog(commands.Cog):
                      fallback_message_content = config.MSG_WEATHER_FETCH_ERROR
                 else:
                     # 성공 시 데이터 포맷팅
-                    formatted_forecast = utils.format_short_term_forecast(forecast_data, day_name)
+                    formatted_forecast = utils.format_short_term_forecast(forecast_data, day_name, target_day_offset=day_offset)
                     weather_data_str = f"{location_name} {formatted_forecast}"
 
             channel_id = original_message.channel.id
@@ -193,7 +193,7 @@ class WeatherCog(commands.Cog):
 
         logger.info("주기적 강수 알림: 날씨 확인 시작...")
         nx, ny = config.DEFAULT_NX, config.DEFAULT_NY
-        forecast_today_raw = await utils.get_short_term_forecast_from_kma(nx, ny, 0)
+        forecast_today_raw = await utils.get_short_term_forecast_from_kma(nx, ny)
 
         # [수정] API 응답이 에러이거나 None일 경우, 아무것도 하지 않고 종료
         if not forecast_today_raw or isinstance(forecast_today_raw, dict) and forecast_today_raw.get("error"):
@@ -244,12 +244,12 @@ class WeatherCog(commands.Cog):
 
         logger.info(f"주기적 {greeting_type} 인사: 날씨 확인 시작...")
         nx, ny = config.DEFAULT_NX, config.DEFAULT_NY
-        today_forecast_raw = await utils.get_short_term_forecast_from_kma(nx, ny, 0)
+        today_forecast_raw = await utils.get_short_term_forecast_from_kma(nx, ny)
 
         weather_summary = f"오늘 {config.DEFAULT_LOCATION_NAME} 날씨 정보를 가져오는 데 실패했어. 😥"
         # [수정] API 응답이 정상일 때만 날씨 요약 생성
         if today_forecast_raw and not isinstance(today_forecast_raw, dict):
-            weather_summary = utils.format_short_term_forecast(today_forecast_raw, "오늘")
+            weather_summary = utils.format_short_term_forecast(today_forecast_raw, "오늘", target_day_offset=0)
         elif isinstance(today_forecast_raw, dict) and today_forecast_raw.get("error"):
             weather_summary = today_forecast_raw.get("message", "날씨 정보 조회 중 오류가 발생했어.")
 
