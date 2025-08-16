@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS conversation_history (
     user_name TEXT NOT NULL,
     content TEXT NOT NULL,
     is_bot BOOLEAN NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    embedding BLOB
 );
 
 -- 시스템 전체의 카운터(예: API 호출 횟수)를 관리하는 테이블
