@@ -3,6 +3,8 @@ import discord
 from discord.ext import commands
 import re
 import random
+import time
+import pytz
 
 import config
 from logger_config import logger, discord_log_handler
@@ -75,13 +77,11 @@ class EventListeners(commands.Cog):
             logger.debug(f"{context_log} AI 핸들러가 준비되지 않아 처리 중단.")
             return
 
-        # 1. DB에서 서버의 AI 활성화 여부 확인 (기본값 True)
         is_guild_ai_enabled = utils.get_guild_setting(message.guild.id, 'ai_enabled', default=True)
         if not is_guild_ai_enabled:
             logger.debug(f"[{message.guild.name}] 서버의 AI 기능이 비활성화되어 처리 중단.")
             return
 
-        # 2. DB 또는 config에서 채널의 AI 허용 여부 확인
         allowed_channels = utils.get_guild_setting(message.guild.id, 'ai_allowed_channels')
         is_ai_allowed_channel = False
         if allowed_channels:
@@ -108,11 +108,11 @@ class EventListeners(commands.Cog):
         if intent == 'Time':
             current_time_str = utils.get_current_time()
             time_info_for_ai = f"현재 한국 시간은 {current_time_str} 입니다."
-            await self.ai_handler.process_ai_message(message, weather_info=time_info_for_ai)
+            await self.ai_handler.process_ai_message(message, weather_info=time_info_for_ai, intent=intent)
         elif intent == 'Weather' and self.weather_cog:
-            await self.weather_cog.weather_command(message, location_query=message.content)
+            await self.weather_cog.prepare_weather_response_for_ai(message, 0, config.DEFAULT_LOCATION_NAME, config.DEFAULT_NX, config.DEFAULT_NY, message.content)
         else: # Chat, Mixed, Command
-            await self.ai_handler.process_ai_message(message)
+            await self.ai_handler.process_ai_message(message, intent=intent)
 
         logger.debug(f"{context_log} AI 상호작용 처리 종료.")
 
@@ -124,27 +124,50 @@ class EventListeners(commands.Cog):
         if self.activity_cog: self.activity_cog.record_message(message)
         if self.ai_handler: self.ai_handler.add_message_to_history(message)
 
-        # 봇의 접두사로 시작하지 않는 메시지만 키워드 및 AI 상호작용 처리
-        if not message.content.startswith(self.bot.command_prefix):
-            if await self._handle_keyword_triggers(message):
-                return
-            await self._handle_ai_interaction(message)
+        ctx = await self.bot.get_context(message)
+        if ctx.command:
+            await self.bot.process_commands(message)
+            return
 
-        # 모든 메시지에 대해 명령어 처리를 시도
-        await self.bot.process_commands(message)
+        if await self._handle_keyword_triggers(message):
+            return
+        await self._handle_ai_interaction(message)
 
     @commands.Cog.listener()
-    async def on_command(self, ctx: commands.Context):
-        """명령어가 실행될 때마다 분석 로그를 기록합니다."""
+    async def on_command_completion(self, ctx: commands.Context):
+        """명령어 실행 완료 시 분석 로그를 기록합니다."""
         if not ctx.guild:
             return
+
+        start_time = ctx.message.created_at.replace(tzinfo=pytz.UTC)
+        latency_ms = (datetime.now(pytz.utc) - start_time).total_seconds() * 1000
 
         details = {
             "guild_id": ctx.guild.id,
             "user_id": ctx.author.id,
             "command": ctx.command.qualified_name,
             "channel_id": ctx.channel.id,
-            "full_message": ctx.message.content
+            "full_message": ctx.message.content,
+            "success": True,
+            "latency_ms": round(latency_ms)
+        }
+        utils.log_analytics("COMMAND_USAGE", details)
+
+    @commands.Cog.listener()
+    async def on_command_error(self, ctx: commands.Context, error: commands.CommandError):
+        """명령어 실행 오류 시 분석 로그를 기록합니다."""
+        if not ctx.guild:
+            return
+
+        details = {
+            "guild_id": ctx.guild.id,
+            "user_id": ctx.author.id,
+            "command": ctx.command.qualified_name if ctx.command else "unknown",
+            "channel_id": ctx.channel.id,
+            "full_message": ctx.message.content,
+            "success": False,
+            "error": str(type(error).__name__),
+            "error_message": str(error)
         }
         utils.log_analytics("COMMAND_USAGE", details)
 
