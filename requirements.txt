@@ -1,0 +1,29 @@
+# --- Discord 봇 핵심 라이브러리 ---
+discord.py>=2.3.0
+
+# --- AI 및 데이터 처리 ---
+# Google Gemini AI 라이브러리
+google-generativeai>=0.5.0
+
+# RAG(검색 증강 생성)을 위한 문장 임베딩 라이브러리 (2단계에서 사용)
+sentence-transformers>=2.2.0
+
+# 비동기 SQLite 드라이버 (1단계부터 사용)
+aiosqlite>=0.19.0
+
+# --- 한국어 자연어 처리 (NLP) ---
+# 한국어 형태소 분석기 라이브러리 (3단계에서 사용)
+konlpy>=0.6.0
+
+# KoNLPy와 함께 사용할 Mecab 형태소 분석기 (3단계에서 사용)
+mecab-ko>=1.0.0
+
+# --- 기타 유틸리티 ---
+# .env 파일을 읽기 위한 라이브러리
+python-dotenv>=1.0.0
+
+# 시간대 처리를 위한 라이브러리
+pytz
+
+# HTTP 요청을 위한 라이브러리 (기상청 API 등)
+requests
