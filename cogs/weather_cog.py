@@ -230,6 +230,9 @@ class WeatherCog(commands.Cog):
                 except Exception as e:
                     logger.error(f"{context_log} {precip_type_kor} 알림 전송 중 오류: {e}", exc_info=True)
 
+    @rain_notification_loop.error
+    async def rain_notification_loop_error(self, error):
+        logger.error(f"주기적 강수 알림 루프에서 처리되지 않은 오류 발생: {error}", exc_info=True)
 
     async def _send_greeting_notification(self, greeting_type: str):
         await self.bot.wait_until_ready()
@@ -281,10 +284,18 @@ class WeatherCog(commands.Cog):
         logger.info(f"아침 인사 루프 실행 (설정 시간: {config.MORNING_GREETING_TIME['hour']}:{config.MORNING_GREETING_TIME['minute']}).")
         await self._send_greeting_notification("아침")
 
+    @morning_greeting_loop.error
+    async def morning_greeting_loop_error(self, error):
+        logger.error(f"아침 인사 루프에서 처리되지 않은 오류 발생: {error}", exc_info=True)
+
     @tasks.loop(time=dt_time(hour=config.EVENING_GREETING_TIME["hour"], minute=config.EVENING_GREETING_TIME["minute"], tzinfo=KST))
     async def evening_greeting_loop(self):
         logger.info(f"저녁 인사 루프 실행 (설정 시간: {config.EVENING_GREETING_TIME['hour']}:{config.EVENING_GREETING_TIME['minute']}).")
         await self._send_greeting_notification("저녁")
+
+    @evening_greeting_loop.error
+    async def evening_greeting_loop_error(self, error):
+        logger.error(f"저녁 인사 루프에서 처리되지 않은 오류 발생: {error}", exc_info=True)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(WeatherCog(bot))
