@@ -3,7 +3,6 @@ import discord
 from discord.ext import commands, tasks
 from datetime import datetime, timedelta, time as dt_time
 import pytz
-from collections import Counter
 
 # 설정, 로거, 유틸리티, AI 핸들러 가져오기
 import config
@@ -22,7 +21,7 @@ class WeatherCog(commands.Cog):
         self.notified_rain_event_starts = set()
 
     def setup_and_start_loops(self):
-        """외부(EventListeners의 on_ready)에서 호출되어 루프를 안전하게 시작합니다."""
+        """EventListeners의 on_ready에서 호출되어 루프를 안전하게 시작합니다."""
         if config.ENABLE_RAIN_NOTIFICATION and config.RAIN_NOTIFICATION_CHANNEL_ID != 0:
             logger.info("WeatherCog: 주기적 비 알림 루프를 시작합니다.")
             self.rain_notification_loop.start()
@@ -58,29 +57,37 @@ class WeatherCog(commands.Cog):
         fallback_message_content = ""
 
         async with original_message.channel.typing():
+            # [수정] 이전 코드처럼 API 응답이 에러인지 먼저 명확하게 확인하는 로직으로 변경
             if day_offset == 0:
                 current_weather_data = await utils.get_current_weather_from_kma(nx, ny)
-                current_weather_str = utils.format_current_weather(current_weather_data)
-
-                if "오류" in current_weather_str or "실패" in current_weather_str or "없어" in current_weather_str:
-                    fallback_message_content = f"{location_name} {current_weather_str}"
+                # API 에러 처리
+                if isinstance(current_weather_data, dict) and current_weather_data.get("error"):
+                    fallback_message_content = current_weather_data.get("message", config.MSG_WEATHER_FETCH_ERROR)
+                elif current_weather_data is None:
+                    fallback_message_content = config.MSG_WEATHER_FETCH_ERROR
                 else:
+                    # 성공 시 데이터 포맷팅
+                    current_weather_str = utils.format_current_weather(current_weather_data)
                     short_term_data = await utils.get_short_term_forecast_from_kma(nx, ny, target_day_offset=0)
                     formatted_forecast = utils.format_short_term_forecast(short_term_data, day_name)
                     weather_data_str = f"{location_name} {day_name} 날씨 정보: 현재 {current_weather_str}\n{formatted_forecast}".strip()
             else:
                 forecast_data = await utils.get_short_term_forecast_from_kma(nx, ny, target_day_offset=day_offset)
-                formatted_forecast = utils.format_short_term_forecast(forecast_data, day_name)
-
-                if "오류" in formatted_forecast or "실패" in formatted_forecast or "없어" in formatted_forecast:
-                    fallback_message_content = f"{location_name} {formatted_forecast}"
+                # API 에러 처리
+                if isinstance(forecast_data, dict) and forecast_data.get("error"):
+                    fallback_message_content = forecast_data.get("message", config.MSG_WEATHER_FETCH_ERROR)
+                elif forecast_data is None:
+                     fallback_message_content = config.MSG_WEATHER_FETCH_ERROR
                 else:
+                    # 성공 시 데이터 포맷팅
+                    formatted_forecast = utils.format_short_term_forecast(forecast_data, day_name)
                     weather_data_str = f"{location_name} {formatted_forecast}"
 
             channel_id = original_message.channel.id
             channel_ai_settings = config.CHANNEL_AI_CONFIG.get(channel_id)
-            is_ai_channel_and_enabled = self.ai_handler and self.ai_handler.is_ready and channel_ai_settings
+            is_ai_channel_and_enabled = self.ai_handler and self.ai_handler.is_ready and channel_ai_settings and channel_ai_settings.get("allowed", False)
 
+            # [수정] 최종 응답 전송 로직을 더 명확하게 변경
             if fallback_message_content:
                 logger.info(f"WeatherCog: 날씨 정보 조회 문제로 직접 응답 - {fallback_message_content}")
                 await original_message.reply(fallback_message_content, mention_author=False)
@@ -88,7 +95,7 @@ class WeatherCog(commands.Cog):
                 logger.info(f"WeatherCog: AI 응답 요청. 날씨정보: '{weather_data_str[:100]}...'")
                 await self.ai_handler.process_ai_message(original_message, weather_info=weather_data_str)
             elif weather_data_str:
-                logger.info(f"WeatherCog: AI 사용 불가하여 직접 날씨 정보 전송 - {weather_data_str}")
+                logger.info(f"WeatherCog: AI 사용 불가 채널이라 직접 날씨 정보 전송 - {weather_data_str}")
                 await original_message.reply(f"📍 {weather_data_str}", mention_author=False)
             else:
                  await original_message.reply(config.MSG_WEATHER_NO_DATA, mention_author=False)
@@ -102,6 +109,7 @@ class WeatherCog(commands.Cog):
 
         query_for_loc_check = user_original_query.lower()
         parsed_location_name = None
+        # [수정] 더 긴 지역 이름이 먼저 확인되도록 정렬하여 "광양"이 "광주"보다 먼저 감지되는 문제 수정
         sorted_locations = sorted(config.LOCATION_COORDINATES.keys(), key=len, reverse=True)
         for loc_key in sorted_locations:
             if loc_key in query_for_loc_check:
@@ -184,11 +192,11 @@ class WeatherCog(commands.Cog):
         if not notification_channel: return
 
         logger.info("주기적 강수 알림: 날씨 확인 시작...")
-        # [수정] DEFAULT_STATION_ID 대신 DEFAULT_NX, DEFAULT_NY 사용
         nx, ny = config.DEFAULT_NX, config.DEFAULT_NY
         forecast_today_raw = await utils.get_short_term_forecast_from_kma(nx, ny, 0)
 
-        if not forecast_today_raw:
+        # [수정] API 응답이 에러이거나 None일 경우, 아무것도 하지 않고 종료
+        if not forecast_today_raw or isinstance(forecast_today_raw, dict) and forecast_today_raw.get("error"):
             logger.warning("주기적 강수 알림: 오늘 예보 데이터를 가져오지 못했습니다.")
             return
 
@@ -235,14 +243,14 @@ class WeatherCog(commands.Cog):
         if not notification_channel: return
 
         logger.info(f"주기적 {greeting_type} 인사: 날씨 확인 시작...")
-        # [수정] DEFAULT_STATION_ID 대신 DEFAULT_NX, DEFAULT_NY 사용
         nx, ny = config.DEFAULT_NX, config.DEFAULT_NY
         today_forecast_raw = await utils.get_short_term_forecast_from_kma(nx, ny, 0)
 
-        weather_summary = "오늘 날씨 정보를 가져오는 데 실패했어. 😥"
-        if today_forecast_raw and not today_forecast_raw.get("error"):
+        weather_summary = f"오늘 {config.DEFAULT_LOCATION_NAME} 날씨 정보를 가져오는 데 실패했어. 😥"
+        # [수정] API 응답이 정상일 때만 날씨 요약 생성
+        if today_forecast_raw and not isinstance(today_forecast_raw, dict):
             weather_summary = utils.format_short_term_forecast(today_forecast_raw, "오늘")
-        elif today_forecast_raw and today_forecast_raw.get("error"):
+        elif isinstance(today_forecast_raw, dict) and today_forecast_raw.get("error"):
             weather_summary = today_forecast_raw.get("message", "날씨 정보 조회 중 오류가 발생했어.")
 
         alert_context = ""
