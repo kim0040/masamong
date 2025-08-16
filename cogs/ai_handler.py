@@ -19,7 +19,7 @@ from logger_config import logger
 KST = pytz.timezone('Asia/Seoul')
 
 class AIHandler(commands.Cog):
-    """Gemini AI 상호작용 (RAG, 함수 호출 라우터, 동적 설정)"""
+    """Gemini AI 상호작용 (RAG, 함수 호출, 비용 관리)"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -27,12 +27,15 @@ class AIHandler(commands.Cog):
         self.gemini_configured = False
         self.st_model = None
         self.api_call_lock = asyncio.Lock()
+        # Rate Limiting Deques
         self.minute_request_timestamps = deque()
+        self.minute_token_timestamps = deque() # (timestamp, token_count)
         self.daily_request_count = 0
         self.daily_limit_reset_time = self._get_next_kst_midnight()
+
         self.last_proactive_response_times: Dict[int, datetime] = {}
-        self.tools = []
-        self.tool_map = {}
+        self.tools: List[content_types.Tool] = []
+        self.tool_map: Dict[str, callable] = {}
 
         if config.GEMINI_API_KEY:
             try:
@@ -46,8 +49,6 @@ class AIHandler(commands.Cog):
         try:
             model_name = 'jhgan/ko-sroberta-multilingual-v1'
             self.st_model = SentenceTransformer(model_name)
-            self.embedding_dim = self.st_model.get_sentence_embedding_dimension()
-            logger.info(f"SentenceTransformer 모델 로드 성공: {model_name} (차원: {self.embedding_dim})")
         except Exception as e:
             logger.error(f"SentenceTransformer 모델 로드 실패: {e}", exc_info=True)
 
@@ -57,15 +58,13 @@ class AIHandler(commands.Cog):
 
     def _register_tools(self):
         self.tool_map = {}
-        if not hasattr(config, 'AI_TOOLS') or not config.AI_TOOLS: return
+        if not hasattr(config, 'AI_TOOLS'): return
         for tool_path in config.AI_TOOLS:
             try:
-                parts = tool_path.split('.')
-                cog_name_str, func_name = parts[1], parts[2]
+                parts = tool_path.split('.'); cog_name_str, func_name = parts[1], parts[2]
                 cog_name_pascal = ''.join([p.capitalize() for p in cog_name_str.split('_')])
                 cog_instance = self.bot.get_cog(cog_name_pascal)
                 if cog_instance: self.tool_map[func_name] = getattr(cog_instance, func_name)
-                else: logger.error(f"도구 등록 실패: Cog '{cog_name_pascal}'를 찾을 수 없습니다.")
             except Exception as e: logger.error(f"도구 등록 실패: '{tool_path}'. 오류: {e}")
         if self.tool_map: self.tools = [content_types.Tool.from_function(func) for func in self.tool_map.values()]
         logger.info(f"AI 도구 등록 완료: {list(self.tool_map.keys())}")
@@ -74,18 +73,48 @@ class AIHandler(commands.Cog):
     def is_ready(self) -> bool:
         return self.gemini_configured and self.st_model is not None and self.bot.db is not None
 
-    # (이하 헬퍼 함수들은 이전과 거의 동일, _get_persona_for_channel 추가)
     def _get_next_kst_midnight(self):
         return KST.localize(datetime.combine(datetime.now(KST).date() + timedelta(days=1), time(0, 0)))
-    async def _check_global_rate_limit(self):
+
+    async def _check_global_rate_limit(self, prompt_tokens: int = 0) -> Tuple[bool, str | None]:
         async with self.api_call_lock:
-            now = datetime.now(); one_minute_ago = now - timedelta(minutes=1)
-            while self.minute_request_timestamps and self.minute_request_timestamps[0] < one_minute_ago: self.minute_request_timestamps.popleft()
-            if len(self.minute_request_timestamps) >= config.API_RPM_LIMIT: return True, config.MSG_AI_RATE_LIMITED
-            if datetime.now(KST) >= self.daily_limit_reset_time: self.daily_request_count = 0; self.daily_limit_reset_time = self._get_next_kst_midnight()
-            if self.daily_request_count >= config.API_RPD_LIMIT: return True, config.MSG_AI_DAILY_LIMITED
+            now = datetime.now()
+            one_minute_ago = now - timedelta(minutes=1)
+
+            # RPM Check
+            while self.minute_request_timestamps and self.minute_request_timestamps[0] < one_minute_ago:
+                self.minute_request_timestamps.popleft()
+            if len(self.minute_request_timestamps) >= config.API_RPM_LIMIT:
+                logger.warning(f"RPM 제한 도달 ({len(self.minute_request_timestamps)}/{config.API_RPM_LIMIT}).")
+                return True, config.MSG_AI_RATE_LIMITED
+
+            # TPM Check
+            current_tpm = 0
+            while self.minute_token_timestamps and self.minute_token_timestamps[0][0] < one_minute_ago:
+                self.minute_token_timestamps.popleft()
+            for _, tokens in self.minute_token_timestamps:
+                current_tpm += tokens
+
+            if current_tpm + prompt_tokens > config.API_TPM_LIMIT:
+                logger.warning(f"TPM 제한 도달 (현재: {current_tpm}, 요청: {prompt_tokens}, 한도: {config.API_TPM_LIMIT}).")
+                return True, config.MSG_AI_RATE_LIMITED
+
+            # RPD Check
+            if now.astimezone(KST) >= self.daily_limit_reset_time:
+                self.daily_request_count = 0; self.daily_limit_reset_time = self._get_next_kst_midnight()
+            if self.daily_request_count >= config.API_RPD_LIMIT:
+                return True, config.MSG_AI_DAILY_LIMITED
+
             return False, None
-    def _record_api_call(self): self.minute_request_timestamps.append(datetime.now()); self.daily_request_count += 1
+
+    def _record_api_call(self, tokens_used: int):
+        now = datetime.now()
+        self.minute_request_timestamps.append(now)
+        self.minute_token_timestamps.append((now, tokens_used))
+        self.daily_request_count += 1
+        logger.debug(f"Gemini API 호출 기록. 토큰: {tokens_used}, 분당 요청: {len(self.minute_request_timestamps)}, 분당 토큰: {sum(t[1] for t in self.minute_token_timestamps)}, 일일 요청: {self.daily_request_count}")
+
+    # (이하 다른 헬퍼 함수들은 이전과 동일)
     def _is_on_cooldown(self, user_id: int):
         if user_id in self.ai_user_cooldowns:
             remaining = (self.ai_user_cooldowns[user_id] + timedelta(seconds=config.AI_COOLDOWN_SECONDS)) - datetime.now()
@@ -104,8 +133,7 @@ class AIHandler(commands.Cog):
                 await self.bot.db.commit()
         except Exception as e: logger.error(f"임베딩 생성/저장 오류: {e}", exc_info=True)
     async def add_message_to_history(self, message):
-        if not config.AI_MEMORY_ENABLED or not self.is_ready: return
-        if not config.CHANNEL_AI_CONFIG.get(message.channel.id): return
+        if not config.AI_MEMORY_ENABLED or not self.is_ready or not config.CHANNEL_AI_CONFIG.get(message.channel.id): return
         sql = "INSERT INTO conversation_history (message_id, guild_id, channel_id, user_id, user_name, content, is_bot, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?);"
         params = (message.id, message.guild.id, message.channel.id, message.author.id, message.author.display_name, message.content, message.author.bot, message.created_at.isoformat())
         try:
@@ -128,15 +156,9 @@ class AIHandler(commands.Cog):
         sql = "SELECT user_id, user_name, is_bot, content FROM conversation_history WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?"
         cursor = await self.bot.db.execute(sql, (channel_id, config.AI_MEMORY_MAX_MESSAGES)); rows = await cursor.fetchall(); rows.reverse()
         return [{"role": "model" if r[2] else "user", "parts": [{"text": f"User({r[0]}|{r[1]}): {r[3]}"}]} for r in rows]
-
-    async def _get_persona_for_channel(self, guild_id: int, channel_id: int) -> str:
-        """DB에서 서버별 커스텀 페르소나를 조회하고, 없으면 config의 기본값을 반환합니다."""
-        sql = "SELECT value FROM guild_settings WHERE guild_id = ? AND setting_name = 'persona'"
-        cursor = await self.bot.db.execute(sql, (guild_id,))
-        result = await cursor.fetchone()
-        if result and result[0]:
-            return result[0]
-        return config.CHANNEL_AI_CONFIG.get(channel_id, {}).get("persona", "")
+    async def _get_persona_for_channel(self, guild_id, channel_id):
+        cursor = await self.bot.db.execute("SELECT value FROM guild_settings WHERE guild_id = ? AND setting_name = 'persona'", (guild_id,)); row = await cursor.fetchone()
+        return row[0] if row and row[0] else config.CHANNEL_AI_CONFIG.get(channel_id, {}).get("persona", "")
 
     async def generate_system_message(self, text_to_rephrase, channel_id, guild_id):
         if not self.is_ready: return text_to_rephrase
@@ -147,7 +169,8 @@ class AIHandler(commands.Cog):
             if is_limited: return text_to_rephrase
             model = genai.GenerativeModel(config.AI_MODEL_NAME, system_instruction=persona)
             prompt = f"다음 문장을 너의 말투로 자연스럽게 바꿔서 말해줘: \"{text_to_rephrase}\""
-            async with self.api_call_lock: self._record_api_call(); response = await model.generate_content_async(prompt)
+            self._record_api_call(await model.count_tokens_async(prompt))
+            response = await model.generate_content_async(prompt)
             return response.text.strip()
         except Exception as e: logger.error(f"시스템 메시지 생성 오류: {e}", exc_info=True); return text_to_rephrase
 
@@ -156,28 +179,28 @@ class AIHandler(commands.Cog):
         on_cooldown, rem = self._is_on_cooldown(author.id)
         if on_cooldown: return config.MSG_AI_COOLDOWN.format(remaining=rem)
         self._update_cooldown(author.id)
-        is_limited, msg = await self._check_global_rate_limit()
-        if is_limited: return msg
         persona = await self._get_persona_for_channel(channel.guild.id, channel.id)
+        model = genai.GenerativeModel(config.AI_MODEL_NAME, system_instruction=persona)
+        prompt_tokens = await model.count_tokens_async(prompt)
+        is_limited, msg = await self._check_global_rate_limit(prompt_tokens)
+        if is_limited: return msg
         try:
-            model = genai.GenerativeModel(config.AI_MODEL_NAME, system_instruction=persona)
-            async with self.api_call_lock: self._record_api_call(); response = await model.generate_content_async(prompt)
+            self._record_api_call(prompt_tokens)
+            response = await model.generate_content_async(prompt)
             return response.text.strip()
         except Exception as e: logger.error(f"직접 프롬프트 처리 오류: {e}", exc_info=True); return config.MSG_AI_ERROR
 
     async def process_ai_message(self, message: discord.Message):
-        if not self.is_ready: return
-        if not config.CHANNEL_AI_CONFIG.get(message.channel.id): return
+        if not self.is_ready or not config.CHANNEL_AI_CONFIG.get(message.channel.id): return
         user_query = message.content.replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
         if not user_query: await message.reply(config.MSG_AI_NO_CONTENT.format(bot_name=self.bot.user.name), mention_author=False); return
         on_cooldown, rem = self._is_on_cooldown(message.author.id)
         if on_cooldown: await message.reply(config.MSG_AI_COOLDOWN.format(remaining=rem), mention_author=False); return
         self._update_cooldown(message.author.id)
-        is_limited, msg = await self._check_global_rate_limit()
-        if is_limited: await message.reply(msg, mention_author=False); return
 
         async with message.channel.typing():
             try:
+                # 1. 시스템 프롬프트 및 RAG 컨텍스트 구성
                 embedding = await asyncio.get_running_loop().run_in_executor(None, self.st_model.encode, user_query)
                 rag_context = await self._find_similar_history(embedding)
                 persona = await self._get_persona_for_channel(message.guild.id, message.channel.id)
@@ -185,15 +208,23 @@ class AIHandler(commands.Cog):
                 system_instructions = [persona, rules]
                 if rag_context: system_instructions.append(f"다음은 관련된 과거 대화 내용이야. 참고해서 답변해줘.\n---\n{rag_context}\n---")
 
-                model_with_tools = genai.GenerativeModel(config.AI_MODEL_NAME, safety_settings=config.GEMINI_SAFETY_SETTINGS, system_instruction="\n".join(filter(None, system_instructions)), tools=self.tools)
+                # 2. 모델 및 채팅 세션 초기화
+                model_with_tools = genai.GenerativeModel(config.AI_MODEL_NAME, system_instruction="\n".join(filter(None, system_instructions)), tools=self.tools)
                 history = await self._get_history_from_db(message.channel.id)
                 chat_session = model_with_tools.start_chat(history=history)
+                final_query = f"User({message.author.id}|{message.author.display_name}): {user_query}"
 
-                response = await chat_session.send_message_async(f"User({message.author.id}|{message.author.display_name}): {user_query}")
+                # 3. 토큰 사용량 예측 및 제한 확인
+                prompt_tokens = await model_with_tools.count_tokens_async(chat_session.history + [content_types.to_content(final_query)])
+                is_limited, msg = await self._check_global_rate_limit(prompt_tokens)
+                if is_limited: await message.reply(msg, mention_author=False); return
 
+                # 4. 1차 AI 응답 요청
+                response = await chat_session.send_message_async(final_query)
+
+                # 5. 함수 호출 처리
                 if (function_call := response.candidates[0].content.parts[0].function_call):
-                    tool_name = function_call.name
-                    tool_args = {key: value for key, value in function_call.args.items()}
+                    tool_name = function_call.name; tool_args = {key: value for key, value in function_call.args.items()}
                     tool_function = self.tool_map.get(tool_name)
                     if tool_function:
                         if 'channel_id' in tool_function.__code__.co_varnames: tool_args['channel_id'] = message.channel.id
@@ -201,9 +232,10 @@ class AIHandler(commands.Cog):
                         function_result = await tool_function(**tool_args)
                         response = await chat_session.send_message_async(content_types.Part.from_function_response(name=tool_name, response={"result": function_result}))
 
+                # 6. 최종 응답 및 대화 기록
+                self._record_api_call(response.usage_metadata.total_token_count)
                 final_text = response.text.strip()
                 await message.reply(final_text, mention_author=False)
-
                 bot_message = discord.Object(id=discord.utils.time_snowflake(datetime.now(pytz.utc)))
                 bot_message.author = self.bot.user; bot_message.content = final_text; bot_message.channel = message.channel
                 bot_message.guild = message.guild; bot_message.created_at = datetime.now(pytz.utc)
