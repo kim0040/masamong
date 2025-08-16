@@ -8,6 +8,7 @@ import sys
 
 # --- 데이터베이스 및 설정 임포트 ---
 import aiosqlite
+import sqlite_vss
 import config
 from logger_config import logger
 
@@ -46,14 +47,21 @@ class ReMasamongBot(commands.Bot):
 
         try:
             self.db = await aiosqlite.connect(self.db_path)
-            logger.info(f"데이터베이스에 성공적으로 연결되었습니다: {self.db_path}")
+            await self.db.enable_load_extension(True)
+            # sync 함수인 sqlite_vss.load를 run_in_executor로 비동기 실행
+            await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: sqlite_vss.load(self.db)
+            )
+            await self.db.enable_load_extension(False)
+            logger.info(f"데이터베이스 연결 및 VSS 확장 로드 성공: {self.db_path}")
         except Exception as e:
-            logger.critical(f"데이터베이스 연결에 실패했습니다: {e}", exc_info=True)
+            logger.critical(f"데이터베이스 연결 또는 VSS 확장 로드 실패: {e}", exc_info=True)
             await self.close()
             return
 
         # cogs 폴더 내의 모든 .py 파일을 동적으로 로드
-        cog_list = ['events', 'commands', 'ai_handler', 'weather_cog', 'fun_cog', 'activity_cog', 'poll_cog']
+        cog_list = ['events', 'commands', 'ai_handler', 'weather_cog', 'fun_cog', 'activity_cog', 'poll_cog', 'settings_cog']
         for cog_name in cog_list:
             try:
                 # 각 Cog에 데이터베이스 연결 객체(self.db)를 전달할 수 있도록 준비
