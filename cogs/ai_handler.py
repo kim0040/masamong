@@ -2,6 +2,7 @@
 import discord
 from discord.ext import commands
 import google.generativeai as genai
+import google.api_core.exceptions
 from datetime import datetime, timedelta, time
 import asyncio
 import pytz
@@ -9,7 +10,6 @@ from collections import deque
 from typing import Dict, Any, Tuple
 import sqlite3
 import numpy as np
-from sentence_transformers import SentenceTransformer
 import pickle
 
 import config
@@ -32,41 +32,36 @@ class AIHandler(commands.Cog):
         self.api_call_lock = asyncio.Lock()
         self.minute_request_timestamps = deque()
         self.last_proactive_response_times: Dict[int, datetime] = {}
-        self.embedding_model = None
 
         if config.GEMINI_API_KEY:
             try:
                 genai.configure(api_key=config.GEMINI_API_KEY)
                 self.model = genai.GenerativeModel(config.AI_MODEL_NAME)
                 self.intent_model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME)
+                self.embedding_model_name = "models/embedding-001"
                 logger.info("Gemini API 및 모델 설정 완료.")
                 self.gemini_configured = True
             except Exception as e:
                 logger.critical(f"Gemini API 설정 실패: {e}. AI 기능 비활성화됨.", exc_info=True)
 
-        try:
-            self.embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
-            logger.info("SentenceTransformer 모델 로드 완료.")
-        except Exception as e:
-            logger.critical(f"SentenceTransformer 모델 로드 실패: {e}. RAG 기능 비활성화됨.", exc_info=True)
-
     @property
     def is_ready(self) -> bool:
         """AI 핸들러가 모든 기능을 수행할 준비가 되었는지 확인합니다."""
-        return self.gemini_configured and self.embedding_model is not None
+        return self.gemini_configured
 
-    async def _check_global_rate_limit(self) -> Tuple[bool, str | None]:
-        async with self.api_call_lock:
-            now = datetime.now()
-            one_minute_ago = now - timedelta(minutes=1)
-            while self.minute_request_timestamps and self.minute_request_timestamps[0] < one_minute_ago:
-                self.minute_request_timestamps.popleft()
+    async def _check_global_rate_limit(self, counter_name: str, limit: int) -> Tuple[bool, str | None]:
+        if counter_name == 'gemini_daily_calls':
+            async with self.api_call_lock:
+                now = datetime.now()
+                one_minute_ago = now - timedelta(minutes=1)
+                while self.minute_request_timestamps and self.minute_request_timestamps[0] < one_minute_ago:
+                    self.minute_request_timestamps.popleft()
 
-            if len(self.minute_request_timestamps) >= config.API_RPM_LIMIT:
-                logger.warning(f"분당 Gemini API 호출 제한 도달 ({len(self.minute_request_timestamps)}/{config.API_RPM_LIMIT}).")
-                return True, config.MSG_AI_RATE_LIMITED
+                if len(self.minute_request_timestamps) >= config.API_RPM_LIMIT:
+                    logger.warning(f"분당 Gemini API 호출 제한 도달 ({len(self.minute_request_timestamps)}/{config.API_RPM_LIMIT}).")
+                    return True, config.MSG_AI_RATE_LIMITED
 
-        if await utils.is_api_limit_reached('gemini_daily_calls', config.API_RPD_LIMIT):
+        if await utils.is_api_limit_reached(counter_name, limit):
             return True, config.MSG_AI_DAILY_LIMITED
 
         return False, None
@@ -143,7 +138,7 @@ class AIHandler(commands.Cog):
             conn.commit()
             logger.debug(f"[{message.guild.name}/{message.channel.name}] 메시지 ID {message.id}를 DB에 저장했습니다.")
 
-            if not message.author.bot and self.embedding_model:
+            if not message.author.bot:
                 asyncio.create_task(self._create_and_save_embedding(message.id, message.content))
 
         except sqlite3.Error as e:
@@ -154,12 +149,21 @@ class AIHandler(commands.Cog):
 
     async def _create_and_save_embedding(self, message_id: int, content: str):
         """주어진 내용의 임베딩을 생성하고 DB에 저장합니다."""
-        if not self.embedding_model: return
-        
         try:
+            is_limited, _ = await self._check_global_rate_limit('gemini_embedding_calls', 1000)
+            if is_limited:
+                logger.warning("Gemini Embedding API 호출 한도 도달. 임베딩 생성 건너뜁니다.")
+                return
+
             logger.debug(f"메시지 ID {message_id}의 임베딩 생성을 시작합니다.")
-            embedding = await asyncio.to_thread(self.embedding_model.encode, content)
-            embedding_blob = pickle.dumps(embedding)
+            embedding_result = await genai.embed_content_async(
+                model=self.embedding_model_name,
+                content=content,
+                task_type="retrieval_document"
+            )
+            await utils.increment_api_counter('gemini_embedding_calls')
+
+            embedding_blob = pickle.dumps(embedding_result['embedding'])
 
             conn = None
             try:
@@ -177,10 +181,17 @@ class AIHandler(commands.Cog):
         except Exception as e:
             logger.error(f"임베딩 생성/저장 중 오류 (메시지 ID: {message_id}): {e}", exc_info=True)
 
-    async def _find_similar_conversations(self, channel_id: int, user_id: int, query_embedding: np.ndarray, top_k: int = 5) -> str:
+    async def _find_similar_conversations(self, channel_id: int, user_id: int, query: str, top_k: int = 5) -> str:
         """DB에서 유사한 대화를 검색하여 컨텍스트 문자열을 생성합니다."""
         conn = None
         try:
+            query_embedding_result = await genai.embed_content_async(
+                model=self.embedding_model_name,
+                content=query,
+                task_type="retrieval_query"
+            )
+            query_embedding = np.array(query_embedding_result['embedding'])
+
             conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=ro", uri=True)
             cursor = conn.cursor()
 
@@ -199,7 +210,7 @@ class AIHandler(commands.Cog):
                 embedding = pickle.loads(embedding_blob)
                 sim = _cosine_similarity(query_embedding, embedding)
                 similarities.append((sim, content))
-            
+
             similarities.sort(key=lambda x: x[0], reverse=True)
             top_conversations = [content for sim, content in similarities[:top_k]]
 
@@ -208,8 +219,8 @@ class AIHandler(commands.Cog):
             context_str = "이전 대화 중 관련 내용:\n" + "\n".join(f"- {conv}" for conv in reversed(top_conversations))
             return context_str
 
-        except sqlite3.Error as e:
-            logger.error(f"유사 대화 검색 중 DB 오류: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"유사 대화 검색 중 오류: {e}", exc_info=True)
             return ""
         finally:
             if conn:
@@ -225,7 +236,7 @@ class AIHandler(commands.Cog):
         if not user_query: return "Chat"
         
         try:
-            is_limited, _ = await self._check_global_rate_limit()
+            is_limited, _ = await self._check_global_rate_limit('gemini_daily_calls', config.API_RPD_LIMIT)
             if is_limited: return "Chat"
             
             prompt = f"{config.AI_INTENT_PERSONA}\n\n사용자 메시지: \"{user_query}\""
@@ -285,7 +296,7 @@ class AIHandler(commands.Cog):
                 return config.MSG_AI_COOLDOWN.format(remaining=remaining_time)
             self._update_cooldown(author.id)
 
-        is_limited, limit_message = await self._check_global_rate_limit()
+        is_limited, limit_message = await self._check_global_rate_limit('gemini_daily_calls', config.API_RPD_LIMIT)
         if is_limited: return limit_message
 
         guild_id = self.bot.get_channel(channel_id).guild.id
@@ -308,8 +319,7 @@ class AIHandler(commands.Cog):
         if weather_info_str:
             system_instructions.append(f"참고할 날씨 정보: {weather_info_str}")
 
-        query_embedding = await asyncio.to_thread(self.embedding_model.encode, user_query)
-        rag_context = await self._find_similar_conversations(channel_id, author.id, query_embedding)
+        rag_context = await self._find_similar_conversations(channel_id, author.id, user_query)
         if rag_context:
             system_instructions.append(rag_context)
 
@@ -360,6 +370,9 @@ class AIHandler(commands.Cog):
                 return config.MSG_AI_BLOCKED_PROMPT
             else:
                 return config.MSG_AI_BLOCKED_RESPONSE
+        except google.api_core.exceptions.InternalServerError as e:
+            logger.error(f"Gemini API 내부 서버 오류: {e}", exc_info=True)
+            return config.MSG_AI_ERROR
         except Exception as e:
             logger.error(f"AI 응답 생성 중 예기치 않은 오류: {e}", exc_info=True)
             return config.MSG_AI_ERROR
