@@ -107,8 +107,20 @@ class AIHandler(commands.Cog):
         if not config.AI_MEMORY_ENABLED or not message.guild:
             return
 
-        channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
-        if not channel_config.get("allowed", False):
+        # DB에서 동적으로 설정 확인
+        is_guild_ai_enabled = utils.get_guild_setting(message.guild.id, 'ai_enabled', default=True)
+        if not is_guild_ai_enabled:
+            return
+
+        allowed_channels = utils.get_guild_setting(message.guild.id, 'ai_allowed_channels')
+        is_ai_allowed_channel = False
+        if allowed_channels:
+            is_ai_allowed_channel = message.channel.id in allowed_channels
+        else:
+            channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
+            is_ai_allowed_channel = channel_config.get("allowed", False)
+
+        if not is_ai_allowed_channel:
             return
 
         conn = None
@@ -275,8 +287,20 @@ class AIHandler(commands.Cog):
         is_limited, limit_message = await self._check_global_rate_limit()
         if is_limited: return limit_message
 
+        guild_id = self.bot.get_channel(channel_id).guild.id
+
+        custom_persona_text = utils.get_guild_setting(guild_id, 'persona_text')
         user_persona_override = config.USER_SPECIFIC_PERSONAS.get(author.id)
-        persona_cfg = user_persona_override or persona_config
+
+        if user_persona_override:
+            persona_cfg = user_persona_override
+        elif custom_persona_text:
+            # DB에 저장된 페르소나를 사용. rules는 기본값을 따르거나 비워둘 수 있음.
+            # 이 예시에서는 persona 텍스트만 교체하고 rules는 config.py의 것을 따르도록 함.
+            fallback_rules = persona_config.get("rules", "")
+            persona_cfg = {"persona": custom_persona_text, "rules": fallback_rules}
+        else:
+            persona_cfg = persona_config
 
         system_instructions = [
             persona_cfg.get("persona", ""),
@@ -310,6 +334,23 @@ class AIHandler(commands.Cog):
                 await utils.increment_api_counter('gemini_daily_calls')
 
             ai_response_text = response.text.strip()
+
+            try:
+                usage_metadata = response.usage_metadata
+                details = {
+                    "guild_id": self.bot.get_channel(channel_id).guild.id,
+                    "user_id": author.id,
+                    "channel_id": channel_id,
+                    "model_name": config.AI_MODEL_NAME,
+                    "prompt_tokens": usage_metadata.prompt_token_count,
+                    "response_tokens": usage_metadata.candidates_token_count,
+                    "total_tokens": usage_metadata.total_token_count,
+                    "is_task": is_task
+                }
+                utils.log_analytics("AI_INTERACTION", details)
+            except Exception as e:
+                logger.error(f"AI 상호작용 분석 로그 기록 중 오류: {e}")
+
             logger.info(f"AI 응답 생성 성공 (길이: {len(ai_response_text)}): {ai_response_text[:50]}...")
             return ai_response_text
 
@@ -326,18 +367,15 @@ class AIHandler(commands.Cog):
     async def process_ai_message(self, message: discord.Message, weather_info: str | None = None):
         if not self.is_ready: return
 
-        channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id)
-        if not channel_config or not channel_config.get("allowed", False):
-            if weather_info:
-                await message.reply(f"📍 {weather_info}", mention_author=False)
-            return
-
+        # 동적 설정 확인 로직은 add_message_to_history와 _handle_ai_interaction에 이미 포함됨
+        # 여기서는 AI 응답 생성에만 집중
         user_query = message.content.replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
         if not user_query and not weather_info:
             await message.reply(config.MSG_AI_NO_CONTENT.format(bot_name=self.bot.user.name), mention_author=False)
             return
 
         async with message.channel.typing():
+            channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
             ai_response_text = await self._generate_gemini_response(
                 channel_id=message.channel.id,
                 user_query=user_query,
