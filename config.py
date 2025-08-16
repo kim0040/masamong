@@ -17,14 +17,31 @@ DISCORD_LOG_LEVEL = "INFO"
 
 # --- AI 설정 ---
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
-AI_MODEL_NAME = "gemini-2.5-flash"
-AI_INTENT_MODEL_NAME = "gemini-2.5-flash"
-API_RPM_LIMIT = 10
-API_RPD_LIMIT = 200
+# 무료 티어에서 더 관대한 gemini-2.5-flash-lite를 기본 모델로 사용
+AI_MODEL_NAME = "gemini-2.5-flash-lite"
+AI_INTENT_MODEL_NAME = "gemini-2.5-flash-lite" # 의도 분석 모델도 통일
+
+# Gemini API 무료 티어 제한량 (2025년 8월 기준)
+# https://ai.google.dev/gemini-api/docs/rate-limits
+AI_EMBEDDING_MODEL_NAME = "models/text-embedding-004" # 최신 모델은 gemini-embedding-001 이지만, text-embedding-004가 더 범용적일 수 있음.
+API_RPM_LIMIT = 15  # 분당 요청 수 (RPM)
+API_TPM_LIMIT = 250000 # 분당 토큰 수 (TPM)
+API_RPD_LIMIT = 1000 # 일일 요청 수 (RPD)
+
 AI_COOLDOWN_SECONDS = 3
 AI_MEMORY_ENABLED = True
 AI_MEMORY_MAX_MESSAGES = 50
 AI_INTENT_ANALYSIS_ENABLED = True
+
+# --- AI 함수 호출(Tools) 설정 ---
+# AI가 사용할 수 있는 도구 목록을 정의합니다.
+# 형식: 'cogs.cog_name.function_name'
+AI_TOOLS = [
+    'cogs.weather_cog.get_weather_forecast',
+    'cogs.fun_cog.get_conversation_for_summary',
+    'cogs.poll_cog.create_poll',
+]
+
 AI_INTENT_PERSONA = """너는 사용자의 메시지를 분석해서 그 의도를 다음 중 하나로 분류하는 역할을 맡았어.
 - 'Weather': 메시지가 날씨(기온, 비, 눈, 바람 등)에 대해 명확히 묻거나 언급할 때.
 - 'Command': 메시지가 명백한 명령어 형식일 때 (예: !로 시작).
