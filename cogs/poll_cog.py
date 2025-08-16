@@ -53,7 +53,8 @@ class PollCog(commands.Cog):
             for i in range(len(choices)):
                 await poll_message.add_reaction(number_emojis[i])
         except Exception as e:
-            logger.error(f"투표 생성 중 오류: {e}", exc_info=True)
+            context_log = f"[{ctx.guild.name}/{ctx.channel.name}]"
+            logger.error(f"{context_log} 투표 생성 중 오류: {e}", exc_info=True)
             await ctx.send("투표를 만드는 데 실패했어. 다시 시도해줘.")
 
 async def setup(bot: commands.Bot):

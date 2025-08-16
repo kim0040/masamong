@@ -23,17 +23,14 @@ class ActivityCog(commands.Cog):
 
         conn = None
         try:
-            # WAL 모드를 사용하면 동시 읽기/쓰기 성능이 향상됩니다.
             conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=rw", uri=True)
             conn.execute("PRAGMA journal_mode=WAL;")
             cursor = conn.cursor()
 
             guild_id = message.guild.id
             user_id = message.author.id
-            # DB는 UTC 시간으로 통일하여 저장
             now_utc_str = datetime.utcnow().isoformat()
 
-            # ON CONFLICT를 사용하여 INSERT 또는 UPDATE를 한 번에 처리
             cursor.execute("""
                 INSERT INTO user_activity (user_id, guild_id, message_count, last_active_at)
                 VALUES (?, ?, 1, ?)
@@ -44,7 +41,6 @@ class ActivityCog(commands.Cog):
 
             conn.commit()
         except sqlite3.OperationalError as e:
-            # DB 파일이 없거나 경로 문제일 수 있습니다.
             logger.error(f"[ActivityCog] DB 파일을 찾을 수 없거나 쓰기 권한이 없습니다. '{config.DATABASE_FILE}' 경로를 확인하세요. 오류: {e}")
         except sqlite3.Error as e:
             logger.error(f"[ActivityCog] 활동 기록 중 DB 오류 발생: {e}", exc_info=True)
@@ -62,7 +58,7 @@ class ActivityCog(commands.Cog):
 
         conn = None
         try:
-            conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=ro", uri=True) # 읽기 전용으로 연결
+            conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=ro", uri=True)
             cursor = conn.cursor()
 
             cursor.execute("""
@@ -94,7 +90,6 @@ class ActivityCog(commands.Cog):
             ranking_list = []
             for i, (user_id, count) in enumerate(top_users):
                 try:
-                    # fetch_user는 cache에 없으면 API call을 하므로, get_user를 먼저 시도하는 것이 효율적입니다.
                     user = self.bot.get_user(int(user_id)) or await self.bot.fetch_user(int(user_id))
                     user_name = user.display_name
                 except discord.NotFound:
@@ -106,7 +101,6 @@ class ActivityCog(commands.Cog):
 
             ranking_str = "\n".join(ranking_list)
 
-            # AI 핸들러가 준비되었는지 다시 한번 확인
             if not self.ai_handler or not self.ai_handler.is_ready:
                  await ctx.send(f"**🏆 이번 주 수다왕 랭킹! 🏆**\n\n{ranking_str}")
                  return
