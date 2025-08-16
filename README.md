@@ -13,10 +13,10 @@
   딱딱한 명령어는 이제 필수가 아닙니다. 봇의 모든 기능(`날씨`, `요약`, `투표` 등)은 AI가 이해할 수 있는 하나의 '도구(Tool)'로 정의되어 있습니다. 사용자가 자연어로 무언가를 요청하면, Gemini AI가 그 의도를 파악하여 가장 적절한 도구를 스스로 선택하고 실행하여 그 결과를 바탕으로 답변합니다.
 
 - **서버별 동적 페르소나**
-  `!페르소나` 명령어를 통해 서버 관리자는 자신의 서버에만 적용되는 AI의 역할, 말투, 정체성을 직접 설정할 수 있습니다. 설정된 페르소나는 데이터베이스에 저장되어 봇의 모든 응답에 반영됩니다.
+  서버 관리자는 슬래시 커맨드(`/persona set`)를 통해 자신의 서버에만 적용되는 AI의 역할, 말투, 정체성을 직접 설정할 수 있습니다. 설정된 페르소나는 데이터베이스에 저장되어 봇의 모든 응답에 반영됩니다.
 
 - **자발적 대화 참여**
-  봇은 `@멘션`으로 호출될 때만 응답하는 수동적인 존재가 아닙니다. 대화의 흐름을 지켜보다가 자신과 관련된 키워드가 나오면, '눈치 보는 AI'의 판단을 거쳐 자연스럽게 대화에 참여합니다.
+  봇은 `@멘션`으로 호출될 때만 응답하는 수동적인 존재가 아닙니다. 대화의 흐름을 지켜보다가 자신과 관련된 키워드가 나오면, 자연스럽게 대화에 참여합니다.
 
 ## ✨ 주요 기능 및 사용법
 
@@ -53,8 +53,8 @@
 ## 🛠️ 기술 스택
 
 - **Core Framework:** `discord.py`
-- **AI Engine:** Google `Gemini 2.5 Flash` via `google-generativeai`
-- **RAG & Embeddings:** `sentence-transformers`
+- **AI Engine:** Google Gemini API (`gemini-2.5-flash-lite`)
+- **Embeddings for RAG:** Google Gemini Embedding API (`text-embedding-004`)
 - **Database:** `SQLite`
 - **Async DB Driver:** `aiosqlite`
 - **Vector Search:** `sqlite-vss`
@@ -80,11 +80,12 @@ python3 -m venv venv
 source venv/bin/activate
 
 # 3. 필수 라이브러리 설치
+# (이제 torch 등 무거운 라이브러리가 필요 없어 설치가 매우 가볍고 빠릅니다.)
 pip install -r requirements.txt
 
 # 4. .env 파일 설정
-# .env.example 파일을 복사하여 .env 파일을 만들고 아래 내용을 채웁니다.
-cp .env.example .env
+# .env.example 파일이 있다면 복사하고, 없다면 새로 만들어 아래 내용을 채웁니다.
+# cp .env.example .env
 # nano .env 또는 다른 편집기로 아래 값을 입력
 # DISCORD_BOT_TOKEN="YOUR_DISCORD_BOT_TOKEN"
 # GEMINI_API_KEY="YOUR_GEMINI_API_KEY"
@@ -96,14 +97,13 @@ python database/init_db.py
 # 6. 봇 실행
 python main.py
 ```
-> **참고:** `sentence-transformers` 라이브러리는 최초 실행 시 사전 훈련된 모델을 다운로드하므로, 초기 구동에 다소 시간이 걸릴 수 있습니다.
 
 ## 📁 프로젝트 구조
 
 - `main.py`: 🤖 봇의 생명주기를 관리하는 메인 실행 파일.
 - `config.py`: 🧠 봇의 기본 페르소나, API 제한 등 핵심 설정을 담은 파일.
 - `cogs/`: 🧩 각 기능별 모듈(Cog)이 들어있는 폴더.
-    - `ai_handler.py`: Gemini AI와의 모든 통신, RAG, 함수 호출을 전담하는 핵심 두뇌.
+    - `ai_handler.py`: Gemini API와의 모든 통신, RAG, 함수 호출을 전담하는 핵심 두뇌.
     - `events.py`: 👂 디스코드의 모든 이벤트를 감지하고 `AIHandler`에 전달하는 귀.
     - `weather_cog.py`: 🌦️ 날씨 조회 '도구'와 주기적 알림 기능.
     - `fun_cog.py`: 🎉 운세, 요약 '도구' 기능.
