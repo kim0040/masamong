@@ -71,7 +71,10 @@ AI_PROACTIVE_RESPONSE_CONFIG = { "enabled": True, "keywords": ["마사몽", "마
   2. 챗봇이 답변하기 좋은 질문이나 주제가 나왔는가?
   3. 이미 사용자들끼리 대화가 활발하게 진행 중이라 챗봇의 개입이 불필해 보이지는 않는가? (이 경우 'No')
   4. 부정적인 맥락이거나, 챗봇을 비난하는 내용인가? (이 경우 'No')
-- 위의 기준을 종합적으로 고려해서, 참여하는 것이 좋다고 생각되면 'Yes', 아니면 'No'라고만 대답해. 다른 설명은 절대 붙이지 마.""" }
+- 위의 기준을 종합적으로 고려해서, 참여하는 것이 좋다고 생각되면 'Yes', 아니면 'No'라고만 대답해. 다른 설명은 절대 붙이지 마.""",
+        "look_back_count": 5,
+        "min_message_length": 10
+}
 AI_CREATIVE_PROMPTS = { "fortune": "사용자 '{user_name}'를 위한 오늘의 운세를 재치있게 알려줘.", "summarize": "다음 대화 내용을 분석해서, 핵심 내용을 3가지 항목으로 요약해줘.\n--- 대화 내용 ---\n{conversation}", "ranking": "다음 서버 활동 랭킹을 보고, 1등을 축하하고 다른 사람들을 독려하는 발표 멘트를 작성해줘.\n--- 활동 랭킹 ---\n{ranking_list}" }
 FUN_KEYWORD_TRIGGERS = { "enabled": True, "cooldown_seconds": 60, "triggers": { "fortune": ["운세", "오늘 운", "운세 좀"], "summarize": ["요약해줘", "무슨 얘기했어", "무슨 얘기함", "요약 좀", "지금까지 뭔 얘기"] } }
 
