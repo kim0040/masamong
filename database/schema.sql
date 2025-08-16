@@ -32,7 +32,14 @@ CREATE TABLE IF NOT EXISTS conversation_history (
     user_name TEXT NOT NULL,
     content TEXT NOT NULL,
     is_bot BOOLEAN NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    embedding BLOB
+);
+
+-- 대화 내용 벡터 검색을 위한 VSS(Vector Search) 가상 테이블
+-- `conversation_history`의 rowid와 연결하여 사용
+CREATE VIRTUAL TABLE IF NOT EXISTS vss_conversations USING vss0(
+    embedding(384)
 );
 
 -- 시스템 전체의 카운터(예: API 호출 횟수)를 관리하는 테이블
