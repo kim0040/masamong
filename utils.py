@@ -93,45 +93,54 @@ async def _fetch_kma_api(endpoint_key: str, params: dict) -> dict | None:
         return None
 
 async def get_current_weather_from_kma(nx: str, ny: str) -> dict | None:
-    """초단기실황 정보를 기상청 API로부터 가져옵니다. (getUltraSrtNcst)"""
+    """초단기실황 정보를 기상청 API로부터 가져옵니다."""
     now = datetime.now(KST)
     base_date = now.strftime("%Y%m%d")
-
-    # 초단기실황 API는 매시 40분에 업데이트되므로, 안정적으로 45분 이전에는 이전 시간을 사용
-    base_time_moment = now
+    # API는 매시 30분에 생성되어 40분부터 제공되므로, 안전하게 이전 시간 것을 조회
     if now.minute < 45:
-        base_time_moment = now - timedelta(hours=1)
-    base_time = base_time_moment.strftime("%H00")
+        now -= timedelta(hours=1)
+    base_time = now.strftime("%H00")
 
-    params = {"base_date": base_date, "base_time": base_time, "nx": nx, "ny": ny}
+    params = {
+        "base_date": base_date,
+        "base_time": base_time,
+        "nx": nx,
+        "ny": ny
+    }
     return await _fetch_kma_api("ultrasrt_ncst", params)
 
-async def get_short_term_forecast_from_kma(nx: str, ny: str) -> dict | None:
-    """
-    가장 최신의 단기예보(VilageFcst) 전문을 통째로 기상청 API로부터 가져옵니다.
-    이 함수는 `target_day_offset`을 받지 않습니다. 항상 가장 최신 회차의 예보를 가져옵니다.
-    """
+async def get_short_term_forecast_from_kma(nx: str, ny: str, target_day_offset: int = 0) -> dict | None:
+    """단기예보 정보를 기상청 API로부터 가져옵니다."""
     now = datetime.now(KST)
+    target_date = now.date() + timedelta(days=target_day_offset)
     
-    # 단기예보는 하루 8번 (02:10, 05:10, 08:10, 11:10, 14:10, 17:10, 20:10, 23:10) 발표
-    available_times = [2, 5, 8, 11, 14, 17, 20, 23]
+    # 단기예보는 하루 8번 (02, 05, 08, 11, 14, 17, 20, 23시) 발표
+    # 현재 시간 기준으로 가장 가까운 과거 발표 시간을 찾아야 함
+    if target_day_offset == 0: # 오늘 예보
+        available_times = [2, 5, 8, 11, 14, 17, 20, 23]
+        base_time_hour = 23 # 기본값
+        # 현재 시간보다 작은 발표 시간 중 가장 큰 값
+        valid_times = [t for t in available_times if t * 100 + 10 <= now.hour * 100 + now.minute]
+        if valid_times:
+            base_time_hour = max(valid_times)
 
-    # 현재 시간과 비교하여 가장 최근의 발표 시간을 찾음 (API 제공시간은 +10분)
-    current_hour_minute = now.hour * 100 + now.minute
-    valid_times = [t for t in available_times if t * 100 + 10 <= current_hour_minute]
+        base_date = now.date()
+        # 만약 새벽 2시 10분 이전이면, 전날 23시 발표자료를 봐야 함
+        if not valid_times:
+            base_date -= timedelta(days=1)
 
-    base_date = now.date()
-    if not valid_times:
-        # 오늘자 발표가 아직 없다면 (예: 02:10 이전), 어제 23시 발표자료를 사용
-        base_time_hour = 23
-        base_date -= timedelta(days=1)
-    else:
-        base_time_hour = max(valid_times)
+        base_date_str = base_date.strftime("%Y%m%d")
+        base_time_str = f"{base_time_hour:02d}00"
+    else: # 내일, 모레 예보는 보통 가장 최신 자료를 보면 됨 (05시 발표 자료 추천)
+        base_date_str = (now - timedelta(days=1)).strftime("%Y%m%d") if now.hour < 5 else now.strftime("%Y%m%d")
+        base_time_str = "0500"
 
-    base_date_str = base_date.strftime("%Y%m%d")
-    base_time_str = f"{base_time_hour:02d}00"
-
-    params = {"base_date": base_date_str, "base_time": base_time_str, "nx": nx, "ny": ny}
+    params = {
+        "base_date": base_date_str,
+        "base_time": base_time_str,
+        "nx": nx,
+        "ny": ny
+    }
     return await _fetch_kma_api("vilage_fcst", params)
 
 
@@ -143,88 +152,50 @@ def format_current_weather(weather_data: dict | None) -> str:
         items = weather_data['response']['body']['items']['item']
         weather_values = {item['category']: item['obsrValue'] for item in items}
 
-        temp = weather_values.get('T1H', 'N/A')
-        reh = weather_values.get('REH', 'N/A')
+        temp = weather_values.get('T1H', 'N/A') + "°C"
+        reh = weather_values.get('REH', 'N/A') + "%"
         rn1 = weather_values.get('RN1', '0')
-        pty_code = weather_values.get('PTY', '0')
 
-        pty_map = {"0": "강수 없음", "1": "비", "2": "비/눈", "3": "눈", "5": "빗방울", "6": "빗방울/눈날림", "7": "눈날림"}
+        pty_code = weather_values.get('PTY', '0')
+        pty_map = {"0": "없음", "1": "비", "2": "비/눈", "3": "눈", "5": "빗방울", "6": "빗방울/눈날림", "7": "눈날림"}
         pty = pty_map.get(pty_code, "정보 없음")
         
         rain_info = ""
-        if pty_code != '0' and rn1 != "강수없음":
-             rain_info = f" (시간당 {rn1}mm)"
+        if float(rn1) > 0:
+            rain_info = f" (시간당 {rn1}mm)"
 
-        return f"🌡️기온: {temp}°C, 💧습도: {reh}%, ☔강수: {pty}{rain_info}"
-    except (KeyError, TypeError, IndexError) as e:
-        logger.error(f"초단기실황 데이터 포맷팅 실패: {e}\n데이터: {str(weather_data)[:500]}", exc_info=True)
+        return f"🌡️기온: {temp}, 💧습도: {reh}, ☔강수: {pty}{rain_info}"
+    except (KeyError, TypeError, IndexError):
         return config.MSG_WEATHER_NO_DATA
 
 
-def format_short_term_forecast(forecast_data: dict | None, target_date: datetime.date) -> str:
-    """
-    JSON으로 파싱된 단기예보 데이터에서 특정 날짜(target_date)의 정보를 추출하여
-    사람이 읽기 좋은 문자열로 포맷팅합니다.
-    """
-    day_name_map = {0: "오늘", 1: "내일", 2: "모레"}
-    day_offset = (target_date - datetime.now(KST).date()).days
-    day_name = day_name_map.get(day_offset, f"{day_offset}일 후")
-
+def format_short_term_forecast(forecast_data: dict | None, day_name: str) -> str:
+    """JSON으로 파싱된 단기예보 데이터를 사람이 읽기 좋은 문자열로 포맷팅합니다."""
     if not forecast_data or forecast_data.get("error"):
         return f"{day_name} 날씨: {forecast_data.get('message', config.MSG_WEATHER_FETCH_ERROR)}"
-
     try:
         items = forecast_data['response']['body']['items']['item']
-        target_date_str = target_date.strftime("%Y%m%d")
 
-        # 해당 날짜의 데이터만 필터링
-        date_specific_items = [item for item in items if item.get('fcstDate') == target_date_str]
+        # 최저/최고 기온 찾기
+        min_temp = next((item['fcstValue'] for item in items if item['category'] == 'TMN'), None)
+        max_temp = next((item['fcstValue'] for item in items if item['category'] == 'TMX'), None)
 
-        if not date_specific_items:
-            logger.warning(f"{target_date_str}에 해당하는 예보 데이터가 없습니다. 원본 데이터: {str(forecast_data)[:500]}")
-            return f"{day_name}({target_date_str})의 예보 정보가 없습니다."
-
-        # 최저/최고 기온 찾기 (TMN, TMX)
-        min_temp = next((item['fcstValue'] for item in date_specific_items if item['category'] == 'TMN'), None)
-        max_temp = next((item['fcstValue'] for item in date_specific_items if item['category'] == 'TMX'), None)
-
-        # 오전/오후 하늘 상태 및 강수확률
+        # 특정 시간대(예: 정오)의 하늘 상태와 강수확률 찾기
         sky_map = {"1": "맑음☀️", "3": "구름많음☁️", "4": "흐림🌥️"}
-        am_sky_val, pm_sky_val = "1", "1"
-        am_pop, pm_pop = 0, 0
         
-        hourly_pops = {item['fcstTime']: int(item['fcstValue']) for item in date_specific_items if item['category'] == 'POP'}
-        hourly_skies = {item['fcstTime']: item['fcstValue'] for item in date_specific_items if item['category'] == 'SKY'}
+        noon_sky_val = next((item['fcstValue'] for item in items if item['category'] == 'SKY' and item['fcstTime'] == '1200'), "1")
+        noon_sky = sky_map.get(noon_sky_val, "정보없음")
 
-        # 오전(06-12시), 오후(13-18시)의 대표 날씨
-        am_pops = [v for k, v in hourly_pops.items() if "0600" <= k <= "1200"]
-        pm_pops = [v for k, v in hourly_pops.items() if "1300" <= k <= "1800"]
-        am_pop = max(am_pops) if am_pops else 0
-        pm_pop = max(pm_pops) if pm_pops else 0
+        # 하루 중 최대 강수확률
+        pops = [int(item['fcstValue']) for item in items if item['category'] == 'POP']
+        max_pop = max(pops) if pops else 0
 
-        # 대표 하늘상태는 가장 빈번하게 나타난 것으로 결정
-        am_skies = [v for k, v in hourly_skies.items() if "0600" <= k <= "1200"]
-        pm_skies = [v for k, v in hourly_skies.items() if "1300" <= k <= "1800"]
-        if am_skies: am_sky_val = max(set(am_skies), key=am_skies.count)
-        if pm_skies: pm_sky_val = max(set(pm_skies), key=pm_skies.count)
-
-        am_sky = sky_map.get(am_sky_val, "정보없음")
-        pm_sky = sky_map.get(pm_sky_val, "정보없음")
-
-        # 하루 중 최고 강수확률
-        max_pop = max(hourly_pops.values()) if hourly_pops else 0
-
-        # 최종 문자열 조합
         temp_range_str = ""
         if min_temp and max_temp:
-            temp_range_str = f" (최저 {min_temp}°C / 최고 {max_temp}°C)"
-        elif max_temp:
-            temp_range_str = f" (최고 {max_temp}°C)"
+            temp_range_str = f"(최저 {min_temp}°C / 최고 {max_temp}°C)"
         
-        weather_desc = f"오전: {am_sky} (강수 {am_pop}%), 오후: {pm_sky} (강수 {pm_pop}%)"
+        weather_desc = f"하늘: 대체로 {noon_sky}, 최고 강수확률: {max_pop}%"
 
-        return f"**{day_name}** 날씨{temp_range_str}\n> {weather_desc}"
-
-    except (KeyError, TypeError, IndexError, StopIteration) as e:
-        logger.error(f"단기예보 데이터 포맷팅 실패: {e}\n데이터: {str(forecast_data)[:500]}", exc_info=True)
+        return f"{day_name} 날씨 {temp_range_str}:\n{weather_desc}".strip()
+    except (KeyError, TypeError, IndexError, StopIteration):
         return config.MSG_WEATHER_NO_DATA

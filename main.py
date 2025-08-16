@@ -8,7 +8,6 @@ import sys
 
 # --- 데이터베이스 및 설정 임포트 ---
 import aiosqlite
-import sqlite_vss
 import config
 from logger_config import logger
 
@@ -17,8 +16,10 @@ if not config.TOKEN:
     logger.critical("DISCORD_BOT_TOKEN 환경 변수가 설정되지 않았습니다. 봇을 실행할 수 없습니다.")
     sys.exit(1)
 
-if not config.GEMINI_API_KEY:
-    logger.warning("GEMINI_API_KEY 환경 변수가 없습니다. AI 기능이 작동하지 않습니다.")
+# AI 또는 날씨 기능 활성화 시 API 키 확인
+is_any_ai_channel_enabled = any(settings.get("allowed", False) for settings in config.CHANNEL_AI_CONFIG.values())
+if is_any_ai_channel_enabled and not config.GEMINI_API_KEY:
+    logger.warning("AI 채널이 설정되었지만 GEMINI_API_KEY 환경 변수가 없습니다. AI 기능이 작동하지 않습니다.")
 if not config.KMA_API_KEY or config.KMA_API_KEY == 'YOUR_KMA_API_KEY':
     logger.warning("KMA_API_KEY가 설정되지 않았습니다. 날씨 기능이 작동하지 않을 수 있습니다.")
 
@@ -45,23 +46,18 @@ class ReMasamongBot(commands.Bot):
 
         try:
             self.db = await aiosqlite.connect(self.db_path)
-            await self.db.enable_load_extension(True)
-
-            # vss0은 vector0에 의존하므로, vector0를 먼저 로드해야 합니다.
-            # aiosqlite의 네이티브 load_extension을 사용하여 각 모듈을 직접 로드합니다.
-            await self.db.load_extension(sqlite_vss.vector_loadable_path())
-            await self.db.load_extension(sqlite_vss.vss_loadable_path())
-
-            logger.info(f"데이터베이스 연결 및 VSS 확장 로드 성공.")
+            logger.info(f"데이터베이스에 성공적으로 연결되었습니다: {self.db_path}")
         except Exception as e:
-            logger.critical(f"데이터베이스 연결 또는 VSS 확장 로드 실패: {e}", exc_info=True)
+            logger.critical(f"데이터베이스 연결에 실패했습니다: {e}", exc_info=True)
             await self.close()
             return
 
         # cogs 폴더 내의 모든 .py 파일을 동적으로 로드
-        cog_list = ['events', 'commands', 'ai_handler', 'weather_cog', 'fun_cog', 'activity_cog', 'poll_cog', 'settings_cog', 'logging_cog']
+        cog_list = ['events', 'commands', 'ai_handler', 'weather_cog', 'fun_cog', 'activity_cog', 'poll_cog']
         for cog_name in cog_list:
             try:
+                # 각 Cog에 데이터베이스 연결 객체(self.db)를 전달할 수 있도록 준비
+                # 실제 전달은 각 Cog의 __init__에서 bot 인스턴스를 통해 이루어짐
                 await self.load_extension(f'cogs.{cog_name}')
                 logger.info(f"Cog 로드 성공: {cog_name}")
             except Exception as e:
