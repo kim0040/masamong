@@ -51,31 +51,27 @@ class WeatherCog(commands.Cog):
             await original_message.reply(config.MSG_WEATHER_API_KEY_MISSING, mention_author=False)
             return
 
-        day_names = ["오늘", "내일", "모레"]
-        day_name = day_names[day_offset] if 0 <= day_offset < len(day_names) else f"{day_offset}일 후"
-
+        target_date = datetime.now(KST).date() + timedelta(days=day_offset)
         weather_data_str = ""
         fallback_message_content = ""
 
         async with original_message.channel.typing():
-            if day_offset == 0:
-                current_weather_data = await utils.get_current_weather_from_kma(nx, ny)
-                current_weather_str = utils.format_current_weather(current_weather_data)
-                
-                if "오류" in current_weather_str or "실패" in current_weather_str or "없어" in current_weather_str:
-                    fallback_message_content = f"{location_name} {current_weather_str}"
-                else:
-                    short_term_data = await utils.get_short_term_forecast_from_kma(nx, ny, target_day_offset=0)
-                    formatted_forecast = utils.format_short_term_forecast(short_term_data, day_name)
-                    weather_data_str = f"{location_name} {day_name} 날씨 정보: 현재 {current_weather_str}\n{formatted_forecast}".strip()
+            # 1. 단기 예보 데이터를 한 번만 가져옵니다.
+            forecast_data = await utils.get_short_term_forecast_from_kma(nx, ny)
+
+            # 2. 단기 예보를 포맷팅합니다.
+            formatted_forecast = utils.format_short_term_forecast(forecast_data, target_date)
+
+            if "오류" in formatted_forecast or "실패" in formatted_forecast or "없어" in formatted_forecast:
+                fallback_message_content = f"📍 {location_name} {formatted_forecast}"
             else:
-                forecast_data = await utils.get_short_term_forecast_from_kma(nx, ny, target_day_offset=day_offset)
-                formatted_forecast = utils.format_short_term_forecast(forecast_data, day_name)
-                
-                if "오류" in formatted_forecast or "실패" in formatted_forecast or "없어" in formatted_forecast:
-                    fallback_message_content = f"{location_name} {formatted_forecast}"
+                # 오늘 날씨를 요청한 경우에만 현재 날씨를 추가합니다.
+                if day_offset == 0:
+                    current_weather_data = await utils.get_current_weather_from_kma(nx, ny)
+                    current_weather_str = utils.format_current_weather(current_weather_data)
+                    weather_data_str = f"📍 {location_name} 현재 날씨: {current_weather_str}\n{formatted_forecast}"
                 else:
-                    weather_data_str = f"{location_name} {formatted_forecast}"
+                    weather_data_str = f"📍 {location_name} {formatted_forecast}"
 
             channel_id = original_message.channel.id
             channel_ai_settings = config.CHANNEL_AI_CONFIG.get(channel_id)
@@ -89,9 +85,9 @@ class WeatherCog(commands.Cog):
                 await self.ai_handler.process_ai_message(original_message, weather_info=weather_data_str)
             elif weather_data_str:
                 logger.info(f"WeatherCog: AI 사용 불가하여 직접 날씨 정보 전송 - {weather_data_str}")
-                await original_message.reply(f"📍 {weather_data_str}", mention_author=False)
+                await original_message.reply(weather_data_str, mention_author=False)
             else:
-                 await original_message.reply(config.MSG_WEATHER_NO_DATA, mention_author=False)
+                await original_message.reply(config.MSG_WEATHER_NO_DATA, mention_author=False)
 
     @commands.command(name="날씨", aliases=["weather", "현재날씨", "오늘날씨"])
     async def weather_command(self, ctx: commands.Context, *, location_query: str = ""):
@@ -184,15 +180,14 @@ class WeatherCog(commands.Cog):
         if not notification_channel: return
         
         logger.info("주기적 강수 알림: 날씨 확인 시작...")
-        # [수정] DEFAULT_STATION_ID 대신 DEFAULT_NX, DEFAULT_NY 사용
         nx, ny = config.DEFAULT_NX, config.DEFAULT_NY
-        forecast_today_raw = await utils.get_short_term_forecast_from_kma(nx, ny, 0)
+        forecast_data = await utils.get_short_term_forecast_from_kma(nx, ny)
         
-        if not forecast_today_raw:
-            logger.warning("주기적 강수 알림: 오늘 예보 데이터를 가져오지 못했습니다.")
+        if not forecast_data or forecast_data.get("error"):
+            logger.warning(f"주기적 강수 알림: 예보 데이터를 가져오지 못했습니다. 에러: {forecast_data.get('message') if forecast_data else '없음'}")
             return
 
-        precipitation_periods = self._parse_rain_periods(forecast_today_raw)
+        precipitation_periods = self._parse_rain_periods(forecast_data)
         now_kst = datetime.now(KST)
         
         cutoff_time = now_kst - timedelta(days=1)
@@ -235,15 +230,11 @@ class WeatherCog(commands.Cog):
         if not notification_channel: return
 
         logger.info(f"주기적 {greeting_type} 인사: 날씨 확인 시작...")
-        # [수정] DEFAULT_STATION_ID 대신 DEFAULT_NX, DEFAULT_NY 사용
         nx, ny = config.DEFAULT_NX, config.DEFAULT_NY
-        today_forecast_raw = await utils.get_short_term_forecast_from_kma(nx, ny, 0)
+        today_forecast_raw = await utils.get_short_term_forecast_from_kma(nx, ny)
         
-        weather_summary = "오늘 날씨 정보를 가져오는 데 실패했어. 😥"
-        if today_forecast_raw and not today_forecast_raw.get("error"):
-            weather_summary = utils.format_short_term_forecast(today_forecast_raw, "오늘")
-        elif today_forecast_raw and today_forecast_raw.get("error"):
-            weather_summary = today_forecast_raw.get("message", "날씨 정보 조회 중 오류가 발생했어.")
+        today = datetime.now(KST).date()
+        weather_summary = utils.format_short_term_forecast(today_forecast_raw, today)
         
         alert_context = ""
         alert_type_log = ""
