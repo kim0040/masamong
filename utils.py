@@ -12,6 +12,32 @@ from typing import Any
 
 KST = pytz.timezone('Asia/Seoul')
 
+def log_analytics(event_type: str, details: dict):
+    """분석 이벤트를 DB에 기록합니다."""
+    conn = None
+    try:
+        conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=rw", uri=True)
+        cursor = conn.cursor()
+
+        details_json = json.dumps(details, ensure_ascii=False)
+
+        guild_id = details.get('guild_id')
+        user_id = details.get('user_id')
+
+        cursor.execute("""
+            INSERT INTO analytics_log (event_type, guild_id, user_id, details)
+            VALUES (?, ?, ?, ?)
+        """, (event_type, guild_id, user_id, details_json))
+        conn.commit()
+
+    except sqlite3.Error as e:
+        logger.error(f"분석 로그 기록 중 DB 오류 (이벤트: {event_type}): {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"분석 로그 기록 중 일반 오류 (이벤트: {event_type}): {e}", exc_info=True)
+    finally:
+        if conn:
+            conn.close()
+
 def get_guild_setting(guild_id: int, setting_name: str, default: Any = None) -> Any:
     """DB에서 특정 서버(guild)의 설정 값을 가져옵니다."""
     conn = None
@@ -19,7 +45,7 @@ def get_guild_setting(guild_id: int, setting_name: str, default: Any = None) -> 
         conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=ro", uri=True)
         cursor = conn.cursor()
 
-        allowed_columns = ["ai_enabled", "ai_allowed_channels", "proactive_response_probability", "proactive_response_cooldown", "default_persona_id"]
+        allowed_columns = ["ai_enabled", "ai_allowed_channels", "proactive_response_probability", "proactive_response_cooldown", "persona_text"]
         if setting_name not in allowed_columns:
             logger.error(f"허용되지 않은 설정 이름에 대한 접근 시도: {setting_name}")
             return default

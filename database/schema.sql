@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS guild_settings (
     ai_allowed_channels TEXT, -- JSON 배열 형태의 채널 ID 목록
     proactive_response_probability REAL NOT NULL DEFAULT 0.05,
     proactive_response_cooldown INTEGER NOT NULL DEFAULT 300, -- 초 단위
-    default_persona_id INTEGER,
+    persona_text TEXT, -- 사용자 정의 페르소나
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc'))
 );
