@@ -11,6 +11,9 @@ sentence-transformers>=2.2.0
 # 비동기 SQLite 드라이버 (1단계부터 사용)
 aiosqlite>=0.19.0
 
+# SQLite용 벡터 검색 확장 기능 (2단계부터 사용)
+sqlite-vss>=0.1.2
+
 # --- 한국어 자연어 처리 (NLP) ---
 # 한국어 형태소 분석기 라이브러리 (3단계에서 사용)
 konlpy>=0.6.0
