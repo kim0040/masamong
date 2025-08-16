@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import sqlite3
 import os
+from datetime import datetime
 
 # 이 스크립트는 봇을 시작하기 전에 한번만 실행하여
 # database/schema.sql 파일에 정의된 대로 데이터베이스와 테이블을 생성합니다.
@@ -37,6 +38,22 @@ def initialize_database():
         # SQL 스크립트 실행 (여러 CREATE 문을 한번에 실행)
         cursor.executescript(schema_sql)
         print("스키마를 성공적으로 적용하여 테이블을 생성/확인했습니다.")
+
+        # 시스템 카운터 초기값 설정
+        print("시스템 카운터 초기값을 확인하고 설정합니다...")
+        now_date_str = datetime.utcnow().isoformat()
+        counters_to_initialize = {
+            'kma_daily_calls': 0,
+            'gemini_daily_calls': 0
+        }
+        for name, value in counters_to_initialize.items():
+            cursor.execute("""
+                INSERT OR IGNORE INTO system_counters (counter_name, counter_value, last_reset_at)
+                VALUES (?, ?, ?)
+            """, (name, value, now_date_str))
+
+        print("시스템 카운터 초기화가 완료되었습니다.")
+
 
         # 변경사항 저장 및 연결 종료
         conn.commit()
