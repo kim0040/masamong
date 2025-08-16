@@ -124,12 +124,29 @@ class EventListeners(commands.Cog):
         if self.activity_cog: self.activity_cog.record_message(message)
         if self.ai_handler: self.ai_handler.add_message_to_history(message)
 
+        # 봇의 접두사로 시작하지 않는 메시지만 키워드 및 AI 상호작용 처리
         if not message.content.startswith(self.bot.command_prefix):
             if await self._handle_keyword_triggers(message):
                 return
             await self._handle_ai_interaction(message)
 
+        # 모든 메시지에 대해 명령어 처리를 시도
         await self.bot.process_commands(message)
+
+    @commands.Cog.listener()
+    async def on_command(self, ctx: commands.Context):
+        """명령어가 실행될 때마다 분석 로그를 기록합니다."""
+        if not ctx.guild:
+            return
+
+        details = {
+            "guild_id": ctx.guild.id,
+            "user_id": ctx.author.id,
+            "command": ctx.command.qualified_name,
+            "channel_id": ctx.channel.id,
+            "full_message": ctx.message.content
+        }
+        utils.log_analytics("COMMAND_USAGE", details)
 
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message):
