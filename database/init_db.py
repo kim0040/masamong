@@ -22,15 +22,18 @@ def initialize_database():
         print(f"[오류] 스키마 파일 '{SCHEMA_PATH}'을(를) 찾을 수 없습니다.")
         return
 
-    conn = None  # 연결 객체를 try 블록 외부에서 초기화
+    conn = None
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.enable_load_extension(True)
-        sqlite_vss.load(conn)
-        conn.enable_load_extension(False) # 보안을 위해 사용 후 비활성화
+
+        # sqlite_vss.load() 대신, 의존성 순서에 맞춰 직접 로드
+        conn.load_extension(sqlite_vss.vector_loadable_path())
+        conn.load_extension(sqlite_vss.vss_loadable_path())
+
+        print("데이터베이스 연결 및 VSS 확장 로드 성공.")
 
         cursor = conn.cursor()
-        print(f"데이터베이스 연결 및 VSS 확장 로드 성공: {DB_PATH}")
 
         with open(SCHEMA_PATH, 'r', encoding='utf-8') as f:
             schema_sql = f.read()
