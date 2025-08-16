@@ -94,12 +94,40 @@ class EventListeners(commands.Cog):
             
         logger.debug("의도 분석 시작...")
         intent = await self.ai_handler.analyze_intent(message)
-        logger.debug(f"의도 분석 결과: '{intent}'")
-        
-        # ... (이하 의도 분석 및 처리 로직은 이전과 동일)
+        logger.info(f"AI 의도 분석 결과: '{intent}' (메시지: '{message.content[:50]}...')")
 
-        if intent == 'Chat':
-            logger.debug("일반 채팅 의도로 판단됨.")
+        # 멘션되었거나, 자발적 응답 조건이 충족되었을 때만 아래 로직 실행
+        if not (is_bot_mentioned or should_consider_proactive):
+             logger.debug("AI 상호작용 조건 미충족으로 처리 종료.")
+             return
+
+        if intent == 'Weather':
+            if not self.weather_cog:
+                logger.error("WeatherCog가 로드되지 않아 날씨 의도를 처리할 수 없습니다.")
+                return
+
+            logger.debug("날씨 의도로 판단됨. 날씨 정보 조회를 시작합니다.")
+            query_for_loc_check = message.content.lower()
+            location_name = config.DEFAULT_LOCATION_NAME
+            nx, ny = config.DEFAULT_NX, config.DEFAULT_NY
+
+            sorted_locations = sorted(config.LOCATION_COORDINATES.keys(), key=len, reverse=True)
+            for loc_key in sorted_locations:
+                if loc_key in query_for_loc_check:
+                    location_name = loc_key
+                    coords = config.LOCATION_COORDINATES[location_name]
+                    nx, ny = str(coords["nx"]), str(coords["ny"])
+                    logger.info(f"날씨 의도 분석: 지역 감지 - {location_name} (nx: {nx}, ny: {ny})")
+                    break
+
+            day_offset = 0
+            if "모레" in query_for_loc_check: day_offset = 2
+            elif "내일" in query_for_loc_check: day_offset = 1
+
+            await self.weather_cog.prepare_weather_response_for_ai(message, day_offset, location_name, nx, ny, message.content)
+
+        elif intent in ['Chat', 'Mixed']:
+            logger.debug(f"'{intent}' 의도로 판단됨. AI 채팅 응답 처리를 시작합니다.")
             if is_bot_mentioned:
                 logger.debug("멘션이 확인되어 AI 응답 생성을 요청합니다.")
                 await self.ai_handler.process_ai_message(message)
@@ -111,6 +139,13 @@ class EventListeners(commands.Cog):
                     await self.ai_handler.process_ai_message(message)
                 else:
                     logger.debug("자발적 응답 최종 판단 결과: 응답하지 않음.")
+
+        elif intent == 'Command':
+             logger.debug("명령어 의도로 판단되었으나, on_message에서 이미 bot.process_commands()가 처리하므로 여기서는 별도 작업을 수행하지 않습니다.")
+
+        else:
+            logger.warning(f"알 수 없는 의도('{intent}')가 분석되었습니다. 처리를 건너뜁니다.")
+
         logger.debug("--- AI 상호작용 처리 종료 ---")
 
     @commands.Cog.listener()
