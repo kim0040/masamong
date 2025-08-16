@@ -41,13 +41,22 @@ DATABASE_FILE = "database/remasamong.db"
 
 # --- AI 설정 ---
 GEMINI_API_KEY = load_config_value('GEMINI_API_KEY')
-AI_MODEL_NAME = "gemini-2.5-flash-lite"
+# '사고'용 모델 (의도분석 등)
 AI_INTENT_MODEL_NAME = "gemini-2.5-flash-lite"
+# '응답'용 모델 (실제 답변 생성)
+AI_RESPONSE_MODEL_NAME = "gemini-2.5-flash"
+# 임베딩 모델
+AI_EMBEDDING_MODEL_NAME = "models/embedding-001"
+
+# API 호출 제한 (분당)
 API_RPM_LIMIT = 15
-API_RPD_LIMIT = 1000
+# API 호출 제한 (일일)
+API_LITE_RPD_LIMIT = 1000 # for flash-lite
+API_FLASH_RPD_LIMIT = 250 # for flash
+API_EMBEDDING_RPD_LIMIT = 1000 # for embedding-001
+
 AI_COOLDOWN_SECONDS = 3
 AI_MEMORY_ENABLED = True
-AI_MEMORY_MAX_MESSAGES = 50
 AI_INTENT_ANALYSIS_ENABLED = True
 AI_INTENT_PERSONA = """너는 사용자의 메시지를 분석해서 그 의도를 다음 중 하나로 분류하는 역할을 맡았어.
 - 'Time': 메시지가 현재 시간, 날짜, 요일 등 시간에 대해 명확히 물을 때. (예: "지금 몇 시야?", "오늘 며칠이야?")
@@ -64,12 +73,12 @@ AI_PROACTIVE_RESPONSE_CONFIG = { "enabled": True, "keywords": ["마사몽", "마
   4. 부정적인 맥락이거나, 챗봇을 비난하는 내용인가? (이 경우 'No')
 - 위의 기준을 종합적으로 고려해서, 참여하는 것이 좋다고 생각되면 'Yes', 아니면 'No'라고만 대답해. 다른 설명은 절대 붙이지 마.""" }
 AI_CREATIVE_PROMPTS = { "fortune": "사용자 '{user_name}'를 위한 오늘의 운세를 재치있게 알려줘.", "summarize": "다음 대화 내용을 분석해서, 핵심 내용을 3가지 항목으로 요약해줘.\n--- 대화 내용 ---\n{conversation}", "ranking": "다음 서버 활동 랭킹을 보고, 1등을 축하하고 다른 사람들을 독려하는 발표 멘트를 작성해줘.\n--- 활동 랭킹 ---\n{ranking_list}" }
-AI_SUMMARY_MAX_CHARS = 8000
 FUN_KEYWORD_TRIGGERS = { "enabled": True, "cooldown_seconds": 60, "triggers": { "fortune": ["운세", "오늘 운", "운세 좀"], "summarize": ["요약해줘", "무슨 얘기했어", "무슨 얘기함", "요약 좀", "지금까지 뭔 얘기"] } }
 
 # --- 기상청 API 설정 (새로운 좌표 시스템으로 변경) ---
 KMA_API_KEY = load_config_value('KMA_API_KEY')
-KMA_API_DAILY_CALL_LIMIT = 10000 # 새 API는 호출 제한이 더 엄격할 수 있음
+KMA_API_DAILY_CALL_LIMIT = 10000
+
 DEFAULT_LOCATION_NAME = "광양"
 DEFAULT_NX = "70"
 DEFAULT_NY = "65"

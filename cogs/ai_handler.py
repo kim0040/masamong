@@ -36,8 +36,8 @@ class AIHandler(commands.Cog):
         if config.GEMINI_API_KEY:
             try:
                 genai.configure(api_key=config.GEMINI_API_KEY)
-                self.model = genai.GenerativeModel(config.AI_MODEL_NAME)
                 self.intent_model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME)
+                self.response_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME)
                 self.embedding_model_name = "models/embedding-001"
                 logger.info("Gemini API 및 모델 설정 완료.")
                 self.gemini_configured = True
@@ -50,7 +50,7 @@ class AIHandler(commands.Cog):
         return self.gemini_configured
 
     async def _check_global_rate_limit(self, counter_name: str, limit: int) -> Tuple[bool, str | None]:
-        if counter_name == 'gemini_daily_calls':
+        if counter_name.startswith('gemini_'):
             async with self.api_call_lock:
                 now = datetime.now()
                 one_minute_ago = now - timedelta(minutes=1)
@@ -150,7 +150,7 @@ class AIHandler(commands.Cog):
     async def _create_and_save_embedding(self, message_id: int, content: str):
         """주어진 내용의 임베딩을 생성하고 DB에 저장합니다."""
         try:
-            is_limited, _ = await self._check_global_rate_limit('gemini_embedding_calls', 1000)
+            is_limited, _ = await self._check_global_rate_limit('gemini_embedding_calls', config.API_EMBEDDING_RPD_LIMIT)
             if is_limited:
                 logger.warning("Gemini Embedding API 호출 한도 도달. 임베딩 생성 건너뜁니다.")
                 return
@@ -185,11 +185,15 @@ class AIHandler(commands.Cog):
         """DB에서 유사한 대화를 검색하여 컨텍스트 문자열을 생성합니다."""
         conn = None
         try:
+            is_limited, _ = await self._check_global_rate_limit('gemini_embedding_calls', config.API_EMBEDDING_RPD_LIMIT)
+            if is_limited: return ""
+
             query_embedding_result = await genai.embed_content_async(
                 model=self.embedding_model_name,
                 content=query,
                 task_type="retrieval_query"
             )
+            await utils.increment_api_counter('gemini_embedding_calls')
             query_embedding = np.array(query_embedding_result['embedding'])
 
             conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=ro", uri=True)
@@ -201,8 +205,8 @@ class AIHandler(commands.Cog):
                 ORDER BY created_at DESC
                 LIMIT 100;
             """, (channel_id, user_id))
-            
-            rows = cursor.fetchall()
+
+            rows = await asyncio.to_thread(cursor.fetchall)
             if not rows: return ""
 
             similarities = []
@@ -236,7 +240,7 @@ class AIHandler(commands.Cog):
         if not user_query: return "Chat"
         
         try:
-            is_limited, _ = await self._check_global_rate_limit('gemini_daily_calls', config.API_RPD_LIMIT)
+            is_limited, _ = await self._check_global_rate_limit('gemini_lite_daily_calls', config.API_LITE_RPD_LIMIT)
             if is_limited: return "Chat"
             
             prompt = f"{config.AI_INTENT_PERSONA}\n\n사용자 메시지: \"{user_query}\""
@@ -245,7 +249,7 @@ class AIHandler(commands.Cog):
             async with self.api_call_lock:
                 self._record_api_call()
                 response = await self.intent_model.generate_content_async(prompt)
-                await utils.increment_api_counter('gemini_daily_calls')
+                await utils.increment_api_counter('gemini_lite_daily_calls')
             
             intent = response.text.strip()
             logger.info(f"의도 분석 결과: '{intent}' (원본: '{user_query[:50]}...')")
@@ -296,7 +300,7 @@ class AIHandler(commands.Cog):
                 return config.MSG_AI_COOLDOWN.format(remaining=remaining_time)
             self._update_cooldown(author.id)
 
-        is_limited, limit_message = await self._check_global_rate_limit('gemini_daily_calls', config.API_RPD_LIMIT)
+        is_limited, limit_message = await self._check_global_rate_limit('gemini_flash_daily_calls', config.API_FLASH_RPD_LIMIT)
         if is_limited: return limit_message
 
         guild_id = self.bot.get_channel(channel_id).guild.id
@@ -326,11 +330,7 @@ class AIHandler(commands.Cog):
         history = []
 
         try:
-            model = genai.GenerativeModel(
-                config.AI_MODEL_NAME,
-                safety_settings=config.GEMINI_SAFETY_SETTINGS,
-                system_instruction="\n".join(filter(None, system_instructions))
-            )
+            model = self.response_model
             
             chat_session = model.start_chat(history=history)
             final_query = user_query if is_task else f"User({author.id}|{author.display_name}): {user_query}"
@@ -340,7 +340,7 @@ class AIHandler(commands.Cog):
             async with self.api_call_lock:
                 self._record_api_call()
                 response = await chat_session.send_message_async(final_query, stream=False)
-                await utils.increment_api_counter('gemini_daily_calls')
+                await utils.increment_api_counter('gemini_flash_daily_calls')
 
             ai_response_text = response.text.strip()
 
@@ -350,7 +350,7 @@ class AIHandler(commands.Cog):
                     "guild_id": guild_id,
                     "user_id": author.id,
                     "channel_id": channel_id,
-                    "model_name": config.AI_MODEL_NAME,
+                    "model_name": config.AI_RESPONSE_MODEL_NAME,
                     "intent": intent,
                     "prompt_tokens": usage_metadata.prompt_token_count,
                     "response_tokens": usage_metadata.candidates_token_count,
