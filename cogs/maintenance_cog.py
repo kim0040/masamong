@@ -29,7 +29,7 @@ class MaintenanceCog(commands.Cog):
         """주기적으로 오래된 대화 기록을 아카이빙합니다."""
         logger.info("정기 RAG 아카이빙 작업을 시작합니다...")
         try:
-            await utils.archive_old_conversations()
+            await utils.archive_old_conversations(self.bot.db)
             logger.info("정기 RAG 아카이빙 작업을 성공적으로 완료했습니다.")
         except Exception as e:
             logger.error(f"정기 RAG 아카이빙 작업 중 예외 발생: {e}", exc_info=True)
