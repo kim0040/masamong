@@ -44,12 +44,15 @@ async def get_stock_price(stock_name: str) -> dict:
             "change_rate": float(stock_info.get('fltRt', '0.0'))
         }
 
-    except requests.exceptions.Timeout:
-        logger.error("KRX API 요청 시간 초과.")
-        return {"error": "API 요청 시간 초과"}
+    except requests.exceptions.SSLError as e:
+        logger.error(f"KRX API SSL 오류: {e}", exc_info=True)
+        return {"error": "API 서버와 보안 연결(SSL)에 실패했습니다."}
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+        logger.warning(f"KRX API 연결 오류: {e}")
+        return {"error": "API 서버에 연결할 수 없습니다."}
     except requests.exceptions.HTTPError as e:
         logger.error(f"KRX API HTTP 오류: {e.response.status_code}")
         return {"error": f"API 서버 오류 ({e.response.status_code})"}
-    except (requests.exceptions.RequestException, ValueError) as e:
-        logger.error(f"KRX API 처리 중 오류: {e}", exc_info=True)
-        return {"error": "API 요청 또는 데이터 처리 중 오류 발생"}
+    except ValueError as e: # JSONDecodeError
+        logger.error(f"KRX API JSON 파싱 오류: {e}", exc_info=True)
+        return {"error": "API 응답 데이터 처리 중 오류 발생"}
