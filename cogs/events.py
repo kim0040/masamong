@@ -107,10 +107,35 @@ class EventListeners(commands.Cog):
 
         if intent == 'Time':
             current_time_str = utils.get_current_time()
-            time_info_for_ai = f"현재 한국 시간은 {current_time_str} 입니다."
-            await self.ai_handler.process_ai_message(message, weather_info=time_info_for_ai, intent=intent)
+            await self.ai_handler.process_ai_message(message, time_info=current_time_str, intent=intent)
         elif intent == 'Weather' and self.weather_cog:
-            await self.weather_cog.prepare_weather_response_for_ai(message, 0, config.DEFAULT_LOCATION_NAME, config.DEFAULT_NX, config.DEFAULT_NY, message.content)
+            user_query = message.content.lower()
+
+            # 1. 지역 파싱
+            location_name = config.DEFAULT_LOCATION_NAME
+            nx, ny = config.DEFAULT_NX, config.DEFAULT_NY
+
+            parsed_location_name = None
+            sorted_locations = sorted(config.LOCATION_COORDINATES.keys(), key=len, reverse=True)
+            for loc_key in sorted_locations:
+                if loc_key in user_query:
+                    parsed_location_name = loc_key
+                    break
+
+            if parsed_location_name:
+                location_name = parsed_location_name
+                coords = config.LOCATION_COORDINATES[location_name]
+                nx, ny = str(coords["nx"]), str(coords["ny"])
+                logger.info(f"{context_log} 날씨 의도: 지역 감지 - {location_name}")
+            else:
+                logger.info(f"{context_log} 날씨 의도: 지역 감지 실패, 기본값({location_name}) 사용.")
+
+            # 2. 날짜 파싱
+            day_offset = 0
+            if "모레" in user_query: day_offset = 2
+            elif "내일" in user_query: day_offset = 1
+
+            await self.weather_cog.prepare_weather_response_for_ai(message, day_offset, location_name, nx, ny, message.content)
         else: # Chat, Mixed, Command
             await self.ai_handler.process_ai_message(message, intent=intent)
 

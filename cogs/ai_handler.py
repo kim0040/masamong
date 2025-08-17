@@ -23,6 +23,67 @@ def _cosine_similarity(v1, v2):
     """코사인 유사도를 계산합니다."""
     return np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
 
+def _get_recent_conversation_text_sync(channel_id: int, look_back: int) -> str | None:
+    """[Worker] DB에서 최근 대화 기록을 가져와 텍스트로 반환합니다."""
+    conn = None
+    try:
+        conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=ro", uri=True)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT user_name, content FROM conversation_history
+            WHERE channel_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?;
+        """, (channel_id, look_back))
+
+        rows = cursor.fetchall()
+        if not rows:
+            return None
+
+        return "\n".join([f"{row[0]}: {row[1]}" for row in reversed(rows)])
+    finally:
+        if conn:
+            conn.close()
+
+def _find_similar_conversations_sync(channel_id: int, user_id: int, query_embedding: np.ndarray, top_k: int) -> str:
+    """[Worker] DB에서 유사한 대화를 검색하여 컨텍스트 문자열을 생성합니다."""
+    conn = None
+    try:
+        conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=ro", uri=True)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT content, embedding FROM conversation_history
+            WHERE channel_id = ? AND user_id = ? AND embedding IS NOT NULL
+            ORDER BY created_at DESC
+            LIMIT 100;
+        """, (channel_id, user_id))
+
+        rows = cursor.fetchall()
+        if not rows: return ""
+
+        similarities = []
+        for content, embedding_blob in rows:
+            embedding = pickle.loads(embedding_blob)
+            sim = _cosine_similarity(query_embedding, embedding)
+            similarities.append((sim, content))
+
+        similarities.sort(key=lambda x: x[0], reverse=True)
+        top_conversations = [content for sim, content in similarities[:top_k]]
+
+        if not top_conversations: return ""
+
+        context_str = "이전 대화 중 관련 내용:\n" + "\n".join(f"- {conv}" for conv in reversed(top_conversations))
+        return context_str
+    except Exception as e:
+        # 이 함수는 다른 스레드에서 실행되므로, 로깅을 여기서 직접 처리해야 함
+        logger.error(f"[Worker] 유사 대화 검색 중 오류: {e}", exc_info=True)
+        return ""
+    finally:
+        if conn:
+            conn.close()
+
 class AIHandler(commands.Cog):
     """Gemini AI 상호작용 (자발적 응답, 의도 분석, 사용자별 대화 기록)"""
 
@@ -184,7 +245,6 @@ class AIHandler(commands.Cog):
 
     async def _find_similar_conversations(self, channel_id: int, user_id: int, query: str, top_k: int = 5) -> str:
         """DB에서 유사한 대화를 검색하여 컨텍스트 문자열을 생성합니다."""
-        conn = None
         try:
             is_limited, _ = await self._check_global_rate_limit('gemini_embedding_calls', config.API_EMBEDDING_RPD_LIMIT)
             if is_limited: return ""
@@ -197,39 +257,17 @@ class AIHandler(commands.Cog):
             await utils.increment_api_counter('gemini_embedding_calls')
             query_embedding = np.array(query_embedding_result['embedding'])
 
-            conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=ro", uri=True)
-            cursor = conn.cursor()
-
-            cursor.execute("""
-                SELECT content, embedding FROM conversation_history
-                WHERE channel_id = ? AND user_id = ? AND embedding IS NOT NULL
-                ORDER BY created_at DESC
-                LIMIT 100;
-            """, (channel_id, user_id))
-
-            rows = await asyncio.to_thread(cursor.fetchall)
-            if not rows: return ""
-
-            similarities = []
-            for content, embedding_blob in rows:
-                embedding = pickle.loads(embedding_blob)
-                sim = _cosine_similarity(query_embedding, embedding)
-                similarities.append((sim, content))
-
-            similarities.sort(key=lambda x: x[0], reverse=True)
-            top_conversations = [content for sim, content in similarities[:top_k]]
-
-            if not top_conversations: return ""
-
-            context_str = "이전 대화 중 관련 내용:\n" + "\n".join(f"- {conv}" for conv in reversed(top_conversations))
-            return context_str
-
+            # DB 접근 로직을 동기 함수로 분리하고 to_thread로 호출
+            return await asyncio.to_thread(
+                _find_similar_conversations_sync,
+                channel_id,
+                user_id,
+                query_embedding,
+                top_k
+            )
         except Exception as e:
             logger.error(f"유사 대화 검색 중 오류: {e}", exc_info=True)
             return ""
-        finally:
-            if conn:
-                conn.close()
 
     async def should_proactively_respond(self, message: discord.Message) -> bool:
         # 1. 기본 조건 확인
@@ -264,25 +302,15 @@ class AIHandler(commands.Cog):
             return False
 
         # 4. 대화 기록 가져오기
-        conn = None
         try:
-            conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=ro", uri=True)
-            cursor = conn.cursor()
             look_back = conf.get("look_back_count", 5)
-
-            cursor.execute("""
-                SELECT user_name, content FROM conversation_history
-                WHERE channel_id = ?
-                ORDER BY created_at DESC
-                LIMIT ?;
-            """, (message.channel.id, look_back))
-
-            rows = await asyncio.to_thread(cursor.fetchall)
-            if not rows: return False
+            recent_conversation_text = await asyncio.to_thread(
+                _get_recent_conversation_text_sync, message.channel.id, look_back
+            )
+            if not recent_conversation_text:
+                return False
 
             # 5. AI 판단 요청
-            recent_conversation_text = "\n".join([f"{row[0]}: {row[1]}" for row in reversed(rows)])
-
             is_limited, _ = await self._check_global_rate_limit('gemini_lite_daily_calls', config.API_LITE_RPD_LIMIT)
             if is_limited: return False
 
@@ -372,6 +400,7 @@ class AIHandler(commands.Cog):
         author: discord.User,
         persona_config: dict,
         weather_info_str: str | None = None,
+        time_info_str: str | None = None,
         is_task: bool = False,
         intent: str = "Chat"
     ) -> str | None:
@@ -405,6 +434,8 @@ class AIHandler(commands.Cog):
         ]
         if weather_info_str:
             system_instructions.append(f"참고할 날씨 정보: {weather_info_str}")
+        if time_info_str:
+            system_instructions.append(f"참고할 현재 시간 정보: {time_info_str}")
 
         rag_context = await self._find_similar_conversations(channel_id, author.id, user_query)
         if rag_context:
@@ -460,7 +491,7 @@ class AIHandler(commands.Cog):
             logger.error(f"AI 응답 생성 중 예기치 않은 오류: {e}", exc_info=True)
             return config.MSG_AI_ERROR
 
-    async def process_ai_message(self, message: discord.Message, weather_info: str | None = None, intent: str = "Chat"):
+    async def process_ai_message(self, message: discord.Message, weather_info: str | None = None, time_info: str | None = None, intent: str = "Chat"):
         if not self.is_ready: return
 
         user_query = message.content.replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
@@ -476,6 +507,7 @@ class AIHandler(commands.Cog):
                 author=message.author,
                 persona_config=channel_config,
                 weather_info_str=weather_info,
+                time_info_str=time_info,
                 intent=intent
             )
 
