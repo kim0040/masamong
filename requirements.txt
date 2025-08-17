@@ -5,13 +5,6 @@ discord.py>=2.3.0
 # Google Gemini AI 라이브러리
 google-generativeai>=0.5.0
 
-# --- RAG 및 벡터 임베딩 ---
-sentence-transformers
-numpy
-# 저사양 서버를 위해 CPU 버전의 torch를 명시
---extra-index-url https://download.pytorch.org/whl/cpu
-torch
-
 # 비동기 SQLite 드라이버 (1단계부터 사용)
 aiosqlite>=0.19.0
 
