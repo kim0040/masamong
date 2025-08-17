@@ -33,8 +33,8 @@ TOKEN = load_config_value('DISCORD_BOT_TOKEN')
 # --- 로깅 설정 ---
 LOG_FILE_NAME = "discord_logs.txt"
 ERROR_LOG_FILE_NAME = "error_logs.txt"
-DISCORD_LOG_CHANNEL_ID = 0 
-DISCORD_LOG_LEVEL = "INFO" 
+# 서버에 특화되지 않은 글로벌 로그(예: 봇 시작, API 키 오류)를 보낼 채널 ID. 0으로 두면 비활성화.
+GLOBAL_LOG_CHANNEL_ID = int(load_config_value('GLOBAL_LOG_CHANNEL_ID', 0))
 
 # --- 데이터베이스 설정 ---
 DATABASE_FILE = "database/remasamong.db"
@@ -129,7 +129,8 @@ You are a master planner AI. Your role is to analyze a user's request and create
 2.  **Structure**: The JSON object must have a key named `plan` which is a list of dictionaries. Each dictionary represents a step and must contain `tool_to_use` and `parameters`.
 3.  **Think Step-by-Step**: For complex requests, break down the problem into multiple steps. The order of steps in the list matters.
 4.  **Parameter Matching**: Ensure the keys in the `parameters` dictionary exactly match the parameter names defined for the tool.
-5.  **Default to Chat**: If the user's request is a simple greeting, question, or something that doesn't fit any tool, use the `general_chat` tool.
+5.  **Prioritize Tools**: If the user's query contains keywords clearly related to a tool's description (e.g., "날씨", "주식", "게임"), you should prioritize using that tool. Only use `general_chat` if no other tool is appropriate.
+6.  **Default to Chat**: If the user's request is a simple greeting, question, or something that doesn't fit any tool, use the `general_chat` tool.
 
 **# Examples:**
 
@@ -175,6 +176,35 @@ You are a master planner AI. Your role is to analyze a user's request and create
           "tool_to_use": "general_chat",
           "parameters": {
             "user_query": "안녕? 뭐하고 있었어?"
+          }
+        }
+      ]
+    }
+    ```
+
+*   User Request: "요즘 할만한 RPG 게임 추천해줘"
+    ```json
+    {
+      "plan": [
+        {
+          "tool_to_use": "recommend_games",
+          "parameters": {
+            "genres": "rpg",
+            "ordering": "-rating"
+          }
+        }
+      ]
+    }
+    ```
+
+*   User Request: "오늘 날씨 어때"
+    ```json
+    {
+      "plan": [
+        {
+          "tool_to_use": "general_chat",
+          "parameters": {
+            "user_query": "오늘 날씨 어때"
           }
         }
       ]

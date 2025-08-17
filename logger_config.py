@@ -5,6 +5,7 @@ from datetime import datetime
 import pytz
 import asyncio
 import discord
+from discord.ext import commands
 from collections import deque
 import traceback
 
@@ -63,17 +64,17 @@ class DiscordLogHandler(logging.Handler):
             timestamp=datetime.fromtimestamp(record.created).astimezone(KST)
         )
 
-        # 메시지 본문 추가 (2000자 제한 고려)
+        # 메시지 본문 추가 (1024자 제한 엄수)
         message_content = record.getMessage()
         if record.exc_info:
             exc_text = "".join(traceback.format_exception(*record.exc_info))
-            message_content += f"\n\n**Traceback:**\n```python\n{exc_text[:1500]}\n```"
+            message_content += f"\n\n**Traceback:**\n```python\n{exc_text}\n```"
 
-        if len(message_content) > 1800:
-            embed.add_field(name="Message", value=f"```\n{message_content[:1800]}...\n```", inline=False)
-        else:
-            embed.add_field(name="Message", value=f"```\n{message_content}\n```", inline=False)
+        # Discord 필드 값 제한인 1024자에 맞게 자르기
+        if len(message_content) > 1000:
+            message_content = message_content[:1000] + "..."
 
+        embed.add_field(name="Message", value=f"```\n{message_content}\n```", inline=False)
         embed.set_footer(text="Logged at")
         return embed
 
@@ -93,41 +94,48 @@ async def discord_logging_task():
             guild_id = getattr(record, 'guild_id', None)
             target_guilds = []
 
-            if guild_id:
-                guild = _bot_instance.get_guild(guild_id)
-                if guild:
-                    target_guilds.append(guild)
-            else:
-                # guild_id가 없으면 모든 서버의 'logs' 채널에 보낸다 (또는 특정 채널에만).
-                # 여기서는 모든 서버에 보내는 것으로 가정.
-                # 실제 운영 시에는 특정 서버나 채널 ID로 제한하는 것이 좋음.
-                target_guilds = _bot_instance.guilds
-
-            handler = logging.getLogger().handlers[-1] # Get this handler instance
-            if not isinstance(handler, DiscordLogHandler): continue
+            # 핸들러 인스턴스를 한 번만 찾음
+            handler = None
+            for h in logging.getLogger().handlers:
+                if isinstance(h, DiscordLogHandler):
+                    handler = h
+                    break
+            if not handler:
+                continue
 
             embed = handler.format_embed(record)
 
-            for guild in target_guilds:
-                log_channel = log_channel_cache.get(guild.id)
-                if not log_channel:
-                    for channel in guild.text_channels:
-                        if channel.name == 'logs':
-                            bot_permissions = channel.permissions_for(guild.me)
-                            if bot_permissions.send_messages and bot_permissions.embed_links:
-                                log_channel_cache[guild.id] = channel
-                                log_channel = channel
-                                break
+            # 길드 ID가 있는 경우, 해당 길드의 'logs' 채널에만 전송
+            guild_id = getattr(record, 'guild_id', None)
+            if guild_id:
+                guild = _bot_instance.get_guild(guild_id)
+                if guild:
+                    log_channel = log_channel_cache.get(guild.id)
+                    if not log_channel:
+                        for channel in guild.text_channels:
+                            if channel.name == 'logs':
+                                bot_permissions = channel.permissions_for(guild.me)
+                                if bot_permissions.send_messages and bot_permissions.embed_links:
+                                    log_channel_cache[guild.id] = channel
+                                    log_channel = channel
+                                    break
+                    if log_channel:
+                        try:
+                            await log_channel.send(embed=embed)
+                        except discord.Forbidden:
+                            log_channel_cache.pop(guild.id, None) # 권한 문제 시 캐시 제거
+                        except Exception as e:
+                            logging.getLogger(__name__).error(f"Discord 로그 채널({log_channel.name}) 전송 중 오류: {e}", exc_info=False)
 
-                if log_channel:
+            # 길드 ID가 없는 경우, 글로벌 로그 채널에 전송
+            else:
+                if config.GLOBAL_LOG_CHANNEL_ID != 0:
                     try:
-                        await log_channel.send(embed=embed)
-                    except discord.Forbidden:
-                        # 권한 문제 발생 시 캐시에서 제거하여 다음 번에 다시 찾도록 함
-                        log_channel_cache.pop(guild.id, None)
+                        channel = _bot_instance.get_channel(config.GLOBAL_LOG_CHANNEL_ID)
+                        if channel:
+                            await channel.send(embed=embed)
                     except Exception as e:
-                        # 전송 실패 시 파일 로그에 기록
-                        logging.getLogger(__name__).error(f"Discord 로그 채널({log_channel.name}) 전송 중 오류: {e}", exc_info=False)
+                        logging.getLogger(__name__).error(f"글로벌 로그 채널({config.GLOBAL_LOG_CHANNEL_ID}) 전송 중 오류: {e}", exc_info=False)
 
             _discord_log_queue.task_done()
         except asyncio.CancelledError:
@@ -188,7 +196,8 @@ def register_discord_logging(bot: commands.Bot):
     _bot_instance = bot
 
     discord_handler = DiscordLogHandler()
-    discord_handler.setLevel(logging.INFO) # Discord에는 INFO 레벨 이상만 전송
+    # 사용자의 요청에 따라 WARNING 레벨 이상의 로그만 Discord로 전송
+    discord_handler.setLevel(logging.WARNING)
 
     # 포매터는 핸들러 내에서 Embed를 생성하므로 필요 없음
     logging.getLogger().addHandler(discord_handler)
