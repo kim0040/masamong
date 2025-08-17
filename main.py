@@ -53,8 +53,17 @@ class ReMasamongBot(commands.Bot):
             return
 
         # cogs 폴더 내의 모든 .py 파일을 동적으로 로드
-        cog_list = ['events', 'commands', 'ai_handler', 'weather_cog', 'fun_cog', 'activity_cog', 'poll_cog']
+        cog_list = [
+            'events', 'commands', 'ai_handler', 'weather_cog', 'fun_cog',
+            'activity_cog', 'poll_cog', 'settings_cog', 'maintenance_cog'
+        ]
+        # settings_cog와 같이 UI와 관련된 cog는 다른 cog보다 먼저 로드하는 것이 좋을 수 있습니다.
+        # 순서가 중요하다면 리스트의 순서를 조정하세요.
+
         for cog_name in cog_list:
+            if not os.path.exists(f'cogs/{cog_name}.py'):
+                logger.warning(f"Cog 파일 '{cog_name}.py'을(를) 찾을 수 없어 건너뜁니다.")
+                continue
             try:
                 # 각 Cog에 데이터베이스 연결 객체(self.db)를 전달할 수 있도록 준비
                 # 실제 전달은 각 Cog의 __init__에서 bot 인스턴스를 통해 이루어짐
