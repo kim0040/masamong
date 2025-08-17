@@ -18,7 +18,6 @@ import json
 import config
 from logger_config import logger
 from utils import db as db_utils
-from . import response_formatter
 
 KST = pytz.timezone('Asia/Seoul')
 
@@ -314,8 +313,17 @@ class AIHandler(commands.Cog):
                 await message.reply(config.MSG_AI_DAILY_LIMITED, mention_author=False)
                 return None
             
-            prompt = f"{config.AGENT_PLANNER_PERSONA}\n\n# User Request:\n{user_query}"
-            
+            # Planner에 컨텍스트를 주기 위해 최근 대화 내용을 가져옴
+            recent_conv_text = await self._get_recent_conversation_text(message.channel.id, look_back=4)
+            if recent_conv_text:
+                prompt = (
+                    f"{config.AGENT_PLANNER_PERSONA}\n\n"
+                    f"## Recent Conversation History:\n{recent_conv_text}\n\n"
+                    f"## Current User Request:\n{user_query}"
+                )
+            else:
+                prompt = f"{config.AGENT_PLANNER_PERSONA}\n\n# User Request:\n{user_query}"
+
             async with self.api_call_lock:
                 self._record_api_call()
                 response = await self.intent_model.generate_content_async(prompt)
@@ -585,16 +593,9 @@ class AIHandler(commands.Cog):
             else:
                 final_response_text = await self.synthesize_final_response(user_query, execution_context, message.author, message.guild.id)
 
-            # 4. 응답 포맷팅 및 전송
+            # 4. 응답 전송
             if final_response_text:
-                formatted_response = response_formatter.format_final_response(user_query, execution_context, final_response_text)
-
-                bot_response_message = None
-                if isinstance(formatted_response, discord.Embed):
-                    bot_response_message = await message.reply(embed=formatted_response, mention_author=False)
-                else:
-                    bot_response_message = await message.reply(formatted_response[:2000], mention_author=False)
-
+                bot_response_message = await message.reply(final_response_text[:2000], mention_author=False)
                 if bot_response_message:
                     await self.add_message_to_history(bot_response_message)
 

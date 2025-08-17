@@ -33,8 +33,8 @@ TOKEN = load_config_value('DISCORD_BOT_TOKEN')
 # --- 로깅 설정 ---
 LOG_FILE_NAME = "discord_logs.txt"
 ERROR_LOG_FILE_NAME = "error_logs.txt"
-DISCORD_LOG_CHANNEL_ID = 0 
-DISCORD_LOG_LEVEL = "INFO" 
+# 서버에 특화되지 않은 글로벌 로그(예: 봇 시작, API 키 오류)를 보낼 채널 ID. 0으로 두면 비활성화.
+GLOBAL_LOG_CHANNEL_ID = int(load_config_value('GLOBAL_LOG_CHANNEL_ID', 0))
 
 # --- 데이터베이스 설정 ---
 DATABASE_FILE = "database/remasamong.db"
