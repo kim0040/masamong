@@ -3,8 +3,11 @@ import discord
 from discord.ext import commands
 import re
 
+import config
 from logger_config import logger
 from utils.api_handlers import finnhub, kakao, krx, exim, rawg
+from utils import db as db_utils
+from .weather_cog import WeatherCog
 
 def is_korean(text: str) -> bool:
     """텍스트에 한글이 포함되어 있는지 확인합니다."""
@@ -19,7 +22,39 @@ class ToolsCog(commands.Cog):
     """
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.weather_cog: WeatherCog = self.bot.get_cog('WeatherCog')
         logger.info("ToolsCog 초기화 완료.")
+
+    async def get_current_time(self) -> dict:
+        """현재 시간과 날짜를 반환합니다."""
+        return {"current_time": db_utils.get_current_time()}
+
+    async def get_current_weather(self, location: str = None, day_offset: int = 0) -> dict:
+        """주어진 위치의 날씨 정보를 조회합니다. (오늘, 내일, 모레까지 가능)"""
+        if not self.weather_cog:
+            return {"error": "날씨 정보 모듈이 준비되지 않았습니다."}
+
+        location_name = location or config.DEFAULT_LOCATION_NAME
+
+        # 위치 정보로부터 nx, ny 좌표 찾기
+        coords = config.LOCATION_COORDINATES.get(location_name)
+        if not coords:
+            # 부분 일치 검색
+            for key, value in config.LOCATION_COORDINATES.items():
+                if location_name in key:
+                    coords = value
+                    location_name = key
+                    break
+
+        if not coords:
+            return {"error": f"'{location_name}' 지역의 좌표를 찾을 수 없습니다."}
+
+        nx, ny = str(coords["nx"]), str(coords["ny"])
+
+        weather_data, error_msg = await self.weather_cog.get_formatted_weather_string(day_offset, location_name, nx, ny)
+        if error_msg:
+            return {"error": error_msg}
+        return {"weather_info": weather_data}
 
     async def get_stock_price(self, stock_name: str) -> dict:
         """주식명을 기반으로 국내 또는 해외 주식의 시세를 조회합니다."""
