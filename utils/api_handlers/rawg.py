@@ -16,11 +16,11 @@ async def get_games(ordering: str = '-released', dates: str = None, genres: str 
         logger.error("RAWG API 키(RAWG_API_KEY)가 설정되지 않았습니다.")
         return {"error": "API 키가 설정되지 않았습니다."}
 
-    # 'dates' 파라미터가 없으면, 최근 1년으로 기본 설정
+    # 'dates' 파라미터가 없으면, 최근 3개월으로 기본 설정
     if not dates:
         today = datetime.now()
-        one_year_ago = today - timedelta(days=365)
-        dates = f"{one_year_ago.strftime('%Y-%m-%d')},{today.strftime('%Y-%m-%d')}"
+        three_months_ago = today - timedelta(days=90)
+        dates = f"{three_months_ago.strftime('%Y-%m-%d')},{today.strftime('%Y-%m-%d')}"
 
     params = {
         "key": config.RAWG_API_KEY,

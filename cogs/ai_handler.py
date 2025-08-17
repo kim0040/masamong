@@ -150,7 +150,7 @@ class AIHandler(commands.Cog):
 
         if not tool_name:
             return {"error": "tool_to_use가 지정되지 않았습니다."}
-        
+
         try:
             tool_method = getattr(self.tools_cog, tool_name)
             logger.info(f"Executing tool: {tool_name} with params: {parameters}", extra=log_extra)
@@ -232,6 +232,48 @@ class AIHandler(commands.Cog):
 
             # 루프가 5번 모두 돌았을 경우
             await message.reply("생각이 너무 많아져서 일단 멈췄어. 다시 말 걸어줄래?", mention_author=False)
+
+    async def get_recent_conversation_text(self, channel_id: int, look_back: int) -> str | None:
+        """DB에서 최근 대화 기록을 가져와 텍스트로 반환합니다. (FunCog용)"""
+        try:
+            async with self.bot.db.execute("SELECT user_name, content FROM conversation_history WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?", (channel_id, look_back)) as cursor:
+                rows = await cursor.fetchall()
+            if not rows:
+                return None
+            return "\n".join([f"{row[0]}: {row[1]}" for row in reversed(rows)])
+        except Exception as e:
+            logger.error(f"최근 대화 기록 조회 중 오류(FunCog): {e}", exc_info=True, extra={'guild_id': self.bot.get_channel(channel_id).guild.id})
+            return None
+
+    async def generate_creative_text(self, channel: discord.TextChannel, author: discord.User, prompt_key: str, context: Dict[str, Any] | None = None) -> str | None:
+        """
+        단순한 프롬프트 기반의 텍스트를 생성합니다. (FunCog 등에서 사용)
+        """
+        if not self.is_ready:
+            logger.warning(f"창의적 텍스트 생성 불가({prompt_key}): AI 핸들러 미준비.", extra={'guild_id': channel.guild.id})
+            return config.MSG_AI_ERROR
+
+        prompt_template = config.AI_CREATIVE_PROMPTS.get(prompt_key)
+        if not prompt_template:
+            logger.error(f"창의적 텍스트 생성 불가: config에서 프롬프트 키 '{prompt_key}'를 찾을 수 없음.")
+            return config.MSG_CMD_ERROR
+
+        final_prompt = prompt_template.format(**(context or {}))
+
+        try:
+            is_limited, limit_message = await self._check_global_rate_limit('gemini_flash_daily_calls', config.API_FLASH_RPD_LIMIT)
+            if is_limited: return limit_message
+
+            async with self.api_call_lock:
+                self._record_api_call()
+                response = await self.model.generate_content_async(final_prompt)
+                await db_utils.increment_api_counter(self.bot.db, 'gemini_flash_daily_calls')
+
+            return response.text.strip()
+        except Exception as e:
+            logger.error(f"창의적 텍스트 생성 중 오류({prompt_key}): {e}", exc_info=True, extra={'guild_id': channel.guild.id})
+            return config.MSG_AI_ERROR
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AIHandler(bot))

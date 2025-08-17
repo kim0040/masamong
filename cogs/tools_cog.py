@@ -29,8 +29,8 @@ class ToolsCog(commands.Cog):
         """현재 시간과 날짜를 반환합니다."""
         return {"current_time": db_utils.get_current_time()}
 
-    async def get_current_weather(self, location: str = None) -> dict:
-        """주어진 위치의 현재 날씨 정보를 조회합니다."""
+    async def get_current_weather(self, location: str = None, day_offset: int = 0) -> dict:
+        """주어진 위치의 날씨 정보를 조회합니다. (오늘, 내일, 모레까지 가능)"""
         if not self.weather_cog:
             return {"error": "날씨 정보 모듈이 준비되지 않았습니다."}
 
@@ -51,7 +51,7 @@ class ToolsCog(commands.Cog):
 
         nx, ny = str(coords["nx"]), str(coords["ny"])
 
-        weather_data, error_msg = await self.weather_cog.get_formatted_weather_string(0, location_name, nx, ny)
+        weather_data, error_msg = await self.weather_cog.get_formatted_weather_string(day_offset, location_name, nx, ny)
         if error_msg:
             return {"error": error_msg}
         return {"weather_info": weather_data}
