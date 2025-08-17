@@ -3,6 +3,7 @@ import asyncio
 import requests
 import config
 from logger_config import logger
+from .. import http as http_utils
 
 async def get_stock_price(stock_name: str) -> dict:
     """
@@ -18,11 +19,12 @@ async def get_stock_price(stock_name: str) -> dict:
         "serviceKey": config.GO_DATA_API_KEY_KR,
         "itmsNm": stock_name,
         "resultType": "json",
-        "numOfRows": "1" # 가장 정확한 1개만 받도록 설정
+        "numOfRows": "1"
     }
 
+    session = http_utils.get_legacy_ssl_session()
     try:
-        response = await asyncio.to_thread(requests.get, url, params=params, timeout=10)
+        response = await asyncio.to_thread(session.get, url, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
 
@@ -31,11 +33,7 @@ async def get_stock_price(stock_name: str) -> dict:
             logger.warning(f"KRX API에서 '{stock_name}' 주식 정보를 찾지 못했습니다.")
             return {"error": f"'{stock_name}' 주식 정보를 찾을 수 없습니다."}
 
-        # item이 리스트가 아닌 단일 dict로 올 경우를 대비
-        if isinstance(items, dict):
-            stock_info = items
-        else:
-            stock_info = items[0]
+        stock_info = items[0] if isinstance(items, list) else items
 
         return {
             "name": stock_info.get('itmsNm'),
@@ -43,16 +41,6 @@ async def get_stock_price(stock_name: str) -> dict:
             "change_value": int(stock_info.get('vs', '0')),
             "change_rate": float(stock_info.get('fltRt', '0.0'))
         }
-
-    except requests.exceptions.SSLError as e:
-        logger.error(f"KRX API SSL 오류: {e}", exc_info=True)
-        return {"error": "API 서버와 보안 연결(SSL)에 실패했습니다."}
-    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-        logger.warning(f"KRX API 연결 오류: {e}")
-        return {"error": "API 서버에 연결할 수 없습니다."}
-    except requests.exceptions.HTTPError as e:
-        logger.error(f"KRX API HTTP 오류: {e.response.status_code}")
-        return {"error": f"API 서버 오류 ({e.response.status_code})"}
-    except ValueError as e: # JSONDecodeError
-        logger.error(f"KRX API JSON 파싱 오류: {e}", exc_info=True)
-        return {"error": "API 응답 데이터 처리 중 오류 발생"}
+    except requests.exceptions.RequestException as e:
+        logger.error(f"KRX API 처리 중 오류: {e}", exc_info=True)
+        return {"error": "API 요청 또는 데이터 처리 중 오류 발생"}
