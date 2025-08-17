@@ -84,6 +84,8 @@ class AIHandler(commands.Cog):
 
     async def _create_and_save_embedding(self, message_id: int, content: str, guild_id: int):
         try:
+            if await db_utils.check_api_rate_limit(self.bot.db, 'gemini_embedding', config.RPM_LIMIT_EMBEDDING, config.RPD_LIMIT_EMBEDDING):
+                return
             embedding_result = await genai.embed_content_async(model=self.embedding_model_name, content=content, task_type="retrieval_document")
             embedding_blob = pickle.dumps(embedding_result['embedding'])
             await self.bot.db.execute("UPDATE conversation_history SET embedding = ? WHERE message_id = ?", (embedding_blob, message_id))
@@ -96,6 +98,10 @@ class AIHandler(commands.Cog):
         log_extra = {'channel_id': channel_id, 'user_id': user_id}
         logger.info(f"RAG 컨텍스트 검색 시작. Query: '{query}'", extra=log_extra)
         try:
+            # 임베딩 API 호출 전 속도 제한 확인
+            if await db_utils.check_api_rate_limit(self.bot.db, 'gemini_embedding', config.RPM_LIMIT_EMBEDDING, config.RPD_LIMIT_EMBEDDING):
+                return "", []
+
             query_embedding = np.array((await genai.embed_content_async(model=self.embedding_model_name, content=query, task_type="retrieval_query"))['embedding'])
             async with self.bot.db.execute("SELECT content, embedding FROM conversation_history WHERE channel_id = ? AND embedding IS NOT NULL ORDER BY created_at DESC LIMIT 100;", (channel_id,)) as cursor:
                 rows = await cursor.fetchall()
@@ -198,6 +204,11 @@ class AIHandler(commands.Cog):
 
                 # 4. 도구 사용 루프
                 for i in range(5): # 최대 5번의 도구 호출 허용
+                    # API 속도 제한 확인
+                    if await db_utils.check_api_rate_limit(self.bot.db, 'gemini_response', config.RPM_LIMIT_RESPONSE, config.RPD_LIMIT_RESPONSE):
+                        await message.reply(config.MSG_AI_RATE_LIMITED, mention_author=False)
+                        return # 함수 종료
+
                     logger.info(f"모델 생성 시도 #{i+1}", extra=log_extra)
                     logger.debug(f"모델 전달 대화 내용: {json.dumps(full_conversation, ensure_ascii=False, indent=2)}", extra=log_extra)
 
@@ -278,6 +289,9 @@ class AIHandler(commands.Cog):
 
 자, 판단해. Yes or No?"""
 
+            if await db_utils.check_api_rate_limit(self.bot.db, 'gemini_intent', config.RPM_LIMIT_INTENT, config.RPD_LIMIT_INTENT):
+                return False
+
             lite_model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME)
             response = await lite_model.generate_content_async(
                 gatekeeper_prompt,
@@ -328,6 +342,9 @@ class AIHandler(commands.Cog):
             persona = channel_config.get("persona", "")
             rules = channel_config.get("rules", "")
             system_prompt = f"{persona}\n\n{rules}"
+
+            if await db_utils.check_api_rate_limit(self.bot.db, 'gemini_response', config.RPM_LIMIT_RESPONSE, config.RPD_LIMIT_RESPONSE):
+                return config.MSG_AI_RATE_LIMITED
 
             model_with_prompt = genai.GenerativeModel(
                 model_name=config.AI_RESPONSE_MODEL_NAME,
