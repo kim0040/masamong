@@ -5,7 +5,7 @@ import re
 
 import config
 from logger_config import logger
-from utils.api_handlers import finnhub, kakao, krx, exim, rawg
+from utils.api_handlers import finnhub, kakao, exim, rawg
 from utils import db as db_utils
 from .weather_cog import WeatherCog
 
@@ -57,10 +57,10 @@ class ToolsCog(commands.Cog):
         return {"weather_info": weather_data}
 
     async def get_stock_price(self, stock_name: str) -> dict:
-        """주식명을 기반으로 국내 또는 해외 주식의 시세를 조회합니다."""
+        """주식명을 기반으로 해외 주식의 시세를 조회합니다. (현재 한글 종목명 조회는 지원되지 않음)"""
         if is_korean(stock_name):
-            logger.info(f"'{stock_name}'은(는) 한글이 포함되어 KRX API를 호출합니다.")
-            return await krx.get_stock_price(stock_name)
+            logger.warning(f"'{stock_name}'은(는) 한글 종목으로, 현재 지원되지 않습니다.")
+            return {"error": f"'{stock_name}'과(와) 같은 한글 종목명 검색은 현재 지원되지 않아. 미안! 대신 미국 주식 티커(예: AAPL)를 알려주면 찾아볼게."}
         else:
             # 해외 주식은 Ticker Symbol로 조회해야 함
             logger.info(f"'{stock_name}'은(는) Ticker로 간주하여 Finnhub API를 호출합니다.")

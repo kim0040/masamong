@@ -45,7 +45,6 @@ GEMINI_API_KEY = load_config_value('GEMINI_API_KEY')
 RAWG_API_KEY = load_config_value('RAWG_API_KEY', 'YOUR_RAWG_API_KEY')
 FINNHUB_API_KEY = load_config_value('FINNHUB_API_KEY', 'YOUR_FINNHUB_API_KEY')
 KAKAO_API_KEY = load_config_value('KAKAO_API_KEY', 'YOUR_KAKAO_API_KEY')
-GO_DATA_API_KEY_KR = load_config_value('GO_DATA_API_KEY_KR', 'YOUR_GO_DATA_API_KEY_KR') # 공공데이터포털 (국내 주식)
 EXIM_API_KEY_KR = load_config_value('EXIM_API_KEY_KR', 'YOUR_EXIM_API_KEY_KR')       # 한국수출입은행 (환율)
 
 # '사고'용 모델 (의도분석 등)

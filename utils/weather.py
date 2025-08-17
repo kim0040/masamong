@@ -30,42 +30,34 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict) 
     if await db_utils.is_api_limit_reached(db, 'kma_daily_calls', config.KMA_API_DAILY_CALL_LIMIT):
         return {"error": "limit_reached", "message": config.MSG_KMA_API_DAILY_LIMIT_REACHED}
 
-    full_url = f"{KMA_API_BASE_URL}/{endpoint}"
+    # Plan 수정: 최종 URL 구조 수정
+    # 엔드포인트(getUltraSrtNcst 등)는 URL 경로가 아니라 'req' 파라미터로 전달되어야 할 가능성이 매우 높습니다.
+    # 예: /VilageFcstInfoService_2.0/getUltraSrtNcst -> /VilageFcstInfoService_2.0?req=getUltraSrtNcst
+    full_url = KMA_API_BASE_URL
 
     base_params = {
-        "authKey": api_key,
+        "authKey": api_key, # Plan 수정: 원래 코드의 'authKey'로 되돌림. 'serviceKey'가 아니었을 수 있음.
         "pageNo": "1",
         "numOfRows": "1000",
-        "dataType": "JSON"
+        "dataType": "JSON",
+        "req": endpoint # 'req' 파라미터로 엔드포인트 지정
     }
     base_params.update(params)
 
-    try:
-        response = await asyncio.to_thread(requests.get, full_url, params=base_params, timeout=15)
-        response.raise_for_status()
-        data = response.json()
+    data = await http_utils.make_async_request(full_url, params=base_params)
 
-        header = data.get('response', {}).get('header', {})
-        if header.get('resultCode') != '00':
-            error_msg = header.get('resultMsg', 'Unknown API Error')
-            logger.error(f"기상청 API가 오류를 반환했습니다: {error_msg}")
-            return {"error": "api_error", "message": f"기상청 API 오류: {error_msg}"}
+    if not data or isinstance(data, dict) and data.get("error"):
+        logger.error(f"기상청 API({endpoint}) 호출 실패: {data}")
+        return data if data else {"error": "unknown_error", "message": config.MSG_WEATHER_FETCH_ERROR}
 
-        await db_utils.increment_api_counter(db, 'kma_daily_calls')
-        return data
+    header = data.get('response', {}).get('header', {})
+    if header.get('resultCode') != '00':
+        error_msg = header.get('resultMsg', 'Unknown API Error')
+        logger.error(f"기상청 API가 오류를 반환했습니다: {error_msg} (Code: {header.get('resultCode')})")
+        return {"error": "api_error", "message": f"기상청 API 오류: {error_msg}"}
 
-    except requests.exceptions.Timeout:
-        logger.error("기상청 API 요청 시간 초과.")
-        return {"error": "timeout", "message": config.MSG_WEATHER_FETCH_ERROR}
-    except requests.exceptions.HTTPError as e:
-        logger.error(f"기상청 API HTTP 오류: {e.response.status_code} for url: {e.response.url}")
-        return {"error": "http_error", "message": config.MSG_WEATHER_FETCH_ERROR}
-    except json.JSONDecodeError:
-        logger.error(f"기상청 API 응답 JSON 파싱 실패. 응답 내용: {response.text}")
-        return {"error": "json_error", "message": config.MSG_WEATHER_FETCH_ERROR}
-    except Exception as e:
-        logger.error(f"기상청 API 처리 중 예기치 않은 오류: {e}", exc_info=True)
-        return {"error": "unknown_error", "message": config.MSG_WEATHER_FETCH_ERROR}
+    await db_utils.increment_api_counter(db, 'kma_daily_calls')
+    return data
 
 async def get_current_weather_from_kma(db: aiosqlite.Connection, nx: str, ny: str) -> dict | None:
     """초단기실황 정보를 새로운 기상청 API로부터 가져옵니다."""

@@ -23,3 +23,7 @@ pytz
 
 # HTTP 요청을 위한 라이브러리 (기상청 API 등)
 requests
+
+# 비동기 HTTP 요청을 위한 라이브러리
+aiohttp>=3.9.0
+aiohttp-retry>=2.8.0
