@@ -127,16 +127,6 @@ async def discord_logging_task():
                         except Exception as e:
                             logging.getLogger(__name__).error(f"Discord 로그 채널({log_channel.name}) 전송 중 오류: {e}", exc_info=False)
 
-            # 길드 ID가 없는 경우, 글로벌 로그 채널에 전송
-            else:
-                if config.GLOBAL_LOG_CHANNEL_ID != 0:
-                    try:
-                        channel = _bot_instance.get_channel(config.GLOBAL_LOG_CHANNEL_ID)
-                        if channel:
-                            await channel.send(embed=embed)
-                    except Exception as e:
-                        logging.getLogger(__name__).error(f"글로벌 로그 채널({config.GLOBAL_LOG_CHANNEL_ID}) 전송 중 오류: {e}", exc_info=False)
-
             _discord_log_queue.task_done()
         except asyncio.CancelledError:
             break
