@@ -7,6 +7,8 @@ from logger_config import logger
 
 BASE_URL = "https://www.koreaexim.go.kr/site/program/financial/exchangeJSON"
 
+from .. import http as http_utils
+
 async def _fetch_exim_data(data_param: str) -> list | dict:
     """한국수출입은행 API에서 데이터를 가져오는 내부 헬퍼 함수."""
     if not config.EXIM_API_KEY_KR or config.EXIM_API_KEY_KR == 'YOUR_EXIM_API_KEY_KR':
@@ -20,21 +22,19 @@ async def _fetch_exim_data(data_param: str) -> list | dict:
         "data": data_param
     }
 
+    session = http_utils.get_legacy_ssl_session()
+
     for attempt in range(3): # 최대 3번 재시도
         try:
-            # SSL 인증서 문제 우회를 위해 verify=False 추가.
-            response = await asyncio.to_thread(requests.get, BASE_URL, params=params, timeout=10, verify=False)
+            response = await asyncio.to_thread(session.get, BASE_URL, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
             break # 성공 시 루프 탈출
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, requests.exceptions.SSLError) as e:
             logger.warning(f"수출입은행 API 연결 오류 (시도 {attempt + 1}/3): {e}")
             if attempt == 2: # 마지막 시도 실패 시 에러 반환
                 return {"error": "API 서버에 연결할 수 없습니다."}
             await asyncio.sleep(1) # 1초 후 재시도
-        except requests.exceptions.SSLError as e:
-            logger.error(f"수출입은행 API SSL 오류: {e}", exc_info=True)
-            return {"error": "API 서버와 보안 연결(SSL)에 실패했습니다."}
         except requests.exceptions.HTTPError as e:
             logger.error(f"수출입은행 API({data_param}) HTTP 오류: {e.response.status_code}")
             return {"error": f"API 서버 오류 ({e.response.status_code})"}
