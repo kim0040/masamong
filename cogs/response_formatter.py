@@ -109,11 +109,11 @@ def format_final_response(user_query: str, execution_context: dict, synthesized_
         return synthesized_response
 
     # 오류가 있는지 먼저 확인
-    if any("error" in step for step in execution_context.values()):
+    if any(isinstance(step, dict) and "error" in step for step in execution_context.values()):
         return _format_error_embed(user_query, execution_context)
 
     # 사용된 도구 목록을 확인
-    tools_used = {step.get('tool') for step in execution_context.values() if step.get('tool')}
+    tools_used = {step.get('tool') for step in execution_context.values() if isinstance(step, dict) and step.get('tool')}
 
     if "search_for_place" in tools_used:
         return _format_place_embed(user_query, execution_context, synthesized_response)
