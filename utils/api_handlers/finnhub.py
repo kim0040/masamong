@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-import asyncio
 from datetime import datetime, timedelta
 import config
 from logger_config import logger

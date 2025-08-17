@@ -30,17 +30,13 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict) 
     if await db_utils.is_api_limit_reached(db, 'kma_daily_calls', config.KMA_API_DAILY_CALL_LIMIT):
         return {"error": "limit_reached", "message": config.MSG_KMA_API_DAILY_LIMIT_REACHED}
 
-    # Plan 수정: 최종 URL 구조 수정
-    # 엔드포인트(getUltraSrtNcst 등)는 URL 경로가 아니라 'req' 파라미터로 전달되어야 할 가능성이 매우 높습니다.
-    # 예: /VilageFcstInfoService_2.0/getUltraSrtNcst -> /VilageFcstInfoService_2.0?req=getUltraSrtNcst
-    full_url = KMA_API_BASE_URL
+    full_url = f"{KMA_API_BASE_URL}/{endpoint}"
 
     base_params = {
-        "authKey": api_key, # Plan 수정: 원래 코드의 'authKey'로 되돌림. 'serviceKey'가 아니었을 수 있음.
+        "authKey": api_key,
         "pageNo": "1",
         "numOfRows": "1000",
-        "dataType": "JSON",
-        "req": endpoint # 'req' 파라미터로 엔드포인트 지정
+        "dataType": "JSON"
     }
     base_params.update(params)
 
