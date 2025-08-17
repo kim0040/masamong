@@ -103,6 +103,46 @@ async def increment_api_counter(db: aiosqlite.Connection, counter_name: str):
     except aiosqlite.Error as e:
         logger.error(f"API 카운터 증가 중 DB 오류: {e}", exc_info=True)
 
+async def check_api_rate_limit(db: aiosqlite.Connection, api_type: str, rpm_limit: int, rpd_limit: int) -> bool:
+    """
+    API 호출에 대한 RPM/RPD 제한을 확인하고, 호출을 기록합니다.
+    제한에 도달하면 True를, 그렇지 않으면 False를 반환합니다.
+    """
+    try:
+        now_utc = datetime.utcnow()
+        one_minute_ago = (now_utc - timedelta(minutes=1)).isoformat()
+        one_day_ago = (now_utc - timedelta(days=1)).isoformat()
+
+        # 1. 1일 이상 된 오래된 로그 정리
+        await db.execute("DELETE FROM api_call_log WHERE called_at < ?", (one_day_ago,))
+
+        # 2. RPD (일일 제한) 확인
+        async with db.execute("SELECT COUNT(*) FROM api_call_log WHERE api_type = ? AND called_at >= ?", (api_type, one_day_ago)) as cursor:
+            day_count = (await cursor.fetchone())[0]
+
+        if day_count >= rpd_limit:
+            logger.warning(f"API 일일 호출 한도 도달: {api_type} ({day_count}/{rpd_limit})")
+            return True
+
+        # 3. RPM (분당 제한) 확인
+        async with db.execute("SELECT COUNT(*) FROM api_call_log WHERE api_type = ? AND called_at >= ?", (api_type, one_minute_ago)) as cursor:
+            minute_count = (await cursor.fetchone())[0]
+
+        if minute_count >= rpm_limit:
+            logger.warning(f"API 분당 호출 한도 도달: {api_type} ({minute_count}/{rpm_limit})")
+            return True
+
+        # 4. 제한에 걸리지 않았으면, 현재 호출 기록
+        await db.execute("INSERT INTO api_call_log (api_type, called_at) VALUES (?, ?)", (api_type, now_utc.isoformat()))
+        await db.commit()
+
+        return False
+
+    except aiosqlite.Error as e:
+        logger.error(f"API Rate Limit 확인 중 DB 오류 ({api_type}): {e}", exc_info=True)
+        # DB 오류 시 안전하게 요청을 차단
+        return True
+
 async def archive_old_conversations(db: aiosqlite.Connection):
     """
     오래된 대화 기록을 `conversation_history`에서 `conversation_history_archive`로 옮깁니다.
