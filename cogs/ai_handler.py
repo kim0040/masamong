@@ -392,7 +392,13 @@ class AIHandler(commands.Cog):
         if weather_info_str: system_instructions.append(f"참고할 날씨 정보: {weather_info_str}")
         if time_info_str: system_instructions.append(f"참고할 현재 시간 정보: {time_info_str}")
 
-        rag_context = await self._find_similar_conversations(channel_id, author.id, user_query)
+        # RAG 컨텍스트 생성을 위해 최근 대화 내용을 가져와 쿼리에 추가
+        rag_query_context = user_query
+        recent_conv = await self._get_recent_conversation_text(channel_id, look_back=3)
+        if recent_conv:
+            rag_query_context = f"[최근 대화]\n{recent_conv}\n\n[현재 질문]\n{user_query}"
+
+        rag_context = await self._find_similar_conversations(channel_id, author.id, rag_query_context)
         if rag_context: system_instructions.append(rag_context)
 
         try:
