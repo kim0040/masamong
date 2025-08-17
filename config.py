@@ -84,7 +84,13 @@ RAG_ARCHIVING_CONFIG = {
     "batch_size": 1000,  # 한 번에 아카이빙할 메시지 수
     "check_interval_hours": 24  # 아카이빙 실행 주기 (시간)
 }
-AI_CREATIVE_PROMPTS = { "fortune": "사용자 '{user_name}'를 위한 오늘의 운세를 재치있게 알려줘.", "summarize": "다음 대화 내용을 분석해서, 핵심 내용을 3가지 항목으로 요약해줘.\n--- 대화 내용 ---\n{conversation}", "ranking": "다음 서버 활동 랭킹을 보고, 1등을 축하하고 다른 사람들을 독려하는 발표 멘트를 작성해줘.\n--- 활동 랭킹 ---\n{ranking_list}" }
+AI_CREATIVE_PROMPTS = {
+    "fortune": "사용자 '{user_name}'를 위한 오늘의 운세를 재치있게 알려줘.",
+    "summarize": "다음 대화 내용을 분석해서, 핵심 내용을 3가지 항목으로 요약해줘.\n--- 대화 내용 ---\n{conversation}",
+    "ranking": "다음 서버 활동 랭킹을 보고, 1등을 축하하고 다른 사람들을 독려하는 발표 멘트를 작성해줘.\n--- 활동 랭킹 ---\n{ranking_list}",
+    "answer_time": "현재 시간은 '{current_time}'입니다. 이 정보를 사용하여 사용자에게 현재 시간을 알려주세요.",
+    "answer_weather": "'{location_name}'의 날씨 정보는 다음과 같습니다: {weather_data}. 이 정보를 바탕으로 사용자에게 날씨를 설명해주세요."
+}
 FUN_KEYWORD_TRIGGERS = { "enabled": True, "cooldown_seconds": 60, "triggers": { "fortune": ["운세", "오늘 운", "운세 좀"], "summarize": ["요약해줘", "무슨 얘기했어", "무슨 얘기함", "요약 좀", "지금까지 뭔 얘기"] } }
 
 # --- 기상청 API 설정 (새로운 좌표 시스템으로 변경) ---
