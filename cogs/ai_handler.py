@@ -147,23 +147,29 @@ class AIHandler(commands.Cog):
         history.reverse()
 
         # 3. 시스템 프롬프트 구성 (페르소나 + RAG 컨텍스트)
-        system_prompt = config.AGENT_SYSTEM_PROMPT
+        system_prompt_str = config.AGENT_SYSTEM_PROMPT
         custom_persona = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'persona_text')
         if custom_persona:
-            system_prompt = f"{custom_persona}\n\n{system_prompt}"
+            system_prompt_str = f"{custom_persona}\n\n{system_prompt_str}"
         if rag_prompt_addition:
-            system_prompt = f"{rag_prompt_addition}\n\n{system_prompt}"
+            system_prompt_str = f"{rag_prompt_addition}\n\n{system_prompt_str}"
 
         # 4. Gemini API 호출 및 응답 처리 (상태 비저장 방식)
         async with message.channel.typing():
             try:
+                # Note: The 'google.generativeai' library uses 'system_instruction' within the model constructor,
+                # not in 'generate_content_async'. To apply a dynamic system prompt, we must create a new model instance.
+                model_with_dynamic_prompt = genai.GenerativeModel(
+                    config.AI_RESPONSE_MODEL_NAME,
+                    system_instruction=system_prompt_str
+                )
+
                 full_conversation = history
                 for i in range(5): # 최대 5번의 tool-call-result 루프
-                    response = await self.model.generate_content_async(
+                    response = await model_with_dynamic_prompt.generate_content_async(
                         full_conversation,
                         generation_config=genai.types.GenerationConfig(),
-                        safety_settings=config.GEMINI_SAFETY_SETTINGS,
-                        system_instruction=system_prompt,
+                        safety_settings=config.GEMINI_SAFETY_SETTINGS
                     )
 
                     response_text = ""
@@ -171,8 +177,6 @@ class AIHandler(commands.Cog):
                         response_text = "".join(part.text for part in response.parts).strip()
 
                     if not response_text and response.candidates[0].finish_reason.name != "STOP":
-                         # 일부 모델은 response.text 대신 content.parts에 텍스트를 포함할 수 있습니다.
-                         # 혹은 안전 설정, 길이 제한 등으로 인해 빈 응답이 올 수 있습니다.
                          logger.warning(f"Gemini로부터 빈 응답 수신. 종료 사유: {response.candidates[0].finish_reason.name}", extra=log_extra)
 
                     tool_call = self._parse_tool_call(response_text)
