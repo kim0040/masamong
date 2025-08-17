@@ -8,7 +8,7 @@ import json
 
 import config
 from logger_config import logger
-import utils
+from utils import db as db_utils
 
 class PersonaSetModal(Modal, title="AI 페르소나 설정"):
     persona_input = TextInput(
@@ -94,7 +94,7 @@ class SettingsCog(commands.Cog):
         log_extra = {'guild_id': guild_id}
 
         try:
-            current_channels_json = await utils.get_guild_setting(self.bot.db, guild_id, 'ai_allowed_channels')
+            current_channels_json = await db_utils.get_guild_setting(self.bot.db, guild_id, 'ai_allowed_channels')
 
             allowed_channels = []
             if current_channels_json:
@@ -140,7 +140,7 @@ class SettingsCog(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def view_persona(self, interaction: discord.Interaction):
         guild_id = interaction.guild_id
-        persona_text = await utils.get_guild_setting(self.bot.db, guild_id, 'persona_text')
+        persona_text = await db_utils.get_guild_setting(self.bot.db, guild_id, 'persona_text')
 
         if persona_text:
             embed = discord.Embed(title="🎨 현재 AI 페르소나", description=persona_text, color=discord.Color.green())
@@ -152,7 +152,7 @@ class SettingsCog(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def set_persona(self, interaction: discord.Interaction):
         guild_id = interaction.guild_id
-        current_persona = await utils.get_guild_setting(self.bot.db, guild_id, 'persona_text', default="")
+        current_persona = await db_utils.get_guild_setting(self.bot.db, guild_id, 'persona_text', default="")
         await interaction.response.send_modal(PersonaSetModal(self.bot, current_persona=current_persona))
 
 async def setup(bot: commands.Bot):

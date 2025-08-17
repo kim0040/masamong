@@ -64,17 +64,17 @@ class DiscordLogHandler(logging.Handler):
             timestamp=datetime.fromtimestamp(record.created).astimezone(KST)
         )
 
-        # 메시지 본문 추가 (2000자 제한 고려)
+        # 메시지 본문 추가 (1024자 제한 엄수)
         message_content = record.getMessage()
         if record.exc_info:
             exc_text = "".join(traceback.format_exception(*record.exc_info))
-            message_content += f"\n\n**Traceback:**\n```python\n{exc_text[:1500]}\n```"
+            message_content += f"\n\n**Traceback:**\n```python\n{exc_text}\n```"
 
-        if len(message_content) > 1800:
-            embed.add_field(name="Message", value=f"```\n{message_content[:1800]}...\n```", inline=False)
-        else:
-            embed.add_field(name="Message", value=f"```\n{message_content}\n```", inline=False)
+        # Discord 필드 값 제한인 1024자에 맞게 자르기
+        if len(message_content) > 1000:
+            message_content = message_content[:1000] + "..."
 
+        embed.add_field(name="Message", value=f"```\n{message_content}\n```", inline=False)
         embed.set_footer(text="Logged at")
         return embed
 
@@ -189,7 +189,8 @@ def register_discord_logging(bot: commands.Bot):
     _bot_instance = bot
 
     discord_handler = DiscordLogHandler()
-    discord_handler.setLevel(logging.INFO) # Discord에는 INFO 레벨 이상만 전송
+    # 사용자의 요청에 따라 WARNING 레벨 이상의 로그만 Discord로 전송
+    discord_handler.setLevel(logging.WARNING)
 
     # 포매터는 핸들러 내에서 Embed를 생성하므로 필요 없음
     logging.getLogger().addHandler(discord_handler)
