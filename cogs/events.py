@@ -8,7 +8,7 @@ import pytz
 
 import config
 from logger_config import logger
-import utils
+from utils import db as db_utils
 from .ai_handler import AIHandler
 from .weather_cog import WeatherCog
 from .fun_cog import FunCog
@@ -72,11 +72,11 @@ class EventListeners(commands.Cog):
         if not self.ai_handler or not self.ai_handler.is_ready:
             return
 
-        is_guild_ai_enabled = await utils.get_guild_setting(self.bot.db, message.guild.id, 'ai_enabled', default=True)
+        is_guild_ai_enabled = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'ai_enabled', default=True)
         if not is_guild_ai_enabled:
             return
 
-        allowed_channels = await utils.get_guild_setting(self.bot.db, message.guild.id, 'ai_allowed_channels')
+        allowed_channels = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'ai_allowed_channels')
         is_ai_allowed_channel = False
         if allowed_channels:
             is_ai_allowed_channel = message.channel.id in allowed_channels
@@ -133,7 +133,7 @@ class EventListeners(commands.Cog):
             "success": True,
             "latency_ms": round(latency_ms)
         }
-        await utils.log_analytics(self.bot.db, "COMMAND_USAGE", details)
+        await db_utils.log_analytics(self.bot.db, "COMMAND_USAGE", details)
 
         log_message = (
             f"Command `!{details['command']}` by `{ctx.author}` "
@@ -163,7 +163,7 @@ class EventListeners(commands.Cog):
             "error": str(type(error).__name__),
             "error_message": str(error)
         }
-        await utils.log_analytics(self.bot.db, "COMMAND_USAGE", details)
+        await db_utils.log_analytics(self.bot.db, "COMMAND_USAGE", details)
 
         log_message = (
             f"Command Error `!{details['command']}` by `{ctx.author}` "
