@@ -4,7 +4,6 @@ import requests
 from datetime import datetime
 import config
 from logger_config import logger
-from .. import http as http_utils
 
 BASE_URL = "https://www.koreaexim.go.kr/site/program/financial/exchangeJSON"
 
@@ -21,12 +20,18 @@ async def _fetch_exim_data(data_param: str) -> list | dict:
         "data": data_param
     }
 
-    session = http_utils.get_legacy_ssl_session()
+    # 보안을 위해 API 키는 로그에서 제외
+    log_params = params.copy()
+    log_params["authkey"] = "[REDACTED]"
+    logger.info(f"수출입은행 API 요청: URL='{BASE_URL}', Params='{log_params}'")
 
     try:
-        response = await asyncio.to_thread(session.get, BASE_URL, params=params, timeout=10)
+        # 레거시 SSL 세션 대신 표준 requests 사용
+        response = await asyncio.to_thread(requests.get, BASE_URL, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
+        logger.debug(f"수출입은행 API 응답 수신 ({data_param}): {data}")
+
         if not data:
             logger.warning(f"수출입은행 API({data_param})에서 {search_date} 날짜의 데이터를 받지 못했습니다.")
             return {"error": "데이터를 찾을 수 없습니다."}
@@ -34,6 +39,9 @@ async def _fetch_exim_data(data_param: str) -> list | dict:
     except requests.exceptions.RequestException as e:
         logger.error(f"수출입은행 API({data_param}) 처리 중 오류: {e}", exc_info=True)
         return {"error": "API 요청 또는 데이터 처리 중 오류 발생"}
+    except (KeyError, TypeError, ValueError) as e:
+        logger.error(f"수출입은행 API 응답 파싱 중 오류: {e}. 응답 데이터: {response.text}", exc_info=True)
+        return {"error": "API 응답 데이터 파싱 중 오류 발생"}
 
 
 async def get_exchange_rate(target_currency: str = "USD") -> dict:

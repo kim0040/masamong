@@ -40,10 +40,16 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict) 
     }
     base_params.update(params)
 
+    # 보안을 위해 API 키는 로그에서 제외
+    log_params = base_params.copy()
+    log_params["authKey"] = "[REDACTED]"
+    logger.info(f"기상청 API 요청: URL='{full_url}', Params='{log_params}'")
+
     try:
         response = await asyncio.to_thread(requests.get, full_url, params=base_params, timeout=15)
         response.raise_for_status()
         data = response.json()
+        logger.debug(f"기상청 API 응답 수신 ({endpoint}): {data}")
 
         header = data.get('response', {}).get('header', {})
         if header.get('resultCode') != '00':
@@ -85,22 +91,34 @@ async def get_current_weather_from_kma(db: aiosqlite.Connection, nx: str, ny: st
     return await _fetch_kma_api(db, "getUltraSrtNcst", params)
 
 async def get_short_term_forecast_from_kma(db: aiosqlite.Connection, nx: str, ny: str) -> dict | None:
-    """단기예보 정보를 새로운 기상청 API로부터 가져옵니다."""
+    """
+    단기예보 정보를 새로운 기상청 API로부터 가져옵니다.
+    - KMA API는 특정 시간에 데이터를 생성하므로, 요청 시점에 따라 올바른 base_date와 base_time을 계산해야 합니다.
+    - 데이터 생성 시간에 약간의 딜레이가 있을 수 있으므로, 30분의 버퍼를 두고 가장 최신이지만 확실히 생성된 데이터를 요청합니다.
+    """
     now = datetime.now(KST)
-    available_times = [2, 5, 8, 11, 14, 17, 20, 23]
-    current_marker = now.hour * 100 + now.minute
+    # API 데이터 생성 기준 시각 (HH00)
+    available_hours = [2, 5, 8, 11, 14, 17, 20, 23]
 
-    valid_times = [t for t in available_times if (t * 100 + 10) <= current_marker]
+    # 데이터가 확실히 생성되었을 시간을 계산 (현재 시간 - 30분)
+    request_time = now - timedelta(minutes=30)
 
-    if not valid_times:
-        base_dt = now - timedelta(days=1)
-        base_time_hour = 23
+    # 요청 시간에 가장 가까운 과거의 API 데이터 생성 시각을 찾습니다.
+    base_date = request_time.strftime("%Y%m%d")
+
+    found_hour = -1
+    for hour in reversed(available_hours):
+        if request_time.hour >= hour:
+            found_hour = hour
+            break
+
+    # 만약 오늘자 생성 시각을 찾지 못했다면 (예: 새벽 1시), 어제 마지막 시간을 사용합니다.
+    if found_hour == -1:
+        yesterday = request_time - timedelta(days=1)
+        base_date = yesterday.strftime("%Y%m%d")
+        base_time = "2300"
     else:
-        base_dt = now
-        base_time_hour = max(valid_times)
-
-    base_date = base_dt.strftime("%Y%m%d")
-    base_time = f"{base_time_hour:02d}00"
+        base_time = f"{found_hour:02d}00"
 
     params = {
         "base_date": base_date,

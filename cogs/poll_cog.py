@@ -13,27 +13,18 @@ class PollCog(commands.Cog):
 
     @commands.command(name='투표', aliases=['poll'])
     @commands.guild_only()
-    async def poll(self, ctx: commands.Context, *, content: str = ""):
+    async def poll(self, ctx: commands.Context, question: str, *choices: str):
         """
         간단한 투표를 생성합니다.
         사용법: !투표 "질문" "항목1" "항목2" ... (최대 10개)
         """
-        if not content:
-            await ctx.send('명령어 형식이 잘못됐어. `!투표 "질문" "항목1" "항목2"` 처럼 써줘!')
+        if not choices:
+            await ctx.send('투표를 만들려면 질문과 최소 하나 이상의 선택 항목이 필요해. `!투표 "질문" "항목1"` 형식으로 다시 써줘.')
             return
 
-        options = re.findall(r'"(.*?)"', content)
-
-        if len(options) < 2:
-            await ctx.send('투표를 만들려면 질문과 최소 하나 이상의 선택 항목이 필요해. `"질문" "항목1"` 형식으로 다시 써줘.')
-            return
-
-        if len(options) > 11:
+        if len(choices) > 10:
             await ctx.send('선택 항목은 최대 10개까지만 만들 수 있어.')
             return
-
-        question = options[0]
-        choices = options[1:]
 
         number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 
