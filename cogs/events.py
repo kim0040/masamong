@@ -15,6 +15,8 @@ from .weather_cog import WeatherCog
 from .fun_cog import FunCog
 from .activity_cog import ActivityCog
 
+from collections import deque
+
 class EventListeners(commands.Cog):
     """Discord 이벤트 리스너 (모든 상호작용의 시작점)"""
 
@@ -24,6 +26,8 @@ class EventListeners(commands.Cog):
         self.weather_cog: WeatherCog | None = None
         self.fun_cog: FunCog | None = None
         self.activity_cog: ActivityCog | None = None
+        # 중복 이벤트 처리를 방지하기 위한 최근 명령어 ID 저장소
+        self.processed_command_ids = deque(maxlen=100)
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -117,6 +121,12 @@ class EventListeners(commands.Cog):
         """명령어 실행 완료 시 분석 및 Discord 로그를 기록합니다."""
         if not ctx.guild:
             return
+
+        # 중복 실행 방지
+        if ctx.message.id in self.processed_command_ids:
+            logger.warning(f"중복 on_command_completion 이벤트 감지됨: Message ID {ctx.message.id}. 무시합니다.")
+            return
+        self.processed_command_ids.append(ctx.message.id)
 
         start_time = ctx.message.created_at.replace(tzinfo=pytz.UTC)
         latency_ms = (datetime.now(pytz.utc) - start_time).total_seconds() * 1000
