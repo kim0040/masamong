@@ -79,26 +79,51 @@ class AIHandler(commands.Cog):
         except Exception as e:
             logger.error(f"임베딩 생성/저장 중 오류 (메시지 ID: {message_id}): {e}", exc_info=True, extra={'guild_id': guild_id})
 
-    async def _get_rag_context(self, channel_id: int, user_id: int, query: str) -> Tuple[str, list[str]]:
+    async def _get_rag_context(self, channel_id: int, user_id: int, query: str, log_extra: dict) -> Tuple[str, list[str]]:
         """RAG를 위한 컨텍스트를 DB에서 검색하고, 컨텍스트 문자열과 원본 메시지 내용 목록을 반환합니다."""
         try:
-            query_embedding = np.array((await genai.embed_content_async(model=self.embedding_model_name, content=query, task_type="retrieval_query"))['embedding'])
+            logger.debug(f"RAG 컨텍스트 검색 시작. 쿼리: '{query}'", extra=log_extra)
+            query_embedding_result = await genai.embed_content_async(model=self.embedding_model_name, content=query, task_type="retrieval_query")
+            query_embedding = np.array(query_embedding_result['embedding'])
+
             async with self.bot.db.execute("SELECT content, embedding FROM conversation_history WHERE channel_id = ? AND embedding IS NOT NULL ORDER BY created_at DESC LIMIT 100;", (channel_id,)) as cursor:
                 rows = await cursor.fetchall()
-            if not rows: return "", []
+            if not rows:
+                logger.debug("RAG: 검색할 임베딩된 대화 기록이 없습니다.", extra=log_extra)
+                return "", []
 
             def _cosine_similarity(v1, v2):
                 norm_v1, norm_v2 = np.linalg.norm(v1), np.linalg.norm(v2)
                 return np.dot(v1, v2) / (norm_v1 * norm_v2) if norm_v1 > 0 and norm_v2 > 0 else 0.0
 
-            similarities = sorted([(sim, content) for content, blob in rows if (sim := _cosine_similarity(query_embedding, pickle.loads(blob))) > 0.75], key=lambda x: x[0], reverse=True)
-            if not similarities: return "", []
+            loaded_rows = []
+            for content, blob in rows:
+                try:
+                    loaded_rows.append((content, pickle.loads(blob)))
+                except pickle.UnpicklingError:
+                    logger.warning(f"RAG: DB에서 임베딩 blob을 로드하는 데 실패했습니다. 해당 row는 건너뜁니다.", extra=log_extra)
+                    continue
+
+            similarities = sorted(
+                [(sim, content) for content, embedding in loaded_rows if (sim := _cosine_similarity(query_embedding, embedding)) > 0.75],
+                key=lambda x: x[0],
+                reverse=True
+            )
+
+            if not similarities:
+                logger.debug("RAG: 유사도 0.75 이상인 대화 기록을 찾지 못했습니다.", extra=log_extra)
+                return "", []
 
             top_contents = [content for _, content in similarities[:3]]
             context_str = "참고할 만한 과거 대화 내용:\n" + "\n".join(f"- {c}" for c in top_contents)
+
+            logger.info(f"RAG 컨텍스트 검색 완료. {len(top_contents)}개의 유사한 대화 발견.", extra=log_extra)
+            for i, (sim, content) in enumerate(similarities[:3]):
+                logger.debug(f"  - RAG 결과 #{i+1} (유사도: {sim:.4f}): \"{content[:80]}...\"")
+
             return context_str, top_contents
         except Exception as e:
-            logger.error(f"RAG 컨텍스트 검색 중 오류: {e}", exc_info=True)
+            logger.error(f"RAG 컨텍스트 검색 중 오류: {e}", exc_info=True, extra=log_extra)
             return "", []
 
     # --- 에이전트 핵심 로직 ---
@@ -127,22 +152,29 @@ class AIHandler(commands.Cog):
         user_query = message.content.replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
         if not user_query: return
 
-        log_extra = {'guild_id': message.guild.id}
+        log_extra = {'guild_id': message.guild.id, 'user_id': message.author.id, 'channel_id': message.channel.id}
+        logger.info(f"에이전트 호출 시작. 사용자 쿼리: \"{user_query}\"", extra=log_extra)
 
         # 1. RAG 컨텍스트와 중복 제거용 콘텐츠 목록 가져오기
-        rag_prompt_addition, rag_contents = await self._get_rag_context(message.channel.id, message.author.id, user_query)
+        rag_prompt_addition, rag_contents = await self._get_rag_context(message.channel.id, message.author.id, user_query, log_extra)
         rag_content_set = set(rag_contents)
 
         # 2. 중복을 피해 대화 기록 구성 (시간순: 오래된 -> 최신)
         history = []
+        raw_history_count = 0
         async for msg in message.channel.history(limit=15):
+            raw_history_count += 1
             if msg.content in rag_content_set:
+                logger.debug(f"최근 대화 기록에서 RAG 컨텍스트와 중복된 메시지 건너뜀: \"{msg.content[:50]}...\"", extra=log_extra)
                 continue
+
             role = 'model' if msg.author.id == self.bot.user.id else 'user'
             history.append({'role': role, 'parts': [msg.content]})
             if len(history) >= 8:
                 break
         history.reverse()
+
+        logger.debug(f"총 {raw_history_count}개의 메시지 확인, {len(history)}개의 최근 대화 기록을 컨텍스트에 포함.", extra=log_extra)
 
         # 3. 시스템 프롬프트 구성 (페르소나 + RAG 컨텍스트)
         system_prompt = config.AGENT_SYSTEM_PROMPT
@@ -156,6 +188,16 @@ class AIHandler(commands.Cog):
         async with message.channel.typing():
             try:
                 full_conversation = history
+
+                # 최종 프롬프트 구성 로깅
+                final_prompt_summary = (
+                    f"최종 프롬프트 구성: "
+                    f"RAG 컨텍스트 ({len(rag_contents)}개), "
+                    f"최근 대화 기록 ({len(history)}개), "
+                    f"시스템 프롬프트 ({len(system_prompt)}자)"
+                )
+                logger.info(final_prompt_summary, extra=log_extra)
+
                 for i in range(5): # 최대 5번의 tool-call-result 루프
                     response = await self.model.generate_content_async(
                         full_conversation,
