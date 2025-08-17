@@ -31,6 +31,7 @@ class AIHandler(commands.Cog):
         self.bot = bot
         self.tools_cog = bot.get_cog('ToolsCog')
         self.ai_user_cooldowns: Dict[int, datetime] = {}
+        self.proactive_cooldowns: Dict[int, float] = {}
         self.gemini_configured = False
         self.api_call_lock = asyncio.Lock()
 
@@ -196,6 +197,70 @@ class AIHandler(commands.Cog):
             except Exception as e:
                 logger.error(f"에이전트 처리 중 오류: {e}", exc_info=True, extra=log_extra)
                 await message.reply(config.MSG_AI_ERROR, mention_author=False)
+
+    async def should_proactively_respond(self, message: discord.Message) -> bool:
+        """봇이 대화에 자발적으로 참여해야 할지 여부를 결정합니다."""
+        conf = config.AI_PROACTIVE_RESPONSE_CONFIG
+        if not conf.get("enabled"):
+            return False
+
+        # 쿨다운 확인
+        now = time.time()
+        cooldown_seconds = conf.get("cooldown_seconds", 90)
+        last_proactive_time = self.proactive_cooldowns.get(message.channel.id, 0)
+        if (now - last_proactive_time) < cooldown_seconds:
+            return False
+
+        # 최소 메시지 길이 확인
+        if len(message.content) < conf.get("min_message_length", 10):
+            return False
+
+        # 키워드 확인
+        msg_lower = message.content.lower()
+        if not any(keyword in msg_lower for keyword in conf.get("keywords", [])):
+            return False
+
+        # 확률 확인
+        if random.random() > conf.get("probability", 0.1):
+            return False
+
+        # 게이트키퍼 AI를 통한 최종 결정
+        try:
+            look_back = conf.get("look_back_count", 5)
+            history_msgs = [f"User({msg.author.display_name}): {msg.content}" async for msg in message.channel.history(limit=look_back)]
+            history_msgs.reverse()
+            conversation_context = "\n".join(history_msgs)
+
+            gatekeeper_prompt = f"""{conf['gatekeeper_persona']}
+
+--- 최근 대화 내용 ---
+{conversation_context}
+---
+사용자의 마지막 메시지: "{message.content}"
+---
+
+자, 판단해. Yes or No?"""
+
+            # '사고'용 경량 모델 사용
+            lite_model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME)
+            response = await lite_model.generate_content_async(
+                gatekeeper_prompt,
+                generation_config=genai.types.GenerationConfig(temperature=0.0),
+                safety_settings=config.GEMINI_SAFETY_SETTINGS,
+            )
+
+            decision = response.text.strip().upper()
+            logger.info(f"게이트키퍼 AI 결정: '{decision}'", extra={'guild_id': message.guild.id})
+
+            if "YES" in decision:
+                self.proactive_cooldowns[message.channel.id] = now # 쿨다운 업데이트
+                return True
+
+        except Exception as e:
+            logger.error(f"게이트키퍼 AI 실행 중 오류: {e}", exc_info=True, extra={'guild_id': message.guild.id})
+
+        return False
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AIHandler(bot))
