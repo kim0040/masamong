@@ -146,6 +146,29 @@ System:
 
 Assistant:
 애플 주가 찾고 환율까지 보느라 좀 귀찮았는데... 지금 애플(AAPL)은 170.5달러고, 원화로는 대충 230,175원 정도네. 됐냐?
+
+User: 그럼 MS는?
+
+Assistant:
+<tool_call>
+{
+  "tool_to_use": "get_stock_price",
+  "parameters": {
+    "stock_name": "MSFT"
+  }
+}
+</tool_call>
+
+System:
+<tool_result>
+{
+  "tool": "get_stock_price",
+  "result": { "current_price": 450.0, "currency": "USD" }
+}
+</tool_result>
+
+Assistant:
+MS는 450달러. 더 궁금한 거 있어?
 """
 AI_PROACTIVE_RESPONSE_CONFIG = { "enabled": True, "keywords": ["마사몽", "마사모", "봇", "챗봇"], "probability": 0.6, "cooldown_seconds": 90, "gatekeeper_persona": """너는 대화의 흐름을 분석하는 '눈치 빠른' AI야. 주어진 최근 대화 내용과 마지막 메시지를 보고, AI 챗봇('마사몽')이 지금 대화에 참여하는 것이 자연스럽고 대화를 더 재미있게 만들지를 판단해야 해.
 - 판단 기준:
