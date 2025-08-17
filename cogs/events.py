@@ -7,7 +7,7 @@ import time
 import pytz
 
 import config
-from logger_config import logger, discord_log_handler
+from logger_config import logger
 import utils
 from .ai_handler import AIHandler
 from .weather_cog import WeatherCog
@@ -26,7 +26,6 @@ class EventListeners(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        discord_log_handler.set_bot(self.bot, config.DISCORD_LOG_CHANNEL_ID)
         logger.info(f'봇 준비 완료: {self.bot.user.name} (ID: {self.bot.user.id})')
         
         # Cog 종속성 주입
@@ -196,6 +195,19 @@ class EventListeners(commands.Cog):
         }
         utils.log_analytics("COMMAND_USAGE", details)
 
+        # Discord 로그 채널에 임베드 로깅
+        embed = discord.Embed(
+            title=f"✅ Command Used: `!{details['command']}`",
+            color=discord.Color.green(),
+            timestamp=datetime.now(pytz.utc)
+        )
+        embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
+        embed.add_field(name="User", value=f"<@{ctx.author.id}>", inline=True)
+        embed.add_field(name="Channel", value=f"<#{ctx.channel.id}>", inline=True)
+        embed.add_field(name="Latency", value=f"{details['latency_ms']}ms", inline=True)
+        embed.add_field(name="Full Command", value=f"```\n{details['full_message']}\n```", inline=False)
+        await utils.log_to_discord(ctx.guild, embed)
+
     @commands.Cog.listener()
     async def on_command_error(self, ctx: commands.Context, error: commands.CommandError):
         """명령어 실행 오류 시 분석 로그를 기록합니다."""
@@ -213,6 +225,20 @@ class EventListeners(commands.Cog):
             "error_message": str(error)
         }
         utils.log_analytics("COMMAND_USAGE", details)
+
+        # Discord 로그 채널에 임베드 로깅
+        embed = discord.Embed(
+            title=f"❌ Command Error: `!{details['command']}`",
+            description=f"```\n{details['error_message']}\n```",
+            color=discord.Color.red(),
+            timestamp=datetime.now(pytz.utc)
+        )
+        embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
+        embed.add_field(name="User", value=f"<@{ctx.author.id}>", inline=True)
+        embed.add_field(name="Channel", value=f"<#{ctx.channel.id}>", inline=True)
+        embed.add_field(name="Error Type", value=f"`{details['error']}`", inline=True)
+        embed.add_field(name="Full Command", value=f"```\n{details['full_message']}\n```", inline=False)
+        await utils.log_to_discord(ctx.guild, embed)
 
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message):
