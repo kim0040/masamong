@@ -93,48 +93,8 @@ class EventListeners(commands.Cog):
         if not is_bot_mentioned and not should_proactively_respond:
             return
 
-        intent = await self.ai_handler.analyze_intent(message)
-        logger.info(f"사용자 '{message.author}'의 메시지 의도: {intent}", extra={'guild_id': message.guild.id})
-
-        async with message.channel.typing():
-            if intent == 'Time':
-                current_time_str = utils.get_current_time()
-                context = {"current_time": current_time_str}
-                response_text = await self.ai_handler.generate_creative_text(message.channel, message.author, "answer_time", context)
-                bot_response = await message.reply(response_text or config.MSG_AI_ERROR, mention_author=False)
-                await self.ai_handler.add_message_to_history(bot_response)
-
-            elif intent == 'Weather' and self.weather_cog:
-                user_query = message.content.lower()
-                location_name = config.DEFAULT_LOCATION_NAME
-                nx, ny = config.DEFAULT_NX, config.DEFAULT_NY
-
-                sorted_locations = sorted(config.LOCATION_COORDINATES.keys(), key=len, reverse=True)
-                for loc_key in sorted_locations:
-                    if loc_key in user_query:
-                        location_name = loc_key
-                        coords = config.LOCATION_COORDINATES[location_name]
-                        nx, ny = str(coords["nx"]), str(coords["ny"])
-                        break
-
-                day_offset = 0
-                if "모레" in user_query: day_offset = 2
-                elif "내일" in user_query: day_offset = 1
-
-                weather_data, error_msg = await self.weather_cog.get_formatted_weather_string(day_offset, location_name, nx, ny)
-
-                if error_msg:
-                    await message.reply(error_msg, mention_author=False)
-                elif weather_data:
-                    context = {"location_name": location_name, "weather_data": weather_data}
-                    response_text = await self.ai_handler.generate_creative_text(message.channel, message.author, "answer_weather", context)
-                    bot_response = await message.reply(response_text or config.MSG_AI_ERROR, mention_author=False)
-                    await self.ai_handler.add_message_to_history(bot_response)
-                else:
-                    await message.reply(config.MSG_WEATHER_NO_DATA, mention_author=False)
-
-            else: # Chat, Mixed, Command
-                await self.ai_handler.process_ai_message(message, intent=intent)
+        # The new agent orchestrator handles everything from planning to response.
+        await self.ai_handler.process_agent_message(message)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
