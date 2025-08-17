@@ -107,9 +107,9 @@ class AIHandler(commands.Cog):
                 norm_v1, norm_v2 = np.linalg.norm(v1), np.linalg.norm(v2)
                 return np.dot(v1, v2) / (norm_v1 * norm_v2) if norm_v1 > 0 and norm_v2 > 0 else 0.0
 
-            similarities = sorted([(sim, content) for content, blob in rows if (sim := _cosine_similarity(query_embedding, pickle.loads(blob))) > 0.75], key=lambda x: x[0], reverse=True)
+            similarities = sorted([(sim, content) for content, blob in rows if (sim := _cosine_similarity(query_embedding, pickle.loads(blob))) > 0.70], key=lambda x: x[0], reverse=True)
             if not similarities:
-                logger.info("RAG: 유사도 0.75 이상인 문서를 찾지 못했습니다.", extra=log_extra)
+                logger.info("RAG: 유사도 0.70 이상인 문서를 찾지 못했습니다.", extra=log_extra)
                 return "", []
 
             top_contents = [content for _, content in similarities[:3]]
@@ -159,18 +159,22 @@ class AIHandler(commands.Cog):
             rag_prompt_addition, rag_contents = await self._get_rag_context(message.channel.id, message.author.id, user_query)
             rag_content_set = set(rag_contents)
 
+            # RAG 성공 여부에 따라 대화 기록 길이를 동적으로 조절하여 토큰 사용량 최적화
+            history_limit = 3 if rag_contents else 8
+
             history = []
-            async for msg in message.channel.history(limit=15):
+            # history_limit보다 조금 더 많은 메시지를 가져와 필터링
+            async for msg in message.channel.history(limit=history_limit * 2):
                 if msg.id == message.id: continue # 현재 메시지는 제외
                 if msg.content in rag_content_set:
                     logger.debug(f"중복된 RAG 컨텍스트 메시지 건너뛰기: '{msg.content[:50]}...'", extra=log_extra)
                     continue
                 role = 'model' if msg.author.id == self.bot.user.id else 'user'
                 history.append({'role': role, 'parts': [msg.content]})
-                if len(history) >= 8:
+                if len(history) >= history_limit:
                     break
             history.reverse()
-            logger.info(f"{len(history)}개의 최근 대화 기록과 {len(rag_contents)}개의 RAG 컨텍스트를 조합.", extra=log_extra)
+            logger.info(f"{len(history)}개의 최근 대화 기록(동적 한도: {history_limit})과 {len(rag_contents)}개의 RAG 컨텍스트를 조합.", extra=log_extra)
 
             # 2. 시스템 프롬프트 구성
             system_prompt_str = config.AGENT_SYSTEM_PROMPT
