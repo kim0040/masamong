@@ -105,39 +105,56 @@ class EventListeners(commands.Cog):
         intent = await self.ai_handler.analyze_intent(message)
         logger.info(f"{context_log} 사용자 '{message.author}'의 메시지 의도: {intent}")
 
-        if intent == 'Time':
-            current_time_str = utils.get_current_time()
-            await self.ai_handler.process_ai_message(message, time_info=current_time_str, intent=intent)
-        elif intent == 'Weather' and self.weather_cog:
-            user_query = message.content.lower()
+        async with message.channel.typing():
+            if intent == 'Time':
+                current_time_str = utils.get_current_time()
+                context = {"current_time": current_time_str}
+                response_text = await self.ai_handler.generate_creative_text(message.channel, message.author, "answer_time", context)
+                bot_response = await message.reply(response_text or config.MSG_AI_ERROR, mention_author=False)
+                if self.ai_handler: self.ai_handler.add_message_to_history(bot_response)
 
-            # 1. 지역 파싱
-            location_name = config.DEFAULT_LOCATION_NAME
-            nx, ny = config.DEFAULT_NX, config.DEFAULT_NY
+            elif intent == 'Weather' and self.weather_cog:
+                user_query = message.content.lower()
 
-            parsed_location_name = None
-            sorted_locations = sorted(config.LOCATION_COORDINATES.keys(), key=len, reverse=True)
-            for loc_key in sorted_locations:
-                if loc_key in user_query:
-                    parsed_location_name = loc_key
-                    break
+                # 1. 지역 파싱
+                location_name = config.DEFAULT_LOCATION_NAME
+                nx, ny = config.DEFAULT_NX, config.DEFAULT_NY
 
-            if parsed_location_name:
-                location_name = parsed_location_name
-                coords = config.LOCATION_COORDINATES[location_name]
-                nx, ny = str(coords["nx"]), str(coords["ny"])
-                logger.info(f"{context_log} 날씨 의도: 지역 감지 - {location_name}")
-            else:
-                logger.info(f"{context_log} 날씨 의도: 지역 감지 실패, 기본값({location_name}) 사용.")
+                parsed_location_name = None
+                sorted_locations = sorted(config.LOCATION_COORDINATES.keys(), key=len, reverse=True)
+                for loc_key in sorted_locations:
+                    if loc_key in user_query:
+                        parsed_location_name = loc_key
+                        break
 
-            # 2. 날짜 파싱
-            day_offset = 0
-            if "모레" in user_query: day_offset = 2
-            elif "내일" in user_query: day_offset = 1
+                if parsed_location_name:
+                    location_name = parsed_location_name
+                    coords = config.LOCATION_COORDINATES[location_name]
+                    nx, ny = str(coords["nx"]), str(coords["ny"])
+                    logger.info(f"{context_log} 날씨 의도: 지역 감지 - {location_name}")
+                else:
+                    logger.info(f"{context_log} 날씨 의도: 지역 감지 실패, 기본값({location_name}) 사용.")
 
-            await self.weather_cog.prepare_weather_response_for_ai(message, day_offset, location_name, nx, ny, message.content)
-        else: # Chat, Mixed, Command
-            await self.ai_handler.process_ai_message(message, intent=intent)
+                # 2. 날짜 파싱
+                day_offset = 0
+                if "모레" in user_query: day_offset = 2
+                elif "내일" in user_query: day_offset = 1
+
+                # 3. 날씨 정보 조회 및 AI 응답 생성
+                weather_data, error_msg = await self.weather_cog.get_formatted_weather_string(day_offset, location_name, nx, ny)
+
+                if error_msg:
+                    await message.reply(error_msg, mention_author=False)
+                elif weather_data:
+                    context = {"location_name": location_name, "weather_data": weather_data}
+                    response_text = await self.ai_handler.generate_creative_text(message.channel, message.author, "answer_weather", context)
+                    bot_response = await message.reply(response_text or config.MSG_AI_ERROR, mention_author=False)
+                    if self.ai_handler: self.ai_handler.add_message_to_history(bot_response)
+                else:
+                    await message.reply(config.MSG_WEATHER_NO_DATA, mention_author=False)
+
+            else: # Chat, Mixed, Command
+                await self.ai_handler.process_ai_message(message, intent=intent)
 
         logger.debug(f"{context_log} AI 상호작용 처리 종료.")
 
