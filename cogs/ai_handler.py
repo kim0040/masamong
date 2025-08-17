@@ -79,24 +79,27 @@ class AIHandler(commands.Cog):
         except Exception as e:
             logger.error(f"임베딩 생성/저장 중 오류 (메시지 ID: {message_id}): {e}", exc_info=True, extra={'guild_id': guild_id})
 
-    async def _get_rag_context(self, channel_id: int, user_id: int, query: str) -> str:
-        """RAG를 위한 컨텍스트를 DB에서 검색합니다."""
+    async def _get_rag_context(self, channel_id: int, user_id: int, query: str) -> Tuple[str, list[str]]:
+        """RAG를 위한 컨텍스트를 DB에서 검색하고, 컨텍스트 문자열과 원본 메시지 내용 목록을 반환합니다."""
         try:
             query_embedding = np.array((await genai.embed_content_async(model=self.embedding_model_name, content=query, task_type="retrieval_query"))['embedding'])
             async with self.bot.db.execute("SELECT content, embedding FROM conversation_history WHERE channel_id = ? AND embedding IS NOT NULL ORDER BY created_at DESC LIMIT 100;", (channel_id,)) as cursor:
                 rows = await cursor.fetchall()
-            if not rows: return ""
+            if not rows: return "", []
 
             def _cosine_similarity(v1, v2):
                 norm_v1, norm_v2 = np.linalg.norm(v1), np.linalg.norm(v2)
                 return np.dot(v1, v2) / (norm_v1 * norm_v2) if norm_v1 > 0 and norm_v2 > 0 else 0.0
 
             similarities = sorted([(sim, content) for content, blob in rows if (sim := _cosine_similarity(query_embedding, pickle.loads(blob))) > 0.75], key=lambda x: x[0], reverse=True)
-            if not similarities: return ""
-            return "참고할 만한 과거 대화 내용:\n" + "\n".join(f"- {content}" for _, content in similarities[:3])
+            if not similarities: return "", []
+
+            top_contents = [content for _, content in similarities[:3]]
+            context_str = "참고할 만한 과거 대화 내용:\n" + "\n".join(f"- {c}" for c in top_contents)
+            return context_str, top_contents
         except Exception as e:
             logger.error(f"RAG 컨텍스트 검색 중 오류: {e}", exc_info=True)
-            return ""
+            return "", []
 
     # --- 에이전트 핵심 로직 ---
     def _parse_tool_call(self, text: str) -> dict | None:
@@ -126,44 +129,63 @@ class AIHandler(commands.Cog):
 
         log_extra = {'guild_id': message.guild.id}
 
-        # 1. 대화 기록 구성 (RAG + 현재 대화)
-        history = []
-        rag_context = await self._get_rag_context(message.channel.id, message.author.id, user_query)
-        if rag_context:
-            history.append({'role': 'system', 'parts': [rag_context]})
+        # 1. RAG 컨텍스트와 중복 제거용 콘텐츠 목록 가져오기
+        rag_prompt_addition, rag_contents = await self._get_rag_context(message.channel.id, message.author.id, user_query)
+        rag_content_set = set(rag_contents)
 
-        async for msg in message.channel.history(limit=8):
+        # 2. 중복을 피해 대화 기록 구성 (시간순: 오래된 -> 최신)
+        history = []
+        async for msg in message.channel.history(limit=15):
+            if msg.content in rag_content_set:
+                continue
             role = 'model' if msg.author.id == self.bot.user.id else 'user'
             history.append({'role': role, 'parts': [msg.content]})
+            if len(history) >= 8:
+                break
         history.reverse()
 
+        # 3. 시스템 프롬프트 구성 (페르소나 + RAG 컨텍스트)
         system_prompt = config.AGENT_SYSTEM_PROMPT
         custom_persona = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'persona_text')
         if custom_persona:
             system_prompt = f"{custom_persona}\n\n{system_prompt}"
+        if rag_prompt_addition:
+            system_prompt = f"{rag_prompt_addition}\n\n{system_prompt}"
 
-        chat_session = self.model.start_chat(history=history)
-
+        # 4. Gemini API 호출 및 응답 처리 (상태 비저장 방식)
         async with message.channel.typing():
             try:
-                for _ in range(5): # 최대 5번의 tool-call-result 루프
-                    response = await chat_session.send_message_async(system_instruction=system_prompt)
-                    response_text = response.text.strip()
+                full_conversation = history
+                for i in range(5): # 최대 5번의 tool-call-result 루프
+                    response = await self.model.generate_content_async(
+                        full_conversation,
+                        generation_config=genai.types.GenerationConfig(),
+                        safety_settings=config.GEMINI_SAFETY_SETTINGS,
+                        system_instruction=system_prompt,
+                    )
+
+                    response_text = ""
+                    if response.parts:
+                        response_text = "".join(part.text for part in response.parts).strip()
+
+                    if not response_text and response.candidates[0].finish_reason.name != "STOP":
+                         # 일부 모델은 response.text 대신 content.parts에 텍스트를 포함할 수 있습니다.
+                         # 혹은 안전 설정, 길이 제한 등으로 인해 빈 응답이 올 수 있습니다.
+                         logger.warning(f"Gemini로부터 빈 응답 수신. 종료 사유: {response.candidates[0].finish_reason.name}", extra=log_extra)
 
                     tool_call = self._parse_tool_call(response_text)
-                    if tool_call:
-                        logger.info(f"Tool call 감지: {tool_call}", extra=log_extra)
-                        tool_result = await self._execute_tool(tool_call, message.guild.id)
-                        tool_result_str = json.dumps(tool_result, ensure_ascii=False)
 
-                        # Gemini 1.5는 Tool-Call 응답을 history에 추가하지 않고 다음 프롬프트에 parts로 전달
-                        response = await chat_session.send_message_async(
-                            [f"<tool_result>\n{tool_result_str}\n</tool_result>"]
-                        )
-                        response_text = response.text.strip()
-                        # Tool 재호출을 방지하기 위해, tool call이 없는지 한번 더 확인
-                        if not self._parse_tool_call(response_text):
-                            break
+                    if tool_call:
+                        logger.info(f"Tool call 감지 (시도 {i+1}): {tool_call}", extra=log_extra)
+                        full_conversation.append({'role': 'model', 'parts': [response_text]})
+
+                        tool_result = await self._execute_tool(tool_call, message.guild.id)
+                        tool_result_str = json.dumps(tool_result, ensure_ascii=False, indent=2)
+
+                        full_conversation.append({
+                            'role': 'user',
+                            'parts': [f"<tool_result>\n{tool_result_str}\n</tool_result>"]
+                        })
                     else:
                         break
 
