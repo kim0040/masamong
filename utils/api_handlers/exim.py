@@ -4,10 +4,9 @@ import requests
 from datetime import datetime
 import config
 from logger_config import logger
+from .. import http as http_utils
 
 BASE_URL = "https://www.koreaexim.go.kr/site/program/financial/exchangeJSON"
-
-from .. import http as http_utils
 
 async def _fetch_exim_data(data_param: str) -> list | dict:
     """한국수출입은행 API에서 데이터를 가져오는 내부 헬퍼 함수."""
@@ -24,30 +23,17 @@ async def _fetch_exim_data(data_param: str) -> list | dict:
 
     session = http_utils.get_legacy_ssl_session()
 
-    for attempt in range(3): # 최대 3번 재시도
-        try:
-            response = await asyncio.to_thread(session.get, BASE_URL, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            break # 성공 시 루프 탈출
-    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, requests.exceptions.SSLError) as e:
-            logger.warning(f"수출입은행 API 연결 오류 (시도 {attempt + 1}/3): {e}")
-            if attempt == 2: # 마지막 시도 실패 시 에러 반환
-                return {"error": "API 서버에 연결할 수 없습니다."}
-            await asyncio.sleep(1) # 1초 후 재시도
-        except requests.exceptions.HTTPError as e:
-            logger.error(f"수출입은행 API({data_param}) HTTP 오류: {e.response.status_code}")
-            return {"error": f"API 서버 오류 ({e.response.status_code})"}
-        except ValueError as e: # JSONDecodeError
-            logger.error(f"수출입은행 API({data_param}) JSON 파싱 오류: {e}", exc_info=True)
-            return {"error": "API 응답 데이터 처리 중 오류 발생"}
-    else: # 루프가 break 없이 끝났을 경우 (모든 재시도 실패)
-        return {"error": "API 서버에 여러 번 연결 시도했으나 실패했습니다."}
-
+    try:
+        response = await asyncio.to_thread(session.get, BASE_URL, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
         if not data:
             logger.warning(f"수출입은행 API({data_param})에서 {search_date} 날짜의 데이터를 받지 못했습니다.")
             return {"error": "데이터를 찾을 수 없습니다."}
         return data
+    except requests.exceptions.RequestException as e:
+        logger.error(f"수출입은행 API({data_param}) 처리 중 오류: {e}", exc_info=True)
+        return {"error": "API 요청 또는 데이터 처리 중 오류 발생"}
 
 
 async def get_exchange_rate(target_currency: str = "USD") -> dict:
@@ -73,8 +59,6 @@ async def get_loan_interest_rates() -> dict:
     if isinstance(data, dict) and "error" in data:
         return data
 
-    # API 응답 형식을 가정하여 파싱
-    # 실제 필드명은 API 문서를 확인해야 함
     formatted_rates = [
         {
             "rate_name": item.get("rate_name", "N/A"),
@@ -90,8 +74,6 @@ async def get_international_interest_rates() -> dict:
     if isinstance(data, dict) and "error" in data:
         return data
 
-    # API 응답 형식을 가정하여 파싱
-    # 실제 필드명은 API 문서를 확인해야 함
     formatted_rates = [
         {
             "country": item.get("country", "N/A"),

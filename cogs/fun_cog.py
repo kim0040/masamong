@@ -57,20 +57,17 @@ class FunCog(commands.Cog):
             await channel.send("죄송합니다, 요약 기능이 현재 준비되지 않았습니다.")
             return
 
-        history_deque = self.ai_handler.conversation_histories.get(channel.id)
-        if not history_deque or len(history_deque) < 5:
-            await channel.send("요약할 만한 대화가 충분히 쌓이지 않았어.")
-            return
-
         async with channel.typing():
             try:
-                # [로직 개선] 대화 기록 포맷을 AI가 이해하는 형식으로 변경
-                history_str = "\n".join([item['parts'][0]['text'] for item in history_deque])
+                # AI 핸들러를 통해 DB에서 최근 대화 기록을 가져옴
+                history_str = await self.ai_handler.get_recent_conversation_text(channel.id, look_back=20)
 
-                if len(history_str) > config.AI_SUMMARY_MAX_CHARS:
-                    truncated_len = len(history_str) - config.AI_SUMMARY_MAX_CHARS
-                    history_str = history_str[truncated_len:]
-                    logger.warning(f"요약용 대화 기록이 너무 길어 {truncated_len}자를 잘라냈습니다.")
+                if not history_str:
+                    await channel.send("요약할 만한 대화가 충분히 쌓이지 않았어.")
+                    return
+
+                # 요약용 프롬프트의 최대 길이를 초과하지 않도록 조절 (필요 시)
+                # 현재는 AI_CREATIVE_PROMPTS에서 처리하므로 별도 로직은 생략
 
                 # [로직 개선] 통합된 페르소나를 사용하도록 channel과 author 정보 전달
                 response_text = await self.ai_handler.generate_creative_text(
