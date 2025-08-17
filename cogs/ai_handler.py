@@ -31,6 +31,7 @@ class AIHandler(commands.Cog):
         self.bot = bot
         self.tools_cog = bot.get_cog('ToolsCog')
         self.ai_user_cooldowns: Dict[int, datetime] = {}
+        self.proactive_cooldowns: Dict[int, datetime] = {}
         self.gemini_configured = False
         self.api_call_lock = asyncio.Lock()
 
@@ -125,6 +126,69 @@ class AIHandler(commands.Cog):
         except Exception as e:
             logger.error(f"RAG 컨텍스트 검색 중 오류: {e}", exc_info=True, extra=log_extra)
             return "", []
+
+    async def get_recent_conversation_text(self, channel_id: int, look_back: int) -> str:
+        """주어진 채널의 최근 대화 기록을 텍스트로 가져옵니다."""
+        try:
+            async with self.bot.db.execute(
+                "SELECT user_name, content FROM conversation_history WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?",
+                (channel_id, look_back)
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+            # 오래된 메시지부터 시간순으로 정렬
+            rows.reverse()
+            return "\n".join([f"{row[0]}: {row[1]}" for row in rows])
+        except Exception as e:
+            logger.error(f"최근 대화 기록 조회 중 DB 오류: {e}", exc_info=True)
+            return ""
+
+    async def should_proactively_respond(self, message: discord.Message) -> bool:
+        """AI가 대화에 자발적으로 참여할지 여부를 결정합니다."""
+        conf = config.AI_PROACTIVE_RESPONSE_CONFIG
+        if not conf.get("enabled"):
+            return False
+
+        # 쿨다운 확인
+        last_proactive_time = self.proactive_cooldowns.get(message.channel.id)
+        if last_proactive_time and (datetime.now(KST) - last_proactive_time).total_seconds() < conf.get("cooldown_seconds", 90):
+            return False
+
+        # 메시지 길이 및 키워드 확인
+        if len(message.content) < conf.get("min_message_length", 10):
+            return False
+        if not any(keyword in message.content for keyword in conf.get("keywords", [])):
+            return False
+
+        # 확률 체크
+        if random.random() > conf.get("probability", 0.5):
+            return False
+
+        log_extra = {'guild_id': message.guild.id, 'user_id': message.author.id}
+        logger.info(f"자발적 응답 조건 충족 (키워드, 확률). Gatekeeper AI 호출...", extra=log_extra)
+
+        # Gatekeeper AI를 통한 최종 결정
+        try:
+            history_text = await self.get_recent_conversation_text(message.channel.id, conf.get("look_back_count", 5))
+            if not history_text:
+                return False
+
+            gatekeeper_prompt = f"{conf['gatekeeper_persona']}\n\n# 최근 대화 내용\n{history_text}\n\n# 마지막 메시지\n{message.author.display_name}: {message.content}\n\n# 참여 여부 (Yes/No):"
+
+            lite_model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME)
+            response = await lite_model.generate_content_async(gatekeeper_prompt)
+
+            decision = response.text.strip().upper()
+            logger.info(f"Gatekeeper AI 응답: '{decision}'", extra=log_extra)
+
+            if "YES" in decision:
+                self.proactive_cooldowns[message.channel.id] = datetime.now(KST)
+                return True
+        except Exception as e:
+            logger.error(f"Gatekeeper AI 실행 중 오류: {e}", exc_info=True, extra=log_extra)
+
+        return False
+
 
     # --- 에이전트 핵심 로직 ---
     def _parse_tool_call(self, text: str) -> dict | None:

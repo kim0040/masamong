@@ -9,6 +9,7 @@ import aiosqlite
 import config
 from logger_config import logger
 from . import db as db_utils
+from .. import http as http_utils
 
 KST = pytz.timezone('Asia/Seoul')
 KMA_API_BASE_URL = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0"
