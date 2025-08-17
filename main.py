@@ -54,6 +54,7 @@ class ReMasamongBot(commands.Bot):
 
         # cogs 폴더 내의 모든 .py 파일을 동적으로 로드
         cog_list = [
+            'tools_cog', # 다른 Cog들이 의존할 수 있으므로 먼저 로드
             'events', 'commands', 'ai_handler', 'weather_cog', 'fun_cog',
             'activity_cog', 'poll_cog', 'settings_cog', 'maintenance_cog'
         ]
