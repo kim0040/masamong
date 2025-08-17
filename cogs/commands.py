@@ -8,7 +8,7 @@ import pytz
 # 설정, 로거, 유틸리티 가져오기
 import config
 from logger_config import logger
-import utils
+# from utils import db # db 관련 유틸리티가 필요할 경우 활성화
 
 class UserCommands(commands.Cog):
     """사용자가 호출할 수 있는 명령어를 포함하는 Cog"""
@@ -27,9 +27,6 @@ class UserCommands(commands.Cog):
                 os.remove(log_filename)
                 await ctx.send(config.MSG_DELETE_LOG_SUCCESS.format(filename=log_filename))
                 logger.info(f"[{ctx.guild.name}/{ctx.channel.name}] 로그 파일 삭제됨 | 요청자:{ctx.author}")
-                # 주기적 로그 출력 태스크의 위치 초기화 (필요 시)
-                if hasattr(utils.print_log_periodically_task, 'last_pos'):
-                    utils.print_log_periodically_task.last_pos = 0
             else:
                 await ctx.send(config.MSG_DELETE_LOG_NOT_FOUND.format(filename=log_filename))
                 logger.warning(f"[{ctx.guild.name}/{ctx.channel.name}] 로그 파일 삭제 시도 - 파일 없음 | 요청자:{ctx.author}")

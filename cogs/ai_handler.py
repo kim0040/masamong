@@ -17,8 +17,7 @@ import json
 
 import config
 from logger_config import logger
-import utils
-from . import response_formatter
+from utils import db as db_utils
 
 KST = pytz.timezone('Asia/Seoul')
 
@@ -71,7 +70,7 @@ class AIHandler(commands.Cog):
                     logger.warning(f"분당 Gemini API 호출 제한 도달 ({len(self.minute_request_timestamps)}/{config.API_RPM_LIMIT}).")
                     return True, config.MSG_AI_RATE_LIMITED
 
-        if await utils.is_api_limit_reached(self.bot.db, counter_name, limit):
+        if await db_utils.is_api_limit_reached(self.bot.db, counter_name, limit):
             return True, config.MSG_AI_DAILY_LIMITED
 
         return False, None
@@ -112,11 +111,11 @@ class AIHandler(commands.Cog):
         if not self.is_ready or not config.AI_MEMORY_ENABLED or not message.guild:
             return
 
-        is_guild_ai_enabled = await utils.get_guild_setting(self.bot.db, message.guild.id, 'ai_enabled', default=True)
+        is_guild_ai_enabled = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'ai_enabled', default=True)
         if not is_guild_ai_enabled:
             return
 
-        allowed_channels = await utils.get_guild_setting(self.bot.db, message.guild.id, 'ai_allowed_channels')
+        allowed_channels = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'ai_allowed_channels')
         is_ai_allowed_channel = False
         if allowed_channels:
             is_ai_allowed_channel = message.channel.id in allowed_channels
@@ -167,7 +166,7 @@ class AIHandler(commands.Cog):
                 content=content,
                 task_type="retrieval_document"
             )
-            await utils.increment_api_counter(self.bot.db, 'gemini_embedding_calls')
+            await db_utils.increment_api_counter(self.bot.db, 'gemini_embedding_calls')
 
             embedding_blob = pickle.dumps(embedding_result['embedding'])
 
@@ -192,7 +191,7 @@ class AIHandler(commands.Cog):
                 content=query,
                 task_type="retrieval_query"
             )
-            await utils.increment_api_counter(self.bot.db, 'gemini_embedding_calls')
+            await db_utils.increment_api_counter(self.bot.db, 'gemini_embedding_calls')
             query_embedding = np.array(query_embedding_result['embedding'])
 
             async with self.bot.db.execute("""
@@ -250,10 +249,10 @@ class AIHandler(commands.Cog):
         if not self.is_ready or message.author.bot or not message.guild: return False
         if len(message.content) < conf.get("min_message_length", 10): return False
 
-        is_guild_ai_enabled = await utils.get_guild_setting(self.bot.db, message.guild.id, 'ai_enabled', default=True)
+        is_guild_ai_enabled = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'ai_enabled', default=True)
         if not is_guild_ai_enabled: return False
 
-        allowed_channels = await utils.get_guild_setting(self.bot.db, message.guild.id, 'ai_allowed_channels')
+        allowed_channels = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'ai_allowed_channels')
         if allowed_channels:
             is_ai_allowed_channel = message.channel.id in allowed_channels
         else:
@@ -283,7 +282,7 @@ class AIHandler(commands.Cog):
             async with self.api_call_lock:
                 self._record_api_call()
                 response = await self.intent_model.generate_content_async(prompt)
-                await utils.increment_api_counter(self.bot.db, 'gemini_lite_daily_calls')
+                await db_utils.increment_api_counter(self.bot.db, 'gemini_lite_daily_calls')
 
             decision = response.text.strip().upper()
             logger.info(f"자발적 응답 AI 판단 결과: '{decision}'", extra={'guild_id': message.guild.id})
@@ -314,12 +313,21 @@ class AIHandler(commands.Cog):
                 await message.reply(config.MSG_AI_DAILY_LIMITED, mention_author=False)
                 return None
             
-            prompt = f"{config.AGENT_PLANNER_PERSONA}\n\n# User Request:\n{user_query}"
-            
+            # Planner에 컨텍스트를 주기 위해 최근 대화 내용을 가져옴
+            recent_conv_text = await self._get_recent_conversation_text(message.channel.id, look_back=4)
+            if recent_conv_text:
+                prompt = (
+                    f"{config.AGENT_PLANNER_PERSONA}\n\n"
+                    f"## Recent Conversation History:\n{recent_conv_text}\n\n"
+                    f"## Current User Request:\n{user_query}"
+                )
+            else:
+                prompt = f"{config.AGENT_PLANNER_PERSONA}\n\n# User Request:\n{user_query}"
+
             async with self.api_call_lock:
                 self._record_api_call()
                 response = await self.intent_model.generate_content_async(prompt)
-                await utils.increment_api_counter(self.bot.db, 'gemini_lite_daily_calls')
+                await db_utils.increment_api_counter(self.bot.db, 'gemini_lite_daily_calls')
             
             # 응답 텍스트에서 JSON 부분만 추출
             response_text = response.text.strip()
@@ -381,7 +389,7 @@ class AIHandler(commands.Cog):
         is_limited, limit_message = await self._check_global_rate_limit('gemini_flash_daily_calls', config.API_FLASH_RPD_LIMIT)
         if is_limited: return limit_message
 
-        custom_persona_text = await utils.get_guild_setting(self.bot.db, guild_id, 'persona_text')
+        custom_persona_text = await db_utils.get_guild_setting(self.bot.db, guild_id, 'persona_text')
         user_persona_override = config.USER_SPECIFIC_PERSONAS.get(author.id)
 
         persona_cfg = persona_config
@@ -392,7 +400,13 @@ class AIHandler(commands.Cog):
         if weather_info_str: system_instructions.append(f"참고할 날씨 정보: {weather_info_str}")
         if time_info_str: system_instructions.append(f"참고할 현재 시간 정보: {time_info_str}")
 
-        rag_context = await self._find_similar_conversations(channel_id, author.id, user_query)
+        # RAG 컨텍스트 생성을 위해 최근 대화 내용을 가져와 쿼리에 추가
+        rag_query_context = user_query
+        recent_conv = await self._get_recent_conversation_text(channel_id, look_back=3)
+        if recent_conv:
+            rag_query_context = f"[최근 대화]\n{recent_conv}\n\n[현재 질문]\n{user_query}"
+
+        rag_context = await self._find_similar_conversations(channel_id, author.id, rag_query_context)
         if rag_context: system_instructions.append(rag_context)
 
         try:
@@ -403,7 +417,7 @@ class AIHandler(commands.Cog):
             async with self.api_call_lock:
                 self._record_api_call()
                 response = await chat_session.send_message_async(final_query, stream=False, system_instruction="\n".join(filter(None, system_instructions)))
-                await utils.increment_api_counter(self.bot.db, 'gemini_flash_daily_calls')
+                await db_utils.increment_api_counter(self.bot.db, 'gemini_flash_daily_calls')
 
             ai_response_text = response.text.strip()
 
@@ -416,7 +430,7 @@ class AIHandler(commands.Cog):
                     "response_tokens": usage_metadata.candidates_token_count,
                     "total_tokens": usage_metadata.total_token_count, "is_task": is_task
                 }
-                await utils.log_analytics(self.bot.db, "AI_INTERACTION", details)
+                await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", details)
             except Exception as e:
                 logger.error(f"AI 상호작용 분석 로그 기록 중 오류: {e}", extra={'guild_id': guild_id})
 
@@ -453,7 +467,7 @@ class AIHandler(commands.Cog):
             async with self.api_call_lock:
                 self._record_api_call()
                 response = await self.response_model.generate_content_async(prompt)
-                await utils.increment_api_counter(self.bot.db, 'gemini_flash_daily_calls')
+                await db_utils.increment_api_counter(self.bot.db, 'gemini_flash_daily_calls')
 
             final_answer = response.text.strip()
             logger.info("최종 응답 생성 성공.", extra=log_extra)
@@ -538,7 +552,7 @@ class AIHandler(commands.Cog):
             async with self.api_call_lock:
                 self._record_api_call()
                 response = await self.response_model.generate_content_async(prompt)
-                await utils.increment_api_counter(self.bot.db, 'gemini_flash_daily_calls')
+                await db_utils.increment_api_counter(self.bot.db, 'gemini_flash_daily_calls')
 
             final_answer = response.text.strip()
             logger.info("최종 응답 생성 성공.", extra=log_extra)
@@ -579,16 +593,9 @@ class AIHandler(commands.Cog):
             else:
                 final_response_text = await self.synthesize_final_response(user_query, execution_context, message.author, message.guild.id)
 
-            # 4. 응답 포맷팅 및 전송
+            # 4. 응답 전송
             if final_response_text:
-                formatted_response = response_formatter.format_final_response(user_query, execution_context, final_response_text)
-
-                bot_response_message = None
-                if isinstance(formatted_response, discord.Embed):
-                    bot_response_message = await message.reply(embed=formatted_response, mention_author=False)
-                else:
-                    bot_response_message = await message.reply(formatted_response[:2000], mention_author=False)
-
+                bot_response_message = await message.reply(final_response_text[:2000], mention_author=False)
                 if bot_response_message:
                     await self.add_message_to_history(bot_response_message)
 
