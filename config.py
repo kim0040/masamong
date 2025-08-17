@@ -55,12 +55,17 @@ AI_RESPONSE_MODEL_NAME = "gemini-2.5-flash"
 # 임베딩 모델
 AI_EMBEDDING_MODEL_NAME = "models/embedding-001"
 
-# API 호출 제한 (분당)
-API_RPM_LIMIT = 15
-# API 호출 제한 (일일)
-API_LITE_RPD_LIMIT = 1000 # for flash-lite
-API_FLASH_RPD_LIMIT = 250 # for flash
-API_EMBEDDING_RPD_LIMIT = 1000 # for embedding-001
+# --- Gemini API 호출 제한 (Free Tier 기준) ---
+# 공식 문서: https://ai.google.dev/gemini-api/docs/rate-limits
+# 분당 요청 수 (RPM)
+RPM_LIMIT_INTENT = 15       # gemini-2.5-flash-lite
+RPM_LIMIT_RESPONSE = 10     # gemini-2.5-flash
+RPM_LIMIT_EMBEDDING = 100   # Gemini Embedding (models/embedding-001)
+
+# 일일 요청 수 (RPD)
+RPD_LIMIT_INTENT = 1000     # gemini-2.5-flash-lite
+RPD_LIMIT_RESPONSE = 250    # gemini-2.5-flash
+RPD_LIMIT_EMBEDDING = 1000  # Gemini Embedding (models/embedding-001)
 
 # --- Tool API Limits ---
 # agent.md에 명시된 시스템 제한 설정을 따릅니다.
@@ -101,8 +106,8 @@ If you can answer the user's question without using a tool, just respond directl
 5.  `get_loan_rates()`: Gets loan interest rates from the Export-Import Bank of Korea.
 6.  `get_international_rates()`: Gets international interest rates from the Export-Import Bank of Korea.
 7.  `recommend_games(ordering: str = '-released', genres: str = None, page_size: int = 5)`: Recommends video games. `ordering` can be '-released', '-rating', '-metacritic'.
-8.  `get_current_weather(location: str, day_offset: int = 0)`: Gets the weather for a specified city in South Korea (e.g., "서울", "부산"). You must know the location to use this tool. If the user does not provide a location, you must ask for one. `day_offset` can be 0 for today, 1 for tomorrow, 2 for the day after.
-9.  `get_current_time()`: Gets the current date and time.
+8.  `get_current_weather(location: str = None, day_offset: int = 0)`: Gets the weather for a specified city in South Korea (e.g., "서울", "부산"). If the user doesn't specify a location, call the tool without the 'location' parameter to get the weather for the default location, "광양". `day_offset` can be 0 for today, 1 for tomorrow, 2 for the day after.
+9.  `get_current_time()`: Gets the real-time, current date and time. You **must** use this tool for any questions related to the current time to ensure accuracy; do not answer from your own knowledge.
 
 **# Conversation Flow Example:**
 

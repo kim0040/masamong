@@ -43,6 +43,13 @@ CREATE TABLE IF NOT EXISTS system_counters (
     last_reset_at TEXT NOT NULL
 );
 
+-- API 호출 기록을 저장하여 RPM/RPD를 관리하는 테이블
+CREATE TABLE IF NOT EXISTS api_call_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    api_type TEXT NOT NULL, -- 'gemini_intent', 'gemini_response', 'gemini_embedding' 등
+    called_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc'))
+);
+
 -- 봇의 운영 지표를 기록하기 위한 분석용 로그 테이블
 CREATE TABLE IF NOT EXISTS analytics_log (
     log_id INTEGER PRIMARY KEY AUTOINCREMENT,
