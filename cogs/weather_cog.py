@@ -44,6 +44,32 @@ class WeatherCog(commands.Cog):
         if hasattr(self, 'evening_greeting_loop') and self.evening_greeting_loop.is_running():
             self.evening_greeting_loop.cancel()
 
+    async def get_formatted_weather_string(self, day_offset: int, location_name: str, nx: str, ny: str) -> tuple[str | None, str | None]:
+        """날씨 정보를 조회하고 사람이 읽기 좋은 문자열로 포맷팅합니다. 성공 시 (날씨 정보 문자열, None)을, 실패 시 (None, 오류 메시지)를 반환합니다."""
+        day_names = ["오늘", "내일", "모레"]
+        day_name = day_names[day_offset] if 0 <= day_offset < len(day_names) else f"{day_offset}일 후"
+
+        if day_offset == 0:
+            current_weather_data = await utils.get_current_weather_from_kma(nx, ny)
+            if isinstance(current_weather_data, dict) and current_weather_data.get("error"):
+                return None, current_weather_data.get("message", config.MSG_WEATHER_FETCH_ERROR)
+            if current_weather_data is None:
+                return None, config.MSG_WEATHER_FETCH_ERROR
+
+            current_weather_str = utils.format_current_weather(current_weather_data)
+            short_term_data = await utils.get_short_term_forecast_from_kma(nx, ny)
+            formatted_forecast = utils.format_short_term_forecast(short_term_data, day_name, target_day_offset=0)
+            return f"현재 {current_weather_str}\n{formatted_forecast}".strip(), None
+        else:
+            forecast_data = await utils.get_short_term_forecast_from_kma(nx, ny)
+            if isinstance(forecast_data, dict) and forecast_data.get("error"):
+                return None, forecast_data.get("message", config.MSG_WEATHER_FETCH_ERROR)
+            if forecast_data is None:
+                return None, config.MSG_WEATHER_FETCH_ERROR
+
+            formatted_forecast = utils.format_short_term_forecast(forecast_data, day_name, target_day_offset=day_offset)
+            return f"{location_name} {formatted_forecast}", None
+
     async def prepare_weather_response_for_ai(self, original_message: discord.Message, day_offset: int, location_name: str, nx: str, ny: str, user_original_query: str):
         """날씨 정보를 가져와 AI에게 전달할 문자열을 준비하고, AI 응답을 요청하거나 직접 응답합니다."""
         context_log = f"[{original_message.guild.name}/{original_message.channel.name}]"
@@ -51,49 +77,30 @@ class WeatherCog(commands.Cog):
             await original_message.reply(config.MSG_WEATHER_API_KEY_MISSING, mention_author=False)
             return
 
-        day_names = ["오늘", "내일", "모레"]
-        day_name = day_names[day_offset] if 0 <= day_offset < len(day_names) else f"{day_offset}일 후"
-
-        weather_data_str = ""
-        fallback_message_content = ""
-
         async with original_message.channel.typing():
-            if day_offset == 0:
-                current_weather_data = await utils.get_current_weather_from_kma(nx, ny)
-                if isinstance(current_weather_data, dict) and current_weather_data.get("error"):
-                    fallback_message_content = current_weather_data.get("message", config.MSG_WEATHER_FETCH_ERROR)
-                elif current_weather_data is None:
-                    fallback_message_content = config.MSG_WEATHER_FETCH_ERROR
-                else:
-                    current_weather_str = utils.format_current_weather(current_weather_data)
-                    short_term_data = await utils.get_short_term_forecast_from_kma(nx, ny)
-                    formatted_forecast = utils.format_short_term_forecast(short_term_data, day_name, target_day_offset=0)
-                    weather_data_str = f"{location_name} {day_name} 날씨 정보: 현재 {current_weather_str}\n{formatted_forecast}".strip()
-            else:
-                forecast_data = await utils.get_short_term_forecast_from_kma(nx, ny)
-                if isinstance(forecast_data, dict) and forecast_data.get("error"):
-                    fallback_message_content = forecast_data.get("message", config.MSG_WEATHER_FETCH_ERROR)
-                elif forecast_data is None:
-                     fallback_message_content = config.MSG_WEATHER_FETCH_ERROR
-                else:
-                    formatted_forecast = utils.format_short_term_forecast(forecast_data, day_name, target_day_offset=day_offset)
-                    weather_data_str = f"{location_name} {formatted_forecast}"
+            weather_data_str, error_message = await self.get_formatted_weather_string(day_offset, location_name, nx, ny)
+
+            if error_message:
+                logger.info(f"{context_log} 날씨 정보 조회 문제로 직접 응답 - {error_message}")
+                await original_message.reply(error_message, mention_author=False)
+                return
+
+            if not weather_data_str:
+                await original_message.reply(config.MSG_WEATHER_NO_DATA, mention_author=False)
+                return
 
             channel_id = original_message.channel.id
             channel_ai_settings = config.CHANNEL_AI_CONFIG.get(channel_id)
             is_ai_channel_and_enabled = self.ai_handler and self.ai_handler.is_ready and channel_ai_settings and channel_ai_settings.get("allowed", False)
 
-            if fallback_message_content:
-                logger.info(f"{context_log} 날씨 정보 조회 문제로 직접 응답 - {fallback_message_content}")
-                await original_message.reply(fallback_message_content, mention_author=False)
-            elif is_ai_channel_and_enabled and weather_data_str:
-                logger.info(f"{context_log} AI 응답 요청. 날씨정보: '{weather_data_str[:100]}...'")
-                await self.ai_handler.process_ai_message(original_message, weather_info=weather_data_str)
-            elif weather_data_str:
-                logger.info(f"{context_log} AI 사용 불가 채널이라 직접 날씨 정보 전송.")
-                await original_message.reply(f"📍 {weather_data_str}", mention_author=False)
+            if is_ai_channel_and_enabled:
+                logger.info(f"{context_log} AI 날씨 응답 생성 요청...")
+                context = {"location_name": location_name, "weather_data": weather_data_str}
+                ai_response = await self.ai_handler.generate_creative_text(original_message.channel, original_message.author, "answer_weather", context)
+                await original_message.reply(ai_response or config.MSG_AI_ERROR, mention_author=False)
             else:
-                 await original_message.reply(config.MSG_WEATHER_NO_DATA, mention_author=False)
+                logger.info(f"{context_log} AI 사용 불가 채널이라 직접 날씨 정보 전송.")
+                await original_message.reply(f"📍 **{location_name}**\n{weather_data_str}", mention_author=False)
 
     @commands.command(name="날씨", aliases=["weather", "현재날씨", "오늘날씨"])
     async def weather_command(self, ctx: commands.Context, *, location_query: str = ""):
