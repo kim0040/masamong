@@ -82,6 +82,7 @@ class ReMasamongBot(commands.Bot):
         await super().close()
 
 # --- 메인 실행 로직 ---
+# 최종 안정화 버전
 async def main():
     bot = ReMasamongBot(command_prefix='!', intents=config.intents)
     async with bot:

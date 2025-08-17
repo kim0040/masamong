@@ -6,11 +6,53 @@ import requests
 import json
 import asyncio
 import sqlite3
+import discord
 from logger_config import logger
 import config
 from typing import Any
 
 KST = pytz.timezone('Asia/Seoul')
+_log_channel_cache = {}
+
+async def log_to_discord(guild: discord.Guild, embed: discord.Embed):
+    """
+    특정 서버(guild)의 'logs' 채널을 찾아 임베드 로그 메시지를 전송합니다.
+    채널 검색 결과를 캐싱하여 성능을 최적화합니다.
+    """
+    # 이전에 'logs' 채널을 찾지 못했으면 다시 검색하지 않음
+    if guild.id in _log_channel_cache and _log_channel_cache[guild.id] is None:
+        return
+
+    log_channel = None
+    if guild.id in _log_channel_cache:
+        # 캐시된 ID로 채널을 가져옴
+        log_channel = guild.get_channel(_log_channel_cache[guild.id])
+
+    if log_channel is None:
+        # 캐시에 없거나, 캐시된 채널이 더 이상 존재하지 않으면 다시 검색
+        for channel in guild.text_channels:
+            if channel.name == 'logs':
+                log_channel = channel
+                _log_channel_cache[guild.id] = channel.id
+                logger.info(f"'{guild.name}' 서버에서 'logs' 채널(ID: {channel.id})을 찾았습니다.")
+                break
+
+        if log_channel is None:
+            _log_channel_cache[guild.id] = None  # 'logs' 채널이 없음을 캐싱
+            return
+
+    # 권한 확인
+    bot_permissions = log_channel.permissions_for(guild.me)
+    if not bot_permissions.send_messages or not bot_permissions.embed_links:
+        # 권한 문제는 일시적일 수 있으므로, 캐시를 지우고 다음 기회에 다시 시도
+        logger.warning(f"서버 '{guild.name}'의 'logs' 채널에 메시지/임베드 전송 권한이 없습니다.")
+        _log_channel_cache.pop(guild.id, None)
+        return
+
+    try:
+        await log_channel.send(embed=embed)
+    except Exception as e:
+        logger.error(f"Discord 로그 채널({log_channel.name}) 전송 중 오류 발생: {e}", exc_info=True)
 
 def get_current_time() -> str:
     """
