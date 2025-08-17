@@ -101,7 +101,7 @@ If you can answer the user's question without using a tool, just respond directl
 5.  `get_loan_rates()`: Gets loan interest rates from the Export-Import Bank of Korea.
 6.  `get_international_rates()`: Gets international interest rates from the Export-Import Bank of Korea.
 7.  `recommend_games(ordering: str = '-released', genres: str = None, page_size: int = 5)`: Recommends video games. `ordering` can be '-released', '-rating', '-metacritic'.
-8.  `get_current_weather(location: str = "광양")`: Gets the current weather for a location in South Korea.
+8.  `get_current_weather(location: str = None, day_offset: int = 0)`: Gets the weather for a specified location in South Korea. `day_offset` can be 0 for today, 1 for tomorrow, 2 for the day after.
 9.  `get_current_time()`: Gets the current date and time.
 
 **# Conversation Flow Example:**
