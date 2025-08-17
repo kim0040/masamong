@@ -47,15 +47,27 @@ class DiscordLogHandler(logging.Handler):
                 log_entry = self.format(record)
                 
                 # 로그 레벨에 따라 색상을 다르게 하여 가독성 향상
-                color = discord.Color.default()
-                if record.levelno == logging.DEBUG:
-                    color = discord.Color.light_grey()
+                color = discord.Color.dark_grey()
+                if record.levelno == logging.INFO:
+                    color = discord.Color.blue()
                 elif record.levelno == logging.WARNING:
                     color = discord.Color.gold()
                 elif record.levelno >= logging.ERROR:
                     color = discord.Color.red()
 
-                embed = discord.Embed(description=f"```\n{log_entry}\n```", color=color)
+                # 가독성을 높인 새로운 Embed 포맷
+                embed = discord.Embed(
+                    description=f"```\n{record.getMessage()}\n```",
+                    color=color,
+                    timestamp=datetime.fromtimestamp(record.created, tz=KST)
+                )
+                embed.set_author(name=f"[{record.levelname}] in [{record.name}]")
+
+                # 에러 로그의 경우 Traceback 정보 추가
+                if record.exc_info:
+                    exc_text = self.formatter.formatException(record.exc_info)
+                    embed.add_field(name="Traceback", value=f"```python\n{exc_text[:1000]}\n```", inline=False)
+
                 await channel.send(embed=embed)
             except discord.errors.Forbidden:
                 print(f"[심각] DiscordLogHandler: 채널(ID: {self.channel_id})에 메시지를 보낼 권한이 없습니다.", file=sys.stderr)
