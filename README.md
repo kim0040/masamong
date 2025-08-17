@@ -44,7 +44,6 @@
 - **AI 에이전트 상호작용**
   `@마사몽`으로 봇을 직접 호출하여 다양한 질문을 할 수 있습니다. 이제 봇은 여러 정보를 조합해야 하는 복합적인 질문도 처리할 수 있습니다.
   - `@마사몽 애플 주가를 원화로 알려줘.` (해외 주식 + 환율)
-  - `@마사몽 페이커 최근 롤 전적 찾아봐.` (LoL 전적 조회)
   - `@마사몽 강남역 근처 맛집 추천해줘.` (장소 검색)
   - `@마사몽 삼성전자 뉴스 3개만 요약해줘.` (국내 주식 + 뉴스 요약 - *향후 확장 가능*)
   - `@마사몽 어제 우리가 얘기했던 LLM 최적화 방안 다시 설명해줄래?` (기존 RAG 기반 대화 기억)
@@ -64,7 +63,6 @@
 - Discord 봇 토큰
 - **Google Gemini API 키**
 - (선택) 기상청 공공데이터포털 API 키
-- (선택) **Riot Games API 키**
 - (선택) **Finnhub API 키**
 - (선택) **Kakao Developers REST API 키**
 - (선택) **공공데이터포털(KRX) API 키**
@@ -89,7 +87,6 @@ pip install -r requirements.txt
 # DISCORD_BOT_TOKEN="YOUR_DISCORD_BOT_TOKEN"
 # GEMINI_API_KEY="YOUR_GEMINI_API_KEY"
 # KMA_API_KEY="YOUR_KMA_API_KEY"
-# RIOT_API_KEY="YOUR_RIOT_API_KEY"
 # FINNHUB_API_KEY="YOUR_FINNHUB_API_KEY"
 # KAKAO_API_KEY="YOUR_KAKAO_API_KEY"
 # GO_DATA_API_KEY_KR="YOUR_GO_DATA_API_KEY_KR"
