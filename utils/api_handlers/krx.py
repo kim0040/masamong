@@ -3,6 +3,7 @@ import asyncio
 import requests
 import config
 from logger_config import logger
+from .. import http as http_utils
 
 async def get_stock_price(stock_name: str) -> dict:
     """
@@ -21,9 +22,9 @@ async def get_stock_price(stock_name: str) -> dict:
         "numOfRows": "1" # 가장 정확한 1개만 받도록 설정
     }
 
+    session = http_utils.get_legacy_ssl_session()
     try:
-        # SSL 인증서 문제 우회를 위해 verify=False 추가. 보안상 권장되지 않으나, 공공 API 서버 문제로 인한 임시방편.
-        response = await asyncio.to_thread(requests.get, url, params=params, timeout=10, verify=False)
+        response = await asyncio.to_thread(session.get, url, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
 
