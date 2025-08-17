@@ -110,7 +110,15 @@ You are a master planner AI. Your role is to analyze a user's request and create
         *   `riot_id`: The player's full Riot ID in "gameName#tagLine" format (e.g., "Hide on bush#KR1").
         *   `count`: The number of matches to retrieve. Defaults to 1.
 
-6.  `general_chat(user_query: str)`
+6.  `get_loan_rates()`
+    *   Description: Gets the loan interest rates from the Export-Import Bank of Korea. Takes no parameters.
+    *   Parameters: None
+
+7.  `get_international_rates()`
+    *   Description: Gets international interest rates from the Export-Import Bank of Korea. Takes no parameters.
+    *   Parameters: None
+
+8.  `general_chat(user_query: str)`
     *   Description: Use this tool if no other specific tool is suitable for the user's request. This is for general conversation, greetings, or questions that don't require external data.
     *   Parameters:
         *   `user_query`: The original user query.
