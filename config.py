@@ -106,8 +106,8 @@ If you can answer the user's question without using a tool, just respond directl
 5.  `get_loan_rates()`: Gets loan interest rates from the Export-Import Bank of Korea.
 6.  `get_international_rates()`: Gets international interest rates from the Export-Import Bank of Korea.
 7.  `recommend_games(ordering: str = '-released', genres: str = None, page_size: int = 5)`: Recommends video games. `ordering` can be '-released', '-rating', '-metacritic'.
-8.  `get_current_weather(location: str, day_offset: int = 0)`: Gets the weather for a specified city in South Korea (e.g., "서울", "부산"). You must know the location to use this tool. If the user does not provide a location, you must ask for one. `day_offset` can be 0 for today, 1 for tomorrow, 2 for the day after.
-9.  `get_current_time()`: Gets the current date and time.
+8.  `get_current_weather(location: str = None, day_offset: int = 0)`: Gets the weather for a specified city in South Korea (e.g., "서울", "부산"). If the user doesn't specify a location, call the tool without the 'location' parameter to get the weather for the default location, "광양". `day_offset` can be 0 for today, 1 for tomorrow, 2 for the day after.
+9.  `get_current_time()`: Gets the real-time, current date and time. You **must** use this tool for any questions related to the current time to ensure accuracy; do not answer from your own knowledge.
 
 **# Conversation Flow Example:**
 
