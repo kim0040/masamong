@@ -303,3 +303,82 @@ def format_short_term_forecast(forecast_data: dict | None, day_name: str, target
     except (KeyError, TypeError, IndexError, StopIteration, ValueError) as e:
         logger.error(f"단기예보 포맷팅 중 오류: {e}", exc_info=True)
         return config.MSG_WEATHER_NO_DATA
+
+async def archive_old_conversations():
+    """
+    오래된 대화 기록을 `conversation_history`에서 `conversation_history_archive`로 옮깁니다.
+    config.py의 RAG_ARCHIVING_CONFIG 설정에 따라 작동합니다.
+    """
+    conf = config.RAG_ARCHIVING_CONFIG
+    if not conf.get("enabled"):
+        logger.debug("RAG 아카이빙이 비활성화되어 있어 작업을 건너뜁니다.")
+        return
+
+    conn = None
+    try:
+        conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=rw", uri=True)
+        cursor = conn.cursor()
+
+        # 1. 현재 conversation_history 테이블의 레코드 수 확인
+        cursor.execute("SELECT COUNT(*) FROM conversation_history")
+        current_records = cursor.fetchone()[0]
+        logger.info(f"RAG 아카이빙 확인: 현재 대화 기록 {current_records}개. (한도: {conf.get('history_limit')})")
+
+        # 2. 한도를 초과했는지 확인
+        if current_records <= conf.get("history_limit"):
+            logger.info("대화 기록이 한도 내에 있어 아카이빙을 건너뜁니다.")
+            return
+
+        # 3. 아카이빙할 레코드 수 계산
+        records_to_archive_total = current_records - conf.get("history_limit")
+        records_to_archive_batch = min(records_to_archive_total, conf.get("batch_size"))
+        logger.info(f"아카이빙 목표: {records_to_archive_batch}개 레코드.")
+
+        # 트랜잭션 시작 (autocommit 비활성화)
+        conn.isolation_level = None
+        cursor.execute("BEGIN")
+
+        try:
+            # 4. 아카이빙할 가장 오래된 레코드의 ID 조회
+            cursor.execute("""
+                SELECT message_id FROM conversation_history
+                ORDER BY created_at ASC
+                LIMIT ?
+            """, (records_to_archive_batch,))
+
+            message_ids_to_archive = [row[0] for row in cursor.fetchall()]
+            if not message_ids_to_archive:
+                logger.warning("아카이빙할 레코드가 없습니다. 작업을 중단합니다.")
+                cursor.execute("COMMIT") # 변경사항 없으므로 커밋하고 종료
+                return
+
+            placeholders = ",".join("?" for _ in message_ids_to_archive)
+
+            # 5. `conversation_history_archive`로 복사
+            cursor.execute(f"""
+                INSERT INTO conversation_history_archive
+                SELECT * FROM conversation_history
+                WHERE message_id IN ({placeholders})
+            """, message_ids_to_archive)
+            logger.info(f"{cursor.rowcount}개 레코드를 아카이브 테이블로 복사했습니다.")
+
+            # 6. `conversation_history`에서 삭제
+            cursor.execute(f"""
+                DELETE FROM conversation_history
+                WHERE message_id IN ({placeholders})
+            """, message_ids_to_archive)
+            logger.info(f"{cursor.rowcount}개 레코드를 원본 테이블에서 삭제했습니다.")
+
+            # 7. 트랜잭션 커밋
+            cursor.execute("COMMIT")
+            logger.info(f"총 {len(message_ids_to_archive)}개의 대화 기록 아카이빙 완료.")
+
+        except sqlite3.Error as e:
+            logger.error(f"아카이빙 트랜잭션 중 오류 발생! 롤백합니다. 오류: {e}", exc_info=True)
+            cursor.execute("ROLLBACK")
+
+    except sqlite3.Error as e:
+        logger.error(f"RAG 아카이빙 작업 중 DB 오류 발생: {e}", exc_info=True)
+    finally:
+        if conn:
+            conn.close()
