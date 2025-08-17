@@ -29,20 +29,16 @@ class EventListeners(commands.Cog):
     async def on_ready(self):
         logger.info(f'봇 준비 완료: {self.bot.user.name} (ID: {self.bot.user.id})')
         
-        # Cog 종속성 주입
+        # 의존성 주입은 main.py의 setup_hook에서 처리하므로 여기서는 각 Cog를 가져오기만 함.
         self.ai_handler = self.bot.get_cog('AIHandler')
         self.weather_cog = self.bot.get_cog('WeatherCog')
         self.fun_cog = self.bot.get_cog('FunCog')
         self.activity_cog = self.bot.get_cog('ActivityCog')
 
-        if self.ai_handler:
-            if self.fun_cog: self.fun_cog.ai_handler = self.ai_handler
-            if self.activity_cog: self.activity_cog.ai_handler = self.ai_handler
-            if self.weather_cog: self.weather_cog.ai_handler = self.ai_handler
-            logger.info("모든 Cog에 AIHandler 의존성 주입 완료.")
-        else:
-            logger.error("AIHandler를 찾을 수 없어 의존성 주입 실패.")
-        
+        if not all([self.ai_handler, self.weather_cog, self.fun_cog, self.activity_cog]):
+            logger.warning("일부 Cog를 찾을 수 없습니다. 의존성 주입이 완벽하지 않을 수 있습니다.")
+
+        # 날씨 Cog의 주기적 작업 시작
         if self.weather_cog:
             self.weather_cog.setup_and_start_loops()
 

@@ -67,12 +67,28 @@ class ReMasamongBot(commands.Bot):
                 logger.warning(f"Cog 파일 '{cog_name}.py'을(를) 찾을 수 없어 건너뜁니다.")
                 continue
             try:
-                # 각 Cog에 데이터베이스 연결 객체(self.db)를 전달할 수 있도록 준비
-                # 실제 전달은 각 Cog의 __init__에서 bot 인스턴스를 통해 이루어짐
                 await self.load_extension(f'cogs.{cog_name}')
                 logger.info(f"Cog 로드 성공: {cog_name}")
             except Exception as e:
                 logger.error(f"Cog 로드 중 오류 발생 ({cog_name}): {e}", exc_info=True)
+
+        # --- Cog 로드 후 의존성 주입 ---
+        # AIHandler를 필요로 하는 다른 Cog들에게 인스턴스를 주입합니다.
+        ai_handler_cog = self.get_cog('AIHandler')
+        if ai_handler_cog:
+            # ActivityCog에 주입
+            activity_cog = self.get_cog('ActivityCog')
+            if activity_cog:
+                activity_cog.ai_handler = ai_handler_cog
+                logger.info("AIHandler를 ActivityCog에 성공적으로 주입했습니다.")
+
+            # FunCog에 주입
+            fun_cog = self.get_cog('FunCog')
+            if fun_cog:
+                fun_cog.ai_handler = ai_handler_cog
+                logger.info("AIHandler를 FunCog에 성공적으로 주입했습니다.")
+        else:
+            logger.warning("AIHandler Cog를 찾을 수 없어 다른 Cog에 주입하지 못했습니다.")
 
     async def close(self):
         """
