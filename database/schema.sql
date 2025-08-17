@@ -52,3 +52,16 @@ CREATE TABLE IF NOT EXISTS analytics_log (
     user_id INTEGER,
     details TEXT -- JSON 형태로 상세 정보 저장 (예: { "command": "ranking", "latency_ms": 120 })
 );
+
+-- 보관된(archived) 대화 내용을 저장하는 테이블
+CREATE TABLE IF NOT EXISTS conversation_history_archive (
+    message_id INTEGER PRIMARY KEY,
+    guild_id INTEGER NOT NULL,
+    channel_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    user_name TEXT NOT NULL,
+    content TEXT NOT NULL,
+    is_bot BOOLEAN NOT NULL,
+    created_at TEXT NOT NULL,
+    embedding BLOB
+);
