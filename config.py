@@ -44,7 +44,7 @@ GEMINI_API_KEY = load_config_value('GEMINI_API_KEY')
 
 # --- Tool-Using Agent API Keys ---
 # 각 API 키를 .env 파일 또는 환경변수에 설정해야 합니다.
-RIOT_API_KEY = load_config_value('RIOT_API_KEY', 'YOUR_RIOT_API_KEY')
+RAWG_API_KEY = load_config_value('RAWG_API_KEY', 'YOUR_RAWG_API_KEY')
 FINNHUB_API_KEY = load_config_value('FINNHUB_API_KEY', 'YOUR_FINNHUB_API_KEY')
 KAKAO_API_KEY = load_config_value('KAKAO_API_KEY', 'YOUR_KAKAO_API_KEY')
 GO_DATA_API_KEY_KR = load_config_value('GO_DATA_API_KEY_KR', 'YOUR_GO_DATA_API_KEY_KR') # 공공데이터포털 (국내 주식)
@@ -66,10 +66,8 @@ API_EMBEDDING_RPD_LIMIT = 1000 # for embedding-001
 
 # --- Tool API Limits ---
 # agent.md에 명시된 시스템 제한 설정을 따릅니다.
-RIOT_API_LIMIT_PER_SECOND = 15
-RIOT_API_LIMIT_PER_2_MINUTES = 80
 FINNHUB_API_RPM_LIMIT = 50
-KAKAO_API_RPD_LIMIT = 250000
+KAKAO_API_RPD_LIMIT = 95000 # 카카오 로컬 API의 키워드 검색은 일일 100,000회 제한
 KRX_API_RPD_LIMIT = 9000
 EXIM_API_RPD_LIMIT = 900
 
@@ -94,23 +92,33 @@ You are a master planner AI. Your role is to analyze a user's request and create
         *   `stock_name`: The ticker symbol of the stock (e.g., "TSLA").
         *   `count`: The number of news articles to retrieve. Defaults to 3.
 
-3.  `search_for_place(query: str)`
-    *   Description: Searches for a place, like a restaurant or landmark, using a keyword.
+3.  `search_for_place(query: str, page_size: int = 5)`
+    *   Description: Searches for up to 5 places, like restaurants or landmarks, using a keyword. The results will include details like category, address, and a map link.
     *   Parameters:
         *   `query`: The search keyword (e.g., "강남역 맛집").
+        *   `page_size`: The number of places to find. Defaults to 5.
 
 4.  `get_krw_exchange_rate(currency_code: str = "USD")`
     *   Description: Gets the exchange rate for a specific currency against the South Korean Won (KRW).
     *   Parameters:
         *   `currency_code`: The standard 3-letter currency code (e.g., "USD", "JPY", "EUR"). Defaults to "USD".
 
-5.  `get_lol_match_history(riot_id: str, count: int = 1)`
-    *   Description: Gets the recent match history for a League of Legends player.
-    *   Parameters:
-        *   `riot_id`: The player's full Riot ID in "gameName#tagLine" format (e.g., "Hide on bush#KR1").
-        *   `count`: The number of matches to retrieve. Defaults to 1.
+5.  `get_loan_rates()`
+    *   Description: Gets the loan interest rates from the Export-Import Bank of Korea. Takes no parameters.
+    *   Parameters: None
 
-6.  `general_chat(user_query: str)`
+7.  `get_international_rates()`
+    *   Description: Gets international interest rates from the Export-Import Bank of Korea. Takes no parameters.
+    *   Parameters: None
+
+8.  `recommend_games(ordering: str = '-released', genres: str = None, page_size: int = 5)`
+    *   Description: Recommends video games based on various criteria.
+    *   Parameters:
+        *   `ordering`: The sorting order. Use '-released' for newest games, '-rating' for highest rated, '-metacritic' for highest Metacritic score. Defaults to '-released'.
+        *   `genres`: A comma-separated list of genre slugs to filter by (e.g., "action", "adventure", "rpg").
+        *   `page_size`: The number of games to recommend. Defaults to 5.
+
+9.  `general_chat(user_query: str)`
     *   Description: Use this tool if no other specific tool is suitable for the user's request. This is for general conversation, greetings, or questions that don't require external data.
     *   Parameters:
         *   `user_query`: The original user query.
@@ -153,21 +161,6 @@ You are a master planner AI. Your role is to analyze a user's request and create
           "tool_to_use": "get_krw_exchange_rate",
           "parameters": {
             "currency_code": "USD"
-          }
-        }
-      ]
-    }
-    ```
-
-*   User Request: "페이커 전적 어때?"
-    ```json
-    {
-      "plan": [
-        {
-          "tool_to_use": "get_lol_match_history",
-          "parameters": {
-            "riot_id": "Hide on bush#KR1",
-            "count": 1
           }
         }
       ]

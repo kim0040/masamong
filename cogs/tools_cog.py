@@ -4,7 +4,7 @@ from discord.ext import commands
 import re
 
 from logger_config import logger
-from utils.api_handlers import riot, finnhub, kakao, krx, exim
+from utils.api_handlers import finnhub, kakao, krx, exim, rawg
 
 def is_korean(text: str) -> bool:
     """텍스트에 한글이 포함되어 있는지 확인합니다."""
@@ -35,41 +35,25 @@ class ToolsCog(commands.Cog):
         """특정 종목(Ticker Symbol)에 대한 최신 뉴스를 조회합니다."""
         return await finnhub.get_company_news(stock_name, count)
 
-    async def search_for_place(self, query: str) -> dict:
-        """키워드로 장소를 검색합니다."""
-        return await kakao.search_place_by_keyword(query)
+    async def search_for_place(self, query: str, page_size: int = 5) -> dict:
+        """키워드로 장소를 검색하고, 여러 개의 결과를 반환합니다."""
+        return await kakao.search_place_by_keyword(query, page_size=page_size)
 
     async def get_krw_exchange_rate(self, currency_code: str = "USD") -> dict:
         """특정 통화의 원화(KRW) 대비 환율을 조회합니다."""
         return await exim.get_exchange_rate(currency_code)
 
-    async def get_lol_match_history(self, riot_id: str, count: int = 1) -> dict:
-        """Riot ID를 사용하여 LoL 최근 전적을 조회합니다."""
-        # Riot ID 형식: "게임이름#태그라인" (예: "Hide on bush#KR1")
-        parts = riot_id.split('#')
-        if len(parts) != 2 or not parts[0] or not parts[1]:
-            return {"error": "Riot ID는 '이름#태그' 형식이어야 합니다. (예: Hide on bush#KR1)"}
-        game_name, tag_line = parts[0], parts[1]
+    async def get_loan_rates(self) -> dict:
+        """한국수출입은행의 대출 금리 정보를 조회합니다."""
+        return await exim.get_loan_interest_rates()
 
-        puuid_result = await riot.get_puuid_by_riot_id(game_name, tag_line)
-        if puuid_result.get("error"):
-            return puuid_result
-        puuid = puuid_result["puuid"]
+    async def get_international_rates(self) -> dict:
+        """한국수출입은행의 국제 금리 정보를 조회합니다."""
+        return await exim.get_international_interest_rates()
 
-        match_ids_result = await riot.get_match_ids_by_puuid(puuid, count)
-        if match_ids_result.get("error"):
-            return match_ids_result
-
-        match_details_list = []
-        for match_id in match_ids_result["match_ids"]:
-            details = await riot.get_match_details_by_id(match_id, puuid)
-            if not details.get("error"):
-                match_details_list.append(details)
-
-        if not match_details_list:
-            return {"error": "상세 전적을 조회하는 데 실패했습니다."}
-
-        return {"matches": match_details_list}
+    async def recommend_games(self, ordering: str = '-released', genres: str = None, page_size: int = 5) -> dict:
+        """다양한 조건에 따라 비디오 게임을 추천합니다."""
+        return await rawg.get_games(ordering=ordering, genres=genres, page_size=page_size)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ToolsCog(bot))
