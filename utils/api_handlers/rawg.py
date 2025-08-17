@@ -46,8 +46,8 @@ async def get_games(ordering: str = '-released', dates: str = None, genres: str 
                 "released": game.get('released'),
                 "rating": game.get('rating'),
                 "metacritic": game.get('metacritic'),
-                "genres": [genre['name'] for genre in game.get('genres', [])],
-                "platforms": [p['platform']['name'] for p in game.get('platforms', [])]
+                "genres": [genre['name'] for genre in game.get('genres') or []],
+                "platforms": [p['platform']['name'] for p in game.get('platforms') or [] if p and p.get('platform')]
             }
             for game in results
         ]
