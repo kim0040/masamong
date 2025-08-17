@@ -3,7 +3,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from discord.ui import Modal, TextInput
-import sqlite3
+import aiosqlite
 import json
 
 import config
@@ -19,34 +19,32 @@ class PersonaSetModal(Modal, title="AI 페르소나 설정"):
         required=True
     )
 
-    def __init__(self, current_persona: str = ""):
+    def __init__(self, bot: commands.Bot, current_persona: str = ""):
         super().__init__()
+        self.bot = bot
         if current_persona:
             self.persona_input.default = current_persona
 
     async def on_submit(self, interaction: discord.Interaction):
         new_persona = self.persona_input.value
         guild_id = interaction.guild_id
+        log_extra = {'guild_id': guild_id}
 
-        conn = None
         try:
-            conn = sqlite3.connect(config.DATABASE_FILE)
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO guild_settings (guild_id, persona_text) VALUES (?, ?)
-                ON CONFLICT(guild_id) DO UPDATE SET persona_text = excluded.persona_text
+            await self.bot.db.execute("""
+                INSERT INTO guild_settings (guild_id, persona_text, updated_at) VALUES (?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc'))
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    persona_text = excluded.persona_text,
+                    updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc')
             """, (guild_id, new_persona))
-            conn.commit()
+            await self.bot.db.commit()
 
             await interaction.response.send_message("✅ AI 페르소나를 성공적으로 변경했습니다.", ephemeral=True)
-            logger.info(f"[{interaction.guild.name}] AI 페르소나 변경됨 (요청자: {interaction.user})")
+            logger.info(f"AI 페르소나 변경됨 (요청자: {interaction.user})", extra=log_extra)
 
-        except sqlite3.Error as e:
-            logger.error(f"[{interaction.guild.name}] AI 페르소나 설정 중 DB 오류: {e}", exc_info=True)
+        except aiosqlite.Error as e:
+            logger.error(f"AI 페르소나 설정 중 DB 오류: {e}", exc_info=True, extra=log_extra)
             await interaction.response.send_message("❌ 페르소나를 변경하는 중 오류가 발생했습니다.", ephemeral=True)
-        finally:
-            if conn:
-                conn.close()
 
 
 class SettingsCog(commands.Cog):
@@ -64,30 +62,24 @@ class SettingsCog(commands.Cog):
     async def set_ai_enabled(self, interaction: discord.Interaction, enabled: bool):
         """AI 기능 활성화/비활성화를 설정합니다."""
         guild_id = interaction.guild_id
-        if guild_id is None:
-            await interaction.response.send_message("이 명령어는 서버에서만 사용할 수 있습니다.", ephemeral=True)
-            return
+        log_extra = {'guild_id': guild_id}
 
-        conn = None
         try:
-            conn = sqlite3.connect(config.DATABASE_FILE)
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO guild_settings (guild_id, ai_enabled) VALUES (?, ?)
-                ON CONFLICT(guild_id) DO UPDATE SET ai_enabled = excluded.ai_enabled
+            await self.bot.db.execute("""
+                INSERT INTO guild_settings (guild_id, ai_enabled, updated_at) VALUES (?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc'))
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    ai_enabled = excluded.ai_enabled,
+                    updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc')
             """, (guild_id, enabled))
-            conn.commit()
+            await self.bot.db.commit()
 
             status = "활성화" if enabled else "비활성화"
             await interaction.response.send_message(f"✅ AI 기능을 성공적으로 **{status}**했습니다.", ephemeral=True)
-            logger.info(f"[{interaction.guild.name}] AI 기능이 {status}되었습니다. (요청자: {interaction.user})")
+            logger.info(f"AI 기능이 {status}되었습니다. (요청자: {interaction.user})", extra=log_extra)
 
-        except sqlite3.Error as e:
-            logger.error(f"[{interaction.guild.name}] AI 기능 설정 중 DB 오류: {e}", exc_info=True)
+        except aiosqlite.Error as e:
+            logger.error(f"AI 기능 설정 중 DB 오류: {e}", exc_info=True, extra=log_extra)
             await interaction.response.send_message("❌ 설정을 변경하는 중 오류가 발생했습니다.", ephemeral=True)
-        finally:
-            if conn:
-                conn.close()
 
     @config_group.command(name="channel", description="AI 응답 허용 채널을 관리합니다.")
     @app_commands.describe(action="수행할 작업 (추가/제거)", channel="대상 채널")
@@ -99,21 +91,19 @@ class SettingsCog(commands.Cog):
     async def set_allowed_channel(self, interaction: discord.Interaction, action: str, channel: discord.TextChannel):
         """AI 응답 허용 채널 목록을 추가하거나 제거합니다."""
         guild_id = interaction.guild_id
-        if guild_id is None:
-            await interaction.response.send_message("이 명령어는 서버에서만 사용할 수 있습니다.", ephemeral=True)
-            return
+        log_extra = {'guild_id': guild_id}
 
-        conn = None
         try:
-            conn = sqlite3.connect(config.DATABASE_FILE)
-            cursor = conn.cursor()
-
-            cursor.execute("SELECT ai_allowed_channels FROM guild_settings WHERE guild_id = ?", (guild_id,))
-            result = cursor.fetchone()
+            current_channels_json = await utils.get_guild_setting(self.bot.db, guild_id, 'ai_allowed_channels')
 
             allowed_channels = []
-            if result and result[0]:
-                allowed_channels = json.loads(result[0])
+            if current_channels_json:
+                try:
+                    allowed_channels = json.loads(current_channels_json)
+                except (json.JSONDecodeError, TypeError):
+                    # DB에 잘못된 데이터가 있는 경우, 초기화
+                    logger.warning(f"Guild({guild_id})의 ai_allowed_channels가 잘못된 JSON 형식이라 초기화합니다.", extra=log_extra)
+                    allowed_channels = []
 
             if action == "add":
                 if channel.id not in allowed_channels:
@@ -131,27 +121,26 @@ class SettingsCog(commands.Cog):
                     return
 
             new_allowed_channels_json = json.dumps(allowed_channels)
-            cursor.execute("""
-                INSERT INTO guild_settings (guild_id, ai_allowed_channels) VALUES (?, ?)
-                ON CONFLICT(guild_id) DO UPDATE SET ai_allowed_channels = excluded.ai_allowed_channels
+            await self.bot.db.execute("""
+                INSERT INTO guild_settings (guild_id, ai_allowed_channels, updated_at) VALUES (?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc'))
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    ai_allowed_channels = excluded.ai_allowed_channels,
+                    updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc')
             """, (guild_id, new_allowed_channels_json))
-            conn.commit()
+            await self.bot.db.commit()
 
             await interaction.response.send_message(message, ephemeral=True)
-            logger.info(f"[{interaction.guild.name}] AI 허용 채널 목록 변경: {action} {channel.name} (요청자: {interaction.user})")
+            logger.info(f"AI 허용 채널 목록 변경: {action} {channel.name} (요청자: {interaction.user})", extra=log_extra)
 
-        except sqlite3.Error as e:
-            logger.error(f"[{interaction.guild.name}] AI 허용 채널 설정 중 DB 오류: {e}", exc_info=True)
+        except aiosqlite.Error as e:
+            logger.error(f"AI 허용 채널 설정 중 DB 오류: {e}", exc_info=True, extra=log_extra)
             await interaction.response.send_message("❌ 설정을 변경하는 중 오류가 발생했습니다.", ephemeral=True)
-        finally:
-            if conn:
-                conn.close()
 
     @persona_group.command(name="view", description="현재 서버의 AI 페르소나를 확인합니다.")
     @app_commands.checks.has_permissions(administrator=True)
     async def view_persona(self, interaction: discord.Interaction):
         guild_id = interaction.guild_id
-        persona_text = utils.get_guild_setting(guild_id, 'persona_text')
+        persona_text = await utils.get_guild_setting(self.bot.db, guild_id, 'persona_text')
 
         if persona_text:
             embed = discord.Embed(title="🎨 현재 AI 페르소나", description=persona_text, color=discord.Color.green())
@@ -163,8 +152,8 @@ class SettingsCog(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def set_persona(self, interaction: discord.Interaction):
         guild_id = interaction.guild_id
-        current_persona = utils.get_guild_setting(guild_id, 'persona_text', default="")
-        await interaction.response.send_modal(PersonaSetModal(current_persona=current_persona))
+        current_persona = await utils.get_guild_setting(self.bot.db, guild_id, 'persona_text', default="")
+        await interaction.response.send_modal(PersonaSetModal(self.bot, current_persona=current_persona))
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(SettingsCog(bot))

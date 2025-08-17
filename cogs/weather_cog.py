@@ -50,18 +50,18 @@ class WeatherCog(commands.Cog):
         day_name = day_names[day_offset] if 0 <= day_offset < len(day_names) else f"{day_offset}일 후"
 
         if day_offset == 0:
-            current_weather_data = await utils.get_current_weather_from_kma(nx, ny)
+            current_weather_data = await utils.get_current_weather_from_kma(self.bot.db, nx, ny)
             if isinstance(current_weather_data, dict) and current_weather_data.get("error"):
                 return None, current_weather_data.get("message", config.MSG_WEATHER_FETCH_ERROR)
             if current_weather_data is None:
                 return None, config.MSG_WEATHER_FETCH_ERROR
 
             current_weather_str = utils.format_current_weather(current_weather_data)
-            short_term_data = await utils.get_short_term_forecast_from_kma(nx, ny)
+            short_term_data = await utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
             formatted_forecast = utils.format_short_term_forecast(short_term_data, day_name, target_day_offset=0)
             return f"현재 {current_weather_str}\n{formatted_forecast}".strip(), None
         else:
-            forecast_data = await utils.get_short_term_forecast_from_kma(nx, ny)
+            forecast_data = await utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
             if isinstance(forecast_data, dict) and forecast_data.get("error"):
                 return None, forecast_data.get("message", config.MSG_WEATHER_FETCH_ERROR)
             if forecast_data is None:
@@ -198,7 +198,7 @@ class WeatherCog(commands.Cog):
         context_log = f"[{notification_channel.guild.name}/{notification_channel.name}]"
         logger.info(f"{context_log} 주기적 강수 알림: 날씨 확인 시작...")
         nx, ny = config.DEFAULT_NX, config.DEFAULT_NY
-        forecast_today_raw = await utils.get_short_term_forecast_from_kma(nx, ny)
+        forecast_today_raw = await utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
 
         if not forecast_today_raw or isinstance(forecast_today_raw, dict) and forecast_today_raw.get("error"):
             logger.warning(f"{context_log} 주기적 강수 알림: 오늘 예보 데이터를 가져오지 못했습니다.")
@@ -252,7 +252,7 @@ class WeatherCog(commands.Cog):
         context_log = f"[{notification_channel.guild.name}/{notification_channel.name}]"
         logger.info(f"{context_log} 주기적 {greeting_type} 인사: 날씨 확인 시작...")
         nx, ny = config.DEFAULT_NX, config.DEFAULT_NY
-        today_forecast_raw = await utils.get_short_term_forecast_from_kma(nx, ny)
+        today_forecast_raw = await utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
 
         weather_summary = f"오늘 {config.DEFAULT_LOCATION_NAME} 날씨 정보를 가져오는 데 실패했어. 😥"
         if today_forecast_raw and not isinstance(today_forecast_raw, dict):
