@@ -22,7 +22,8 @@ async def get_stock_price(stock_name: str) -> dict:
     }
 
     try:
-        response = await asyncio.to_thread(requests.get, url, params=params, timeout=10)
+        # SSL 인증서 문제 우회를 위해 verify=False 추가. 보안상 권장되지 않으나, 공공 API 서버 문제로 인한 임시방편.
+        response = await asyncio.to_thread(requests.get, url, params=params, timeout=10, verify=False)
         response.raise_for_status()
         data = response.json()
 
