@@ -538,7 +538,7 @@ class AIHandler(commands.Cog):
             async with self.api_call_lock:
                 self._record_api_call()
                 response = await self.response_model.generate_content_async(prompt)
-                await utils.increment_api_counter(self.bot.db, 'gemini_flash_daily_calls')
+                await db_utils.increment_api_counter(self.bot.db, 'gemini_flash_daily_calls')
 
             final_answer = response.text.strip()
             logger.info("최종 응답 생성 성공.", extra=log_extra)
