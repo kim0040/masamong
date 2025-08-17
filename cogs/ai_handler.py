@@ -93,24 +93,32 @@ class AIHandler(commands.Cog):
 
     async def _get_rag_context(self, channel_id: int, user_id: int, query: str) -> Tuple[str, list[str]]:
         """RAG를 위한 컨텍스트를 DB에서 검색하고, 컨텍스트 문자열과 원본 메시지 내용 목록을 반환합니다."""
+        log_extra = {'channel_id': channel_id, 'user_id': user_id}
+        logger.info(f"RAG 컨텍스트 검색 시작. Query: '{query}'", extra=log_extra)
         try:
             query_embedding = np.array((await genai.embed_content_async(model=self.embedding_model_name, content=query, task_type="retrieval_query"))['embedding'])
             async with self.bot.db.execute("SELECT content, embedding FROM conversation_history WHERE channel_id = ? AND embedding IS NOT NULL ORDER BY created_at DESC LIMIT 100;", (channel_id,)) as cursor:
                 rows = await cursor.fetchall()
-            if not rows: return "", []
+            if not rows:
+                logger.info("RAG: 검색할 임베딩 데이터가 없습니다.", extra=log_extra)
+                return "", []
 
             def _cosine_similarity(v1, v2):
                 norm_v1, norm_v2 = np.linalg.norm(v1), np.linalg.norm(v2)
                 return np.dot(v1, v2) / (norm_v1 * norm_v2) if norm_v1 > 0 and norm_v2 > 0 else 0.0
 
             similarities = sorted([(sim, content) for content, blob in rows if (sim := _cosine_similarity(query_embedding, pickle.loads(blob))) > 0.75], key=lambda x: x[0], reverse=True)
-            if not similarities: return "", []
+            if not similarities:
+                logger.info("RAG: 유사도 0.75 이상인 문서를 찾지 못했습니다.", extra=log_extra)
+                return "", []
 
             top_contents = [content for _, content in similarities[:3]]
             context_str = "참고할 만한 과거 대화 내용:\n" + "\n".join(f"- {c}" for c in top_contents)
+            logger.info(f"RAG: {len(top_contents)}개의 유사한 대화 내용을 찾았습니다.", extra=log_extra)
+            logger.debug(f"RAG 결과: {context_str}", extra=log_extra)
             return context_str, top_contents
         except Exception as e:
-            logger.error(f"RAG 컨텍스트 검색 중 오류: {e}", exc_info=True)
+            logger.error(f"RAG 컨텍스트 검색 중 오류: {e}", exc_info=True, extra=log_extra)
             return "", []
 
     # --- 에이전트 핵심 로직 ---
@@ -139,46 +147,64 @@ class AIHandler(commands.Cog):
         user_query = message.content.replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
         if not user_query: return
 
-        log_extra = {'guild_id': message.guild.id}
+        log_extra = {
+            'guild_id': message.guild.id,
+            'channel_id': message.channel.id,
+            'user_id': message.author.id
+        }
+        logger.info(f"에이전트 처리 시작. Query: '{user_query}'", extra=log_extra)
 
         try:
+            # 1. RAG 및 대화 기록 컨텍스트 구성
             rag_prompt_addition, rag_contents = await self._get_rag_context(message.channel.id, message.author.id, user_query)
             rag_content_set = set(rag_contents)
 
             history = []
             async for msg in message.channel.history(limit=15):
+                if msg.id == message.id: continue # 현재 메시지는 제외
                 if msg.content in rag_content_set:
+                    logger.debug(f"중복된 RAG 컨텍스트 메시지 건너뛰기: '{msg.content[:50]}...'", extra=log_extra)
                     continue
                 role = 'model' if msg.author.id == self.bot.user.id else 'user'
                 history.append({'role': role, 'parts': [msg.content]})
                 if len(history) >= 8:
                     break
             history.reverse()
+            logger.info(f"{len(history)}개의 최근 대화 기록과 {len(rag_contents)}개의 RAG 컨텍스트를 조합.", extra=log_extra)
 
+            # 2. 시스템 프롬프트 구성
             system_prompt_str = config.AGENT_SYSTEM_PROMPT
             custom_persona = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'persona_text')
             if custom_persona:
                 system_prompt_str = f"{custom_persona}\n\n{system_prompt_str}"
             if rag_prompt_addition:
                 system_prompt_str = f"{rag_prompt_addition}\n\n{system_prompt_str}"
+            logger.debug(f"최종 시스템 프롬프트: \n---\n{system_prompt_str}\n---", extra=log_extra)
 
             async with message.channel.typing():
+                # 3. 모델 및 대화 생성
                 model_with_dynamic_prompt = genai.GenerativeModel(
                     config.AI_RESPONSE_MODEL_NAME,
                     system_instruction=system_prompt_str
                 )
 
-                full_conversation = history
-                for i in range(5):
+                # 첫 번째 `generate_content_async` 호출을 위한 대화 목록
+                # 시스템 프롬프트는 모델에 설정되었으므로, 여기에는 사용자 쿼리만 포함된 기록을 전달
+                full_conversation = history + [{'role': 'user', 'parts': [user_query]}]
+
+                # 4. 도구 사용 루프
+                for i in range(5): # 최대 5번의 도구 호출 허용
+                    logger.info(f"모델 생성 시도 #{i+1}", extra=log_extra)
+                    logger.debug(f"모델 전달 대화 내용: {json.dumps(full_conversation, ensure_ascii=False, indent=2)}", extra=log_extra)
+
                     response = await model_with_dynamic_prompt.generate_content_async(
                         full_conversation,
                         generation_config=genai.types.GenerationConfig(),
                         safety_settings=config.GEMINI_SAFETY_SETTINGS
                     )
 
-                    response_text = ""
-                    if response.parts:
-                        response_text = "".join(part.text for part in response.parts).strip()
+                    response_text = "".join(part.text for part in response.parts).strip() if response.parts else ""
+                    logger.debug(f"모델 응답 수신: '{response_text}'", extra=log_extra)
 
                     if not response_text and response.candidates[0].finish_reason.name != "STOP":
                         logger.warning(f"Gemini로부터 빈 응답 수신. 종료 사유: {response.candidates[0].finish_reason.name}", extra=log_extra)
@@ -186,23 +212,31 @@ class AIHandler(commands.Cog):
                     tool_call = self._parse_tool_call(response_text)
 
                     if tool_call:
-                        logger.info(f"Tool call 감지 (시도 {i+1}): {tool_call}", extra=log_extra)
-                        full_conversation.append({'role': 'model', 'parts': [response_text]})
+                        logger.info(f"Tool call 감지: {tool_call}", extra=log_extra)
+                        full_conversation.append({'role': 'model', 'parts': [response_text]}) # 모델의 응답(도구호출)을 대화에 추가
 
                         tool_result = await self._execute_tool(tool_call, message.guild.id)
                         tool_result_str = json.dumps(tool_result, ensure_ascii=False, indent=2)
+                        logger.info(f"Tool 실행 결과: {tool_result_str}", extra=log_extra)
 
+                        # 도구 실행 결과를 대화에 추가하여 다음 생성에 사용
                         full_conversation.append({
-                            'role': 'user',
+                            'role': 'user', # Gemini에서는 tool role이 별도로 없고, user role로 결과를 전달
                             'parts': [f"<tool_result>\n{tool_result_str}\n</tool_result>"]
                         })
                     else:
+                        # 도구 호출이 없으면 루프 종료
                         break
 
-                logger.info("최종 응답 생성.", extra=log_extra)
+                # 5. 최종 답변 전송
                 if response_text:
+                    logger.info(f"최종 응답 생성: '{response_text}'", extra=log_extra)
                     bot_response_message = await message.reply(response_text, mention_author=False)
                     await self.add_message_to_history(bot_response_message)
+                else:
+                    logger.warning("모델이 최종적으로 빈 응답을 반환했습니다.", extra=log_extra)
+                    await message.reply(config.MSG_AI_ERROR, mention_author=False) # 빈 응답도 에러 처리
+
         except Exception as e:
             logger.error(f"에이전트 처리 중 오류: {e}", exc_info=True, extra=log_extra)
             await message.reply(config.MSG_AI_ERROR, mention_author=False)
