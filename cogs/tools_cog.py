@@ -43,6 +43,14 @@ class ToolsCog(commands.Cog):
         """특정 통화의 원화(KRW) 대비 환율을 조회합니다."""
         return await exim.get_exchange_rate(currency_code)
 
+    async def get_loan_rates(self) -> dict:
+        """한국수출입은행의 대출 금리 정보를 조회합니다."""
+        return await exim.get_loan_interest_rates()
+
+    async def get_international_rates(self) -> dict:
+        """한국수출입은행의 국제 금리 정보를 조회합니다."""
+        return await exim.get_international_interest_rates()
+
     async def get_lol_match_history(self, riot_id: str, count: int = 1) -> dict:
         """Riot ID를 사용하여 LoL 최근 전적을 조회합니다."""
         # Riot ID 형식: "게임이름#태그라인" (예: "Hide on bush#KR1")
