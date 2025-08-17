@@ -35,9 +35,9 @@ class ToolsCog(commands.Cog):
         """특정 종목(Ticker Symbol)에 대한 최신 뉴스를 조회합니다."""
         return await finnhub.get_company_news(stock_name, count)
 
-    async def search_for_place(self, query: str) -> dict:
-        """키워드로 장소를 검색합니다."""
-        return await kakao.search_place_by_keyword(query)
+    async def search_for_place(self, query: str, page_size: int = 5) -> dict:
+        """키워드로 장소를 검색하고, 여러 개의 결과를 반환합니다."""
+        return await kakao.search_place_by_keyword(query, page_size=page_size)
 
     async def get_krw_exchange_rate(self, currency_code: str = "USD") -> dict:
         """특정 통화의 원화(KRW) 대비 환율을 조회합니다."""

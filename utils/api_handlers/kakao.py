@@ -4,9 +4,9 @@ import requests
 import config
 from logger_config import logger
 
-async def search_place_by_keyword(query: str) -> dict:
+async def search_place_by_keyword(query: str, page_size: int = 5) -> dict:
     """
-    카카오 로컬 API를 사용하여 키워드로 장소를 검색합니다.
+    카카오 로컬 API를 사용하여 키워드로 장소를 검색하고, 상세 정보를 포함한 여러 결과를 반환합니다.
     https://developers.kakao.com/docs/latest/ko/local/dev-guide#search-by-keyword
     """
     if not config.KAKAO_API_KEY or config.KAKAO_API_KEY == 'YOUR_KAKAO_API_KEY':
@@ -18,7 +18,8 @@ async def search_place_by_keyword(query: str) -> dict:
         "Authorization": f"KakaoAK {config.KAKAO_API_KEY}"
     }
     params = {
-        "query": query
+        "query": query,
+        "size": page_size
     }
 
     try:
@@ -29,17 +30,20 @@ async def search_place_by_keyword(query: str) -> dict:
         documents = data.get('documents', [])
         if not documents:
             logger.warning(f"카카오맵 API에서 '{query}'에 대한 검색 결과가 없습니다.")
-            return {"error": f"'{query}'에 대한 장소를 찾을 수 없습니다."}
+            return {"error": f"'{query}'에 대한 장소를 찾을 수 없습니다.", "places": []}
 
-        # agent.md 명세에 따라 필요한 정보만 추출하여 반환
-        # 여기서는 가장 첫 번째 결과만 사용
-        place_info = documents[0]
-        return {
-            "place_name": place_info.get('place_name'),
-            "road_address": place_info.get('road_address_name'),
-            "phone": place_info.get('phone'),
-            "place_url": place_info.get('place_url')
-        }
+        # 상세 정보를 포함하여 여러 결과 반환
+        formatted_places = [
+            {
+                "place_name": place.get('place_name'),
+                "category_name": place.get('category_name'),
+                "road_address_name": place.get('road_address_name'),
+                "phone": place.get('phone'),
+                "place_url": place.get('place_url')
+            }
+            for place in documents
+        ]
+        return {"places": formatted_places}
 
     except requests.exceptions.Timeout:
         logger.error("카카오맵 API 요청 시간 초과.")
