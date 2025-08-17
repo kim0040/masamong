@@ -22,7 +22,8 @@ async def _fetch_exim_data(data_param: str) -> list | dict:
 
     for attempt in range(3): # 최대 3번 재시도
         try:
-            response = await asyncio.to_thread(requests.get, BASE_URL, params=params, timeout=10)
+            # SSL 인증서 문제 우회를 위해 verify=False 추가.
+            response = await asyncio.to_thread(requests.get, BASE_URL, params=params, timeout=10, verify=False)
             response.raise_for_status()
             data = response.json()
             break # 성공 시 루프 탈출
