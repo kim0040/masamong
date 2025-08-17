@@ -60,6 +60,30 @@ def _format_lol_match_embed(user_query: str, execution_context: dict, synthesize
     except (KeyError, TypeError, IndexError):
         return _create_base_embed(user_query, synthesized_response, discord.Color.blue())
 
+def _format_place_embed(user_query: str, execution_context: dict, synthesized_response: str) -> discord.Embed:
+    """장소 검색 결과에 대한 임베드를 생성합니다."""
+    try:
+        places = execution_context['step_1_result']['result']['places']
+
+        title = f"🗺️ '{user_query}' 장소 검색 결과"
+        embed = _create_base_embed(title, synthesized_response, discord.Color.dark_green())
+
+        for i, place in enumerate(places[:3]): # 최대 3개까지 표시
+            place_name = place.get('place_name', '이름 없음')
+            category = place.get('category_name', '카테고리 없음')
+            address = place.get('road_address_name', '주소 없음')
+            url = place.get('place_url', '')
+
+            embed.add_field(
+                name=f"{i+1}. {place_name}",
+                value=f"**카테고리:** {category}\n**주소:** {address}\n[카카오맵에서 보기]({url})",
+                inline=False
+            )
+        return embed
+    except (KeyError, TypeError, IndexError):
+        return _create_base_embed(user_query, synthesized_response, discord.Color.blue())
+
+
 def _format_error_embed(user_query: str, execution_context: dict) -> discord.Embed:
     """오류 발생 시 사용자에게 보여줄 임베드를 생성합니다."""
     error_message = "알 수 없는 오류가 발생했습니다."
@@ -91,6 +115,8 @@ def format_final_response(user_query: str, execution_context: dict, synthesized_
     # 사용된 도구 목록을 확인
     tools_used = {step.get('tool') for step in execution_context.values() if step.get('tool')}
 
+    if "search_for_place" in tools_used:
+        return _format_place_embed(user_query, execution_context, synthesized_response)
     if "get_stock_price" in tools_used:
         return _format_stock_embed(user_query, execution_context, synthesized_response)
     if "get_lol_match_history" in tools_used:

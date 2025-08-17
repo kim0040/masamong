@@ -92,10 +92,11 @@ You are a master planner AI. Your role is to analyze a user's request and create
         *   `stock_name`: The ticker symbol of the stock (e.g., "TSLA").
         *   `count`: The number of news articles to retrieve. Defaults to 3.
 
-3.  `search_for_place(query: str)`
-    *   Description: Searches for a place, like a restaurant or landmark, using a keyword.
+3.  `search_for_place(query: str, page_size: int = 5)`
+    *   Description: Searches for up to 5 places, like restaurants or landmarks, using a keyword. The results will include details like category, address, and a map link.
     *   Parameters:
         *   `query`: The search keyword (e.g., "강남역 맛집").
+        *   `page_size`: The number of places to find. Defaults to 5.
 
 4.  `get_krw_exchange_rate(currency_code: str = "USD")`
     *   Description: Gets the exchange rate for a specific currency against the South Korean Won (KRW).
