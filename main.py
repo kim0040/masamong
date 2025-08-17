@@ -46,6 +46,7 @@ class ReMasamongBot(commands.Bot):
 
         try:
             self.db = await aiosqlite.connect(self.db_path)
+            self.db.row_factory = aiosqlite.Row  # 결과를 딕셔너리처럼 사용할 수 있게 설정
             logger.info(f"데이터베이스에 성공적으로 연결되었습니다: {self.db_path}")
         except Exception as e:
             logger.critical(f"데이터베이스 연결에 실패했습니다: {e}", exc_info=True)
