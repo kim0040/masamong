@@ -49,11 +49,9 @@ GO_DATA_API_KEY_KR = load_config_value('GO_DATA_API_KEY_KR', 'YOUR_GO_DATA_API_K
 EXIM_API_KEY_KR = load_config_value('EXIM_API_KEY_KR', 'YOUR_EXIM_API_KEY_KR')       # 한국수출입은행 (환율)
 
 # '사고'용 모델 (의도분석 등)
-# 참고: 원래 "gemini-2.5-flash-lite"는 존재하지 않는 모델명이므로, 정상 작동하는 최신 모델로 수정합니다.
-AI_INTENT_MODEL_NAME = "gemini-1.5-flash-latest"
+AI_INTENT_MODEL_NAME = "gemini-2.5-flash-lite"
 # '응답'용 모델 (실제 답변 생성)
-# 참고: 원래 "gemini-2.5-flash"는 존재하지 않는 모델명이므로, 정상 작동하는 최신 모델로 수정합니다.
-AI_RESPONSE_MODEL_NAME = "gemini-1.5-flash-latest"
+AI_RESPONSE_MODEL_NAME = "gemini-2.5-flash"
 # 임베딩 모델
 AI_EMBEDDING_MODEL_NAME = "models/embedding-001"
 
