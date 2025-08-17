@@ -13,6 +13,7 @@ import aiosqlite
 import numpy as np
 import pickle
 import random
+import time
 import json
 
 import config
@@ -31,15 +32,17 @@ class AIHandler(commands.Cog):
         self.bot = bot
         self.tools_cog = bot.get_cog('ToolsCog')
         self.ai_user_cooldowns: Dict[int, datetime] = {}
+        self.proactive_cooldowns: Dict[int, float] = {}
         self.gemini_configured = False
         self.api_call_lock = asyncio.Lock()
 
         if config.GEMINI_API_KEY:
             try:
                 genai.configure(api_key=config.GEMINI_API_KEY)
-                self.model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME)
+                # We create model instances dynamically now, so we don't need a default one here.
+                # self.model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME)
                 self.embedding_model_name = "models/embedding-001"
-                logger.info("Gemini API 및 모델 설정 완료.")
+                logger.info("Gemini API 설정 완료.")
                 self.gemini_configured = True
             except Exception as e:
                 logger.critical(f"Gemini API 설정 실패: {e}. AI 기능 비활성화됨.", exc_info=True)
@@ -53,10 +56,20 @@ class AIHandler(commands.Cog):
     async def add_message_to_history(self, message: discord.Message):
         if not self.is_ready or not config.AI_MEMORY_ENABLED or not message.guild: return
         try:
+            # This logic seems duplicated with `_handle_ai_interaction`.
+            # However, we need to save history regardless of whether the bot responds.
+            # We'll keep it for now but it could be refactored.
             is_guild_ai_enabled = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'ai_enabled', default=True)
             if not is_guild_ai_enabled: return
+
             allowed_channels = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'ai_allowed_channels')
-            is_ai_allowed_channel = message.channel.id in allowed_channels if allowed_channels else False
+            is_ai_allowed_channel = False
+            if allowed_channels:
+                 is_ai_allowed_channel = message.channel.id in allowed_channels
+            else:
+                 channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
+                 is_ai_allowed_channel = channel_config.get("allowed", False)
+
             if not is_ai_allowed_channel: return
 
             await self.bot.db.execute(
@@ -71,7 +84,6 @@ class AIHandler(commands.Cog):
 
     async def _create_and_save_embedding(self, message_id: int, content: str, guild_id: int):
         try:
-            # (API 호출 제한 로직은 간소화를 위해 이 예제에서는 생략)
             embedding_result = await genai.embed_content_async(model=self.embedding_model_name, content=content, task_type="retrieval_document")
             embedding_blob = pickle.dumps(embedding_result['embedding'])
             await self.bot.db.execute("UPDATE conversation_history SET embedding = ? WHERE message_id = ?", (embedding_blob, message_id))
@@ -129,39 +141,39 @@ class AIHandler(commands.Cog):
 
         log_extra = {'guild_id': message.guild.id}
 
-        # 1. RAG 컨텍스트와 중복 제거용 콘텐츠 목록 가져오기
-        rag_prompt_addition, rag_contents = await self._get_rag_context(message.channel.id, message.author.id, user_query)
-        rag_content_set = set(rag_contents)
+        try:
+            rag_prompt_addition, rag_contents = await self._get_rag_context(message.channel.id, message.author.id, user_query)
+            rag_content_set = set(rag_contents)
 
-        # 2. 중복을 피해 대화 기록 구성 (시간순: 오래된 -> 최신)
-        history = []
-        async for msg in message.channel.history(limit=15):
-            if msg.content in rag_content_set:
-                continue
-            role = 'model' if msg.author.id == self.bot.user.id else 'user'
-            history.append({'role': role, 'parts': [msg.content]})
-            if len(history) >= 8:
-                break
-        history.reverse()
+            history = []
+            async for msg in message.channel.history(limit=15):
+                if msg.content in rag_content_set:
+                    continue
+                role = 'model' if msg.author.id == self.bot.user.id else 'user'
+                history.append({'role': role, 'parts': [msg.content]})
+                if len(history) >= 8:
+                    break
+            history.reverse()
 
-        # 3. 시스템 프롬프트 구성 (페르소나 + RAG 컨텍스트)
-        system_prompt = config.AGENT_SYSTEM_PROMPT
-        custom_persona = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'persona_text')
-        if custom_persona:
-            system_prompt = f"{custom_persona}\n\n{system_prompt}"
-        if rag_prompt_addition:
-            system_prompt = f"{rag_prompt_addition}\n\n{system_prompt}"
+            system_prompt_str = config.AGENT_SYSTEM_PROMPT
+            custom_persona = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'persona_text')
+            if custom_persona:
+                system_prompt_str = f"{custom_persona}\n\n{system_prompt_str}"
+            if rag_prompt_addition:
+                system_prompt_str = f"{rag_prompt_addition}\n\n{system_prompt_str}"
 
-        # 4. Gemini API 호출 및 응답 처리 (상태 비저장 방식)
-        async with message.channel.typing():
-            try:
+            async with message.channel.typing():
+                model_with_dynamic_prompt = genai.GenerativeModel(
+                    config.AI_RESPONSE_MODEL_NAME,
+                    system_instruction=system_prompt_str
+                )
+
                 full_conversation = history
-                for i in range(5): # 최대 5번의 tool-call-result 루프
-                    response = await self.model.generate_content_async(
+                for i in range(5):
+                    response = await model_with_dynamic_prompt.generate_content_async(
                         full_conversation,
                         generation_config=genai.types.GenerationConfig(),
-                        safety_settings=config.GEMINI_SAFETY_SETTINGS,
-                        system_instruction=system_prompt,
+                        safety_settings=config.GEMINI_SAFETY_SETTINGS
                     )
 
                     response_text = ""
@@ -169,9 +181,7 @@ class AIHandler(commands.Cog):
                         response_text = "".join(part.text for part in response.parts).strip()
 
                     if not response_text and response.candidates[0].finish_reason.name != "STOP":
-                         # 일부 모델은 response.text 대신 content.parts에 텍스트를 포함할 수 있습니다.
-                         # 혹은 안전 설정, 길이 제한 등으로 인해 빈 응답이 올 수 있습니다.
-                         logger.warning(f"Gemini로부터 빈 응답 수신. 종료 사유: {response.candidates[0].finish_reason.name}", extra=log_extra)
+                        logger.warning(f"Gemini로부터 빈 응답 수신. 종료 사유: {response.candidates[0].finish_reason.name}", extra=log_extra)
 
                     tool_call = self._parse_tool_call(response_text)
 
@@ -193,9 +203,111 @@ class AIHandler(commands.Cog):
                 if response_text:
                     bot_response_message = await message.reply(response_text, mention_author=False)
                     await self.add_message_to_history(bot_response_message)
-            except Exception as e:
-                logger.error(f"에이전트 처리 중 오류: {e}", exc_info=True, extra=log_extra)
-                await message.reply(config.MSG_AI_ERROR, mention_author=False)
+        except Exception as e:
+            logger.error(f"에이전트 처리 중 오류: {e}", exc_info=True, extra=log_extra)
+            await message.reply(config.MSG_AI_ERROR, mention_author=False)
+
+    async def should_proactively_respond(self, message: discord.Message) -> bool:
+        """봇이 대화에 자발적으로 참여해야 할지 여부를 결정합니다."""
+        conf = config.AI_PROACTIVE_RESPONSE_CONFIG
+        if not conf.get("enabled"): return False
+
+        now = time.time()
+        cooldown_seconds = conf.get("cooldown_seconds", 90)
+        last_proactive_time = self.proactive_cooldowns.get(message.channel.id, 0)
+        if (now - last_proactive_time) < cooldown_seconds: return False
+
+        if len(message.content) < conf.get("min_message_length", 10): return False
+
+        msg_lower = message.content.lower()
+        if not any(keyword in msg_lower for keyword in conf.get("keywords", [])): return False
+
+        if random.random() > conf.get("probability", 0.1): return False
+
+        try:
+            look_back = conf.get("look_back_count", 5)
+            history_msgs = [f"User({msg.author.display_name}): {msg.content}" async for msg in message.channel.history(limit=look_back)]
+            history_msgs.reverse()
+            conversation_context = "\n".join(history_msgs)
+
+            gatekeeper_prompt = f"""{conf['gatekeeper_persona']}
+
+--- 최근 대화 내용 ---
+{conversation_context}
+---
+사용자의 마지막 메시지: "{message.content}"
+---
+
+자, 판단해. Yes or No?"""
+
+            lite_model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME)
+            response = await lite_model.generate_content_async(
+                gatekeeper_prompt,
+                generation_config=genai.types.GenerationConfig(temperature=0.0),
+                safety_settings=config.GEMINI_SAFETY_SETTINGS,
+            )
+
+            decision = response.text.strip().upper()
+            logger.info(f"게이트키퍼 AI 결정: '{decision}'", extra={'guild_id': message.guild.id})
+
+            if "YES" in decision:
+                self.proactive_cooldowns[message.channel.id] = now
+                return True
+        except Exception as e:
+            logger.error(f"게이트키퍼 AI 실행 중 오류: {e}", exc_info=True, extra={'guild_id': message.guild.id})
+
+        return False
+
+    async def get_recent_conversation_text(self, channel_id: int, look_back: int = 20) -> str:
+        """지정된 채널의 최근 대화 기록을 텍스트로 가져옵니다."""
+        if not self.bot.db: return ""
+
+        query = "SELECT user_name, content FROM conversation_history WHERE channel_id = ? AND is_bot = 0 ORDER BY created_at DESC LIMIT ?"
+        try:
+            async with self.bot.db.execute(query, (channel_id, look_back)) as cursor:
+                rows = await cursor.fetchall()
+            if not rows: return ""
+
+            rows.reverse()
+            return "\n".join([f"User({row['user_name']}): {row['content']}" for row in rows])
+        except Exception as e:
+            logger.error(f"최근 대화 기록 조회 중 DB 오류: {e}", exc_info=True)
+            return ""
+
+    async def generate_creative_text(self, channel: discord.TextChannel, author: discord.User, prompt_key: str, context: dict) -> str:
+        """창의적인 텍스트 생성을 위한 전용 AI 호출 함수입니다."""
+        if not self.is_ready: return config.MSG_AI_ERROR
+
+        try:
+            prompt_template = config.AI_CREATIVE_PROMPTS.get(prompt_key)
+            if not prompt_template:
+                logger.error(f"'{prompt_key}'에 해당하는 크리에이티브 프롬프트를 찾을 수 없습니다.")
+                return config.MSG_CMD_ERROR
+
+            user_prompt = prompt_template.format(**context)
+
+            channel_config = config.CHANNEL_AI_CONFIG.get(channel.id, {})
+            persona = channel_config.get("persona", "")
+            rules = channel_config.get("rules", "")
+            system_prompt = f"{persona}\n\n{rules}"
+
+            model_with_prompt = genai.GenerativeModel(
+                model_name=config.AI_RESPONSE_MODEL_NAME,
+                system_instruction=system_prompt
+            )
+
+            response = await model_with_prompt.generate_content_async(
+                user_prompt,
+                safety_settings=config.GEMINI_SAFETY_SETTINGS
+            )
+
+            return response.text.strip()
+        except KeyError as e:
+            logger.error(f"프롬프트 포맷팅 중 키 오류: '{prompt_key}' 프롬프트에 필요한 컨텍스트({e})가 없습니다.", extra={'guild_id': channel.guild.id})
+            return config.MSG_CMD_ERROR
+        except Exception as e:
+            logger.error(f"Creative text 생성 중 오류: {e}", exc_info=True, extra={'guild_id': channel.guild.id})
+            return config.MSG_AI_ERROR
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AIHandler(bot))
