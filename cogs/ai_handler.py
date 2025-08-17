@@ -3,19 +3,22 @@ import discord
 from discord.ext import commands
 import google.generativeai as genai
 import google.api_core.exceptions
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta
 import asyncio
 import pytz
 from collections import deque
+import re
 from typing import Dict, Any, Tuple
 import aiosqlite
 import numpy as np
 import pickle
 import random
+import json
 
 import config
 from logger_config import logger
 import utils
+from . import response_formatter
 
 KST = pytz.timezone('Asia/Seoul')
 
@@ -33,6 +36,7 @@ class AIHandler(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.tools_cog = bot.get_cog('ToolsCog')
         self.ai_user_cooldowns: Dict[int, datetime] = {}
         self.gemini_configured = False
         self.api_call_lock = asyncio.Lock()
@@ -293,30 +297,59 @@ class AIHandler(commands.Cog):
             logger.error(f"자발적 응답 여부 판단 중 예기치 않은 오류: {e}", exc_info=True, extra={'guild_id': message.guild.id})
             return False
 
-    async def analyze_intent(self, message: discord.Message) -> str:
-        if not config.AI_INTENT_ANALYSIS_ENABLED or not self.is_ready: return "Chat"
+    async def create_execution_plan(self, message: discord.Message) -> dict | None:
+        """
+        사용자의 메시지를 기반으로 '계획 및 실행'을 위한 JSON 계획을 생성합니다.
+        """
         user_query = message.content.replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
-        if not user_query: return "Chat"
+        if not user_query:
+            return None
         
+        log_extra = {'guild_id': message.guild.id}
+        logger.info(f"실행 계획 생성 시작. 사용자 쿼리: '{user_query}'", extra=log_extra)
+
         try:
             is_limited, _ = await self._check_global_rate_limit('gemini_lite_daily_calls', config.API_LITE_RPD_LIMIT)
-            if is_limited: return "Chat"
+            if is_limited:
+                await message.reply(config.MSG_AI_DAILY_LIMITED, mention_author=False)
+                return None
             
-            prompt = f"{config.AI_INTENT_PERSONA}\n\n사용자 메시지: \"{user_query}\""
+            prompt = f"{config.AGENT_PLANNER_PERSONA}\n\n# User Request:\n{user_query}"
             
             async with self.api_call_lock:
                 self._record_api_call()
                 response = await self.intent_model.generate_content_async(prompt)
                 await utils.increment_api_counter(self.bot.db, 'gemini_lite_daily_calls')
             
-            intent = response.text.strip()
-            logger.info(f"의도 분석 결과: '{intent}'", extra={'guild_id': message.guild.id})
-            
-            valid_intents = ['Time', 'Weather', 'Command', 'Chat', 'Mixed']
-            return intent if intent in valid_intents else 'Chat'
+            # 응답 텍스트에서 JSON 부분만 추출
+            response_text = response.text.strip()
+            json_match = re.search(r'```json\n({.*?})\n```', response_text, re.DOTALL)
+            if json_match:
+                json_text = json_match.group(1)
+            else:
+                json_text = response_text
+
+            # JSON 파싱 및 검증
+            try:
+                plan_json = json.loads(json_text)
+                if 'plan' not in plan_json or not isinstance(plan_json['plan'], list):
+                    raise ValueError("JSON에 'plan' 키가 없거나 리스트가 아닙니다.")
+                logger.info(f"실행 계획 생성 성공: {plan_json}", extra=log_extra)
+                return plan_json
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.error(f"LLM이 생성한 계획의 JSON 파싱 또는 검증 실패. 오류: {e}\n원본 텍스트: {response_text}", extra=log_extra)
+                # 실패 시 일반 채팅으로 처리하는 fallback
+                return {
+                    "plan": [{
+                        "tool_to_use": "general_chat",
+                        "parameters": {"user_query": user_query}
+                    }]
+                }
+
         except Exception as e:
-            logger.error(f"AI 의도 분석 중 오류 발생: {e}", exc_info=True, extra={'guild_id': message.guild.id})
-            return "Chat"
+            logger.error(f"실행 계획 생성 중 예기치 않은 오류 발생: {e}", exc_info=True, extra=log_extra)
+            await message.reply(config.MSG_AI_ERROR, mention_author=False)
+            return None
 
     async def generate_creative_text(self, channel: discord.TextChannel, author: discord.User, prompt_key: str, context: Dict[str, Any] | None = None) -> str | None:
         if not self.is_ready:
@@ -400,21 +433,79 @@ class AIHandler(commands.Cog):
             logger.error(f"AI 응답 생성 중 예기치 않은 오류: {e}", exc_info=True, extra={'guild_id': guild_id})
             return config.MSG_AI_ERROR
 
-    async def process_ai_message(self, message: discord.Message, weather_info: str | None = None, time_info: str | None = None, intent: str = "Chat"):
+    async def synthesize_final_response(self, user_query: str, execution_context: dict, author: discord.User, guild_id: int) -> str:
+        """
+        실행 컨텍스트를 기반으로 최종 사용자 응답을 생성합니다.
+        """
+        log_extra = {'guild_id': guild_id}
+        context_str = json.dumps(execution_context, indent=2, ensure_ascii=False)
+
+        prompt = (
+            f"{config.AGENT_SYNTHESIZER_PERSONA}\n\n"
+            f"# User's Original Query:\n{user_query}\n\n"
+            f"# Data Collected from Tools:\n```json\n{context_str}\n```"
+        )
+
+        try:
+            is_limited, limit_message = await self._check_global_rate_limit('gemini_flash_daily_calls', config.API_FLASH_RPD_LIMIT)
+            if is_limited: return limit_message
+
+            async with self.api_call_lock:
+                self._record_api_call()
+                response = await self.response_model.generate_content_async(prompt)
+                await utils.increment_api_counter(self.bot.db, 'gemini_flash_daily_calls')
+
+            final_answer = response.text.strip()
+            logger.info("최종 응답 생성 성공.", extra=log_extra)
+            return final_answer
+
+        except Exception as e:
+            logger.error(f"최종 응답 생성 중 예기치 않은 오류: {e}", exc_info=True, extra=log_extra)
+            return config.MSG_AI_ERROR
+
+    async def process_agent_message(self, message: discord.Message):
+        """
+        사용자 메시지에 대한 Plan-and-Execute 에이전트 워크플로우를 처리합니다.
+        """
         if not self.is_ready: return
+
         user_query = message.content.replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
-        if not user_query and not weather_info:
+        if not user_query:
             await message.reply(config.MSG_AI_NO_CONTENT.format(bot_name=self.bot.user.name), mention_author=False)
             return
 
         async with message.channel.typing():
-            ai_response_text = await self._generate_gemini_response(
-                channel_id=message.channel.id, user_query=user_query, author=message.author,
-                persona_config=config.CHANNEL_AI_CONFIG.get(message.channel.id, {}),
-                weather_info_str=weather_info, time_info_str=time_info, intent=intent
-            )
-            if ai_response_text:
-                bot_response_message = await message.reply(ai_response_text[:2000], mention_author=False)
+            # 1. 계획 수립 (Planner)
+            plan = await self.create_execution_plan(message)
+            if not plan:
+                # 오류는 create_execution_plan 내부에서 이미 처리됨
+                return
+
+            # 2. 계획 실행 (Executor)
+            execution_context = await self.execute_plan(plan, message.guild.id)
+
+            # 3. 최종 응답 생성 (Synthesizer)
+            first_step_result = execution_context.get("step_1", {})
+            # 일반 채팅 또는 도구 사용 실패 시, 기존 RAG 기반 채팅으로 fallback
+            if first_step_result.get("tool") == "general_chat" or "error" in first_step_result:
+                # 에러가 있다면 context에 담겨서 Synthesizer로 전달됨
+                is_error = "error" in first_step_result
+                final_response = await self.synthesize_final_response(user_query, execution_context, message.author, message.guild.id)
+                # 만약 에러 응답도 실패하면, 기본 에러 메시지 사용
+                if not final_response and is_error:
+                    final_response = config.MSG_AI_ERROR
+                # 일반 챗 폴백의 경우, RAG를 사용하는 기존 _generate_gemini_response 호출
+                elif not is_error:
+                    final_response = await self._generate_gemini_response(
+                        channel_id=message.channel.id, user_query=user_query, author=message.author,
+                        persona_config=config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
+                    )
+            else:
+                # 도구 사용 성공 시, 결과를 종합하여 답변 생성
+                final_response = await self.synthesize_final_response(user_query, execution_context, message.author, message.guild.id)
+
+            if final_response:
+                bot_response_message = await message.reply(final_response[:2000], mention_author=False)
                 await self.add_message_to_history(bot_response_message)
 
     async def generate_system_alert_message(self, channel_id: int, alert_context_info: str, alert_type: str = "일반 알림") -> str | None:
@@ -426,6 +517,143 @@ class AIHandler(commands.Cog):
             channel_id=channel_id, user_query=user_query_for_alert, author=self.bot.user,
             persona_config=config.CHANNEL_AI_CONFIG.get(channel_id, {}), is_task=True, intent=alert_type
         )
+
+    async def synthesize_final_response(self, user_query: str, execution_context: dict, author: discord.User, guild_id: int) -> str:
+        """
+        실행 컨텍스트를 기반으로 최종 사용자 응답을 생성합니다.
+        """
+        log_extra = {'guild_id': guild_id}
+        context_str = json.dumps(execution_context, indent=2, ensure_ascii=False)
+
+        prompt = (
+            f"{config.AGENT_SYNTHESIZER_PERSONA}\n\n"
+            f"# User's Original Query:\n{user_query}\n\n"
+            f"# Data Collected from Tools:\n```json\n{context_str}\n```"
+        )
+
+        try:
+            is_limited, limit_message = await self._check_global_rate_limit('gemini_flash_daily_calls', config.API_FLASH_RPD_LIMIT)
+            if is_limited: return limit_message
+
+            async with self.api_call_lock:
+                self._record_api_call()
+                response = await self.response_model.generate_content_async(prompt)
+                await utils.increment_api_counter(self.bot.db, 'gemini_flash_daily_calls')
+
+            final_answer = response.text.strip()
+            logger.info("최종 응답 생성 성공.", extra=log_extra)
+            return final_answer
+
+        except Exception as e:
+            logger.error(f"최종 응답 생성 중 예기치 않은 오류: {e}", exc_info=True, extra=log_extra)
+            return config.MSG_AI_ERROR
+
+    async def process_agent_message(self, message: discord.Message):
+        """
+        사용자 메시지에 대한 Plan-and-Execute 에이전트 워크플로우를 처리합니다.
+        """
+        if not self.is_ready: return
+
+        user_query = message.content.replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
+        if not user_query:
+            await message.reply(config.MSG_AI_NO_CONTENT.format(bot_name=self.bot.user.name), mention_author=False)
+            return
+
+        async with message.channel.typing():
+            # 1. 계획 수립 (Planner)
+            plan = await self.create_execution_plan(message)
+            if not plan:
+                return
+
+            # 2. 계획 실행 (Executor)
+            execution_context = await self.execute_plan(plan, message.guild.id)
+
+            # 3. 최종 응답 생성 (Synthesizer)
+            first_step_result = execution_context.get("step_1_result", {})
+
+            if first_step_result.get("tool") == "general_chat":
+                final_response_text = await self._generate_gemini_response(
+                    channel_id=message.channel.id, user_query=user_query, author=message.author,
+                    persona_config=config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
+                )
+            else:
+                final_response_text = await self.synthesize_final_response(user_query, execution_context, message.author, message.guild.id)
+
+            # 4. 응답 포맷팅 및 전송
+            if final_response_text:
+                formatted_response = response_formatter.format_final_response(user_query, execution_context, final_response_text)
+
+                bot_response_message = None
+                if isinstance(formatted_response, discord.Embed):
+                    bot_response_message = await message.reply(embed=formatted_response, mention_author=False)
+                else:
+                    bot_response_message = await message.reply(formatted_response[:2000], mention_author=False)
+
+                if bot_response_message:
+                    await self.add_message_to_history(bot_response_message)
+
+    async def execute_plan(self, plan: dict, guild_id: int) -> dict:
+        """
+        생성된 JSON 계획을 단계별로 실행하고, 각 단계의 결과를 컨텍스트에 저장합니다.
+        """
+        if not self.tools_cog:
+            logger.error("ToolsCog가 로드되지 않아 계획을 실행할 수 없습니다.", extra={'guild_id': guild_id})
+            return {"error": "도구 실행기를 찾을 수 없습니다."}
+
+        execution_context = {}
+        step_number = 1
+        log_extra = {'guild_id': guild_id}
+
+        for step in plan.get('plan', []):
+            tool_name = step.get('tool_to_use')
+            parameters = step.get('parameters', {})
+            step_key = f"step_{step_number}"
+
+            if not tool_name:
+                logger.warning(f"계획의 {step_number}번째 단계에 'tool_to_use'가 없습니다. 건너뜁니다.", extra=log_extra)
+                step_number += 1
+                continue
+
+            # 일반 대화는 특별 처리
+            if tool_name == "general_chat":
+                execution_context[step_key] = {"result": parameters.get("user_query"), "tool": "general_chat"}
+                logger.info("일반 대화로 계획을 종료합니다.", extra=log_extra)
+                break
+
+            try:
+                tool_method = getattr(self.tools_cog, tool_name)
+            except AttributeError:
+                error_msg = f"계획 실행 중단: 존재하지 않는 도구 '{tool_name}'를 호출하려고 했습니다."
+                logger.error(error_msg, extra=log_extra)
+                execution_context[step_key] = {"error": error_msg}
+                break
+
+            try:
+                logger.info(f"Executing tool: {tool_name} with params: {parameters}", extra=log_extra)
+                # 이전 단계의 결과를 파라미터로 사용해야 하는 경우에 대한 처리 (고급 기능)
+                # 예: parameters의 값이 "{step_1.price}" 같은 형태일 때, context에서 값을 찾아 대체
+                # 현재는 직접적인 값만 전달하는 것으로 가정
+                result = await tool_method(**parameters)
+
+                if isinstance(result, dict) and result.get("error"):
+                    error_msg = f"도구 '{tool_name}' 실행 중 오류 발생: {result['error']}"
+                    logger.warning(error_msg, extra=log_extra)
+                    execution_context[step_key] = {"error": error_msg}
+                    break
+
+                execution_context[step_key] = {"result": result, "tool": tool_name}
+
+            except Exception as e:
+                error_msg = f"도구 '{tool_name}' 실행 중 예기치 않은 오류 발생: {e}"
+                logger.error(error_msg, exc_info=True, extra=log_extra)
+                execution_context[step_key] = {"error": "도구 실행 중 예상치 못한 오류가 발생했습니다."}
+                break
+
+            step_number += 1
+
+        logger.info(f"계획 실행 완료. 최종 컨텍스트: {execution_context}", extra=log_extra)
+        return execution_context
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AIHandler(bot))
