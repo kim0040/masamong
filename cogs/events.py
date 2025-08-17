@@ -108,13 +108,15 @@ class EventListeners(commands.Cog):
         if self.ai_handler:
             await self.ai_handler.add_message_to_history(message)
 
-        if message.content.startswith(self.bot.command_prefix):
-            await self.bot.process_commands(message)
-            return
+        # AI 상호작용 및 키워드 트리거를 먼저 처리
+        # 만약 이들이 메시지를 처리했다면, 명령어 처리를 시도하지 않을 수 있음 (선택적)
+        handled_by_keyword = await self._handle_keyword_triggers(message)
+        if not handled_by_keyword:
+            await self._handle_ai_interaction(message)
 
-        if await self._handle_keyword_triggers(message):
-            return
-        await self._handle_ai_interaction(message)
+        # 마지막으로, 모든 메시지에 대해 명령어 처리를 시도
+        # on_message 리스너가 있으면, 반드시 이 함수를 호출해야 명령어가 작동함
+        await self.bot.process_commands(message)
 
     @commands.Cog.listener()
     async def on_command_completion(self, ctx: commands.Context):
