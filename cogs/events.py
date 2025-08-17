@@ -58,7 +58,7 @@ class EventListeners(commands.Cog):
         for trigger_type, keywords in config.FUN_KEYWORD_TRIGGERS.get("triggers", {}).items():
             for keyword in keywords:
                 if keyword in msg_content:
-                    logger.info(f"{context_log} FunCog '{trigger_type}' 키워드 감지 ('{keyword}')")
+                    logger.info(f"{context_log} FunCog '{trigger_type}' 키워드 감지 ('{keyword}')", extra={'guild_id': message.guild.id})
                     self.fun_cog.update_cooldown(message.channel.id)
                     if trigger_type == "summarize":
                         await self.fun_cog.execute_summarize(message.channel, message.author)
@@ -69,19 +69,14 @@ class EventListeners(commands.Cog):
 
     async def _handle_ai_interaction(self, message: discord.Message):
         """AI 상호작용 조건을 확인하고 처리합니다."""
-        context_log = f"[{message.guild.name}/{message.channel.name}]"
-        logger.debug(f"{context_log} AI 상호작용 처리 시작...")
-
         if not self.ai_handler or not self.ai_handler.is_ready:
-            logger.debug(f"{context_log} AI 핸들러가 준비되지 않아 처리 중단.")
             return
 
-        is_guild_ai_enabled = utils.get_guild_setting(message.guild.id, 'ai_enabled', default=True)
+        is_guild_ai_enabled = await utils.get_guild_setting(self.bot.db, message.guild.id, 'ai_enabled', default=True)
         if not is_guild_ai_enabled:
-            logger.debug(f"[{message.guild.name}] 서버의 AI 기능이 비활성화되어 처리 중단.")
             return
 
-        allowed_channels = utils.get_guild_setting(message.guild.id, 'ai_allowed_channels')
+        allowed_channels = await utils.get_guild_setting(self.bot.db, message.guild.id, 'ai_allowed_channels')
         is_ai_allowed_channel = False
         if allowed_channels:
             is_ai_allowed_channel = message.channel.id in allowed_channels
@@ -90,94 +85,39 @@ class EventListeners(commands.Cog):
             is_ai_allowed_channel = channel_config.get("allowed", False)
 
         if not is_ai_allowed_channel:
-            logger.debug(f"{context_log}은 AI 응답이 허용되지 않은 채널이므로 처리 중단.")
             return
 
         is_bot_mentioned = self.bot.user.mentioned_in(message)
         should_proactively_respond = await self.ai_handler.should_proactively_respond(message)
 
         if not is_bot_mentioned and not should_proactively_respond:
-            logger.debug(f"{context_log} 멘션도, 자발적 응답 조건도 아니므로 처리 중단.")
             return
 
-        logger.debug(f"{context_log} 의도 분석 시작...")
-        intent = await self.ai_handler.analyze_intent(message)
-        logger.info(f"{context_log} 사용자 '{message.author}'의 메시지 의도: {intent}")
-
-        async with message.channel.typing():
-            if intent == 'Time':
-                current_time_str = utils.get_current_time()
-                context = {"current_time": current_time_str}
-                response_text = await self.ai_handler.generate_creative_text(message.channel, message.author, "answer_time", context)
-                bot_response = await message.reply(response_text or config.MSG_AI_ERROR, mention_author=False)
-                if self.ai_handler: self.ai_handler.add_message_to_history(bot_response)
-
-            elif intent == 'Weather' and self.weather_cog:
-                user_query = message.content.lower()
-
-                # 1. 지역 파싱
-                location_name = config.DEFAULT_LOCATION_NAME
-                nx, ny = config.DEFAULT_NX, config.DEFAULT_NY
-
-                parsed_location_name = None
-                sorted_locations = sorted(config.LOCATION_COORDINATES.keys(), key=len, reverse=True)
-                for loc_key in sorted_locations:
-                    if loc_key in user_query:
-                        parsed_location_name = loc_key
-                        break
-
-                if parsed_location_name:
-                    location_name = parsed_location_name
-                    coords = config.LOCATION_COORDINATES[location_name]
-                    nx, ny = str(coords["nx"]), str(coords["ny"])
-                    logger.info(f"{context_log} 날씨 의도: 지역 감지 - {location_name}")
-                else:
-                    logger.info(f"{context_log} 날씨 의도: 지역 감지 실패, 기본값({location_name}) 사용.")
-
-                # 2. 날짜 파싱
-                day_offset = 0
-                if "모레" in user_query: day_offset = 2
-                elif "내일" in user_query: day_offset = 1
-
-                # 3. 날씨 정보 조회 및 AI 응답 생성
-                weather_data, error_msg = await self.weather_cog.get_formatted_weather_string(day_offset, location_name, nx, ny)
-
-                if error_msg:
-                    await message.reply(error_msg, mention_author=False)
-                elif weather_data:
-                    context = {"location_name": location_name, "weather_data": weather_data}
-                    response_text = await self.ai_handler.generate_creative_text(message.channel, message.author, "answer_weather", context)
-                    bot_response = await message.reply(response_text or config.MSG_AI_ERROR, mention_author=False)
-                    if self.ai_handler: self.ai_handler.add_message_to_history(bot_response)
-                else:
-                    await message.reply(config.MSG_WEATHER_NO_DATA, mention_author=False)
-
-            else: # Chat, Mixed, Command
-                await self.ai_handler.process_ai_message(message, intent=intent)
-
-        logger.debug(f"{context_log} AI 상호작용 처리 종료.")
+        # The new agent orchestrator handles everything from planning to response.
+        await self.ai_handler.process_agent_message(message)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild or isinstance(message.channel, discord.DMChannel):
             return
 
-        if self.activity_cog: self.activity_cog.record_message(message)
-        if self.ai_handler: self.ai_handler.add_message_to_history(message)
+        if self.activity_cog:
+            await self.activity_cog.record_message(message)
 
-        # 봇의 접두사로 시작하는 메시지는 명령어 처리를 우선 시도
+        if self.ai_handler:
+            await self.ai_handler.add_message_to_history(message)
+
         if message.content.startswith(self.bot.command_prefix):
             await self.bot.process_commands(message)
             return
 
-        # 명령어가 아닐 경우, 키워드 및 AI 상호작용 처리
         if await self._handle_keyword_triggers(message):
             return
         await self._handle_ai_interaction(message)
 
     @commands.Cog.listener()
     async def on_command_completion(self, ctx: commands.Context):
-        """명령어 실행 완료 시 분석 로그를 기록합니다."""
+        """명령어 실행 완료 시 분석 및 Discord 로그를 기록합니다."""
         if not ctx.guild:
             return
 
@@ -193,25 +133,24 @@ class EventListeners(commands.Cog):
             "success": True,
             "latency_ms": round(latency_ms)
         }
-        utils.log_analytics("COMMAND_USAGE", details)
+        await utils.log_analytics(self.bot.db, "COMMAND_USAGE", details)
 
-        # Discord 로그 채널에 임베드 로깅
-        embed = discord.Embed(
-            title=f"✅ Command Used: `!{details['command']}`",
-            color=discord.Color.green(),
-            timestamp=datetime.now(pytz.utc)
+        log_message = (
+            f"Command `!{details['command']}` by `{ctx.author}` "
+            f"in <#{ctx.channel.id}>. Latency: {details['latency_ms']}ms\n"
+            f"```{details['full_message']}```"
         )
-        embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
-        embed.add_field(name="User", value=f"<@{ctx.author.id}>", inline=True)
-        embed.add_field(name="Channel", value=f"<#{ctx.channel.id}>", inline=True)
-        embed.add_field(name="Latency", value=f"{details['latency_ms']}ms", inline=True)
-        embed.add_field(name="Full Command", value=f"```\n{details['full_message']}\n```", inline=False)
-        await utils.log_to_discord(ctx.guild, embed)
+        logger.info(log_message, extra={'guild_id': ctx.guild.id})
 
     @commands.Cog.listener()
     async def on_command_error(self, ctx: commands.Context, error: commands.CommandError):
-        """명령어 실행 오류 시 분석 로그를 기록합니다."""
+        """명령어 실행 오류 시 분석 및 Discord 로그를 기록합니다."""
         if not ctx.guild:
+            return
+
+        ignored_errors = (commands.CommandNotFound, commands.CheckFailure, commands.MissingRequiredArgument)
+        if isinstance(error, ignored_errors):
+            logger.debug(f"무시된 명령어 오류: {error}")
             return
 
         details = {
@@ -224,38 +163,27 @@ class EventListeners(commands.Cog):
             "error": str(type(error).__name__),
             "error_message": str(error)
         }
-        utils.log_analytics("COMMAND_USAGE", details)
+        await utils.log_analytics(self.bot.db, "COMMAND_USAGE", details)
 
-        # Discord 로그 채널에 임베드 로깅
-        embed = discord.Embed(
-            title=f"❌ Command Error: `!{details['command']}`",
-            description=f"```\n{details['error_message']}\n```",
-            color=discord.Color.red(),
-            timestamp=datetime.now(pytz.utc)
+        log_message = (
+            f"Command Error `!{details['command']}` by `{ctx.author}` "
+            f"in <#{ctx.channel.id}>. Error: `{details['error']}`\n"
+            f"```{details['error_message']}```"
         )
-        embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
-        embed.add_field(name="User", value=f"<@{ctx.author.id}>", inline=True)
-        embed.add_field(name="Channel", value=f"<#{ctx.channel.id}>", inline=True)
-        embed.add_field(name="Error Type", value=f"`{details['error']}`", inline=True)
-        embed.add_field(name="Full Command", value=f"```\n{details['full_message']}\n```", inline=False)
-        await utils.log_to_discord(ctx.guild, embed)
+        logger.error(log_message, exc_info=error, extra={'guild_id': ctx.guild.id})
 
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message):
         if not message.guild or message.author.bot: return
-        context_log = f"[{message.guild.name}/{message.channel.name}]"
-        content_to_log = message.content if message.content else "(내용 없음)"
-        if message.attachments:
-            content_to_log += f" [첨부: {', '.join([f'{att.filename}({att.size}b)' for att in message.attachments])}]"
-        logger.warning(f"{context_log} 메시지 삭제됨 | 작성자: {message.author} | 내용: {content_to_log}")
+        logger.warning(f"메시지 삭제됨 | 작성자: {message.author} | 내용: {message.content or '(내용 없음)'}", extra={'guild_id': message.guild.id})
 
     @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild):
-        logger.info(f'새로운 서버에 참여했습니다: "{guild.name}" (ID: {guild.id})')
+        logger.info(f'새로운 서버에 참여했습니다: "{guild.name}" (ID: {guild.id})', extra={'guild_id': guild.id})
 
     @commands.Cog.listener()
     async def on_guild_remove(self, guild: discord.Guild):
-        logger.info(f'서버에서 추방되었습니다: "{guild.name}" (ID: {guild.id})')
+        logger.info(f'서버에서 추방되었습니다: "{guild.name}" (ID: {guild.id})', extra={'guild_id': guild.id})
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(EventListeners(bot))

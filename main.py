@@ -54,6 +54,7 @@ class ReMasamongBot(commands.Bot):
 
         # cogs 폴더 내의 모든 .py 파일을 동적으로 로드
         cog_list = [
+            'tools_cog', # 다른 Cog들이 의존할 수 있으므로 먼저 로드
             'events', 'commands', 'ai_handler', 'weather_cog', 'fun_cog',
             'activity_cog', 'poll_cog', 'settings_cog', 'maintenance_cog'
         ]
@@ -85,6 +86,11 @@ class ReMasamongBot(commands.Bot):
 # 최종 안정화 버전
 async def main():
     bot = ReMasamongBot(command_prefix='!', intents=config.intents)
+
+    # Discord 로깅 핸들러 등록 및 태스크 시작
+    import logger_config
+    logger_config.register_discord_logging(bot)
+
     async with bot:
         logger.info("봇 실행 시작...")
         try:
