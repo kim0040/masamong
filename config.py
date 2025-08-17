@@ -55,12 +55,17 @@ AI_RESPONSE_MODEL_NAME = "gemini-2.5-flash"
 # 임베딩 모델
 AI_EMBEDDING_MODEL_NAME = "models/embedding-001"
 
-# API 호출 제한 (분당)
-API_RPM_LIMIT = 15
-# API 호출 제한 (일일)
-API_LITE_RPD_LIMIT = 1000 # for flash-lite
-API_FLASH_RPD_LIMIT = 250 # for flash
-API_EMBEDDING_RPD_LIMIT = 1000 # for embedding-001
+# --- Gemini API 호출 제한 (Free Tier 기준) ---
+# 공식 문서: https://ai.google.dev/gemini-api/docs/rate-limits
+# 분당 요청 수 (RPM)
+RPM_LIMIT_INTENT = 15       # gemini-2.5-flash-lite
+RPM_LIMIT_RESPONSE = 10     # gemini-2.5-flash
+RPM_LIMIT_EMBEDDING = 100   # Gemini Embedding (models/embedding-001)
+
+# 일일 요청 수 (RPD)
+RPD_LIMIT_INTENT = 1000     # gemini-2.5-flash-lite
+RPD_LIMIT_RESPONSE = 250    # gemini-2.5-flash
+RPD_LIMIT_EMBEDDING = 1000  # Gemini Embedding (models/embedding-001)
 
 # --- Tool API Limits ---
 # agent.md에 명시된 시스템 제한 설정을 따릅니다.
