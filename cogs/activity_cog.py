@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import discord
 from discord.ext import commands
-import sqlite3
+import aiosqlite
 from datetime import datetime
 
 import config
@@ -16,37 +16,30 @@ class ActivityCog(commands.Cog):
         self.ai_handler: AIHandler | None = None
         logger.info("ActivityCog 초기화 완료.")
 
-    def record_message(self, message: discord.Message):
+    async def record_message(self, message: discord.Message):
         """메시지 활동을 DB에 기록합니다."""
         if not message.guild or message.author.bot:
             return
 
-        conn = None
+        log_extra = {'guild_id': message.guild.id}
         try:
-            conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=rw", uri=True)
-            conn.execute("PRAGMA journal_mode=WAL;")
-            cursor = conn.cursor()
-
             guild_id = message.guild.id
             user_id = message.author.id
             now_utc_str = datetime.utcnow().isoformat()
 
-            cursor.execute("""
+            await self.bot.db.execute("""
                 INSERT INTO user_activity (user_id, guild_id, message_count, last_active_at)
                 VALUES (?, ?, 1, ?)
                 ON CONFLICT(user_id, guild_id) DO UPDATE SET
                     message_count = message_count + 1,
                     last_active_at = excluded.last_active_at;
             """, (user_id, guild_id, now_utc_str))
+            await self.bot.db.commit()
 
-            conn.commit()
-        except sqlite3.OperationalError as e:
-            logger.error(f"[ActivityCog] DB 파일을 찾을 수 없거나 쓰기 권한이 없습니다. '{config.DATABASE_FILE}' 경로를 확인하세요. 오류: {e}")
-        except sqlite3.Error as e:
-            logger.error(f"[ActivityCog] 활동 기록 중 DB 오류 발생: {e}", exc_info=True)
-        finally:
-            if conn:
-                conn.close()
+        except aiosqlite.OperationalError as e:
+            logger.error(f"DB 파일을 찾을 수 없거나 쓰기 권한이 없습니다. '{config.DATABASE_FILE}' 경로를 확인하세요. 오류: {e}", extra=log_extra)
+        except aiosqlite.Error as e:
+            logger.error(f"활동 기록 중 DB 오류 발생: {e}", exc_info=True, extra=log_extra)
 
     @commands.command(name='랭킹', aliases=['수다왕', 'ranking'])
     @commands.guild_only()
@@ -56,31 +49,24 @@ class ActivityCog(commands.Cog):
             await ctx.send("죄송합니다, AI 기능이 현재 준비되지 않았습니다.")
             return
 
-        conn = None
+        log_extra = {'guild_id': ctx.guild.id}
         try:
-            conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=ro", uri=True)
-            cursor = conn.cursor()
-
-            cursor.execute("""
+            async with self.bot.db.execute("""
                 SELECT user_id, message_count FROM user_activity
                 WHERE guild_id = ?
                 ORDER BY message_count DESC
                 LIMIT 5;
-            """, (ctx.guild.id,))
+            """, (ctx.guild.id,)) as cursor:
+                top_users = await cursor.fetchall()
 
-            top_users = cursor.fetchall()
-
-        except sqlite3.OperationalError as e:
-            logger.error(f"[{ctx.guild.name}/{ctx.channel.name}] 랭킹 조회 중 DB 파일을 찾을 수 없습니다. '{config.DATABASE_FILE}' 경로를 확인하세요. 오류: {e}")
+        except aiosqlite.OperationalError as e:
+            logger.error(f"랭킹 조회 중 DB 파일을 찾을 수 없습니다. '{config.DATABASE_FILE}' 경로를 확인하세요. 오류: {e}", extra=log_extra)
             await ctx.send(config.MSG_CMD_ERROR)
             return
-        except sqlite3.Error as e:
-            logger.error(f"[{ctx.guild.name}/{ctx.channel.name}] 랭킹 조회 중 DB 오류 발생: {e}", exc_info=True)
+        except aiosqlite.Error as e:
+            logger.error(f"랭킹 조회 중 DB 오류 발생: {e}", exc_info=True, extra=log_extra)
             await ctx.send(config.MSG_CMD_ERROR)
             return
-        finally:
-            if conn:
-                conn.close()
 
         if not top_users:
             await ctx.send("아직 서버 활동 데이터가 충분하지 않아. 다들 분발하라구!")
