@@ -40,6 +40,9 @@ def initialize_database():
         cursor.executescript(schema_sql)
         print("스키마를 성공적으로 적용하여 테이블을 생성/확인했습니다.")
 
+        # 데이터베이스 마이그레이션 실행
+        migrate_database(cursor)
+
         # 시스템 카운터 초기값 설정
         print("시스템 카운터 초기값을 확인하고 설정합니다...")
         now_iso_str = datetime.now(pytz.utc).isoformat()
@@ -70,6 +73,31 @@ def initialize_database():
         print(f"데이터베이스 초기화 중 오류가 발생했습니다: {e}")
     except Exception as e:
         print(f"예기치 않은 오류가 발생했습니다: {e}")
+
+def migrate_database(cursor):
+    """
+    기존 데이터베이스 스키마에 필요한 변경사항을 적용합니다.
+    (예: 새로운 컬럼 추가)
+    """
+    try:
+        print("데이터베이스 마이그레이션을 확인합니다...")
+
+        # guild_settings 테이블에 persona_text 컬럼이 있는지 확인
+        cursor.execute("PRAGMA table_info(guild_settings)")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        if 'persona_text' not in columns:
+            print("'guild_settings' 테이블에 'persona_text' 컬럼이 없어 추가합니다...")
+            cursor.execute("ALTER TABLE guild_settings ADD COLUMN persona_text TEXT")
+            print("컬럼 추가 완료.")
+        else:
+            print("'persona_text' 컬럼이 이미 존재합니다.")
+
+        # 여기에 향후 필요한 다른 마이그레이션 로직을 추가할 수 있습니다.
+
+        print("데이터베이스 마이그레이션 확인 완료.")
+    except sqlite3.Error as e:
+        print(f"데이터베이스 마이그레이션 중 오류 발생: {e}")
 
 if __name__ == '__main__':
     initialize_database()
