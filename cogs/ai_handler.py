@@ -340,9 +340,6 @@ class AIHandler(commands.Cog):
         except Exception as e:
             logger.error(f"자발적 응답 여부 판단 중 예기치 않은 오류: {e}", exc_info=True)
             return False
-        finally:
-            if conn:
-                conn.close()
 
     async def analyze_intent(self, message: discord.Message) -> str:
         if not config.AI_INTENT_ANALYSIS_ENABLED or not self.is_ready: return "Chat"
