@@ -5,54 +5,13 @@ import pytz
 import requests
 import json
 import asyncio
-import sqlite3
+import aiosqlite
 import discord
 from logger_config import logger
 import config
 from typing import Any
 
 KST = pytz.timezone('Asia/Seoul')
-_log_channel_cache = {}
-
-async def log_to_discord(guild: discord.Guild, embed: discord.Embed):
-    """
-    특정 서버(guild)의 'logs' 채널을 찾아 임베드 로그 메시지를 전송합니다.
-    채널 검색 결과를 캐싱하여 성능을 최적화합니다.
-    """
-    # 이전에 'logs' 채널을 찾지 못했으면 다시 검색하지 않음
-    if guild.id in _log_channel_cache and _log_channel_cache[guild.id] is None:
-        return
-
-    log_channel = None
-    if guild.id in _log_channel_cache:
-        # 캐시된 ID로 채널을 가져옴
-        log_channel = guild.get_channel(_log_channel_cache[guild.id])
-
-    if log_channel is None:
-        # 캐시에 없거나, 캐시된 채널이 더 이상 존재하지 않으면 다시 검색
-        for channel in guild.text_channels:
-            if channel.name == 'logs':
-                log_channel = channel
-                _log_channel_cache[guild.id] = channel.id
-                logger.info(f"'{guild.name}' 서버에서 'logs' 채널(ID: {channel.id})을 찾았습니다.")
-                break
-
-        if log_channel is None:
-            _log_channel_cache[guild.id] = None  # 'logs' 채널이 없음을 캐싱
-            return
-
-    # 권한 확인
-    bot_permissions = log_channel.permissions_for(guild.me)
-    if not bot_permissions.send_messages or not bot_permissions.embed_links:
-        # 권한 문제는 일시적일 수 있으므로, 캐시를 지우고 다음 기회에 다시 시도
-        logger.warning(f"서버 '{guild.name}'의 'logs' 채널에 메시지/임베드 전송 권한이 없습니다.")
-        _log_channel_cache.pop(guild.id, None)
-        return
-
-    try:
-        await log_channel.send(embed=embed)
-    except Exception as e:
-        logger.error(f"Discord 로그 채널({log_channel.name}) 전송 중 오류 발생: {e}", exc_info=True)
 
 def get_current_time() -> str:
     """
@@ -62,77 +21,57 @@ def get_current_time() -> str:
     now_kst = datetime.now(KST)
     return now_kst.strftime("%Y년 %m월 %d일 %H시 %M분 %S초")
 
-def log_analytics(event_type: str, details: dict):
+async def log_analytics(db: aiosqlite.Connection, event_type: str, details: dict):
     """분석 이벤트를 DB에 기록합니다."""
-    conn = None
     try:
-        conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=rw", uri=True)
-        cursor = conn.cursor()
-
         details_json = json.dumps(details, ensure_ascii=False)
-
         guild_id = details.get('guild_id')
         user_id = details.get('user_id')
 
-        cursor.execute("""
+        await db.execute("""
             INSERT INTO analytics_log (event_type, guild_id, user_id, details)
             VALUES (?, ?, ?, ?)
         """, (event_type, guild_id, user_id, details_json))
-        conn.commit()
+        await db.commit()
 
-    except sqlite3.Error as e:
-        logger.error(f"분석 로그 기록 중 DB 오류 (이벤트: {event_type}): {e}", exc_info=True)
+    except aiosqlite.Error as e:
+        logger.error(f"분석 로그 기록 중 DB 오류 (이벤트: {event_type}): {e}", exc_info=True, extra={'guild_id': details.get('guild_id')})
     except Exception as e:
-        logger.error(f"분석 로그 기록 중 일반 오류 (이벤트: {event_type}): {e}", exc_info=True)
-    finally:
-        if conn:
-            conn.close()
+        logger.error(f"분석 로그 기록 중 일반 오류 (이벤트: {event_type}): {e}", exc_info=True, extra={'guild_id': details.get('guild_id')})
 
-def get_guild_setting(guild_id: int, setting_name: str, default: Any = None) -> Any:
+async def get_guild_setting(db: aiosqlite.Connection, guild_id: int, setting_name: str, default: Any = None) -> Any:
     """DB에서 특정 서버(guild)의 설정 값을 가져옵니다."""
-    conn = None
     try:
-        conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=ro", uri=True)
-        cursor = conn.cursor()
-
         allowed_columns = ["ai_enabled", "ai_allowed_channels", "proactive_response_probability", "proactive_response_cooldown", "persona_text"]
         if setting_name not in allowed_columns:
-            logger.error(f"허용되지 않은 설정 이름에 대한 접근 시도: {setting_name}")
+            logger.error(f"허용되지 않은 설정 이름에 대한 접근 시도: {setting_name}", extra={'guild_id': guild_id})
             return default
 
-        cursor.execute(f"SELECT {setting_name} FROM guild_settings WHERE guild_id = ?", (guild_id,))
-        result = cursor.fetchone()
+        async with db.execute(f"SELECT {setting_name} FROM guild_settings WHERE guild_id = ?", (guild_id,)) as cursor:
+            result = await cursor.fetchone()
 
         if result:
             if setting_name == 'ai_allowed_channels' and result[0]:
                 try:
                     return json.loads(result[0])
-                except json.JSONDecodeError:
-                    logger.error(f"Guild({guild_id})의 ai_allowed_channels JSON 파싱 오류.")
+                except (json.JSONDecodeError, TypeError):
+                    logger.error(f"Guild({guild_id})의 ai_allowed_channels JSON 파싱 오류.", extra={'guild_id': guild_id})
                     return default
             return result[0]
         else:
             return default
 
-    except sqlite3.Error as e:
-        logger.error(f"Guild 설정({setting_name}) 조회 중 DB 오류: {e}", exc_info=True)
+    except aiosqlite.Error as e:
+        logger.error(f"Guild 설정({setting_name}) 조회 중 DB 오류: {e}", exc_info=True, extra={'guild_id': guild_id})
         return default
-    finally:
-        if conn:
-            conn.close()
 
-async def is_api_limit_reached(counter_name: str, limit: int) -> bool:
+async def is_api_limit_reached(db: aiosqlite.Connection, counter_name: str, limit: int) -> bool:
     """DB의 API 카운터가 한도에 도달했는지 확인하고, 필요시 리셋합니다."""
-    conn = None
     try:
-        conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=rw", uri=True)
-        conn.execute("PRAGMA journal_mode=WAL;")
-        cursor = conn.cursor()
-
         today_kst_str = datetime.now(KST).strftime('%Y-%m-%d')
 
-        cursor.execute("SELECT counter_value, last_reset_at FROM system_counters WHERE counter_name = ?", (counter_name,))
-        result = cursor.fetchone()
+        async with db.execute("SELECT counter_value, last_reset_at FROM system_counters WHERE counter_name = ?", (counter_name,)) as cursor:
+            result = await cursor.fetchone()
 
         if result is None:
             logger.error(f"DB에 '{counter_name}' 카운터가 없습니다. init_db.py를 실행하세요.")
@@ -143,8 +82,8 @@ async def is_api_limit_reached(counter_name: str, limit: int) -> bool:
 
         if last_reset_date_kst_str != today_kst_str:
             logger.info(f"KST 날짜 변경. '{counter_name}' API 카운터를 0으로 리셋합니다.")
-            cursor.execute("UPDATE system_counters SET counter_value = 0, last_reset_at = ? WHERE counter_name = ?", (datetime.utcnow().isoformat(), counter_name))
-            conn.commit()
+            await db.execute("UPDATE system_counters SET counter_value = 0, last_reset_at = ? WHERE counter_name = ?", (datetime.utcnow().isoformat(), counter_name))
+            await db.commit()
             return False
 
         if count >= limit:
@@ -153,26 +92,18 @@ async def is_api_limit_reached(counter_name: str, limit: int) -> bool:
 
         return False
 
-    except sqlite3.Error as e:
+    except aiosqlite.Error as e:
         logger.error(f"API 한도 확인 중 DB 오류: {e}", exc_info=True)
         return True
-    finally:
-        if conn:
-            conn.close()
 
-async def increment_api_counter(counter_name: str):
+async def increment_api_counter(db: aiosqlite.Connection, counter_name: str):
     """DB의 API 카운터를 1 증가시킵니다."""
-    conn = None
     try:
-        conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=rw", uri=True)
-        cursor = conn.cursor()
-        cursor.execute("UPDATE system_counters SET counter_value = counter_value + 1 WHERE counter_name = ?", (counter_name,))
-        conn.commit()
-    except sqlite3.Error as e:
+        await db.execute("UPDATE system_counters SET counter_value = counter_value + 1 WHERE counter_name = ?", (counter_name,))
+        await db.commit()
+    except aiosqlite.Error as e:
         logger.error(f"API 카운터 증가 중 DB 오류: {e}", exc_info=True)
-    finally:
-        if conn:
-            conn.close()
+
 
 # --- KMA API v3 (단기예보) ---
 KMA_API_BASE_URL = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0"
@@ -185,13 +116,13 @@ def get_kma_api_key():
         return None
     return api_key
 
-async def _fetch_kma_api(endpoint: str, params: dict) -> dict | None:
+async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict) -> dict | None:
     """새로운 기상청 API를 호출하고 응답을 파싱하는 통합 함수."""
     api_key = get_kma_api_key()
     if not api_key:
         return {"error": "api_key_missing", "message": config.MSG_WEATHER_API_KEY_MISSING}
 
-    if await is_api_limit_reached('kma_daily_calls', config.KMA_API_DAILY_CALL_LIMIT):
+    if await is_api_limit_reached(db, 'kma_daily_calls', config.KMA_API_DAILY_CALL_LIMIT):
         return {"error": "limit_reached", "message": config.MSG_KMA_API_DAILY_LIMIT_REACHED}
 
     full_url = f"{KMA_API_BASE_URL}/{endpoint}"
@@ -206,12 +137,8 @@ async def _fetch_kma_api(endpoint: str, params: dict) -> dict | None:
 
     try:
         response = await asyncio.to_thread(requests.get, full_url, params=base_params, timeout=15)
-        logger.debug(f"기상청 API 요청: {response.url}")
-        logger.debug(f"기상청 API 응답 상태 코드: {response.status_code}")
-        
         response.raise_for_status()
         data = response.json()
-        logger.debug(f"기상청 API 원본 응답: {str(data)[:500]}")
 
         header = data.get('response', {}).get('header', {})
         if header.get('resultCode') != '00':
@@ -219,7 +146,7 @@ async def _fetch_kma_api(endpoint: str, params: dict) -> dict | None:
             logger.error(f"기상청 API가 오류를 반환했습니다: {error_msg}")
             return {"error": "api_error", "message": f"기상청 API 오류: {error_msg}"}
         
-        await increment_api_counter('kma_daily_calls')
+        await increment_api_counter(db, 'kma_daily_calls')
         return data
 
     except requests.exceptions.Timeout:
@@ -235,7 +162,7 @@ async def _fetch_kma_api(endpoint: str, params: dict) -> dict | None:
         logger.error(f"기상청 API 처리 중 예기치 않은 오류: {e}", exc_info=True)
         return {"error": "unknown_error", "message": config.MSG_WEATHER_FETCH_ERROR}
 
-async def get_current_weather_from_kma(nx: str, ny: str) -> dict | None:
+async def get_current_weather_from_kma(db: aiosqlite.Connection, nx: str, ny: str) -> dict | None:
     """초단기실황 정보를 새로운 기상청 API로부터 가져옵니다."""
     now = datetime.now(KST)
     base_dt = now
@@ -250,10 +177,10 @@ async def get_current_weather_from_kma(nx: str, ny: str) -> dict | None:
         "nx": nx,
         "ny": ny
     }
-    return await _fetch_kma_api("getUltraSrtNcst", params)
+    return await _fetch_kma_api(db, "getUltraSrtNcst", params)
 
-async def get_short_term_forecast_from_kma(nx: str, ny: str) -> dict | None:
-    """단기예보 정보를 새로운 기상청 API로부터 가져옵니다. 이 함수는 항상 최신 예보를 가져오며, 오늘, 내일, 모레 데이터를 모두 포함합니다."""
+async def get_short_term_forecast_from_kma(db: aiosqlite.Connection, nx: str, ny: str) -> dict | None:
+    """단기예보 정보를 새로운 기상청 API로부터 가져옵니다."""
     now = datetime.now(KST)
     available_times = [2, 5, 8, 11, 14, 17, 20, 23]
     current_marker = now.hour * 100 + now.minute
@@ -276,7 +203,7 @@ async def get_short_term_forecast_from_kma(nx: str, ny: str) -> dict | None:
         "nx": nx,
         "ny": ny
     }
-    return await _fetch_kma_api("getVilageFcst", params)
+    return await _fetch_kma_api(db, "getVilageFcst", params)
 
 
 def format_current_weather(weather_data: dict | None) -> str:
@@ -301,6 +228,7 @@ def format_current_weather(weather_data: dict | None) -> str:
 
         return f"🌡️기온: {temp}, 💧습도: {reh}, ☔강수: {pty}{rain_info}"
     except (KeyError, TypeError, IndexError):
+        logger.error(f"초단기실황 포맷팅 중 오류: {weather_data}", exc_info=True)
         return config.MSG_WEATHER_NO_DATA
 
 
@@ -346,7 +274,7 @@ def format_short_term_forecast(forecast_data: dict | None, day_name: str, target
         logger.error(f"단기예보 포맷팅 중 오류: {e}", exc_info=True)
         return config.MSG_WEATHER_NO_DATA
 
-async def archive_old_conversations():
+async def archive_old_conversations(db: aiosqlite.Connection):
     """
     오래된 대화 기록을 `conversation_history`에서 `conversation_history_archive`로 옮깁니다.
     config.py의 RAG_ARCHIVING_CONFIG 설정에 따라 작동합니다.
@@ -356,71 +284,33 @@ async def archive_old_conversations():
         logger.debug("RAG 아카이빙이 비활성화되어 있어 작업을 건너뜁니다.")
         return
 
-    conn = None
     try:
-        conn = sqlite3.connect(f"file:{config.DATABASE_FILE}?mode=rw", uri=True)
-        cursor = conn.cursor()
-
-        # 1. 현재 conversation_history 테이블의 레코드 수 확인
-        cursor.execute("SELECT COUNT(*) FROM conversation_history")
-        current_records = cursor.fetchone()[0]
+        async with db.execute("SELECT COUNT(*) FROM conversation_history") as cursor:
+            current_records = (await cursor.fetchone())[0]
         logger.info(f"RAG 아카이빙 확인: 현재 대화 기록 {current_records}개. (한도: {conf.get('history_limit')})")
 
-        # 2. 한도를 초과했는지 확인
         if current_records <= conf.get("history_limit"):
             logger.info("대화 기록이 한도 내에 있어 아카이빙을 건너뜁니다.")
             return
 
-        # 3. 아카이빙할 레코드 수 계산
         records_to_archive_total = current_records - conf.get("history_limit")
         records_to_archive_batch = min(records_to_archive_total, conf.get("batch_size"))
         logger.info(f"아카이빙 목표: {records_to_archive_batch}개 레코드.")
 
-        # 트랜잭션 시작 (autocommit 비활성화)
-        conn.isolation_level = None
-        cursor.execute("BEGIN")
+        async with db.execute("SELECT message_id FROM conversation_history ORDER BY created_at ASC LIMIT ?", (records_to_archive_batch,)) as cursor:
+            message_ids_to_archive = [row[0] for row in await cursor.fetchall()]
 
-        try:
-            # 4. 아카이빙할 가장 오래된 레코드의 ID 조회
-            cursor.execute("""
-                SELECT message_id FROM conversation_history
-                ORDER BY created_at ASC
-                LIMIT ?
-            """, (records_to_archive_batch,))
+        if not message_ids_to_archive:
+            logger.warning("아카이빙할 레코드가 없습니다. 작업을 중단합니다.")
+            return
 
-            message_ids_to_archive = [row[0] for row in cursor.fetchall()]
-            if not message_ids_to_archive:
-                logger.warning("아카이빙할 레코드가 없습니다. 작업을 중단합니다.")
-                cursor.execute("COMMIT") # 변경사항 없으므로 커밋하고 종료
-                return
+        placeholders = ",".join("?" for _ in message_ids_to_archive)
 
-            placeholders = ",".join("?" for _ in message_ids_to_archive)
+        await db.execute(f"INSERT INTO conversation_history_archive SELECT * FROM conversation_history WHERE message_id IN ({placeholders})", message_ids_to_archive)
+        await db.execute(f"DELETE FROM conversation_history WHERE message_id IN ({placeholders})", message_ids_to_archive)
 
-            # 5. `conversation_history_archive`로 복사
-            cursor.execute(f"""
-                INSERT INTO conversation_history_archive
-                SELECT * FROM conversation_history
-                WHERE message_id IN ({placeholders})
-            """, message_ids_to_archive)
-            logger.info(f"{cursor.rowcount}개 레코드를 아카이브 테이블로 복사했습니다.")
+        await db.commit()
+        logger.info(f"총 {len(message_ids_to_archive)}개의 대화 기록 아카이빙 완료.")
 
-            # 6. `conversation_history`에서 삭제
-            cursor.execute(f"""
-                DELETE FROM conversation_history
-                WHERE message_id IN ({placeholders})
-            """, message_ids_to_archive)
-            logger.info(f"{cursor.rowcount}개 레코드를 원본 테이블에서 삭제했습니다.")
-
-            # 7. 트랜잭션 커밋
-            cursor.execute("COMMIT")
-            logger.info(f"총 {len(message_ids_to_archive)}개의 대화 기록 아카이빙 완료.")
-
-        except sqlite3.Error as e:
-            logger.error(f"아카이빙 트랜잭션 중 오류 발생! 롤백합니다. 오류: {e}", exc_info=True)
-            cursor.execute("ROLLBACK")
-
-    except sqlite3.Error as e:
+    except aiosqlite.Error as e:
         logger.error(f"RAG 아카이빙 작업 중 DB 오류 발생: {e}", exc_info=True)
-    finally:
-        if conn:
-            conn.close()
