@@ -3,7 +3,6 @@ import asyncio
 import requests
 import config
 from logger_config import logger
-from .. import http as http_utils
 
 async def get_stock_price(stock_name: str) -> dict:
     """
@@ -22,15 +21,21 @@ async def get_stock_price(stock_name: str) -> dict:
         "numOfRows": "1"
     }
 
-    session = http_utils.get_legacy_ssl_session()
+    # 보안을 위해 API 키는 로그에서 제외
+    log_params = params.copy()
+    log_params["serviceKey"] = "[REDACTED]"
+    logger.info(f"KRX API 요청: URL='{url}', Params='{log_params}'")
+
     try:
-        response = await asyncio.to_thread(session.get, url, params=params, timeout=10)
+        # 레거시 SSL 세션 대신 표준 requests 사용
+        response = await asyncio.to_thread(requests.get, url, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
+        logger.debug(f"KRX API 응답 수신: {data}")
 
         items = data.get('response', {}).get('body', {}).get('items', {}).get('item', [])
         if not items:
-            logger.warning(f"KRX API에서 '{stock_name}' 주식 정보를 찾지 못했습니다.")
+            logger.warning(f"KRX API에서 '{stock_name}' 주식 정보를 찾지 못했습니다. 응답: {data}")
             return {"error": f"'{stock_name}' 주식 정보를 찾을 수 없습니다."}
 
         stock_info = items[0] if isinstance(items, list) else items
@@ -44,3 +49,6 @@ async def get_stock_price(stock_name: str) -> dict:
     except requests.exceptions.RequestException as e:
         logger.error(f"KRX API 처리 중 오류: {e}", exc_info=True)
         return {"error": "API 요청 또는 데이터 처리 중 오류 발생"}
+    except (KeyError, TypeError, ValueError) as e:
+        logger.error(f"KRX API 응답 파싱 중 오류: {e}. 응답 데이터: {data}", exc_info=True)
+        return {"error": "API 응답 데이터 파싱 중 오류 발생"}
