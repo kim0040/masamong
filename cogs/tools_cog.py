@@ -5,7 +5,7 @@ import re
 
 import config
 from logger_config import logger
-from utils.api_handlers import finnhub, kakao, krx, exim, rawg, nominatim
+from utils.api_handlers import finnhub, kakao, krx, exim, rawg, nominatim, openweathermap, foursquare, ticketmaster
 from utils import db as db_utils
 from .weather_cog import WeatherCog
 
@@ -85,6 +85,24 @@ class ToolsCog(commands.Cog):
         결과가 여러 개일 경우, 사용자에게 선택지를 제공합니다.
         """
         return await nominatim.geocode_location(location_name)
+
+    async def get_foreign_weather(self, lat: float, lon: float) -> dict:
+        """
+        주어진 위도/경도를 기반으로 해외 날씨 정보를 조회합니다.
+        """
+        return await openweathermap.get_weather_by_coords(lat, lon)
+
+    async def find_points_of_interest(self, lat: float, lon: float, query: str = None, limit: int = 10) -> dict:
+        """
+        주어진 위도/경도 주변의 주요 장소(POI)를 검색합니다.
+        """
+        return await foursquare.get_places_by_coords(lat, lon, query, limit)
+
+    async def find_events(self, lat: float, lon: float, radius: int = 50) -> dict:
+        """
+        주어진 위도/경도 주변의 이벤트를 검색합니다.
+        """
+        return await ticketmaster.get_events_by_coords(lat, lon, radius)
 
     async def get_krw_exchange_rate(self, currency_code: str = "USD") -> str:
         """

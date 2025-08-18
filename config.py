@@ -47,6 +47,10 @@ FINNHUB_API_KEY = load_config_value('FINNHUB_API_KEY', 'YOUR_FINNHUB_API_KEY')
 KAKAO_API_KEY = load_config_value('KAKAO_API_KEY', 'YOUR_KAKAO_API_KEY')
 GO_DATA_API_KEY_KR = load_config_value('GO_DATA_API_KEY_KR', 'YOUR_GO_DATA_API_KEY_KR') # 공공데이터포털 (국내 주식)
 EXIM_API_KEY_KR = load_config_value('EXIM_API_KEY_KR', 'YOUR_EXIM_API_KEY_KR')       # 한국수출입은행 (환율)
+OPENWEATHERMAP_API_KEY = load_config_value('OPENWEATHERMAP_API_KEY', 'YOUR_OPENWEATHERMAP_API_KEY')
+FOURSQUARE_API_KEY = load_config_value('FOURSQUARE_API_KEY', 'YOUR_FOURSQUARE_API_KEY')
+TICKETMASTER_API_KEY = load_config_value('TICKETMASTER_API_KEY', 'YOUR_TICKETMASTER_API_KEY')
+
 
 # --- Tool API Base URLs ---
 EXIM_BASE_URL = load_config_value('EXIM_BASE_URL', "https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON")
@@ -56,6 +60,9 @@ KRX_BASE_URL = load_config_value('KRX_BASE_URL', "https://apis.data.go.kr/116010
 RAWG_BASE_URL = load_config_value('RAWG_BASE_URL', "https://api.rawg.io/api")
 KMA_BASE_URL = load_config_value('KMA_BASE_URL', "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0")
 NOMINATIM_BASE_URL = load_config_value('NOMINATIM_BASE_URL', "https://nominatim.openstreetmap.org")
+OPENWEATHERMAP_BASE_URL = load_config_value('OPENWEATHERMAP_BASE_URL', "https://api.openweathermap.org/data/2.5")
+FOURSQUARE_BASE_URL = load_config_value('FOURSQUARE_BASE_URL', "https://api.foursquare.com/v3/places")
+TICKETMASTER_BASE_URL = load_config_value('TICKETMASTER_BASE_URL', "https://app.ticketmaster.com/discovery/v2")
 
 # '사고'용 모델 (의도분석 등)
 AI_INTENT_MODEL_NAME = "gemini-2.5-flash-lite"
@@ -125,6 +132,9 @@ LITE_MODEL_SYSTEM_PROMPT = """You are a 'triage' AI. Your job is to determine th
 8.  `get_current_weather(location: str = None, day_offset: int = 0)`: Gets the weather.
 9.  `get_current_time()`: Gets the current date and time.
 10. `geocode(location_name: str)`: Converts a location name (e.g., "Tokyo", "Eiffel Tower") into geographic coordinates (latitude and longitude).
+11. `get_foreign_weather(lat: float, lon: float)`: Gets the current weather for a specific latitude and longitude, suitable for non-Korean locations.
+12. `find_points_of_interest(lat: float, lon: float, query: str = None)`: Finds popular places, restaurants, or attractions near a specific latitude and longitude.
+13. `find_events(lat: float, lon: float)`: Finds upcoming events like concerts or festivals near a specific latitude and longitude.
 """
 
 # 2. Main 모델 (gemini-2.5-flash): 도구 결과를 바탕으로 최종 답변 생성 담당
