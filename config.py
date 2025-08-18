@@ -174,6 +174,20 @@ AI_CREATIVE_PROMPTS = {
 }
 FUN_KEYWORD_TRIGGERS = { "enabled": True, "cooldown_seconds": 60, "triggers": { "fortune": ["운세", "오늘 운", "운세 좀"], "summarize": ["요약해줘", "무슨 얘기했어", "무슨 얘기함", "요약 좀", "지금까지 뭔 얘기"] } }
 
+# --- 특수 목적용 프롬프트 ---
+SPECIALIZED_PROMPTS = {
+    "travel_assistant": """너는 오직 아래 [제공된 정보]만을 사용하여 사용자의 질문에 답변하는 여행 비서야.
+절대로 [제공된 정보]에 없는 내용을 추측하거나 추가해서는 안 돼.
+정보를 친절하고, 읽기 쉬운 요약 형식으로 정리해줘.
+
+[제공된 정보]
+{tool_result}
+[/제공된 정보]
+
+이제 위의 정보를 바탕으로 "{user_query}"에 대해 답변해줘.
+"""
+}
+
 # --- 기상청 API 설정 (새로운 좌표 시스템으로 변경) ---
 KMA_API_KEY = load_config_value('KMA_API_KEY')
 KMA_API_DAILY_CALL_LIMIT = 10000
