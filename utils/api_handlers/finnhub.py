@@ -5,7 +5,9 @@ from datetime import datetime, timedelta
 import config
 from logger_config import logger
 
-BASE_URL = "https://finnhub.io/api/v1"
+from .. import http
+
+BASE_URL = config.FINNHUB_BASE_URL
 
 def _get_client():
     """API 키 존재 여부를 확인하고, 요청에 필요한 딕셔너리를 반환합니다."""
@@ -47,7 +49,8 @@ async def get_stock_quote(symbol: str) -> str:
     params['symbol'] = symbol.upper()
 
     try:
-        response = await asyncio.to_thread(requests.get, f"{BASE_URL}/quote", params=params, timeout=10)
+        session = http.get_modern_tls_session()
+        response = await asyncio.to_thread(session.get, f"{BASE_URL}/quote", params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
 
@@ -88,7 +91,8 @@ async def get_company_news(symbol: str, count: int = 3) -> str:
     params['to'] = today.strftime('%Y-%m-%d')
 
     try:
-        response = await asyncio.to_thread(requests.get, f"{BASE_URL}/company-news", params=params, timeout=15)
+        session = http.get_modern_tls_session()
+        response = await asyncio.to_thread(session.get, f"{BASE_URL}/company-news", params=params, timeout=15)
         response.raise_for_status()
         news_items = response.json()
 
