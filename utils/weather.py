@@ -130,10 +130,17 @@ async def get_short_term_forecast_from_kma(db: aiosqlite.Connection, nx: str, ny
     return await _fetch_kma_api(db, "getVilageFcst", params)
 
 
+def _get_wind_direction_str(vec_value: float) -> str:
+    """풍향 각도를 16방위 문자열로 변환합니다."""
+    angles = ["북", "북북동", "북동", "동북동", "동", "동남동", "남동", "남남동", "남", "남남서", "남서", "서남서", "서", "서북서", "북서", "북북서"]
+    index = round(vec_value / 22.5) % 16
+    return angles[index]
+
 def format_current_weather(items: dict | None) -> str:
     """
     JSON으로 파싱된 초단기실황 데이터를 사람이 읽기 좋은 문자열로 포맷팅합니다.
     [수정] None 입력 처리 및 데이터 구조 변경에 따른 로직 수정.
+    [Phase 3] 풍속, 풍향 정보 추가.
     """
     if not items:
         return config.MSG_WEATHER_FETCH_ERROR
@@ -142,22 +149,23 @@ def format_current_weather(items: dict | None) -> str:
 
         temp = weather_values.get('T1H', 'N/A')
         reh = weather_values.get('REH', 'N/A')
-        rn1 = weather_values.get('RN1', '0')
+        wsd = weather_values.get('WSD', 'N/A')
+        vec = weather_values.get('VEC', 'N/A')
         pty_code = weather_values.get('PTY', '0')
+        rn1 = weather_values.get('RN1', '0')
 
-        # 데이터가 하나라도 없으면 조회 실패로 간주
-        if 'N/A' in [temp, reh]:
+        if 'N/A' in [temp, reh, wsd, vec]:
             logger.warning(f"초단기실황 데이터 일부 누락: {weather_values}")
             return config.MSG_WEATHER_NO_DATA
 
         pty_map = {"0": "없음", "1": "비", "2": "비/눈", "3": "눈", "5": "빗방울", "6": "빗방울/눈날림", "7": "눈날림"}
         pty = pty_map.get(pty_code, "정보 없음")
+        rain_info = f" (시간당 {rn1}mm)" if float(rn1) > 0 else ""
 
-        rain_info = ""
-        if float(rn1) > 0:
-            rain_info = f" (시간당 {rn1}mm)"
+        wind_dir_str = _get_wind_direction_str(float(vec))
+        wind_info = f", 💨바람: {wind_dir_str} {wsd}m/s"
 
-        return f"🌡️기온: {temp}°C, 💧습도: {reh}%, ☔강수: {pty}{rain_info}"
+        return f"🌡️기온: {temp}°C, 💧습도: {reh}%, ☔강수: {pty}{rain_info}{wind_info}"
     except (KeyError, TypeError, IndexError, ValueError) as e:
         logger.error(f"초단기실황 포맷팅 중 오류: {items}", exc_info=True)
         return config.MSG_WEATHER_NO_DATA
