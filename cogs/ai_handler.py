@@ -260,17 +260,30 @@ class AIHandler(commands.Cog):
                 tool_result_str = json.dumps(tool_result, ensure_ascii=False) if isinstance(tool_result, dict) else str(tool_result)
 
                 logger.info("2단계: Main 모델 호출 시작...", extra=log_extra)
-                main_system_prompt = config.AGENT_SYSTEM_PROMPT.format(user_query=user_query, tool_result=tool_result_str)
 
-                # 페르소나 적용
-                custom_persona = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'persona_text')
-                if custom_persona:
-                    main_system_prompt = f"{custom_persona}\n\n{main_system_prompt}"
+                # --- 분기: 사용할 프롬프트 결정 ---
+                if tool_call.get('tool_to_use') == 'get_travel_recommendation':
+                    # 여행 어시스턴트 도구는 특수 프롬프트를 사용
+                    main_system_prompt = None # 시스템 프롬프트 대신, 전체 프롬프트를 만들어서 전달
+                    main_prompt = config.SPECIALIZED_PROMPTS['travel_assistant'].format(
+                        tool_result=tool_result_str,
+                        user_query=user_query
+                    )
+                    logger.info("여행 추천 도구 결과에 특수 프롬프트를 사용합니다.", extra=log_extra)
+                else:
+                    # 그 외 모든 도구는 기본 에이전트 프롬프트를 사용
+                    main_system_prompt = config.AGENT_SYSTEM_PROMPT.format(user_query=user_query, tool_result=tool_result_str)
+                    main_prompt = user_query # 시스템 프롬프트가 있으므로, 프롬프트는 사용자 쿼리만 전달
+
+                # 페르소나 적용 (시스템 프롬프트가 있을 경우에만)
+                if main_system_prompt:
+                    custom_persona = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'persona_text')
+                    if custom_persona:
+                        main_system_prompt = f"{custom_persona}\n\n{main_system_prompt}"
 
                 main_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, system_instruction=main_system_prompt)
 
-                # Main 모델에는 전체 대화 기록 대신, 현재 문맥만 전달하여 토큰 최적화
-                main_response = await self._safe_generate_content(main_model, user_query, log_extra)
+                main_response = await self._safe_generate_content(main_model, main_prompt, log_extra)
 
                 if main_response and main_response.text:
                     logger.info("Main 모델이 최종 답변을 생성했습니다.", extra=log_extra)
