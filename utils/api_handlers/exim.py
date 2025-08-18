@@ -6,16 +6,13 @@ import config
 from logger_config import logger
 from .. import http
 
-BASE_URL = "https://www.koreaexim.go.kr/site/program/financial/exchangeJSON"
+BASE_URL = "https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON"
 
-async def _fetch_exim_data(data_param: str) -> list:
-    """
-    한국수출입은행 API에서 데이터를 가져오는 내부 헬퍼 함수.
-    [수정] 오류 발생 시 빈 리스트 `[]`를 반환하여 안정성을 높입니다.
-    """
+async def _fetch_exim_data(data_param: str) -> list | dict:
+    """한국수출입은행 API에서 데이터를 가져오는 내부 헬퍼 함수."""
     if not config.EXIM_API_KEY_KR or config.EXIM_API_KEY_KR == 'YOUR_EXIM_API_KEY_KR':
         logger.error("한국수출입은행 API 키(EXIM_API_KEY_KR)가 설정되지 않았습니다.")
-        return []
+        return {"error": "API 키가 설정되지 않았습니다."}
 
     search_date = datetime.now().strftime('%Y%m%d')
     params = {
@@ -24,101 +21,76 @@ async def _fetch_exim_data(data_param: str) -> list:
         "data": data_param
     }
 
+    # 보안을 위해 API 키는 로그에서 제외
     log_params = params.copy()
     log_params["authkey"] = "[REDACTED]"
     logger.info(f"수출입은행 API 요청: URL='{BASE_URL}', Params='{log_params}'")
 
     try:
-        session = http.get_modern_tls_session()
-        response = await asyncio.to_thread(session.get, BASE_URL, params=params, timeout=10)
+        # 특정 TLS 암호화 스위트를 사용하는 커스텀 세션으로 연결
+        # session = http.get_modern_tls_session()
+        # response = await asyncio.to_thread(session.get, BASE_URL, params=params, timeout=10)
+        response = await asyncio.to_thread(requests.get, BASE_URL, params=params, timeout=10, verify=False)
         response.raise_for_status()
         data = response.json()
+        logger.debug(f"수출입은행 API 응답 수신 ({data_param}): {data}")
 
         if not data:
             logger.warning(f"수출입은행 API({data_param})에서 {search_date} 날짜의 데이터를 받지 못했습니다.")
-            return []
-
-        logger.debug(f"수출입은행 API 응답 수신 ({data_param}): {data}")
+            return {"error": "데이터를 찾을 수 없습니다."}
         return data
     except requests.exceptions.RequestException as e:
-        logger.error(f"수출입은행 API({data_param}) 요청 중 오류: {e}", exc_info=True)
-        return []
+        logger.error(f"수출입은행 API({data_param}) 처리 중 오류: {e}", exc_info=True)
+        return {"error": "API 요청 또는 데이터 처리 중 오류 발생"}
     except (KeyError, TypeError, ValueError) as e:
-        # response 변수가 예외 발생 시 정의되지 않았을 수 있으므로 확인
-        response_text = response.text if 'response' in locals() else 'N/A'
-        logger.error(f"수출입은행 API 응답 파싱 중 오류: {e}. 응답 데이터: {response_text}", exc_info=True)
-        return []
-    except Exception as e:
-        logger.error(f"수출입은행 API 처리 중 예기치 않은 오류({data_param}): {e}", exc_info=True)
-        return []
+        logger.error(f"수출입은행 API 응답 파싱 중 오류: {e}. 응답 데이터: {response.text}", exc_info=True)
+        return {"error": "API 응답 데이터 파싱 중 오류 발생"}
 
 
-def _format_exchange_rate_data(rate_info: dict) -> str:
-    """환율 정보를 LLM 친화적인 문자열로 포맷팅합니다."""
-    name = rate_info.get('currency_name', 'N/A')
-    code = rate_info.get('currency_code', 'N/A')
-    tts = rate_info.get('tts', 'N/A') # Telegraphic Transfer Selling (송금 보낼때)
-    ttb = rate_info.get('ttb', 'N/A') # Telegraphic Transfer Buying (송금 받을때)
-    tcb = rate_info.get('tcb', 'N/A') # T/C Buying (현찰 살때)
-    fcs = rate_info.get('fcs', 'N/A') # Foreign Currency Selling (현찰 팔때)
-    deal_basis = rate_info.get('deal_bas_r', 'N/A')
-
-    return (f"{name}({code}) 환율 정보: 매매기준율은 {deal_basis}원입니다.\n"
-            f"- 송금 보낼 때: {tts}원\n"
-            f"- 송금 받을 때: {ttb}원\n"
-            f"- 현찰 살 때: {tcb}원\n"
-            f"- 현찰 팔 때: {fcs}원")
-
-def _format_loan_rates_data(loan_rates: list) -> str:
-    """대출 금리 정보를 LLM 친화적인 문자열로 포맷팅합니다."""
-    if not loan_rates:
-        return "현재 조회 가능한 대출 금리 정보가 없습니다."
-    lines = [f"- {rate.get('rate_name', 'N/A')}: {rate.get('interest_rate', 'N/A')}" for rate in loan_rates]
-    return "수출입은행 대출 금리 정보:\n" + "\n".join(lines)
-
-def _format_international_rates_data(intl_rates: list) -> str:
-    """국제 금리 정보를 LLM 친화적인 문자열로 포맷팅합니다."""
-    if not intl_rates:
-        return "현재 조회 가능한 국제 금리 정보가 없습니다."
-    lines = [f"- {rate.get('country', 'N/A')} ({rate.get('rate_type', 'N/A')}): {rate.get('interest_rate', 'N/A')}" for rate in intl_rates]
-    return "주요 국제 금리 정보:\n" + "\n".join(lines)
-
-async def get_krw_exchange_rate(currency_code: str = "USD") -> str:
-    """
-    환율 정보를 조회하여 LLM 친화적인 문자열로 반환합니다.
-    [수정] 반환 형식을 dict에서 str으로 변경하여 토큰 사용량을 최적화합니다.
-    """
+async def get_exchange_rate(target_currency: str = "USD") -> dict:
+    """환율 정보를 조회합니다 (data=AP01)."""
     data = await _fetch_exim_data("AP01")
-    if not data:
-        return "환율 정보를 가져오는 데 실패했습니다."
+    if isinstance(data, dict) and "error" in data:
+        return data
 
-    for rate_info_raw in data:
-        if rate_info_raw.get('cur_unit') == currency_code.upper():
-            rate_info = {
-                "currency_code": rate_info_raw.get('cur_unit'),
-                "currency_name": rate_info_raw.get('cur_nm'),
-                "ttb": rate_info_raw.get('ttb', '0'),
-                "tts": rate_info_raw.get('tts', '0'),
-                "deal_bas_r": rate_info_raw.get('deal_bas_r', '0'),
-                "tcb": rate_info_raw.get('tc_b', '0'),
-                "fcs": rate_info_raw.get('fc_s', '0'),
+    for rate_info in data:
+        if rate_info.get('cur_unit') == target_currency.upper():
+            return {
+                "currency_code": rate_info.get('cur_unit'),
+                "currency_name": rate_info.get('cur_nm'),
+                "rate": float(rate_info.get('deal_bas_r', '0').replace(',', ''))
             }
-            return _format_exchange_rate_data(rate_info)
 
-    return f"'{currency_code}' 통화에 대한 환율 정보를 찾을 수 없습니다."
+    logger.warning(f"수출입은행 환율 API 응답에서 '{target_currency}' 통화를 찾지 못했습니다.")
+    return {"error": f"'{target_currency}' 통화를 찾을 수 없습니다."}
 
-async def get_loan_rates() -> str:
-    """
-    대출 금리 정보를 조회하여 LLM 친화적인 문자열로 반환합니다.
-    [수정] 반환 형식을 dict에서 str으로 변경하여 토큰 사용량을 최적화합니다.
-    """
+async def get_loan_interest_rates() -> dict:
+    """대출 금리 정보를 조회합니다 (data=AP02 - 가정)."""
     data = await _fetch_exim_data("AP02")
-    return _format_loan_rates_data(data)
+    if isinstance(data, dict) and "error" in data:
+        return data
 
-async def get_international_rates() -> str:
-    """
-    국제 금리 정보를 조회하여 LLM 친화적인 문자열로 반환합니다.
-    [수정] 반환 형식을 dict에서 str으로 변경하여 토큰 사용량을 최적화합니다.
-    """
+    formatted_rates = [
+        {
+            "rate_name": item.get("rate_name", "N/A"),
+            "interest_rate": item.get("interest_rate", "N/A")
+        }
+        for item in data
+    ]
+    return {"loan_rates": formatted_rates}
+
+async def get_international_interest_rates() -> dict:
+    """국제 금리 정보를 조회합니다 (data=AP03 - 가정)."""
     data = await _fetch_exim_data("AP03")
-    return _format_international_rates_data(data)
+    if isinstance(data, dict) and "error" in data:
+        return data
+
+    formatted_rates = [
+        {
+            "country": item.get("country", "N/A"),
+            "rate_type": item.get("rate_type", "N/A"),
+            "interest_rate": item.get("interest_rate", "N/A")
+        }
+        for item in data
+    ]
+    return {"international_rates": formatted_rates}
