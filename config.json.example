@@ -8,5 +8,6 @@
   "KAKAO_BASE_URL": "https://dapi.kakao.com/v2/local/search/keyword.json",
   "KRX_BASE_URL": "https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo",
   "RAWG_BASE_URL": "https://api.rawg.io/api",
-  "KMA_BASE_URL": "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0"
+  "KMA_BASE_URL": "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0",
+  "NOMINATIM_BASE_URL": "https://nominatim.openstreetmap.org"
 }

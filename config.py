@@ -55,6 +55,7 @@ KAKAO_BASE_URL = load_config_value('KAKAO_BASE_URL', "https://dapi.kakao.com/v2/
 KRX_BASE_URL = load_config_value('KRX_BASE_URL', "https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo")
 RAWG_BASE_URL = load_config_value('RAWG_BASE_URL', "https://api.rawg.io/api")
 KMA_BASE_URL = load_config_value('KMA_BASE_URL', "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0")
+NOMINATIM_BASE_URL = load_config_value('NOMINATIM_BASE_URL', "https://nominatim.openstreetmap.org")
 
 # '사고'용 모델 (의도분석 등)
 AI_INTENT_MODEL_NAME = "gemini-2.5-flash-lite"
@@ -123,6 +124,7 @@ LITE_MODEL_SYSTEM_PROMPT = """You are a 'triage' AI. Your job is to determine th
 7.  `recommend_games(ordering: str = '-released', genres: str = None, page_size: int = 5)`: Recommends video games.
 8.  `get_current_weather(location: str = None, day_offset: int = 0)`: Gets the weather.
 9.  `get_current_time()`: Gets the current date and time.
+10. `geocode(location_name: str)`: Converts a location name (e.g., "Tokyo", "Eiffel Tower") into geographic coordinates (latitude and longitude).
 """
 
 # 2. Main 모델 (gemini-2.5-flash): 도구 결과를 바탕으로 최종 답변 생성 담당
