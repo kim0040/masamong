@@ -33,7 +33,7 @@ async def get_events_by_coords(lat: float, lon: float, radius: int = 50, unit: s
     logger.info(f"Ticketmaster API 요청: URL='{url}', Params='{params}'")
 
     try:
-        session = http.get_modern_tls_session()
+        session = http.get_http_session()
         response = await asyncio.to_thread(session.get, url, params=params, timeout=15)
         response.raise_for_status()
         data = response.json()

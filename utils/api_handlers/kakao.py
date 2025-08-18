@@ -26,7 +26,7 @@ async def search_place_by_keyword(query: str, page_size: int = 5) -> str:
     params = {"query": query, "size": page_size}
 
     try:
-        session = http.get_modern_tls_session()
+        session = http.get_http_session()
         response = await asyncio.to_thread(session.get, config.KAKAO_BASE_URL, headers=headers, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()

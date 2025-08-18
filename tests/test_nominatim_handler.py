@@ -26,7 +26,7 @@ async def test_geocode_success_single_result(mocker):
     mock_response = MagicMock()
     mock_response.json.return_value = mock_response_data
     mock_session.get.return_value = mock_response
-    mocker.patch('utils.http.get_modern_tls_session', return_value=mock_session)
+    mocker.patch('utils.http.get_http_session', return_value=mock_session)
 
     result = await nominatim.geocode_location(query)
 
@@ -51,7 +51,7 @@ async def test_geocode_disambiguation_multiple_results(mocker):
     mock_response = MagicMock()
     mock_response.json.return_value = mock_response_data
     mock_session.get.return_value = mock_response
-    mocker.patch('utils.http.get_modern_tls_session', return_value=mock_session)
+    mocker.patch('utils.http.get_http_session', return_value=mock_session)
 
     result = await nominatim.geocode_location(query)
 
@@ -71,7 +71,7 @@ async def test_geocode_not_found(mocker):
     mock_response = MagicMock()
     mock_response.json.return_value = mock_response_data
     mock_session.get.return_value = mock_response
-    mocker.patch('utils.http.get_modern_tls_session', return_value=mock_session)
+    mocker.patch('utils.http.get_http_session', return_value=mock_session)
 
     result = await nominatim.geocode_location(query)
 
@@ -93,7 +93,7 @@ async def test_caching_logic(mocker):
     mock_response = MagicMock()
     mock_response.json.return_value = mock_response_data
     mock_session.get.return_value = mock_response
-    mocker.patch('utils.http.get_modern_tls_session', return_value=mock_session)
+    mocker.patch('utils.http.get_http_session', return_value=mock_session)
 
     # First call - should trigger API call
     result1 = await nominatim.geocode_location(query)

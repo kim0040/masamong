@@ -29,7 +29,7 @@ async def get_places_by_coords(lat: float, lon: float, query: str = None, limit:
     logger.info(f"Foursquare API 요청: URL='{url}', Params='{params}'")
 
     try:
-        session = http.get_modern_tls_session()
+        session = http.get_http_session()
         response = await asyncio.to_thread(session.get, url, headers=headers, params=params, timeout=15)
         response.raise_for_status()
         data = response.json()

@@ -49,7 +49,7 @@ async def get_stock_quote(symbol: str) -> str:
     params['symbol'] = symbol.upper()
 
     try:
-        session = http.get_modern_tls_session()
+        session = http.get_http_session()
         response = await asyncio.to_thread(session.get, f"{BASE_URL}/quote", params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
@@ -91,7 +91,7 @@ async def get_company_news(symbol: str, count: int = 3) -> str:
     params['to'] = today.strftime('%Y-%m-%d')
 
     try:
-        session = http.get_modern_tls_session()
+        session = http.get_http_session()
         response = await asyncio.to_thread(session.get, f"{BASE_URL}/company-news", params=params, timeout=15)
         response.raise_for_status()
         news_items = response.json()

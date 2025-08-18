@@ -44,7 +44,7 @@ async def get_games(ordering: str = '-released', dates: str = None, genres: str 
         params["genres"] = genres.lower()
 
     try:
-        session = http.get_modern_tls_session()
+        session = http.get_http_session()
         response = await asyncio.to_thread(session.get, f"{config.RAWG_BASE_URL}/games", params=params, timeout=15)
         response.raise_for_status()
         data = response.json()

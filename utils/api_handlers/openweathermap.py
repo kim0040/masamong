@@ -27,7 +27,7 @@ async def get_weather_by_coords(lat: float, lon: float) -> dict:
     logger.info(f"OpenWeatherMap API 요청: URL='{url}', Params='{log_params}'")
 
     try:
-        session = http.get_modern_tls_session()
+        session = http.get_http_session()
         response = await asyncio.to_thread(session.get, url, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()

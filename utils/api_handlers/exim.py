@@ -26,7 +26,7 @@ async def _fetch_exim_data(data_param: str) -> list | dict:
 
     try:
         # 특정 TLS 암호화 스위트를 사용하는 커스텀 세션으로 연결
-        session = http.get_modern_tls_session()
+        session = http.get_http_session()
         response = await asyncio.to_thread(session.get, config.EXIM_BASE_URL, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()

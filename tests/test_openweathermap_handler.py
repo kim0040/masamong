@@ -16,7 +16,7 @@ async def test_get_weather_by_coords_success(mocker):
     mock_response = MagicMock()
     mock_response.json.return_value = mock_response_data
     mock_session.get.return_value = mock_response
-    mocker.patch('utils.http.get_modern_tls_session', return_value=mock_session)
+    mocker.patch('utils.http.get_http_session', return_value=mock_session)
 
     result = await openweathermap.get_weather_by_coords(35.68, 139.69)
 
@@ -32,7 +32,7 @@ async def test_get_weather_by_coords_api_error(mocker):
     mocker.patch('config.OPENWEATHERMAP_API_KEY', 'DUMMY_API_KEY')
     mock_session = MagicMock()
     mock_session.get.side_effect = requests.exceptions.RequestException("Network Error")
-    mocker.patch('utils.http.get_modern_tls_session', return_value=mock_session)
+    mocker.patch('utils.http.get_http_session', return_value=mock_session)
 
     result = await openweathermap.get_weather_by_coords(35.68, 139.69)
 
