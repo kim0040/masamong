@@ -4,8 +4,7 @@ import requests
 import config
 from logger_config import logger
 from datetime import datetime, timedelta
-
-BASE_URL = "https://api.rawg.io/api"
+from .. import http
 
 def _format_games_data(games: list) -> str:
     """
@@ -45,7 +44,8 @@ async def get_games(ordering: str = '-released', dates: str = None, genres: str 
         params["genres"] = genres.lower()
 
     try:
-        response = await asyncio.to_thread(requests.get, f"{BASE_URL}/games", params=params, timeout=15)
+        session = http.get_modern_tls_session()
+        response = await asyncio.to_thread(session.get, f"{config.RAWG_BASE_URL}/games", params=params, timeout=15)
         response.raise_for_status()
         data = response.json()
 

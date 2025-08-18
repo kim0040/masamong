@@ -3,6 +3,7 @@ import asyncio
 import requests
 import config
 from logger_config import logger
+from .. import http
 
 def _format_places_data(query: str, places: list) -> str:
     """장소 검색 결과를 LLM 친화적인 문자열로 포맷팅합니다."""
@@ -21,12 +22,12 @@ async def search_place_by_keyword(query: str, page_size: int = 5) -> str:
         logger.error("카카오 API 키(KAKAO_API_KEY)가 설정되지 않았습니다.")
         return f"장소 '{query}'을(를) 검색할 수 없습니다 (API 키 미설정)."
 
-    url = "https://dapi.kakao.com/v2/local/search/keyword.json"
     headers = {"Authorization": f"KakaoAK {config.KAKAO_API_KEY}"}
     params = {"query": query, "size": page_size}
 
     try:
-        response = await asyncio.to_thread(requests.get, url, headers=headers, params=params, timeout=10)
+        session = http.get_modern_tls_session()
+        response = await asyncio.to_thread(session.get, config.KAKAO_BASE_URL, headers=headers, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
 

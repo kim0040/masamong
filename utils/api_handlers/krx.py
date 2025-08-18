@@ -3,6 +3,7 @@ import asyncio
 import requests
 import config
 from logger_config import logger
+from .. import http
 
 def _format_krx_price_data(stock_info: dict) -> str:
     """KRX 주식 가격 데이터를 LLM 친화적인 문자열로 포맷팅합니다."""
@@ -27,14 +28,14 @@ async def get_stock_price(stock_name: str) -> str | None:
         logger.error("공공데이터포털 API 키(GO_DATA_API_KEY_KR)가 설정되지 않았습니다.")
         return f"{stock_name} 주식 정보를 조회할 수 없습니다 (API 키 미설정)."
 
-    url = "https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo"
     params = {"serviceKey": config.GO_DATA_API_KEY_KR, "itmsNm": stock_name, "resultType": "json", "numOfRows": "1"}
     log_params = params.copy()
     log_params["serviceKey"] = "[REDACTED]"
-    logger.info(f"KRX API 요청: URL='{url}', Params='{log_params}'")
+    logger.info(f"KRX API 요청: URL='{config.KRX_BASE_URL}', Params='{log_params}'")
 
     try:
-        response = await asyncio.to_thread(requests.get, url, params=params, timeout=10)
+        session = http.get_modern_tls_session()
+        response = await asyncio.to_thread(session.get, config.KRX_BASE_URL, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
         logger.debug(f"KRX API 응답 수신: {data}")
