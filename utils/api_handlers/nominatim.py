@@ -35,7 +35,7 @@ async def geocode_location(query: str) -> dict:
     api_response_data = None
     try:
         session = http.get_modern_tls_session()
-        response = await asyncio.to_thread(session.get, url, headers=headers, params=params, timeout=15, verify=False)
+        response = await asyncio.to_thread(session.get, url, headers=headers, params=params, timeout=15)
         await asyncio.sleep(1.1)
         response.raise_for_status()
         api_response_data = response.json()
