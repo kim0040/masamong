@@ -47,6 +47,10 @@ FINNHUB_API_KEY = load_config_value('FINNHUB_API_KEY', 'YOUR_FINNHUB_API_KEY')
 KAKAO_API_KEY = load_config_value('KAKAO_API_KEY', 'YOUR_KAKAO_API_KEY')
 GO_DATA_API_KEY_KR = load_config_value('GO_DATA_API_KEY_KR', 'YOUR_GO_DATA_API_KEY_KR') # 공공데이터포털 (국내 주식)
 EXIM_API_KEY_KR = load_config_value('EXIM_API_KEY_KR', 'YOUR_EXIM_API_KEY_KR')       # 한국수출입은행 (환율)
+OPENWEATHERMAP_API_KEY = load_config_value('OPENWEATHERMAP_API_KEY', 'YOUR_OPENWEATHERMAP_API_KEY')
+FOURSQUARE_API_KEY = load_config_value('FOURSQUARE_API_KEY', 'YOUR_FOURSQUARE_API_KEY')
+TICKETMASTER_API_KEY = load_config_value('TICKETMASTER_API_KEY', 'YOUR_TICKETMASTER_API_KEY')
+
 
 # --- Tool API Base URLs ---
 EXIM_BASE_URL = load_config_value('EXIM_BASE_URL', "https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON")
@@ -55,6 +59,10 @@ KAKAO_BASE_URL = load_config_value('KAKAO_BASE_URL', "https://dapi.kakao.com/v2/
 KRX_BASE_URL = load_config_value('KRX_BASE_URL', "https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo")
 RAWG_BASE_URL = load_config_value('RAWG_BASE_URL', "https://api.rawg.io/api")
 KMA_BASE_URL = load_config_value('KMA_BASE_URL', "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0")
+NOMINATIM_BASE_URL = load_config_value('NOMINATIM_BASE_URL', "https://nominatim.openstreetmap.org")
+OPENWEATHERMAP_BASE_URL = load_config_value('OPENWEATHERMAP_BASE_URL', "https://api.openweathermap.org/data/2.5")
+FOURSQUARE_BASE_URL = load_config_value('FOURSQUARE_BASE_URL', "https://api.foursquare.com/v3/places")
+TICKETMASTER_BASE_URL = load_config_value('TICKETMASTER_BASE_URL', "https://app.ticketmaster.com/discovery/v2")
 
 # '사고'용 모델 (의도분석 등)
 AI_INTENT_MODEL_NAME = "gemini-2.5-flash-lite"
@@ -81,6 +89,9 @@ FINNHUB_API_RPM_LIMIT = 50
 KAKAO_API_RPD_LIMIT = 95000 # 카카오 로컬 API의 키워드 검색은 일일 100,000회 제한
 KRX_API_RPD_LIMIT = 9000
 EXIM_API_RPD_LIMIT = 900
+FOURSQUARE_API_RPD_LIMIT = 950
+TICKETMASTER_API_RPD_LIMIT = 5000
+OPENWEATHERMAP_API_RPM_LIMIT = 60
 
 # AI 응답 관련 설정
 AI_RESPONSE_LENGTH_LIMIT = 300 # 답변 길이 제한 (글자 수)
@@ -123,6 +134,10 @@ LITE_MODEL_SYSTEM_PROMPT = """You are a 'triage' AI. Your job is to determine th
 7.  `recommend_games(ordering: str = '-released', genres: str = None, page_size: int = 5)`: Recommends video games.
 8.  `get_current_weather(location: str = None, day_offset: int = 0)`: Gets the weather.
 9.  `get_current_time()`: Gets the current date and time.
+10. `geocode(location_name: str)`: Converts a location name (e.g., "Tokyo", "Eiffel Tower") into geographic coordinates (latitude and longitude).
+11. `get_foreign_weather(lat: float, lon: float)`: Gets the current weather for a specific latitude and longitude, suitable for non-Korean locations.
+12. `find_points_of_interest(lat: float, lon: float, query: str = None)`: Finds popular places, restaurants, or attractions near a specific latitude and longitude.
+13. `find_events(lat: float, lon: float)`: Finds upcoming events like concerts or festivals near a specific latitude and longitude.
 """
 
 # 2. Main 모델 (gemini-2.5-flash): 도구 결과를 바탕으로 최종 답변 생성 담당
@@ -161,6 +176,20 @@ AI_CREATIVE_PROMPTS = {
     "answer_weather": "'{location_name}'의 날씨 정보는 다음과 같습니다: {weather_data}. 이 정보를 바탕으로 사용자에게 날씨를 설명해주세요."
 }
 FUN_KEYWORD_TRIGGERS = { "enabled": True, "cooldown_seconds": 60, "triggers": { "fortune": ["운세", "오늘 운", "운세 좀"], "summarize": ["요약해줘", "무슨 얘기했어", "무슨 얘기함", "요약 좀", "지금까지 뭔 얘기"] } }
+
+# --- 특수 목적용 프롬프트 ---
+SPECIALIZED_PROMPTS = {
+    "travel_assistant": """너는 오직 아래 [제공된 정보]만을 사용하여 사용자의 질문에 답변하는 여행 비서야.
+절대로 [제공된 정보]에 없는 내용을 추측하거나 추가해서는 안 돼.
+정보를 친절하고, 읽기 쉬운 요약 형식으로 정리해줘.
+
+[제공된 정보]
+{tool_result}
+[/제공된 정보]
+
+이제 위의 정보를 바탕으로 "{user_query}"에 대해 답변해줘.
+"""
+}
 
 # --- 기상청 API 설정 (새로운 좌표 시스템으로 변경) ---
 KMA_API_KEY = load_config_value('KMA_API_KEY')
