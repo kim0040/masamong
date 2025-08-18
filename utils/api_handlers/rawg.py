@@ -8,19 +8,21 @@ from datetime import datetime, timedelta
 BASE_URL = "https://api.rawg.io/api"
 
 def _format_games_data(games: list) -> str:
-    """게임 목록 데이터를 LLM 친화적인 문자열로 포맷팅합니다."""
+    """
+    게임 목록 데이터를 LLM 친화적인 문자열로 포맷팅합니다.
+    [Phase 3] 플레이타임, 구매처 정보 추가.
+    """
     if not games:
         return "추천할 만한 게임을 찾지 못했습니다. 다른 조건으로 시도해보세요."
 
     lines = []
     for game in games:
         name = game.get('name', 'N/A')
-        rating = game.get('rating', 'N/A')
         metacritic = game.get('metacritic', 'N/A')
-        genre_list = game.get('genres', [])
-        genres = ", ".join(genre_list) if genre_list else "N/A"
+        playtime = game.get('playtime', 'N/A')
+        stores = ", ".join(game.get('stores', [])) if game.get('stores') else "정보 없음"
 
-        lines.append(f"- {name} (평점: {rating}, 메타스코어: {metacritic}, 장르: {genres})")
+        lines.append(f"- {name} (메타스코어: {metacritic}, 평균 플레이타임: {playtime}시간, 구매처: {stores})")
 
     return "추천 게임 목록:\n" + "\n".join(lines)
 
@@ -55,9 +57,9 @@ async def get_games(ordering: str = '-released', dates: str = None, genres: str 
         formatted_games = [
             {
                 "name": game.get('name'),
-                "rating": game.get('rating'),
                 "metacritic": game.get('metacritic'),
-                "genres": [genre['name'] for genre in game.get('genres') or []],
+                "playtime": game.get('playtime', 0),
+                "stores": [store['store']['name'] for store in game.get('stores', []) if store.get('store')]
             }
             for game in results
         ]

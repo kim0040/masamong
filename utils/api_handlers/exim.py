@@ -57,11 +57,17 @@ def _format_exchange_rate_data(rate_info: dict) -> str:
     """환율 정보를 LLM 친화적인 문자열로 포맷팅합니다."""
     name = rate_info.get('currency_name', 'N/A')
     code = rate_info.get('currency_code', 'N/A')
-    tts = rate_info.get('tts', 'N/A')
-    ttb = rate_info.get('ttb', 'N/A')
+    tts = rate_info.get('tts', 'N/A') # Telegraphic Transfer Selling (송금 보낼때)
+    ttb = rate_info.get('ttb', 'N/A') # Telegraphic Transfer Buying (송금 받을때)
+    tcb = rate_info.get('tcb', 'N/A') # T/C Buying (현찰 살때)
+    fcs = rate_info.get('fcs', 'N/A') # Foreign Currency Selling (현찰 팔때)
     deal_basis = rate_info.get('deal_bas_r', 'N/A')
-    return (f"{name}({code}) 환율 정보: 매매기준율은 {deal_basis}원입니다. "
-            f"실제 송금받을 때(TTB)는 {ttb}원, 보낼 때(TTS)는 {tts}원입니다.")
+
+    return (f"{name}({code}) 환율 정보: 매매기준율은 {deal_basis}원입니다.\n"
+            f"- 송금 보낼 때: {tts}원\n"
+            f"- 송금 받을 때: {ttb}원\n"
+            f"- 현찰 살 때: {tcb}원\n"
+            f"- 현찰 팔 때: {fcs}원")
 
 def _format_loan_rates_data(loan_rates: list) -> str:
     """대출 금리 정보를 LLM 친화적인 문자열로 포맷팅합니다."""
@@ -94,6 +100,8 @@ async def get_krw_exchange_rate(currency_code: str = "USD") -> str:
                 "ttb": rate_info_raw.get('ttb', '0'),
                 "tts": rate_info_raw.get('tts', '0'),
                 "deal_bas_r": rate_info_raw.get('deal_bas_r', '0'),
+                "tcb": rate_info_raw.get('tc_b', '0'),
+                "fcs": rate_info_raw.get('fc_s', '0'),
             }
             return _format_exchange_rate_data(rate_info)
 
