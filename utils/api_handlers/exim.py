@@ -6,8 +6,6 @@ import config
 from logger_config import logger
 from .. import http
 
-BASE_URL = "https://www.koreaexim.go.kr/site/program/financial/exchangeJSON"
-
 async def _fetch_exim_data(data_param: str) -> list | dict:
     """한국수출입은행 API에서 데이터를 가져오는 내부 헬퍼 함수."""
     if not config.EXIM_API_KEY_KR or config.EXIM_API_KEY_KR == 'YOUR_EXIM_API_KEY_KR':
@@ -24,12 +22,12 @@ async def _fetch_exim_data(data_param: str) -> list | dict:
     # 보안을 위해 API 키는 로그에서 제외
     log_params = params.copy()
     log_params["authkey"] = "[REDACTED]"
-    logger.info(f"수출입은행 API 요청: URL='{BASE_URL}', Params='{log_params}'")
+    logger.info(f"수출입은행 API 요청: URL='{config.EXIM_BASE_URL}', Params='{log_params}'")
 
     try:
         # 특정 TLS 암호화 스위트를 사용하는 커스텀 세션으로 연결
         session = http.get_modern_tls_session()
-        response = await asyncio.to_thread(session.get, BASE_URL, params=params, timeout=10)
+        response = await asyncio.to_thread(session.get, config.EXIM_BASE_URL, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
         logger.debug(f"수출입은행 API 응답 수신 ({data_param}): {data}")
