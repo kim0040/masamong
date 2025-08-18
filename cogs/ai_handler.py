@@ -15,6 +15,7 @@ import pickle
 import random
 import time
 import json
+import uuid
 
 import config
 from logger_config import logger
@@ -212,7 +213,13 @@ class AIHandler(commands.Cog):
         user_query = message.content.replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
         if not user_query: return
 
-        log_extra = {'guild_id': message.guild.id, 'channel_id': message.channel.id, 'user_id': message.author.id}
+        trace_id = uuid.uuid4().hex[:8]
+        log_extra = {
+            'guild_id': message.guild.id,
+            'channel_id': message.channel.id,
+            'user_id': message.author.id,
+            'trace_id': trace_id
+        }
         logger.info(f"에이전트 처리 시작 (2-step). Query: '{user_query}'", extra=log_extra)
 
         async with message.channel.typing():
