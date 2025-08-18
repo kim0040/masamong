@@ -53,65 +53,64 @@ async def _fetch_exim_data(data_param: str) -> list:
         return []
 
 
-async def get_exchange_rate(target_currency: str = "USD") -> dict | None:
+def _format_exchange_rate_data(rate_info: dict) -> str:
+    """환율 정보를 LLM 친화적인 문자열로 포맷팅합니다."""
+    name = rate_info.get('currency_name', 'N/A')
+    code = rate_info.get('currency_code', 'N/A')
+    tts = rate_info.get('tts', 'N/A')
+    ttb = rate_info.get('ttb', 'N/A')
+    deal_basis = rate_info.get('deal_bas_r', 'N/A')
+    return (f"{name}({code}) 환율 정보: 매매기준율은 {deal_basis}원입니다. "
+            f"실제 송금받을 때(TTB)는 {ttb}원, 보낼 때(TTS)는 {tts}원입니다.")
+
+def _format_loan_rates_data(loan_rates: list) -> str:
+    """대출 금리 정보를 LLM 친화적인 문자열로 포맷팅합니다."""
+    if not loan_rates:
+        return "현재 조회 가능한 대출 금리 정보가 없습니다."
+    lines = [f"- {rate.get('rate_name', 'N/A')}: {rate.get('interest_rate', 'N/A')}" for rate in loan_rates]
+    return "수출입은행 대출 금리 정보:\n" + "\n".join(lines)
+
+def _format_international_rates_data(intl_rates: list) -> str:
+    """국제 금리 정보를 LLM 친화적인 문자열로 포맷팅합니다."""
+    if not intl_rates:
+        return "현재 조회 가능한 국제 금리 정보가 없습니다."
+    lines = [f"- {rate.get('country', 'N/A')} ({rate.get('rate_type', 'N/A')}): {rate.get('interest_rate', 'N/A')}" for rate in intl_rates]
+    return "주요 국제 금리 정보:\n" + "\n".join(lines)
+
+async def get_krw_exchange_rate(currency_code: str = "USD") -> str:
     """
-    환율 정보를 조회합니다 (data=AP01).
-    [수정] API 호출 실패 또는 통화 부재 시 None을 반환합니다.
+    환율 정보를 조회하여 LLM 친화적인 문자열로 반환합니다.
+    [수정] 반환 형식을 dict에서 str으로 변경하여 토큰 사용량을 최적화합니다.
     """
     data = await _fetch_exim_data("AP01")
     if not data:
-        logger.warning("수출입은행 환율 정보 조회 실패 (API로부터 데이터 없음).")
-        return None
+        return "환율 정보를 가져오는 데 실패했습니다."
 
-    for rate_info in data:
-        if rate_info.get('cur_unit') == target_currency.upper():
-            try:
-                return {
-                    "currency_code": rate_info.get('cur_unit'),
-                    "currency_name": rate_info.get('cur_nm'),
-                    "ttb": rate_info.get('ttb', '0'), # TTB: Telegraphic Transfer Buying Rate (송금 받을때)
-                    "tts": rate_info.get('tts', '0'), # TTS: Telegraphic Transfer Selling Rate (송금 보낼때)
-                    "deal_bas_r": rate_info.get('deal_bas_r', '0'), # 매매 기준율
-                    "tc_b": rate_info.get('tc_b', '0'), # T/C 살때
-                    "fc_s": rate_info.get('fc_s', '0'), # 현찰 팔때
-                }
-            except (TypeError, ValueError) as e:
-                logger.error(f"환율 데이터 파싱 중 오류: {e}, 데이터: {rate_info}", exc_info=True)
-                return None
+    for rate_info_raw in data:
+        if rate_info_raw.get('cur_unit') == currency_code.upper():
+            rate_info = {
+                "currency_code": rate_info_raw.get('cur_unit'),
+                "currency_name": rate_info_raw.get('cur_nm'),
+                "ttb": rate_info_raw.get('ttb', '0'),
+                "tts": rate_info_raw.get('tts', '0'),
+                "deal_bas_r": rate_info_raw.get('deal_bas_r', '0'),
+            }
+            return _format_exchange_rate_data(rate_info)
 
+    return f"'{currency_code}' 통화에 대한 환율 정보를 찾을 수 없습니다."
 
-    logger.warning(f"수출입은행 환율 API 응답에서 '{target_currency}' 통화를 찾지 못했습니다.")
-    return None
-
-async def get_loan_interest_rates() -> dict:
+async def get_loan_rates() -> str:
     """
-    대출 금리 정보를 조회합니다 (data=AP02 - 가정).
-    [수정] 오류 발생 시 빈 리스트를 포함한 딕셔너리를 반환합니다.
+    대출 금리 정보를 조회하여 LLM 친화적인 문자열로 반환합니다.
+    [수정] 반환 형식을 dict에서 str으로 변경하여 토큰 사용량을 최적화합니다.
     """
     data = await _fetch_exim_data("AP02")
+    return _format_loan_rates_data(data)
 
-    formatted_rates = [
-        {
-            "rate_name": item.get("rate_name", "N/A"),
-            "interest_rate": item.get("interest_rate", "N/A")
-        }
-        for item in data
-    ]
-    return {"loan_rates": formatted_rates}
-
-async def get_international_interest_rates() -> dict:
+async def get_international_rates() -> str:
     """
-    국제 금리 정보를 조회합니다 (data=AP03 - 가정).
-    [수정] 오류 발생 시 빈 리스트를 포함한 딕셔너리를 반환합니다.
+    국제 금리 정보를 조회하여 LLM 친화적인 문자열로 반환합니다.
+    [수정] 반환 형식을 dict에서 str으로 변경하여 토큰 사용량을 최적화합니다.
     """
     data = await _fetch_exim_data("AP03")
-
-    formatted_rates = [
-        {
-            "country": item.get("country", "N/A"),
-            "rate_type": item.get("rate_type", "N/A"),
-            "interest_rate": item.get("interest_rate", "N/A")
-        }
-        for item in data
-    ]
-    return {"international_rates": formatted_rates}
+    return _format_international_rates_data(data)
