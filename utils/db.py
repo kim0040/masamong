@@ -73,8 +73,14 @@ async def is_api_limit_reached(db: aiosqlite.Connection, counter_name: str, limi
             result = await cursor.fetchone()
 
         if result is None:
-            logger.error(f"DB에 '{counter_name}' 카운터가 없습니다. init_db.py를 실행하세요.")
-            return True
+            # 카운터가 없는 경우, 새로 생성하고 한도에 도달하지 않은 것으로 간주
+            logger.info(f"DB에 '{counter_name}' 카운터가 없어 새로 생성합니다.")
+            await db.execute(
+                "INSERT INTO system_counters (counter_name, counter_value, last_reset_at) VALUES (?, ?, ?)",
+                (counter_name, 0, datetime.utcnow().isoformat())
+            )
+            await db.commit()
+            return False
 
         count, last_reset_at_iso = result
         last_reset_date_kst_str = datetime.fromisoformat(last_reset_at_iso).astimezone(KST).strftime('%Y-%m-%d')
