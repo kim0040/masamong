@@ -35,7 +35,7 @@ async def get_stock_price(stock_name: str) -> str | None:
 
     try:
         session = http.get_modern_tls_session()
-        response = await asyncio.to_thread(session.get, config.KRX_BASE_URL, params=params, timeout=10, verify=False)
+        response = await asyncio.to_thread(session.get, config.KRX_BASE_URL, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
         logger.debug(f"KRX API 응답 수신: {data}")
