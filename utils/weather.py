@@ -9,9 +9,9 @@ import aiosqlite
 import config
 from logger_config import logger
 from . import db as db_utils
+from . import http
 
 KST = pytz.timezone('Asia/Seoul')
-KMA_API_BASE_URL = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0"
 
 def get_kma_api_key():
     """config.py에서 기상청 API 키를 가져옵니다."""
@@ -22,16 +22,20 @@ def get_kma_api_key():
     return api_key
 
 async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict) -> dict | None:
-    """새로운 기상청 API를 호출하고 응답을 파싱하는 통합 함수."""
+    """
+    새로운 기상청 API를 호출하고 응답을 파싱하는 통합 함수.
+    [수정] 오류 발생 시 None을 반환하여 안정성을 높입니다.
+    """
     api_key = get_kma_api_key()
     if not api_key:
-        return {"error": "api_key_missing", "message": config.MSG_WEATHER_API_KEY_MISSING}
+        logger.error("기상청 API 키가 없어 날씨를 조회할 수 없습니다.")
+        return None
 
     if await db_utils.is_api_limit_reached(db, 'kma_daily_calls', config.KMA_API_DAILY_CALL_LIMIT):
-        return {"error": "limit_reached", "message": config.MSG_KMA_API_DAILY_LIMIT_REACHED}
+        logger.warning("기상청 API 일일 호출 한도를 초과했습니다.")
+        return None
 
-    full_url = f"{KMA_API_BASE_URL}/{endpoint}"
-
+    full_url = f"{config.KMA_BASE_URL}/{endpoint}"
     base_params = {
         "authKey": api_key,
         "pageNo": "1",
@@ -40,13 +44,13 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict) 
     }
     base_params.update(params)
 
-    # 보안을 위해 API 키는 로그에서 제외
     log_params = base_params.copy()
     log_params["authKey"] = "[REDACTED]"
     logger.info(f"기상청 API 요청: URL='{full_url}', Params='{log_params}'")
 
     try:
-        response = await asyncio.to_thread(requests.get, full_url, params=base_params, timeout=15)
+        session = http.get_modern_tls_session()
+        response = await asyncio.to_thread(session.get, full_url, params=base_params, timeout=15)
         response.raise_for_status()
         data = response.json()
         logger.debug(f"기상청 API 응답 수신 ({endpoint}): {data}")
@@ -54,24 +58,22 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict) 
         header = data.get('response', {}).get('header', {})
         if header.get('resultCode') != '00':
             error_msg = header.get('resultMsg', 'Unknown API Error')
-            logger.error(f"기상청 API가 오류를 반환했습니다: {error_msg}")
-            return {"error": "api_error", "message": f"기상청 API 오류: {error_msg}"}
+            logger.error(f"기상청 API 오류: {error_msg} (Code: {header.get('resultCode')})")
+            return None
 
         await db_utils.increment_api_counter(db, 'kma_daily_calls')
-        return data
+        return data.get('response', {}).get('body', {}).get('items')
 
-    except requests.exceptions.Timeout:
-        logger.error("기상청 API 요청 시간 초과.")
-        return {"error": "timeout", "message": config.MSG_WEATHER_FETCH_ERROR}
-    except requests.exceptions.HTTPError as e:
-        logger.error(f"기상청 API HTTP 오류: {e.response.status_code} for url: {e.response.url}")
-        return {"error": "http_error", "message": config.MSG_WEATHER_FETCH_ERROR}
-    except json.JSONDecodeError:
-        logger.error(f"기상청 API 응답 JSON 파싱 실패. 응답 내용: {response.text}")
-        return {"error": "json_error", "message": config.MSG_WEATHER_FETCH_ERROR}
+    except requests.exceptions.RequestException as e:
+        logger.error(f"기상청 API 요청 중 오류: {e}", exc_info=True)
+        return None
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        response_text = response.text if 'response' in locals() else "N/A"
+        logger.error(f"기상청 API 응답 파싱 중 오류: {e}. 응답: {response_text}", exc_info=True)
+        return None
     except Exception as e:
         logger.error(f"기상청 API 처리 중 예기치 않은 오류: {e}", exc_info=True)
-        return {"error": "unknown_error", "message": config.MSG_WEATHER_FETCH_ERROR}
+        return None
 
 async def get_current_weather_from_kma(db: aiosqlite.Connection, nx: str, ny: str) -> dict | None:
     """초단기실황 정보를 새로운 기상청 API로부터 가져옵니다."""
@@ -129,46 +131,62 @@ async def get_short_term_forecast_from_kma(db: aiosqlite.Connection, nx: str, ny
     return await _fetch_kma_api(db, "getVilageFcst", params)
 
 
-def format_current_weather(weather_data: dict | None) -> str:
-    """JSON으로 파싱된 초단기실황 데이터를 사람이 읽기 좋은 문자열로 포맷팅합니다."""
-    if not weather_data or weather_data.get("error"):
-        return weather_data.get("message", config.MSG_WEATHER_FETCH_ERROR)
-    try:
-        items = weather_data['response']['body']['items']['item']
-        weather_values = {item['category']: item['obsrValue'] for item in items}
+def _get_wind_direction_str(vec_value: float) -> str:
+    """풍향 각도를 16방위 문자열로 변환합니다."""
+    angles = ["북", "북북동", "북동", "동북동", "동", "동남동", "남동", "남남동", "남", "남남서", "남서", "서남서", "서", "서북서", "북서", "북북서"]
+    index = round(vec_value / 22.5) % 16
+    return angles[index]
 
-        temp = weather_values.get('T1H', 'N/A') + "°C"
-        reh = weather_values.get('REH', 'N/A') + "%"
+def format_current_weather(items: dict | None) -> str:
+    """
+    JSON으로 파싱된 초단기실황 데이터를 사람이 읽기 좋은 문자열로 포맷팅합니다.
+    [수정] None 입력 처리 및 데이터 구조 변경에 따른 로직 수정.
+    [Phase 3] 풍속, 풍향 정보 추가.
+    """
+    if not items:
+        return config.MSG_WEATHER_FETCH_ERROR
+    try:
+        weather_values = {item['category']: item['obsrValue'] for item in items.get('item', [])}
+
+        temp = weather_values.get('T1H', 'N/A')
+        reh = weather_values.get('REH', 'N/A')
+        wsd = weather_values.get('WSD', 'N/A')
+        vec = weather_values.get('VEC', 'N/A')
+        pty_code = weather_values.get('PTY', '0')
         rn1 = weather_values.get('RN1', '0')
 
-        pty_code = weather_values.get('PTY', '0')
+        if 'N/A' in [temp, reh, wsd, vec]:
+            logger.warning(f"초단기실황 데이터 일부 누락: {weather_values}")
+            return config.MSG_WEATHER_NO_DATA
+
         pty_map = {"0": "없음", "1": "비", "2": "비/눈", "3": "눈", "5": "빗방울", "6": "빗방울/눈날림", "7": "눈날림"}
         pty = pty_map.get(pty_code, "정보 없음")
+        rain_info = f" (시간당 {rn1}mm)" if float(rn1) > 0 else ""
 
-        rain_info = ""
-        if float(rn1) > 0:
-            rain_info = f" (시간당 {rn1}mm)"
+        wind_dir_str = _get_wind_direction_str(float(vec))
+        wind_info = f", 💨바람: {wind_dir_str} {wsd}m/s"
 
-        return f"🌡️기온: {temp}, 💧습도: {reh}, ☔강수: {pty}{rain_info}"
-    except (KeyError, TypeError, IndexError):
-        logger.error(f"초단기실황 포맷팅 중 오류: {weather_data}", exc_info=True)
+        return f"🌡️기온: {temp}°C, 💧습도: {reh}%, ☔강수: {pty}{rain_info}{wind_info}"
+    except (KeyError, TypeError, IndexError, ValueError) as e:
+        logger.error(f"초단기실황 포맷팅 중 오류: {items}", exc_info=True)
         return config.MSG_WEATHER_NO_DATA
 
 
-def format_short_term_forecast(forecast_data: dict | None, day_name: str, target_day_offset: int = 0) -> str:
-    """JSON으로 파싱된 단기예보 데이터를 사람이 읽기 좋은 문자열로 포맷팅합니다."""
-    if not forecast_data or forecast_data.get("error"):
-        return f"{day_name} 날씨: {forecast_data.get('message', config.MSG_WEATHER_FETCH_ERROR)}"
+def format_short_term_forecast(items: dict | None, day_name: str, target_day_offset: int = 0) -> str:
+    """
+    JSON으로 파싱된 단기예보 데이터를 사람이 읽기 좋은 문자열로 포맷팅합니다.
+    [수정] None 입력 처리 및 데이터 구조 변경에 따른 로직 수정.
+    """
+    if not items:
+        return f"{day_name} 날씨: {config.MSG_WEATHER_FETCH_ERROR}"
 
     try:
-        all_items = forecast_data.get('response', {}).get('body', {}).get('items', {}).get('item', [])
+        all_items = items.get('item', [])
         if not all_items:
             return config.MSG_WEATHER_NO_DATA
 
-        target_date = datetime.now(KST).date() + timedelta(days=target_day_offset)
-        target_date_str = target_date.strftime("%Y%m%d")
-
-        day_items = [item for item in all_items if item.get('fcstDate') == target_date_str]
+        target_date = (datetime.now(KST) + timedelta(days=target_day_offset)).strftime("%Y%m%d")
+        day_items = [item for item in all_items if item.get('fcstDate') == target_date]
         if not day_items:
             return f"{day_name} 날씨: 해당 날짜의 예보 데이터가 없습니다."
 
@@ -178,21 +196,21 @@ def format_short_term_forecast(forecast_data: dict | None, day_name: str, target
         max_temp = max(max_temps) if max_temps else None
 
         sky_map = {"1": "맑음☀️", "3": "구름많음☁️", "4": "흐림🌥️"}
+        # 정오(1200) 하늘 상태를 우선적으로 찾음
         noon_sky_item = next((item for item in day_items if item['category'] == 'SKY' and item['fcstTime'] == '1200'), None)
-        noon_sky = sky_map.get(noon_sky_item['fcstValue'], "정보없음") if noon_sky_item else "정보없음"
+        if noon_sky_item:
+            noon_sky = sky_map.get(noon_sky_item['fcstValue'], "정보없음")
+        else: # 정오 정보가 없으면 가장 이른 시간의 하늘 상태를 사용
+            first_sky_item = next((item for item in day_items if item['category'] == 'SKY'), None)
+            noon_sky = sky_map.get(first_sky_item['fcstValue'], "정보없음") if first_sky_item else "정보없음"
 
         pops = [int(item['fcstValue']) for item in day_items if item['category'] == 'POP']
         max_pop = max(pops) if pops else 0
 
-        temp_range_str = ""
-        if min_temp is not None and max_temp is not None:
-            temp_range_str = f"(최저 {min_temp:.1f}°C / 최고 {max_temp:.1f}°C)"
-        elif max_temp is not None:
-            temp_range_str = f"(최고 {max_temp:.1f}°C)"
+        temp_range_str = f"🌡️기온: {min_temp:.1f}°C ~ {max_temp:.1f}°C" if min_temp is not None and max_temp is not None else "기온 정보 없음"
+        weather_desc = f" 하늘: {noon_sky}, 강수확률: ~{max_pop}%"
 
-        weather_desc = f"하늘: 대체로 {noon_sky}, 최고 강수확률: {max_pop}%"
-
-        return f"{day_name} 날씨 {temp_range_str}:\n{weather_desc}".strip()
+        return f"{day_name} 날씨: {temp_range_str},{weather_desc}"
     except (KeyError, TypeError, IndexError, StopIteration, ValueError) as e:
         logger.error(f"단기예보 포맷팅 중 오류: {e}", exc_info=True)
         return config.MSG_WEATHER_NO_DATA

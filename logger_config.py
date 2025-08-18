@@ -8,6 +8,7 @@ import discord
 from discord.ext import commands
 from collections import deque
 import traceback
+import json
 
 import config
 
@@ -20,6 +21,30 @@ def time_converter(*args):
 
 _discord_log_queue = asyncio.Queue()
 _bot_instance = None
+
+class JsonFormatter(logging.Formatter):
+    """
+    로그 레코드를 JSON 형식으로 포맷팅하는 포맷터.
+    """
+    def format(self, record):
+        log_object = {
+            "timestamp": datetime.fromtimestamp(record.created, tz=KST).isoformat(),
+            "level": record.levelname,
+            "name": record.name,
+            "message": record.getMessage(),
+        }
+        # 예외 정보가 있는 경우 추가
+        if record.exc_info:
+            log_object['exc_info'] = self.formatException(record.exc_info)
+
+        # 추가 컨텍스트 정보가 있는 경우 (예: guild_id, user_id)
+        # 참고: 로깅 호출 시 extra={'guild_id': ..., 'user_id': ...} 형태로 전달해야 함
+        extra_fields = ['guild_id', 'user_id', 'channel_id', 'author_id']
+        for field in extra_fields:
+            if hasattr(record, field):
+                log_object[field] = getattr(record, field)
+
+        return json.dumps(log_object, ensure_ascii=False)
 
 class DiscordLogHandler(logging.Handler):
     """
@@ -43,8 +68,6 @@ class DiscordLogHandler(logging.Handler):
         try:
             _discord_log_queue.put_nowait(record)
         except asyncio.QueueFull:
-            # 큐가 가득 차면, 가장 오래된 로그를 버리고 새 로그를 넣음 (선택적)
-            # 여기서는 간단히 무시
             pass
 
     def format_embed(self, record: logging.LogRecord) -> discord.Embed:
@@ -64,13 +87,11 @@ class DiscordLogHandler(logging.Handler):
             timestamp=datetime.fromtimestamp(record.created).astimezone(KST)
         )
 
-        # 메시지 본문 추가 (1024자 제한 엄수)
         message_content = record.getMessage()
         if record.exc_info:
             exc_text = "".join(traceback.format_exception(*record.exc_info))
             message_content += f"\n\n**Traceback:**\n```python\n{exc_text}\n```"
 
-        # Discord 필드 값 제한인 1024자에 맞게 자르기
         if len(message_content) > 1000:
             message_content = message_content[:1000] + "..."
 
@@ -79,7 +100,7 @@ class DiscordLogHandler(logging.Handler):
         return embed
 
 async def discord_logging_task():
-    """큐에서 로그를 꺼내 Discord 'logs' 채널로 전송하는 백그라운드 작업."""
+    """큐에서 로그를 꺼내 Discord로 전송하는 백그라운드 작업."""
     global _bot_instance
     await _bot_instance.wait_until_ready()
     logger.info("Discord 로깅 태스크 시작.")
@@ -89,12 +110,6 @@ async def discord_logging_task():
     while not _bot_instance.is_closed():
         try:
             record = await _discord_log_queue.get()
-
-            # 로그 레코드에 guild_id가 있는지 확인
-            guild_id = getattr(record, 'guild_id', None)
-            target_guilds = []
-
-            # 핸들러 인스턴스를 한 번만 찾음
             handler = None
             for h in logging.getLogger().handlers:
                 if isinstance(h, DiscordLogHandler):
@@ -104,8 +119,6 @@ async def discord_logging_task():
                 continue
 
             embed = handler.format_embed(record)
-
-            # 길드 ID가 있는 경우, 해당 길드의 'logs' 채널에만 전송
             guild_id = getattr(record, 'guild_id', None)
             if guild_id:
                 guild = _bot_instance.get_guild(guild_id)
@@ -123,7 +136,7 @@ async def discord_logging_task():
                         try:
                             await log_channel.send(embed=embed)
                         except discord.Forbidden:
-                            log_channel_cache.pop(guild.id, None) # 권한 문제 시 캐시 제거
+                            log_channel_cache.pop(guild.id, None)
                         except Exception as e:
                             logging.getLogger(__name__).error(f"Discord 로그 채널({log_channel.name}) 전송 중 오류: {e}", exc_info=False)
 
@@ -131,46 +144,44 @@ async def discord_logging_task():
         except asyncio.CancelledError:
             break
         except Exception as e:
-            # 로깅 태스크 자체의 오류는 파일에만 기록
             logging.getLogger(__name__).error(f"Discord 로깅 태스크에서 심각한 오류 발생: {e}", exc_info=True)
             await asyncio.sleep(5)
 
 
 def setup_logger():
     """로거 객체를 설정하고 반환합니다."""
-    logging.Formatter.converter = time_converter
-    log_formatter = logging.Formatter('%(asctime)s [%(levelname)s] [%(name)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    # logging.Formatter.converter = time_converter # JsonFormatter가 타임스탬프를 직접 처리하므로 필요 없음
+    json_formatter = JsonFormatter()
 
     logger = logging.getLogger()
-    logger.setLevel(logging.INFO) # 기본 로그 레벨을 INFO로 설정
+    logger.setLevel(logging.INFO)
 
     if logger.hasHandlers():
         logger.handlers.clear()
 
-    # 1. 콘솔 핸들러
+    # 1. 콘솔 핸들러 (JSON 포맷)
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(log_formatter)
-    console_handler.setLevel(logging.DEBUG) # 콘솔에서는 DEBUG까지 모두 표시
+    console_handler.setFormatter(json_formatter)
+    console_handler.setLevel(logging.DEBUG)
     logger.addHandler(console_handler)
 
-    # 2. 일반 파일 핸들러
+    # 2. 일반 파일 핸들러 (JSON 포맷)
     try:
         file_handler = logging.FileHandler(config.LOG_FILE_NAME, encoding='utf-8', mode='a')
-        file_handler.setFormatter(log_formatter)
+        file_handler.setFormatter(json_formatter)
         logger.addHandler(file_handler)
     except Exception as e:
         print(f"**[심각] 일반 로그 파일 핸들러 설정 오류:** {e}", file=sys.stderr)
 
-    # 3. 오류 파일 핸들러
+    # 3. 오류 파일 핸들러 (JSON 포맷)
     try:
         error_handler = logging.FileHandler(config.ERROR_LOG_FILE_NAME, encoding='utf-8', mode='a')
-        error_handler.setFormatter(log_formatter)
+        error_handler.setFormatter(json_formatter)
         error_handler.setLevel(logging.ERROR)
         logger.addHandler(error_handler)
     except Exception as e:
         print(f"**[심각] 오류 로그 파일 핸들러 설정 오류:** {e}", file=sys.stderr)
 
-    # discord.py 라이브러리 자체의 로그가 너무 많이 뜨는 것을 방지
     logging.getLogger('discord').setLevel(logging.WARNING)
     logging.getLogger('websockets').setLevel(logging.WARNING)
     logging.getLogger('urllib3').setLevel(logging.WARNING)
@@ -180,19 +191,13 @@ def setup_logger():
 def register_discord_logging(bot: commands.Bot):
     """
     Discord 로깅 핸들러를 루트 로거에 추가하고 백그라운드 태스크를 시작합니다.
-    이 함수는 봇이 초기화된 후 main.py에서 호출되어야 합니다.
     """
     global _bot_instance
     _bot_instance = bot
 
     discord_handler = DiscordLogHandler()
-    # 사용자의 요청에 따라 WARNING 레벨 이상의 로그만 Discord로 전송
     discord_handler.setLevel(logging.WARNING)
-
-    # 포매터는 핸들러 내에서 Embed를 생성하므로 필요 없음
     logging.getLogger().addHandler(discord_handler)
-
-    # 백그라운드에서 로그 전송 태스크 시작
     asyncio.create_task(discord_logging_task())
     logging.info("Discord 로깅 핸들러가 등록되었고, 전송 태스크가 시작될 예정입니다.")
 
