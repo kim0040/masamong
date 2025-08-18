@@ -53,7 +53,7 @@ class AIHandler(commands.Cog):
         return self.gemini_configured and self.bot.db is not None and self.tools_cog is not None
 
     # --- Gemini API 안정성 강화를 위한 래퍼 함수 ---
-    async def _safe_generate_content(self, model: genai.GenerativeModel, prompt: Any, log_extra: dict) -> genai.GenerationResponse | None:
+    async def _safe_generate_content(self, model: genai.GenerativeModel, prompt: Any, log_extra: dict) -> genai.types.GenerateContentResponse | None:
         """
         generate_content_async 호출을 위한 안전한 래퍼.
         Google API 관련 특정 예외를 처리하고 로깅하며, 실패 시 None을 반환합니다.
