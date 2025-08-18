@@ -213,63 +213,93 @@ class AIHandler(commands.Cog):
         if not user_query: return
 
         log_extra = {'guild_id': message.guild.id, 'channel_id': message.channel.id, 'user_id': message.author.id}
-        logger.info(f"에이전트 처리 시작. Query: '{user_query}'", extra=log_extra)
+        logger.info(f"에이전트 처리 시작 (2-step). Query: '{user_query}'", extra=log_extra)
 
-        response_text = ""
-        try:
-            rag_prompt_addition, rag_contents = await self._get_rag_context(message.channel.id, message.author.id, user_query)
-            rag_content_set = set(rag_contents)
+        async with message.channel.typing():
+            try:
+                # --- 1단계: Lite 모델로 의도 분석 및 간단 답변 시도 ---
+                rag_prompt, _ = await self._get_rag_context(message.channel.id, message.author.id, user_query)
+                history = await self._get_recent_history(message, rag_prompt)
 
-            history_limit = 3 if rag_contents else 8
-            history = []
-            async for msg in message.channel.history(limit=history_limit * 2):
-                if msg.id == message.id: continue
-                if msg.content in rag_content_set: continue
-                role = 'model' if msg.author.id == self.bot.user.id else 'user'
-                history.append({'role': role, 'parts': [msg.content]})
-                if len(history) >= history_limit: break
-            history.reverse()
+                lite_system_prompt = config.LITE_MODEL_SYSTEM_PROMPT
+                if rag_prompt:
+                    lite_system_prompt = f"{rag_prompt}\n\n{lite_system_prompt}"
 
-            system_prompt_str = config.AGENT_SYSTEM_PROMPT
-            custom_persona = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'persona_text')
-            if custom_persona: system_prompt_str = f"{custom_persona}\n\n{system_prompt_str}"
-            if rag_prompt_addition: system_prompt_str = f"{rag_prompt_addition}\n\n{system_prompt_str}"
+                lite_model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME, system_instruction=lite_system_prompt)
+                lite_conversation = history + [{'role': 'user', 'parts': [user_query]}]
 
-            async with message.channel.typing():
-                model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, system_instruction=system_prompt_str)
-                full_conversation = history + [{'role': 'user', 'parts': [user_query]}]
+                logger.info("1단계: Lite 모델 호출 시작...", extra=log_extra)
+                lite_response = await self._safe_generate_content(lite_model, lite_conversation, log_extra)
 
-                for i in range(5):
-                    logger.info(f"모델 생성 시도 #{i+1}", extra=log_extra)
-                    response = await self._safe_generate_content(model, full_conversation, log_extra)
-
-                    if not response:
-                        logger.error("Gemini로부터 응답을 받지 못했습니다(safe_generate_content가 None 반환).", extra=log_extra)
-                        break
-
-                    response_text = "".join(part.text for part in response.parts).strip() if response.parts else ""
-                    if not response_text and response.candidates[0].finish_reason.name != "STOP":
-                        logger.warning(f"Gemini로부터 빈 응답 수신. 종료 사유: {response.candidates[0].finish_reason.name}", extra=log_extra)
-
-                    tool_call = self._parse_tool_call(response_text)
-                    if tool_call:
-                        full_conversation.append({'role': 'model', 'parts': [response_text]})
-                        tool_result = await self._execute_tool(tool_call, message.guild.id)
-                        tool_result_str = json.dumps(tool_result, ensure_ascii=False, indent=2)
-                        full_conversation.append({'role': 'user', 'parts': [f"<tool_result>\n{tool_result_str}\n</tool_result>"]})
-                    else:
-                        break
-
-                if response_text:
-                    bot_response_message = await message.reply(response_text, mention_author=False)
-                    await self.add_message_to_history(bot_response_message)
-                else:
-                    logger.warning("모델이 최종적으로 빈 응답을 반환했거나 생성에 실패했습니다.", extra=log_extra)
+                if not lite_response or not lite_response.text:
+                    logger.error("Lite 모델이 응답을 생성하지 못했습니다.", extra=log_extra)
                     await message.reply(config.MSG_AI_ERROR, mention_author=False)
+                    return
 
-        except Exception as e:
-            logger.error(f"에이전트 처리 중 최상위 오류: {e}", exc_info=True, extra=log_extra)
-            await message.reply(config.MSG_AI_ERROR, mention_author=False)
+                lite_response_text = lite_response.text.strip()
+                logger.info(f"Lite 모델 응답: '{lite_response_text[:100]}...'", extra=log_extra)
+                tool_call = self._parse_tool_call(lite_response_text)
+
+                # --- 2단계: 분기 처리 ---
+                if not tool_call:
+                    # Case 1: 간단한 대화 - Lite 모델의 답변을 그대로 사용
+                    logger.info("분기: 간단한 대화로 판단, Lite 모델의 답변으로 바로 응답합니다.", extra=log_extra)
+                    await message.reply(lite_response_text, mention_author=False)
+                    return
+
+                # Case 2: 도구 사용 필요 - 도구를 실행하고 Main 모델로 최종 답변 생성
+                logger.info(f"분기: 도구 사용으로 판단. Tool: {tool_call}", extra=log_extra)
+                tool_result = await self._execute_tool(tool_call, message.guild.id)
+
+                if tool_result is None:
+                    logger.error(f"도구 실행 결과가 None입니다: {tool_call.get('tool_to_use')}", extra=log_extra)
+                    await message.reply(config.MSG_AI_ERROR, mention_author=False)
+                    return
+
+                # 도구 결과가 dict 형태일 경우 (이전 버전 호환성), str으로 변환
+                tool_result_str = json.dumps(tool_result, ensure_ascii=False) if isinstance(tool_result, dict) else str(tool_result)
+
+                logger.info("2단계: Main 모델 호출 시작...", extra=log_extra)
+                main_system_prompt = config.AGENT_SYSTEM_PROMPT.format(user_query=user_query, tool_result=tool_result_str)
+
+                # 페르소나 적용
+                custom_persona = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'persona_text')
+                if custom_persona:
+                    main_system_prompt = f"{custom_persona}\n\n{main_system_prompt}"
+
+                main_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, system_instruction=main_system_prompt)
+
+                # Main 모델에는 전체 대화 기록 대신, 현재 문맥만 전달하여 토큰 최적화
+                main_response = await self._safe_generate_content(main_model, user_query, log_extra)
+
+                if main_response and main_response.text:
+                    logger.info("Main 모델이 최종 답변을 생성했습니다.", extra=log_extra)
+                    final_response_text = main_response.text.strip()
+                    await message.reply(final_response_text, mention_author=False)
+                else:
+                    logger.error("Main 모델이 최종 답변을 생성하지 못했습니다.", extra=log_extra)
+                    # 실패 시, 최소한 도구 결과라도 보여줌
+                    await message.reply(f"도구 실행 결과는 다음과 같아.\n```\n{tool_result_str}\n```", mention_author=False)
+
+            except Exception as e:
+                logger.error(f"에이전트 처리 중 최상위 오류: {e}", exc_info=True, extra=log_extra)
+                await message.reply(config.MSG_AI_ERROR, mention_author=False)
+
+    async def _get_recent_history(self, message: discord.Message, rag_prompt: str) -> list:
+        """최근 대화 기록을 가져옵니다. RAG 사용 여부에 따라 기록 길이를 조절합니다."""
+        history_limit = 3 if rag_prompt else 8
+        history = []
+        # RAG에서 사용된 내용은 제외하기 위해 history_limit * 2 만큼 가져와 필터링
+        async for msg in message.channel.history(limit=history_limit * 2):
+            if msg.id == message.id: continue
+            if rag_prompt and msg.content in rag_prompt: continue
+
+            role = 'model' if msg.author.id == self.bot.user.id else 'user'
+            history.append({'role': role, 'parts': [msg.content]})
+            if len(history) >= history_limit:
+                break
+        history.reverse()
+        return history
 
     async def should_proactively_respond(self, message: discord.Message) -> bool:
         conf = config.AI_PROACTIVE_RESPONSE_CONFIG
