@@ -7,16 +7,15 @@ from datetime import datetime, timedelta
 
 BASE_URL = "https://api.rawg.io/api"
 
-async def get_games(ordering: str = '-released', dates: str = None, genres: str = None, page_size: int = 5) -> dict:
+async def get_games(ordering: str = '-released', dates: str = None, genres: str = None, page_size: int = 5) -> dict | None:
     """
     RAWG.io API를 사용하여 게임 목록을 조회합니다.
-    https://api.rawg.io/docs/
+    [수정] 오류 발생 시 None을 반환하고, 결과가 없으면 빈 리스트를 포함한 딕셔너리를 반환합니다.
     """
     if not config.RAWG_API_KEY or config.RAWG_API_KEY == 'YOUR_RAWG_API_KEY':
         logger.error("RAWG API 키(RAWG_API_KEY)가 설정되지 않았습니다.")
-        return {"error": "API 키가 설정되지 않았습니다."}
+        return None
 
-    # 'dates' 파라미터가 없으면, 최근 3개월으로 기본 설정
     if not dates:
         today = datetime.now()
         three_months_ago = today - timedelta(days=90)
@@ -53,12 +52,13 @@ async def get_games(ordering: str = '-released', dates: str = None, genres: str 
         ]
         return {"games": formatted_games}
 
-    except requests.exceptions.Timeout:
-        logger.error("RAWG API 요청 시간 초과.")
-        return {"error": "API 요청 시간 초과"}
-    except requests.exceptions.HTTPError as e:
-        logger.error(f"RAWG API HTTP 오류: {e.response.status_code}")
-        return {"error": f"API 서버 오류 ({e.response.status_code})"}
-    except (requests.exceptions.RequestException, ValueError) as e:
-        logger.error(f"RAWG API 처리 중 오류: {e}", exc_info=True)
-        return {"error": "API 요청 또는 데이터 처리 중 오류 발생"}
+    except requests.exceptions.RequestException as e:
+        logger.error(f"RAWG API 요청 중 오류: {e}", exc_info=True)
+        return None
+    except (ValueError, KeyError) as e:
+        response_text = response.text if 'response' in locals() else 'N/A'
+        logger.error(f"RAWG API 응답 파싱 중 오류: {e}. 응답: {response_text}", exc_info=True)
+        return None
+    except Exception as e:
+        logger.error(f"RAWG API 처리 중 예기치 않은 오류: {e}", exc_info=True)
+        return None

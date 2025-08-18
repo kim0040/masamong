@@ -102,18 +102,22 @@ class EventListeners(commands.Cog):
         if message.author.bot or not message.guild or isinstance(message.channel, discord.DMChannel):
             return
 
+        # [수정] AI가 명령어를 기억하거나 반응하지 않도록, 명령어 처리를 최우선으로 실행합니다.
+        # 이렇게 하면 명령어는 AI 대화 기록에 추가되지 않으며, AI 상호작용 로직을 타지 않습니다.
+        if message.content.startswith(self.bot.command_prefix):
+            await self.bot.process_commands(message)
+            return
+
+        # 아래 로직은 명령어가 아닌 일반 메시지에 대해서만 실행됩니다.
         if self.activity_cog:
             await self.activity_cog.record_message(message)
 
         if self.ai_handler:
             await self.ai_handler.add_message_to_history(message)
 
-        if message.content.startswith(self.bot.command_prefix):
-            await self.bot.process_commands(message)
-            return
-
         if await self._handle_keyword_triggers(message):
             return
+
         await self._handle_ai_interaction(message)
 
     @commands.Cog.listener()
