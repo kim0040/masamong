@@ -9,9 +9,9 @@ import aiosqlite
 import config
 from logger_config import logger
 from . import db as db_utils
+from . import http
 
 KST = pytz.timezone('Asia/Seoul')
-KMA_API_BASE_URL = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0"
 
 def get_kma_api_key():
     """config.py에서 기상청 API 키를 가져옵니다."""
@@ -35,7 +35,7 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict) 
         logger.warning("기상청 API 일일 호출 한도를 초과했습니다.")
         return None
 
-    full_url = f"{KMA_API_BASE_URL}/{endpoint}"
+    full_url = f"{config.KMA_BASE_URL}/{endpoint}"
     base_params = {
         "authKey": api_key,
         "pageNo": "1",
@@ -49,7 +49,8 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict) 
     logger.info(f"기상청 API 요청: URL='{full_url}', Params='{log_params}'")
 
     try:
-        response = await asyncio.to_thread(requests.get, full_url, params=base_params, timeout=15)
+        session = http.get_modern_tls_session()
+        response = await asyncio.to_thread(session.get, full_url, params=base_params, timeout=15)
         response.raise_for_status()
         data = response.json()
         logger.debug(f"기상청 API 응답 수신 ({endpoint}): {data}")

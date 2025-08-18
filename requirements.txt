@@ -23,3 +23,8 @@ pytz
 
 # HTTP 요청을 위한 라이브러리 (기상청 API 등)
 requests
+
+# --- 테스팅 라이브러리 ---
+pytest
+pytest-mock
+pytest-asyncio

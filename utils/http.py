@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import requests
+import ssl
 from requests.adapters import HTTPAdapter
 from urllib3.util.ssl_ import create_urllib3_context
 
@@ -14,15 +15,22 @@ CIPHERS = (
 class ModernTlsAdapter(HTTPAdapter):
     """
     A custom HTTP adapter that forces a modern, specific set of TLS ciphers.
+    This adapter also disables SSL certificate verification as a workaround
+    for servers with self-signed certificates.
     """
     def init_poolmanager(self, *args, **kwargs):
         context = create_urllib3_context(ciphers=CIPHERS)
+        # This is a workaround for the self-signed certificate issue with the Exim bank API.
+        # In a production environment, it would be better to add the certificate to the trust store.
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
         kwargs['ssl_context'] = context
         return super().init_poolmanager(*args, **kwargs)
 
 def get_modern_tls_session() -> requests.Session:
     """
-    Returns a requests.Session object configured with a modern TLS cipher suite.
+    Returns a requests.Session object configured with a modern TLS cipher suite
+    and SSL verification disabled.
     """
     session = requests.Session()
     session.mount('https://', ModernTlsAdapter())

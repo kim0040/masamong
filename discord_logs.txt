@@ -461,3 +461,4 @@ requests.exceptions.SSLError: HTTPSConnectionPool(host='oapi.koreaexim.go.kr', p
 2025-08-18 20:49:37 [WARNING] [root] 수출입은행 환율 API 응답에서 'USD' 통화를 찾지 못했습니다.
 2025-08-18 20:49:37 [INFO] [root] 수출입은행 API 요청: URL='https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON', Params='{'authkey': '[REDACTED]', 'searchdate': '20250818', 'data': 'AP01'}'
 2025-08-18 20:49:38 [WARNING] [root] 수출입은행 환율 API 응답에서 'JPY' 통화를 찾지 못했습니다.
+{"timestamp": "2025-08-18T21:24:36.819337+09:00", "level": "WARNING", "name": "root", "message": "수출입은행 환율 API 응답에서 'EUR' 통화를 찾지 못했습니다."}
