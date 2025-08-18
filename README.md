@@ -1,106 +1,113 @@
-# 마사몽 AI 에이전트 3.0: 다중 도구 지능형 어시스턴트
+# 마사몽 AI 에이전트 v3.5: 실시간 여행 어시스턴트
 
-마사몽 3.0은 단순한 대화 봇을 넘어, 사용자의 복합적인 자연어 질문을 이해하고, 스스로 행동 계획을 수립하며, 다양한 외부 도구(API)를 사용하여 정확한 정보를 찾아내는 고성능 AI 에이전트입니다. '마사몽'이라는 독특한 페르소나를 유지하면서, 서버 멤버들에게 실제 세상의 데이터를 기반으로 한 유용한 정보를 제공하는 것을 목표로 합니다.
+마사몽 3.5는 단순한 정보 검색 봇을 넘어, 사용자의 여행 계획에 생동감을 불어넣는 **'현지 전문가'** AI 에이전트입니다. "다음 주 도쿄 가는데 뭐하지?" 라는 막연한 질문에, 날씨, 인기 명소, 그리고 현지에서 열리는 이벤트까지 종합하여 "마침 다음 주에만 열리는 재즈 페스티벌이 있고, 요즘 현지인들에게 가장 인기 있는 전망대는 여기예요." 와 같이 살아있는 정보를 제공합니다.
 
-## 🤖 봇의 핵심 아키텍처: Plan-and-Execute
+## 🤖 봇의 핵심 아키텍처: 2-Step Agent & API Mashup
 
-마사몽 3.0은 최신 AI 에이전트 기술인 **'계획 및 실행(Plan-and-Execute)'** 모델을 기반으로 동작합니다. 이 아키텍처는 복잡한 문제를 해결하기 위해 다음과 같은 3단계 과정을 거칩니다.
+마사몽 3.5는 효율성과 정확성을 극대화하기 위해 두 가지 핵심 전략을 사용합니다.
 
-### 1. 계획 (Planning)
-사용자가 `@마사몽 애플 주가를 원화로 알려줘`와 같이 복합적인 질문을 하면, 봇은 먼저 경량 LLM(`gemini-2.5-flash-lite`)을 사용하여 **어떤 도구를 어떤 순서로 사용해야 할지**에 대한 행동 계획을 수립합니다. 이 계획은 다음과 같은 JSON 형식으로 생성됩니다.
+### 1. 2-Step Agent (의도 분석 → 최종 답변)
+- **1단계 (Triage & Intent):** 경량 LLM(`gemini-2.5-flash-lite`)이 사용자의 질문을 먼저 분석하여, 간단한 대화인지, 아니면 복잡한 정보 조회가 필요한 '도구 사용'인지 판단합니다.
+- **2단계 (Execution & Synthesis):** 도구 사용이 필요할 경우, `ToolsCog`가 필요한 API를 호출하여 데이터를 수집합니다. 그 후, 더 강력한 LLM(`gemini-2.5-flash`)이 수집된 모든 정보를 바탕으로 최종 답변을 생성합니다.
 
-```json
-{
-  "plan": [
-    {
-      "tool_to_use": "get_stock_price",
-      "parameters": { "stock_name": "AAPL" }
-    },
-    {
-      "tool_to_use": "get_krw_exchange_rate",
-      "parameters": { "currency_code": "USD" }
-    }
-  ]
-}
-```
-
-### 2. 실행 (Execution)
-봇은 생성된 JSON 계획을 받아 각 단계를 순차적으로 실행합니다.
-- **동적 도구 호출**: `get_stock_price`와 같은 도구 이름을 기반으로, `ToolsCog`에 구현된 해당 함수를 동적으로 호출합니다.
-- **API 연동**: 각 도구 함수는 `utils/api_handlers/`에 구현된 API 핸들러를 통해 외부 서비스(Finnhub, 한국수출입은행 등)와 통신하여 필요한 데이터를 가져옵니다.
-- **컨텍스트 관리**: 첫 번째 단계(주가 조회)의 결과(예: `{ "price": 170.5 }`)는 실행 컨텍스트에 저장되어, 다음 단계에서 필요할 경우 사용될 수 있습니다.
-
-### 3. 종합 (Synthesis)
-모든 계획 단계가 실행된 후, 봇은 수집된 모든 데이터(예: 주가, 환율 정보)를 종합합니다. 그리고 더 강력한 LLM(`gemini-2.5-flash`)을 사용하여 이 데이터를 기반으로 사용자의 원래 질문에 대한 자연스럽고 유용한 최종 답변을 생성합니다.
-
-> "애플 주가 찾고 환율까지 보느라 좀 귀찮았는데... 지금 애플(AAPL)은 170.5달러고, 원화로는 대충 230,175원 정도네. 됐냐?"
-
-이러한 분리된 접근 방식은 저사양 서버에서도 효율적으로 작동하며, 복잡한 요청에 대해 더 정확하고 신뢰성 높은 답변을 제공합니다.
+### 2. API Mashup (지능형 라우팅)
+고비용의 단일 API 대신, 각 분야 최고의 무료 API를 지능적으로 조합합니다. `get_travel_recommendation`과 같은 '메타-도구'는 내부적으로 다음과 같이 동작합니다.
+1.  **Geocoding (`Nominatim`):** '도쿄'라는 지명을 위도/경도와 국가 코드로 변환합니다.
+2.  **Intelligent Routing:** 국가 코드가 'kr'이면 한국 기상청(KMA) API를, 그 외에는 `OpenWeatherMap` API를 호출하여 날씨 정보를 가져옵니다.
+3.  **Data Aggregation:** `Foursquare` (명소), `Ticketmaster` (이벤트) API를 동시에 호출하여 추가 정보를 수집합니다.
+4.  **Final Response:** 수집된 모든 데이터를 '엄격한 프롬프트'와 함께 LLM에 전달하여, 정보 왜곡 없는 정확한 요약 답변을 생성합니다.
 
 ## ✨ 주요 기능 및 사용법
 
-### 1. 일반 사용자 기능
+- **실시간 여행 정보**
+  - `@마사몽 다음 주 파리 날씨랑 가볼만한 곳 알려줘`
+  - `@마사몽 서울에서 지금 하고 있는 콘서트 있어?`
 
-- **AI 에이전트 상호작용**
-  `@마사몽`으로 봇을 직접 호출하여 다양한 질문을 할 수 있습니다. 이제 봇은 여러 정보를 조합해야 하는 복합적인 질문도 처리할 수 있습니다.
+- **금융 정보**
   - `@마사몽 애플 주가를 원화로 알려줘.` (해외 주식 + 환율)
-  - `@마사몽 강남역 근처 맛집 추천해줘.` (장소 검색)
-  - `@마사몽 삼성전자 뉴스 3개만 요약해줘.` (국내 주식 + 뉴스 요약 - *향후 확장 가능*)
-  - `@마사몽 어제 우리가 얘기했던 LLM 최적화 방안 다시 설명해줄래?` (기존 RAG 기반 대화 기억)
+  - `@마사몽 삼성전자 최신 뉴스 3개만 보여줘.` (국내 주식 + 뉴스)
 
-- **기존 명령어**
-  - `!랭킹` 또는 `!수다왕`: 서버 내 메시지 작성 빈도를 기준으로 '수다왕' 랭킹을 보여줍니다.
-  - `!투표 "질문" "항목1" "항목2"`: 간단한 주제에 대해 투표를 생성합니다.
-
-### 2. 서버 관리자 기능 (Slash Commands)
-서버 관리자는 슬래시(`/`) 명령어를 통해 봇의 작동 방식을 서버별로 제어할 수 있습니다. (`/config set_ai`, `/config channel`, `/persona set`, `/persona view`)
+- **기타**
+  - `@마사몽 재밌는 스팀 게임 추천해줘`
+  - `!랭킹`, `!투표` 등 기존 명령어
 
 ## ⚙️ 설치 및 설정
 
-### 1. 사전 요구 사항
+### 1. 필수 API 키 목록
+봇의 모든 기능을 사용하려면 아래 API들의 키가 필요합니다. 각 키는 `.env` 파일에 환경 변수로 설정해야 합니다.
 
-- Python 3.11 이상
-- Discord 봇 토큰
-- **Google Gemini API 키**
-- (선택) 기상청 공공데이터포털 API 키
-- (선택) **Finnhub API 키**
-- (선택) **Kakao Developers REST API 키**
-- (선택) **공공데이터포털(KRX) API 키**
-- (선택) **한국수출입은행 API 키**
+- **필수:**
+  - `DISCORD_BOT_TOKEN`
+  - `GEMINI_API_KEY`
+- **여행 어시스턴트 기능:**
+  - `OPENWEATHERMAP_API_KEY`
+  - `FOURSQUARE_API_KEY`
+  - `TICKETMASTER_API_KEY`
+- **금융 기능:**
+  - `FINNHUB_API_KEY` (해외 주식)
+  - `GO_DATA_API_KEY_KR` (국내 주식, KRX)
+  - `EXIM_API_KEY_KR` (환율)
+- **기타 기능:**
+  - `KMA_API_KEY` (한국 날씨)
+  - `RAWG_API_KEY` (게임 추천)
+  - `KAKAO_API_KEY` (장소 검색)
 
-### 2. 설치 과정
+### 2. 설치 과정 (Ubuntu)
 
 ```bash
-# 1. 저장소 복제
+# 1. 시스템 패키지 업데이트 및 파이썬 설치
+sudo apt update
+sudo apt install python3 python3-pip python3-venv -y
+
+# 2. 저장소 복제
 git clone <저장소_URL>
 cd <프로젝트_디렉토리>
 
-# 2. 파이썬 가상환경 생성 및 활성화
+# 3. 파이썬 가상환경 생성 및 활성화
 python3 -m venv venv
 source venv/bin/activate
 
-# 3. 필수 라이브러리 설치
+# 4. 필수 라이브러리 설치
 pip install -r requirements.txt
 
-# 4. 환경 변수 설정
-# .env.example 파일을 .env 로 복사한 후, 아래 내용을 자신의 키 값으로 채워주세요.
-# DISCORD_BOT_TOKEN="YOUR_DISCORD_BOT_TOKEN"
-# GEMINI_API_KEY="YOUR_GEMINI_API_KEY"
-# KMA_API_KEY="YOUR_KMA_API_KEY"
-# FINNHUB_API_KEY="YOUR_FINNHUB_API_KEY"
-# KAKAO_API_KEY="YOUR_KAKAO_API_KEY"
-# GO_DATA_API_KEY_KR="YOUR_GO_DATA_API_KEY_KR"
-# EXIM_API_KEY_KR="YOUR_EXIM_API_KEY_KR"
+# 5. 환경 변수 설정
+# .env.example 파일을 .env 로 복사한 후, 자신의 API 키 값으로 채워주세요.
+cp .env.example .env
+nano .env  # nano 에디터 또는 원하는 편집기로 .env 파일 수정
 
-# 5. 데이터베이스 초기화 (최초 1회만 실행)
+# 6. 데이터베이스 초기화 (최초 1회만 실행)
 python3 database/init_db.py
 
-# 6. 봇 실행
+# 7. 봇 실행
 python3 main.py
 ```
 
-## 🔧 안정성 및 확장성
+### 3. 설치 과정 (Windows)
 
-- **안정적인 비동기 처리**: 모든 데이터베이스 상호작용은 `aiosqlite`를 사용하여 비동기적으로 처리되며, 외부 API 호출은 별도의 스레드에서 실행되어 봇의 메인 이벤트 루프를 막지 않습니다.
-- **중앙화된 로깅 시스템**: 모든 중요한 이벤트와 오류는 콘솔, 로그 파일, 그리고 각 서버의 'logs' 채널에 동시에 기록되어 운영 및 디버깅 편의성을 극대화합니다.
-- **모듈화된 도구 설계**: 새로운 기능을 추가하고 싶을 경우, `utils/api_handlers/`에 새 API 핸들러를 만들고 `cogs/tools_cog.py`에 해당 도구를 등록한 뒤, `config.py`의 플래너 프롬프트에 도구 설명을 추가하는 것만으로 간단하게 확장할 수 있습니다.
+```powershell
+# 1. Python 설치
+# https://python.org 에서 최신 버전을 다운로드하여 설치합니다.
+# 설치 과정에서 "Add Python to PATH" 옵션을 반드시 체크해주세요.
+
+# 2. 저장소 복제
+git clone <저장소_URL>
+cd <프로젝트_디렉토리>
+
+# 3. 파이썬 가상환경 생성 및 활성화
+python -m venv venv
+.\\venv\\Scripts\\activate
+
+# 4. 필수 라이브러리 설치
+pip install -r requirements.txt
+
+# 5. 환경 변수 설정
+# .env.example 파일을 .env 로 복사한 후, 자신의 API 키 값으로 채워주세요.
+copy .env.example .env
+notepad .env  # 메모장 또는 원하는 편집기로 .env 파일 수정
+
+# 6. 데이터베이스 초기화 (최초 1회만 실행)
+python database/init_db.py
+
+# 7. 봇 실행
+python main.py
+```
