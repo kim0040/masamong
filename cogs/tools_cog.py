@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import asyncio
 import discord
 from discord.ext import commands
 import re
@@ -7,6 +8,7 @@ import config
 from logger_config import logger
 from utils.api_handlers import finnhub, kakao, krx, exim, rawg, nominatim, openweathermap, foursquare, ticketmaster
 from utils import db as db_utils
+from utils import coords as coords_utils
 from .weather_cog import WeatherCog
 
 def is_korean(text: str) -> bool:
@@ -24,6 +26,71 @@ class ToolsCog(commands.Cog):
         self.bot = bot
         self.weather_cog: WeatherCog = self.bot.get_cog('WeatherCog')
         logger.info("ToolsCog 초기화 완료.")
+
+    async def get_travel_recommendation(self, location_name: str) -> dict:
+        """
+        주어진 위치에 대한 날씨, 명소, 이벤트 등 여행 정보를 종합하여 반환합니다.
+        This is a high-level meta-tool that acts as an intelligent router.
+        """
+        # 1. Geocode the location name
+        geo_info = await self.geocode(location_name)
+
+        if "error" in geo_info or "disambiguation" in geo_info:
+            return geo_info
+
+        if geo_info.get("status") != "found":
+            return {"error": "위치를 찾는 데 실패했지만 명확한 오류가 반환되지 않았습니다."}
+
+        lat = geo_info.get("lat")
+        lon = geo_info.get("lon")
+        country_code = geo_info.get("country_code")
+        display_name = geo_info.get("display_name")
+
+        logger.info(f"Travel recommendation for '{display_name}' ({lat}, {lon}), country: {country_code}")
+
+        # 2. Route to appropriate weather tool and gather all data concurrently
+        weather_task = None
+        if country_code == 'kr':
+            # Convert to KMA grid and call Korean weather tool
+            nx, ny = coords_utils.latlon_to_kma_grid(lat, lon)
+            # The existing weather tool is complex, let's call its internal logic directly for now
+            # This might need refactoring later to be a proper tool call
+            weather_task = self.weather_cog.get_formatted_weather_string(0, display_name, str(nx), str(ny))
+        else:
+            # Call foreign weather tool
+            weather_task = self.get_foreign_weather(lat, lon)
+
+        poi_task = self.find_points_of_interest(lat, lon)
+        events_task = self.find_events(lat, lon)
+
+        results = await asyncio.gather(weather_task, poi_task, events_task, return_exceptions=True)
+
+        weather_result, poi_result, events_result = results
+
+        # Handle potential errors from individual API calls
+        if isinstance(weather_result, Exception):
+            logger.error("Weather task failed in gather", exc_info=weather_result)
+            weather_result = {"error": "날씨 정보 조회 실패"}
+        # The korean weather function returns a tuple
+        elif isinstance(weather_result, tuple):
+             weather_result = weather_result[0] if weather_result[0] else {"error": weather_result[1]}
+
+
+        if isinstance(poi_result, Exception):
+            logger.error("POI task failed in gather", exc_info=poi_result)
+            poi_result = {"error": "주변 장소 정보 조회 실패"}
+
+        if isinstance(events_result, Exception):
+            logger.error("Events task failed in gather", exc_info=events_result)
+            events_result = {"error": "주변 이벤트 정보 조회 실패"}
+
+        # 3. Aggregate results
+        return {
+            "location_info": geo_info,
+            "weather": weather_result,
+            "points_of_interest": poi_result.get("places", []),
+            "events": events_result.get("events", [])
+        }
 
     async def get_current_time(self) -> dict:
         """현재 시간과 날짜를 반환합니다."""
