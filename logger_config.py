@@ -22,6 +22,33 @@ def time_converter(*args):
 _discord_log_queue = asyncio.Queue()
 _bot_instance = None
 
+class ColoredFormatter(logging.Formatter):
+    """
+    콘솔 출력에 색상과 상세 위치 정보를 추가하는 포맷터.
+    """
+    GREY = "\x1b[38;20m"
+    YELLOW = "\x1b[33;20m"
+    RED = "\x1b[31;20m"
+    BOLD_RED = "\x1b[31;1m"
+    RESET = "\x1b[0m"
+
+    FORMAT = "%(asctime)s [%(levelname)s] [%(name)s:%(funcName)s:%(lineno)d] [%(trace_id)s] - %(message)s"
+
+    FORMATS = {
+        logging.DEBUG: GREY + FORMAT + RESET,
+        logging.INFO: "\x1b[34;20m" + FORMAT + RESET, # Blue
+        logging.WARNING: YELLOW + FORMAT + RESET,
+        logging.ERROR: RED + FORMAT + RESET,
+        logging.CRITICAL: BOLD_RED + FORMAT + RESET
+    }
+
+    def format(self, record):
+        if not hasattr(record, 'trace_id'):
+            record.trace_id = 'N/A'
+        log_fmt = self.FORMATS.get(record.levelno, self.FORMAT)
+        formatter = logging.Formatter(log_fmt, datefmt='%Y-%m-%d %H:%M:%S')
+        return formatter.format(record)
+
 class JsonFormatter(logging.Formatter):
     """
     로그 레코드를 JSON 형식으로 포맷팅하는 포맷터.
@@ -32,6 +59,8 @@ class JsonFormatter(logging.Formatter):
             "level": record.levelname,
             "name": record.name,
             "message": record.getMessage(),
+            "source": f"{record.filename}:{record.lineno}",
+            "function": record.funcName,
         }
         # 예외 정보가 있는 경우 추가
         if record.exc_info:
@@ -39,7 +68,7 @@ class JsonFormatter(logging.Formatter):
 
         # 추가 컨텍스트 정보가 있는 경우 (예: guild_id, user_id)
         # 참고: 로깅 호출 시 extra={'guild_id': ..., 'user_id': ...} 형태로 전달해야 함
-        extra_fields = ['guild_id', 'user_id', 'channel_id', 'author_id']
+        extra_fields = ['guild_id', 'user_id', 'channel_id', 'author_id', 'trace_id']
         for field in extra_fields:
             if hasattr(record, field):
                 log_object[field] = getattr(record, field)
@@ -150,19 +179,18 @@ async def discord_logging_task():
 
 def setup_logger():
     """로거 객체를 설정하고 반환합니다."""
-    # logging.Formatter.converter = time_converter # JsonFormatter가 타임스탬프를 직접 처리하므로 필요 없음
     json_formatter = JsonFormatter()
+    colored_formatter = ColoredFormatter()
 
     logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG) # Show all logs from DEBUG level upwards
 
     if logger.hasHandlers():
         logger.handlers.clear()
 
-    # 1. 콘솔 핸들러 (JSON 포맷)
+    # 1. 콘솔 핸들러 (Colored Text 포맷)
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(json_formatter)
-    console_handler.setLevel(logging.DEBUG)
+    console_handler.setFormatter(colored_formatter)
     logger.addHandler(console_handler)
 
     # 2. 일반 파일 핸들러 (JSON 포맷)
