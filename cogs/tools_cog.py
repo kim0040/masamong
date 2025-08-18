@@ -5,7 +5,7 @@ import re
 
 import config
 from logger_config import logger
-from utils.api_handlers import finnhub, kakao, krx, exim, rawg
+from utils.api_handlers import finnhub, kakao, krx, exim, rawg, nominatim
 from utils import db as db_utils
 from .weather_cog import WeatherCog
 
@@ -78,6 +78,13 @@ class ToolsCog(commands.Cog):
         [수정] 반환 형식을 dict에서 str으로 변경하여 토큰 사용량을 최적화합니다.
         """
         return await kakao.search_place_by_keyword(query, page_size=page_size)
+
+    async def geocode(self, location_name: str) -> dict:
+        """
+        장소 이름을 지리적 좌표(위도/경도)로 변환합니다.
+        결과가 여러 개일 경우, 사용자에게 선택지를 제공합니다.
+        """
+        return await nominatim.geocode_location(location_name)
 
     async def get_krw_exchange_rate(self, currency_code: str = "USD") -> str:
         """
