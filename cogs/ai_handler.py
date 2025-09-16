@@ -136,7 +136,7 @@ class AIHandler(commands.Cog):
                 (message.id, message.guild.id, message.channel.id, message.author.id, message.author.display_name, message.content, message.author.bot, message.created_at.isoformat())
             )
             await self.bot.db.commit()
-            if not message.author.bot and len(message.content) > 1:
+            if not message.author.bot and len(message.content) > 25:
                 asyncio.create_task(self._create_and_save_embedding(message.id, message.content, message.guild.id))
         except Exception as e:
             logger.error(f"대화 기록 저장 중 DB 오류: {e}", exc_info=True, extra={'guild_id': message.guild.id})
