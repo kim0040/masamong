@@ -22,13 +22,12 @@ async def test_get_exchange_rate_success(mocker):
     mocker.patch.object(exim, '_fetch_exim_data', new_callable=AsyncMock, return_value=mock_api_response)
 
     # 테스트할 함수 호출
-    result = await exim.get_exchange_rate("USD")
+    result = await exim.get_krw_exchange_rate("USD")
 
     # 결과 검증
-    assert isinstance(result, dict)
-    assert result.get("currency_code") == "USD"
-    assert result.get("currency_name") == "미국 달러"
-    assert result.get("rate") == 1350.50
+    assert isinstance(result, str)
+    assert "USD → KRW: 1,350.50원" in result
+    assert "미국 달러" in result
 
     # 모킹된 함수가 올바른 인자와 함께 호출되었는지 확인
     exim._fetch_exim_data.assert_called_once_with("AP01")
@@ -48,12 +47,11 @@ async def test_get_exchange_rate_not_found(mocker):
     mocker.patch.object(exim, '_fetch_exim_data', new_callable=AsyncMock, return_value=mock_api_response)
 
     # 테스트할 함수 호출 (EUR)
-    result = await exim.get_exchange_rate("EUR")
+    result = await exim.get_krw_exchange_rate("EUR")
 
     # 결과 검증
-    assert isinstance(result, dict)
-    assert "error" in result
-    assert result["error"] == "'EUR' 통화를 찾을 수 없습니다."
+    assert isinstance(result, str)
+    assert "'EUR' 통화를 찾을 수 없습니다." in result
 
 
 @pytest.mark.asyncio
@@ -67,7 +65,8 @@ async def test_get_exchange_rate_api_error(mocker):
     mocker.patch.object(exim, '_fetch_exim_data', new_callable=AsyncMock, return_value=mock_api_error)
 
     # 테스트할 함수 호출
-    result = await exim.get_exchange_rate("USD")
+    result = await exim.get_krw_exchange_rate("USD")
 
     # 결과 검증
-    assert result == mock_api_error
+    assert isinstance(result, str)
+    assert "API 요청 또는 데이터 처리 중 오류 발생" in result
