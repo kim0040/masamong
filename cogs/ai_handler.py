@@ -42,7 +42,7 @@ class AIHandler(commands.Cog):
                 genai.configure(api_key=config.GEMINI_API_KEY)
                 # We create model instances dynamically now, so we don't need a default one here.
                 # self.model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME)
-                self.embedding_model_name = "models/embedding-001"
+                self.embedding_model_name = config.AI_EMBEDDING_MODEL_NAME
                 logger.info("Gemini API 설정 완료.")
                 self.gemini_configured = True
             except Exception as e:
@@ -200,12 +200,35 @@ class AIHandler(commands.Cog):
             return "", []
 
     # --- 에이전트 핵심 로직 ---
-    def _parse_tool_call(self, text: str) -> dict | None:
-        match = re.search(r'<tool_call>\s*({.*?})\s*</tool_call>', text, re.DOTALL)
-        if match:
-            try: return json.loads(match.group(1))
-            except json.JSONDecodeError: return None
-        return None
+    def _parse_tool_calls(self, text: str) -> list[dict]:
+        """
+        <tool_call> 또는 <tool_plan> 태그에서 도구 호출 목록을 추출합니다.
+        단일 도구 호출(dict)과 도구 계획(list of dicts)을 모두 처리하여 항상 list[dict]를 반환합니다.
+        """
+        # 1. <tool_plan> (JSON 배열) 우선 검색
+        plan_match = re.search(r'<tool_plan>\s*(\[.*?\])\s*</tool_plan>', text, re.DOTALL)
+        if plan_match:
+            try:
+                calls = json.loads(plan_match.group(1))
+                if isinstance(calls, list):
+                    logger.info(f"도구 계획(plan)을 파싱했습니다: {len(calls)} 단계")
+                    return calls
+            except json.JSONDecodeError as e:
+                logger.warning(f"tool_plan JSON 디코딩 실패: {e}. 원본: {plan_match.group(1)}")
+                return []
+
+        # 2. <tool_call> (단일 JSON 객체) 검색
+        call_match = re.search(r'<tool_call>\s*({.*?})\s*</tool_call>', text, re.DOTALL)
+        if call_match:
+            try:
+                call = json.loads(call_match.group(1))
+                if isinstance(call, dict):
+                    logger.info("단일 도구 호출(call)을 파싱했습니다.")
+                    return [call] # 단일 호출도 리스트에 담아 반환
+            except json.JSONDecodeError as e:
+                logger.warning(f"tool_call JSON 디코딩 실패: {e}. 원본: {call_match.group(1)}")
+
+        return []
 
     async def _execute_tool(self, tool_call: dict, guild_id: int) -> dict:
         tool_name = tool_call.get('tool_to_use')
@@ -232,11 +255,11 @@ class AIHandler(commands.Cog):
             'user_id': message.author.id,
             'trace_id': trace_id
         }
-        logger.info(f"에이전트 처리 시작 (2-step). Query: '{user_query}'", extra=log_extra)
+        logger.info(f"에이전트 처리 시작 (PM v5.2). Query: '{user_query}'", extra=log_extra)
 
         async with message.channel.typing():
             try:
-                # --- 1단계: Lite 모델로 의도 분석 및 간단 답변 시도 ---
+                # --- 1단계: Lite 모델로 작업 계획 수립 ---
                 rag_prompt, _ = await self._get_rag_context(message.channel.id, message.author.id, user_query)
                 history = await self._get_recent_history(message, rag_prompt)
 
@@ -247,61 +270,70 @@ class AIHandler(commands.Cog):
                 lite_model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME, system_instruction=lite_system_prompt)
                 lite_conversation = history + [{'role': 'user', 'parts': [user_query]}]
 
-                logger.info("1단계: Lite 모델 호출 시작...", extra=log_extra)
+                logger.info("1단계: Lite 모델 (PM) 호출 시작...", extra=log_extra)
                 lite_response = await self._safe_generate_content(lite_model, lite_conversation, log_extra)
 
                 if not lite_response or not lite_response.text:
-                    logger.error("Lite 모델이 응답을 생성하지 못했습니다.", extra=log_extra)
+                    logger.error("Lite 모델(PM)이 응답을 생성하지 못했습니다.", extra=log_extra)
                     await message.reply(config.MSG_AI_ERROR, mention_author=False)
                     return
 
                 lite_response_text = lite_response.text.strip()
-                logger.info(f"Lite 모델 응답: '{lite_response_text[:100]}...'", extra=log_extra)
-                tool_call = self._parse_tool_call(lite_response_text)
+                logger.info(f"Lite 모델(PM) 응답: '{lite_response_text[:150]}...'", extra=log_extra)
+                
+                # PM v5.2: 단일 호출이 아닌 '계획'을 파싱
+                tool_plan = self._parse_tool_calls(lite_response_text)
 
                 # --- 2단계: 분기 처리 ---
-                if not tool_call:
+                if not tool_plan:
                     # Case 1: 간단한 대화 - Lite 모델의 답변을 그대로 사용
                     logger.info("분기: 간단한 대화로 판단, Lite 모델의 답변으로 바로 응답합니다.", extra=log_extra)
                     await message.reply(lite_response_text, mention_author=False)
                     return
 
-                # Case 2: 도구 사용 필요 - 도구를 실행하고 Main 모델로 최종 답변 생성
-                logger.info(f"분기: 도구 사용으로 판단. Tool: {tool_call}", extra=log_extra)
-                tool_result = await self._execute_tool(tool_call, message.guild.id)
+                # Case 2: 도구 사용 계획 존재 - 계획을 순차적으로 실행
+                logger.info(f"분기: 도구 사용 계획 발견. 총 {len(tool_plan)}단계.", extra=log_extra)
+                
+                tool_results = []
+                for i, tool_call in enumerate(tool_plan):
+                    step_num = i + 1
+                    logger.info(f"계획 실행 ({step_num}/{len(tool_plan)}): {tool_call.get('tool_to_use')}", extra=log_extra)
+                    
+                    # 현재는 이전 단계 결과를 다음 단계에 넘기지 않음. 추후 확장 가능.
+                    result = await self._execute_tool(tool_call, message.guild.id)
+                    
+                    if result is None:
+                        error_msg = f"도구 실행 결과가 None입니다: {tool_call.get('tool_to_use')}"
+                        logger.error(error_msg, extra=log_extra)
+                        tool_results.append({f"error_step_{step_num}": error_msg})
+                        continue
 
-                if tool_result is None:
-                    logger.error(f"도구 실행 결과가 None입니다: {tool_call.get('tool_to_use')}", extra=log_extra)
-                    await message.reply(config.MSG_AI_ERROR, mention_author=False)
-                    return
+                    tool_results.append({
+                        "step": step_num,
+                        "tool_name": tool_call.get('tool_to_use'),
+                        "parameters": tool_call.get('parameters'),
+                        "result": result
+                    })
 
-                # 도구 결과가 dict 형태일 경우 (이전 버전 호환성), str으로 변환
-                tool_result_str = json.dumps(tool_result, ensure_ascii=False) if isinstance(tool_result, dict) else str(tool_result)
+                # 모든 도구의 실행 결과를 하나의 문자열로 통합
+                tool_results_str = json.dumps(tool_results, ensure_ascii=False, indent=2)
 
-                logger.info("2단계: Main 모델 호출 시작...", extra=log_extra)
+                # --- 3단계: Main 모델로 최종 답변 생성 ---
+                logger.info("3단계: Main 모델 호출 시작...", extra=log_extra)
 
-                # --- 분기: 사용할 프롬프트 결정 ---
-                if tool_call.get('tool_to_use') == 'get_travel_recommendation':
-                    # 여행 어시스턴트 도구는 특수 프롬프트를 사용
-                    main_system_prompt = None # 시스템 프롬프트 대신, 전체 프롬프트를 만들어서 전달
-                    main_prompt = config.SPECIALIZED_PROMPTS['travel_assistant'].format(
-                        tool_result=tool_result_str,
-                        user_query=user_query
-                    )
-                    logger.info("여행 추천 도구 결과에 특수 프롬프트를 사용합니다.", extra=log_extra)
-                else:
-                    # 그 외 모든 도구는 기본 에이전트 프롬프트를 사용
-                    main_system_prompt = config.AGENT_SYSTEM_PROMPT.format(user_query=user_query, tool_result=tool_result_str)
-                    main_prompt = user_query # 시스템 프롬프트가 있으므로, 프롬프트는 사용자 쿼리만 전달
+                # PM v5.2: 시스템 프롬프트가 여러 도구 결과를 처리하도록 수정됨
+                main_system_prompt = config.AGENT_SYSTEM_PROMPT.format(
+                    user_query=user_query, 
+                    tool_result=tool_results_str # 이제 tool_result는 모든 결과의 집합
+                )
+                main_prompt = user_query
 
-                # 페르소나 적용 (시스템 프롬프트가 있을 경우에만)
-                if main_system_prompt:
-                    custom_persona = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'persona_text')
-                    if custom_persona:
-                        main_system_prompt = f"{custom_persona}\n\n{main_system_prompt}"
+                # 페르소나 적용
+                custom_persona = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'persona_text')
+                if custom_persona:
+                    main_system_prompt = f"{custom_persona}\n\n{main_system_prompt}"
 
                 main_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, system_instruction=main_system_prompt)
-
                 main_response = await self._safe_generate_content(main_model, main_prompt, log_extra)
 
                 if main_response and main_response.text:
@@ -310,8 +342,7 @@ class AIHandler(commands.Cog):
                     await message.reply(final_response_text, mention_author=False)
                 else:
                     logger.error("Main 모델이 최종 답변을 생성하지 못했습니다.", extra=log_extra)
-                    # 실패 시, 최소한 도구 결과라도 보여줌
-                    await message.reply(f"도구 실행 결과는 다음과 같아.\n```\n{tool_result_str}\n```", mention_author=False)
+                    await message.reply(f"모든 도구 실행을 마쳤지만, 최종 답변을 만드는 데 실패했어요. 여기 실행 결과라도 확인해보세요.\n```json\n{tool_results_str}\n```", mention_author=False)
 
             except Exception as e:
                 logger.error(f"에이전트 처리 중 최상위 오류: {e}", exc_info=True, extra=log_extra)
