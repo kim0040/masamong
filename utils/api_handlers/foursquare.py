@@ -3,11 +3,11 @@ import asyncio
 import requests
 import config
 from logger_config import logger
-from .. import http
 
 async def get_places_by_coords(lat: float, lon: float, query: str = None, limit: int = 10) -> dict:
     """
     Foursquare API를 사용하여 특정 좌표 주변의 장소(POI)를 검색합니다.
+    [수정] 호환성을 위해 표준 requests.Session을 사용하도록 변경.
     """
     if not config.FOURSQUARE_API_KEY or config.FOURSQUARE_API_KEY == 'YOUR_FOURSQUARE_API_KEY':
         logger.error("Foursquare API 키(FOURSQUARE_API_KEY)가 설정되지 않았습니다.")
@@ -16,7 +16,8 @@ async def get_places_by_coords(lat: float, lon: float, query: str = None, limit:
     url = f"{config.FOURSQUARE_BASE_URL}/search"
     headers = {
         "Authorization": config.FOURSQUARE_API_KEY,
-        "Accept": "application/json"
+        "Accept": "application/json",
+        "User-Agent": "Masamong-Bot/3.5 (Discord Bot; +https://github.com/kim0040/masamong)"
     }
     params = {
         "ll": f"{lat},{lon}",
@@ -29,7 +30,8 @@ async def get_places_by_coords(lat: float, lon: float, query: str = None, limit:
     logger.info(f"Foursquare API 요청: URL='{url}', Params='{params}'")
 
     try:
-        session = http.get_modern_tls_session()
+        # 표준 requests.Session 사용
+        session = requests.Session()
         response = await asyncio.to_thread(session.get, url, headers=headers, params=params, timeout=15)
         response.raise_for_status()
         data = response.json()
