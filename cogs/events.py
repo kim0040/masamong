@@ -14,6 +14,7 @@ from .ai_handler import AIHandler
 from .weather_cog import WeatherCog
 from .fun_cog import FunCog
 from .activity_cog import ActivityCog
+from .proactive_assistant import ProactiveAssistant
 
 from collections import deque
 
@@ -26,6 +27,7 @@ class EventListeners(commands.Cog):
         self.weather_cog: WeatherCog | None = None
         self.fun_cog: FunCog | None = None
         self.activity_cog: ActivityCog | None = None
+        self.proactive_assistant: ProactiveAssistant | None = None
         # 중복 이벤트 처리를 방지하기 위한 최근 명령어 ID 저장소
         self.processed_command_ids = deque(maxlen=100)
 
@@ -38,9 +40,13 @@ class EventListeners(commands.Cog):
         self.weather_cog = self.bot.get_cog('WeatherCog')
         self.fun_cog = self.bot.get_cog('FunCog')
         self.activity_cog = self.bot.get_cog('ActivityCog')
+        self.proactive_assistant = self.bot.get_cog('ProactiveAssistant')
 
         if not all([self.ai_handler, self.weather_cog, self.fun_cog, self.activity_cog]):
             logger.warning("일부 Cog를 찾을 수 없습니다. 의존성 주입이 완벽하지 않을 수 있습니다.")
+        
+        if not self.proactive_assistant:
+            logger.warning("ProactiveAssistant Cog를 찾을 수 없습니다. 능동적 비서 기능이 비활성화됩니다.")
 
         # 날씨 Cog의 주기적 작업 시작
         if self.weather_cog:
@@ -117,6 +123,13 @@ class EventListeners(commands.Cog):
 
         if await self._handle_keyword_triggers(message):
             return
+
+        # 능동적 비서 기능 - 잠재적 의도 분석
+        if self.proactive_assistant:
+            proactive_suggestion = await self.proactive_assistant.analyze_user_intent(message)
+            if proactive_suggestion:
+                await message.reply(proactive_suggestion, mention_author=False)
+                return
 
         await self._handle_ai_interaction(message)
 
