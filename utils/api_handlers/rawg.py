@@ -25,10 +25,17 @@ def _format_games_data(games: list) -> str:
 
     return "추천 게임 목록:\n" + "\n".join(lines)
 
+ALLOWED_GENRES = {
+    'action', 'indie', 'adventure', 'rpg', 'strategy', 'shooter', 'casual', 
+    'simulation', 'puzzle', 'arcade', 'platformer', 'racing', 'sports', 
+    'massively-multiplayer', 'fighting', 'family', 'board-games', 
+    'educational', 'card'
+}
+
 async def get_games(ordering: str = '-released', dates: str = None, genres: str = None, page_size: int = 5) -> str:
     """
     RAWG.io API로 게임 목록을 조회하고, LLM 친화적인 문자열로 반환합니다.
-    [수정] 반환 형식을 dict에서 str으로 변경하여 토큰 사용량을 최적화합니다.
+    [수정] genres 파라미터 검증 로직 추가.
     """
     if not config.RAWG_API_KEY or config.RAWG_API_KEY == 'YOUR_RAWG_API_KEY':
         logger.error("RAWG API 키(RAWG_API_KEY)가 설정되지 않았습니다.")
@@ -40,8 +47,17 @@ async def get_games(ordering: str = '-released', dates: str = None, genres: str 
         dates = f"{three_months_ago.strftime('%Y-%m-%d')},{today.strftime('%Y-%m-%d')}"
 
     params = {"key": config.RAWG_API_KEY, "ordering": ordering, "dates": dates, "page_size": page_size}
+    
     if genres:
-        params["genres"] = genres.lower()
+        # 입력된 장르를 소문자, 쉼표 기준으로 분리 및 공백 제거
+        input_genres = [genre.strip().lower() for genre in genres.split(',')]
+        # 허용된 장르 목록에 있는 것만 필터링
+        valid_genres = [genre for genre in input_genres if genre in ALLOWED_GENRES]
+        
+        if not valid_genres:
+            return f"요청하신 장르 '{genres}'를 찾을 수 없거나 유효하지 않습니다. 일반적인 영문 장르(예: action, rpg, shooter)로 다시 시도해주세요."
+            
+        params["genres"] = ",".join(valid_genres)
 
     try:
         session = http.get_modern_tls_session()
