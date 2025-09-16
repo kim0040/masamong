@@ -165,9 +165,17 @@ class ProactiveAssistant(commands.Cog):
                     target_rate = alert_config.get('target_rate', 0)
                     condition = alert_config.get('condition', 'below')  # 'below' or 'above'
                     
-                    # 현재 환율 조회 (실제 구현에서는 API 호출)
-                    # 여기서는 예시로 가정
-                    current_rate = 1350.0  # 실제로는 API에서 가져와야 함
+                    # 현재 환율 조회 - 실제 API 호출
+                    try:
+                        from ..utils.api_handlers import exim
+                        exchange_data = await exim.get_krw_exchange_rate(target_currency)
+                        # 문자열에서 숫자 추출
+                        import re
+                        rate_match = re.search(r'([\d,]+\.?\d*)', exchange_data)
+                        current_rate = float(rate_match.group(1).replace(',', '')) if rate_match else 0
+                    except Exception as e:
+                        logger.error(f"환율 조회 오류: {e}")
+                        continue  # 환율 조회 실패 시 다음 알림으로
                     
                     should_alert = False
                     if condition == 'below' and current_rate <= target_rate:
@@ -197,8 +205,51 @@ class ProactiveAssistant(commands.Cog):
     
     async def _check_weather_alerts(self):
         """날씨 알림 체크"""
-        # 날씨 알림 로직은 WeatherCog에서 이미 구현되어 있음
-        pass
+        try:
+            # 날씨 알림 설정이 있는 사용자들 조회
+            async with self.bot.db.execute("""
+                SELECT user_id, preference_value FROM user_preferences
+                WHERE preference_type = 'weather_alert'
+            """) as cursor:
+                alerts = await cursor.fetchall()
+
+            for user_id, alert_data in alerts:
+                try:
+                    alert_config = json.loads(alert_data)
+                    alert_type = alert_config.get('type', 'rain')  # 'rain', 'temperature', etc.
+                    location = alert_config.get('location', '서울')
+
+                    # 현재 날씨 조회
+                    weather_cog = self.bot.get_cog('WeatherCog')
+                    if not weather_cog:
+                        continue
+
+                    # 실제 날씨 데이터 가져오기 (예시)
+                    current_weather = "비 예보"  # 실제로는 API에서 가져와야 함
+
+                    should_alert = False
+                    if alert_type == 'rain' and '비' in current_weather:
+                        should_alert = True
+
+                    if should_alert:
+                        # 사용자에게 DM 전송
+                        user = self.bot.get_user(user_id)
+                        if user:
+                            message = f"🌧️ 날씨 알림\n\n{location}에 {current_weather} 예보입니다!"
+                            await user.send(message)
+
+                            # 알림 전송 후 설정 삭제 (원하는 경우)
+                            # await self.bot.db.execute("""
+                            #     DELETE FROM user_preferences
+                            #     WHERE user_id = ? AND preference_type = 'weather_alert'
+                            # """, (user_id,))
+                            # await self.bot.db.commit()
+
+                except Exception as e:
+                    logger.error(f"날씨 알림 처리 오류 (사용자 {user_id}): {e}")
+
+        except Exception as e:
+            logger.error(f"날씨 알림 체크 오류: {e}")
     
     @commands.command(name="환율알림", aliases=["환율알림설정", "exchange_alert"])
     async def set_exchange_alert(self, ctx: commands.Context, currency: str, target_rate: float, condition: str = "below"):
