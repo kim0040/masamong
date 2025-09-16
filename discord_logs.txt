@@ -1,617 +1,195 @@
-2025-08-18 20:38:16 [INFO] [root] 수출입은행 API 요청: URL='https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON', Params='{'authkey': '[REDACTED]', 'searchdate': '20250818', 'data': 'AP01'}'
-2025-08-18 20:38:17 [ERROR] [root] 수출입은행 API(AP01) 요청 중 오류: HTTPSConnectionPool(host='oapi.koreaexim.go.kr', port=443): Max retries exceeded with url: /site/program/financial/exchangeJSON?authkey=YOUR_EXIM_API_KEY_HERE&searchdate=20250818&data=AP01 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)')))
-Traceback (most recent call last):
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 464, in _make_request
-    self._validate_conn(conn)
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 1093, in _validate_conn
-    conn.connect()
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connection.py", line 790, in connect
-    sock_and_verified = _ssl_wrap_socket_and_match_hostname(
-                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connection.py", line 969, in _ssl_wrap_socket_and_match_hostname
-    ssl_sock = ssl_wrap_socket(
-               ^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/util/ssl_.py", line 480, in ssl_wrap_socket
-    ssl_sock = _ssl_wrap_socket_impl(sock, context, tls_in_tls, server_hostname)
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/util/ssl_.py", line 524, in _ssl_wrap_socket_impl
-    return ssl_context.wrap_socket(sock, server_hostname=server_hostname)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/ssl.py", line 455, in wrap_socket
-    return self.sslsocket_class._create(
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/ssl.py", line 1041, in _create
-    self.do_handshake()
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/ssl.py", line 1319, in do_handshake
-    self._sslobj.do_handshake()
-ssl.SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 787, in urlopen
-    response = self._make_request(
-               ^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 488, in _make_request
-    raise new_e
-urllib3.exceptions.SSLError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)
-
-The above exception was the direct cause of the following exception:
-
-Traceback (most recent call last):
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/adapters.py", line 667, in send
-    resp = conn.urlopen(
-           ^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 841, in urlopen
-    retries = retries.increment(
-              ^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/util/retry.py", line 519, in increment
-    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
-    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-urllib3.exceptions.MaxRetryError: HTTPSConnectionPool(host='oapi.koreaexim.go.kr', port=443): Max retries exceeded with url: /site/program/financial/exchangeJSON?authkey=YOUR_EXIM_API_KEY_HERE&searchdate=20250818&data=AP01 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)')))
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/app/utils/api_handlers/exim.py", line 33, in _fetch_exim_data
-    response = await asyncio.to_thread(session.get, BASE_URL, params=params, timeout=10)
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py", line 25, in to_thread
-    return await loop.run_in_executor(None, func_call)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py", line 59, in run
-    result = self.fn(*self.args, **self.kwargs)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/sessions.py", line 602, in get
-    return self.request("GET", url, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/sessions.py", line 589, in request
-    resp = self.send(prep, **send_kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/sessions.py", line 703, in send
-    r = adapter.send(request, **kwargs)
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/adapters.py", line 698, in send
-    raise SSLError(e, request=request)
-requests.exceptions.SSLError: HTTPSConnectionPool(host='oapi.koreaexim.go.kr', port=443): Max retries exceeded with url: /site/program/financial/exchangeJSON?authkey=YOUR_EXIM_API_KEY_HERE&searchdate=20250818&data=AP01 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)')))
-2025-08-18 20:38:17 [INFO] [root] 수출입은행 API 요청: URL='https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON', Params='{'authkey': '[REDACTED]', 'searchdate': '20250818', 'data': 'AP01'}'
-2025-08-18 20:38:18 [ERROR] [root] 수출입은행 API(AP01) 요청 중 오류: HTTPSConnectionPool(host='oapi.koreaexim.go.kr', port=443): Max retries exceeded with url: /site/program/financial/exchangeJSON?authkey=YOUR_EXIM_API_KEY_HERE&searchdate=20250818&data=AP01 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)')))
-Traceback (most recent call last):
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 464, in _make_request
-    self._validate_conn(conn)
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 1093, in _validate_conn
-    conn.connect()
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connection.py", line 790, in connect
-    sock_and_verified = _ssl_wrap_socket_and_match_hostname(
-                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connection.py", line 969, in _ssl_wrap_socket_and_match_hostname
-    ssl_sock = ssl_wrap_socket(
-               ^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/util/ssl_.py", line 480, in ssl_wrap_socket
-    ssl_sock = _ssl_wrap_socket_impl(sock, context, tls_in_tls, server_hostname)
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/util/ssl_.py", line 524, in _ssl_wrap_socket_impl
-    return ssl_context.wrap_socket(sock, server_hostname=server_hostname)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/ssl.py", line 455, in wrap_socket
-    return self.sslsocket_class._create(
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/ssl.py", line 1041, in _create
-    self.do_handshake()
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/ssl.py", line 1319, in do_handshake
-    self._sslobj.do_handshake()
-ssl.SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 787, in urlopen
-    response = self._make_request(
-               ^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 488, in _make_request
-    raise new_e
-urllib3.exceptions.SSLError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)
-
-The above exception was the direct cause of the following exception:
-
-Traceback (most recent call last):
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/adapters.py", line 667, in send
-    resp = conn.urlopen(
-           ^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 841, in urlopen
-    retries = retries.increment(
-              ^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/util/retry.py", line 519, in increment
-    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
-    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-urllib3.exceptions.MaxRetryError: HTTPSConnectionPool(host='oapi.koreaexim.go.kr', port=443): Max retries exceeded with url: /site/program/financial/exchangeJSON?authkey=YOUR_EXIM_API_KEY_HERE&searchdate=20250818&data=AP01 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)')))
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/app/utils/api_handlers/exim.py", line 33, in _fetch_exim_data
-    response = await asyncio.to_thread(session.get, BASE_URL, params=params, timeout=10)
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py", line 25, in to_thread
-    return await loop.run_in_executor(None, func_call)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py", line 59, in run
-    result = self.fn(*self.args, **self.kwargs)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/sessions.py", line 602, in get
-    return self.request("GET", url, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/sessions.py", line 589, in request
-    resp = self.send(prep, **send_kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/sessions.py", line 703, in send
-    r = adapter.send(request, **kwargs)
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/adapters.py", line 698, in send
-    raise SSLError(e, request=request)
-requests.exceptions.SSLError: HTTPSConnectionPool(host='oapi.koreaexim.go.kr', port=443): Max retries exceeded with url: /site/program/financial/exchangeJSON?authkey=YOUR_EXIM_API_KEY_HERE&searchdate=20250818&data=AP01 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)')))
-2025-08-18 20:39:17 [INFO] [root] 수출입은행 API 요청: URL='https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON', Params='{'authkey': '[REDACTED]', 'searchdate': '20250818', 'data': 'AP01'}'
-2025-08-18 20:39:17 [ERROR] [root] 수출입은행 API(AP01) 요청 중 오류: HTTPSConnectionPool(host='oapi.koreaexim.go.kr', port=443): Max retries exceeded with url: /site/program/financial/exchangeJSON?authkey=YOUR_EXIM_API_KEY_HERE&searchdate=20250818&data=AP01 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)')))
-Traceback (most recent call last):
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 464, in _make_request
-    self._validate_conn(conn)
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 1093, in _validate_conn
-    conn.connect()
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connection.py", line 790, in connect
-    sock_and_verified = _ssl_wrap_socket_and_match_hostname(
-                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connection.py", line 969, in _ssl_wrap_socket_and_match_hostname
-    ssl_sock = ssl_wrap_socket(
-               ^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/util/ssl_.py", line 480, in ssl_wrap_socket
-    ssl_sock = _ssl_wrap_socket_impl(sock, context, tls_in_tls, server_hostname)
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/util/ssl_.py", line 524, in _ssl_wrap_socket_impl
-    return ssl_context.wrap_socket(sock, server_hostname=server_hostname)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/ssl.py", line 455, in wrap_socket
-    return self.sslsocket_class._create(
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/ssl.py", line 1041, in _create
-    self.do_handshake()
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/ssl.py", line 1319, in do_handshake
-    self._sslobj.do_handshake()
-ssl.SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 787, in urlopen
-    response = self._make_request(
-               ^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 488, in _make_request
-    raise new_e
-urllib3.exceptions.SSLError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)
-
-The above exception was the direct cause of the following exception:
-
-Traceback (most recent call last):
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/adapters.py", line 667, in send
-    resp = conn.urlopen(
-           ^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 841, in urlopen
-    retries = retries.increment(
-              ^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/util/retry.py", line 519, in increment
-    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
-    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-urllib3.exceptions.MaxRetryError: HTTPSConnectionPool(host='oapi.koreaexim.go.kr', port=443): Max retries exceeded with url: /site/program/financial/exchangeJSON?authkey=YOUR_EXIM_API_KEY_HERE&searchdate=20250818&data=AP01 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)')))
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/app/utils/api_handlers/exim.py", line 33, in _fetch_exim_data
-    response = await asyncio.to_thread(session.get, BASE_URL, params=params, timeout=10)
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py", line 25, in to_thread
-    return await loop.run_in_executor(None, func_call)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py", line 59, in run
-    result = self.fn(*self.args, **self.kwargs)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/sessions.py", line 602, in get
-    return self.request("GET", url, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/sessions.py", line 589, in request
-    resp = self.send(prep, **send_kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/sessions.py", line 703, in send
-    r = adapter.send(request, **kwargs)
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/adapters.py", line 698, in send
-    raise SSLError(e, request=request)
-requests.exceptions.SSLError: HTTPSConnectionPool(host='oapi.koreaexim.go.kr', port=443): Max retries exceeded with url: /site/program/financial/exchangeJSON?authkey=YOUR_EXIM_API_KEY_HERE&searchdate=20250818&data=AP01 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)')))
-2025-08-18 20:39:17 [INFO] [root] 수출입은행 API 요청: URL='https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON', Params='{'authkey': '[REDACTED]', 'searchdate': '20250818', 'data': 'AP01'}'
-2025-08-18 20:39:17 [ERROR] [root] 수출입은행 API(AP01) 요청 중 오류: HTTPSConnectionPool(host='oapi.koreaexim.go.kr', port=443): Max retries exceeded with url: /site/program/financial/exchangeJSON?authkey=YOUR_EXIM_API_KEY_HERE&searchdate=20250818&data=AP01 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)')))
-Traceback (most recent call last):
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 464, in _make_request
-    self._validate_conn(conn)
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 1093, in _validate_conn
-    conn.connect()
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connection.py", line 790, in connect
-    sock_and_verified = _ssl_wrap_socket_and_match_hostname(
-                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connection.py", line 969, in _ssl_wrap_socket_and_match_hostname
-    ssl_sock = ssl_wrap_socket(
-               ^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/util/ssl_.py", line 480, in ssl_wrap_socket
-    ssl_sock = _ssl_wrap_socket_impl(sock, context, tls_in_tls, server_hostname)
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/util/ssl_.py", line 524, in _ssl_wrap_socket_impl
-    return ssl_context.wrap_socket(sock, server_hostname=server_hostname)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/ssl.py", line 455, in wrap_socket
-    return self.sslsocket_class._create(
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/ssl.py", line 1041, in _create
-    self.do_handshake()
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/ssl.py", line 1319, in do_handshake
-    self._sslobj.do_handshake()
-ssl.SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 787, in urlopen
-    response = self._make_request(
-               ^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 488, in _make_request
-    raise new_e
-urllib3.exceptions.SSLError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)
-
-The above exception was the direct cause of the following exception:
-
-Traceback (most recent call last):
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/adapters.py", line 667, in send
-    resp = conn.urlopen(
-           ^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 841, in urlopen
-    retries = retries.increment(
-              ^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/util/retry.py", line 519, in increment
-    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
-    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-urllib3.exceptions.MaxRetryError: HTTPSConnectionPool(host='oapi.koreaexim.go.kr', port=443): Max retries exceeded with url: /site/program/financial/exchangeJSON?authkey=YOUR_EXIM_API_KEY_HERE&searchdate=20250818&data=AP01 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)')))
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/app/utils/api_handlers/exim.py", line 33, in _fetch_exim_data
-    response = await asyncio.to_thread(session.get, BASE_URL, params=params, timeout=10)
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py", line 25, in to_thread
-    return await loop.run_in_executor(None, func_call)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py", line 59, in run
-    result = self.fn(*self.args, **self.kwargs)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/sessions.py", line 602, in get
-    return self.request("GET", url, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/sessions.py", line 589, in request
-    resp = self.send(prep, **send_kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/sessions.py", line 703, in send
-    r = adapter.send(request, **kwargs)
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/adapters.py", line 698, in send
-    raise SSLError(e, request=request)
-requests.exceptions.SSLError: HTTPSConnectionPool(host='oapi.koreaexim.go.kr', port=443): Max retries exceeded with url: /site/program/financial/exchangeJSON?authkey=YOUR_EXIM_API_KEY_HERE&searchdate=20250818&data=AP01 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)')))
-2025-08-18 20:39:56 [INFO] [root] 수출입은행 API 요청: URL='https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON', Params='{'authkey': '[REDACTED]', 'searchdate': '20250818', 'data': 'AP01'}'
-2025-08-18 20:39:57 [INFO] [root] 수출입은행 API 요청: URL='https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON', Params='{'authkey': '[REDACTED]', 'searchdate': '20250818', 'data': 'AP01'}'
-2025-08-18 20:47:53 [INFO] [root] 수출입은행 API 요청: URL='https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON', Params='{'authkey': '[REDACTED]', 'searchdate': '20250818', 'data': 'AP01'}'
-2025-08-18 20:48:53 [INFO] [root] 수출입은행 API 요청: URL='https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON', Params='{'authkey': '[REDACTED]', 'searchdate': '20250818', 'data': 'AP01'}'
-2025-08-18 20:48:54 [ERROR] [root] 수출입은행 API(AP01) 처리 중 오류: HTTPSConnectionPool(host='oapi.koreaexim.go.kr', port=443): Max retries exceeded with url: /site/program/financial/exchangeJSON?authkey=YOUR_EXIM_API_KEY_HERE&searchdate=20250818&data=AP01 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)')))
-Traceback (most recent call last):
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 464, in _make_request
-    self._validate_conn(conn)
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 1093, in _validate_conn
-    conn.connect()
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connection.py", line 790, in connect
-    sock_and_verified = _ssl_wrap_socket_and_match_hostname(
-                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connection.py", line 969, in _ssl_wrap_socket_and_match_hostname
-    ssl_sock = ssl_wrap_socket(
-               ^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/util/ssl_.py", line 480, in ssl_wrap_socket
-    ssl_sock = _ssl_wrap_socket_impl(sock, context, tls_in_tls, server_hostname)
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/util/ssl_.py", line 524, in _ssl_wrap_socket_impl
-    return ssl_context.wrap_socket(sock, server_hostname=server_hostname)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/ssl.py", line 455, in wrap_socket
-    return self.sslsocket_class._create(
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/ssl.py", line 1041, in _create
-    self.do_handshake()
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/ssl.py", line 1319, in do_handshake
-    self._sslobj.do_handshake()
-ssl.SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 787, in urlopen
-    response = self._make_request(
-               ^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 488, in _make_request
-    raise new_e
-urllib3.exceptions.SSLError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)
-
-The above exception was the direct cause of the following exception:
-
-Traceback (most recent call last):
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/adapters.py", line 667, in send
-    resp = conn.urlopen(
-           ^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 841, in urlopen
-    retries = retries.increment(
-              ^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/util/retry.py", line 519, in increment
-    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
-    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-urllib3.exceptions.MaxRetryError: HTTPSConnectionPool(host='oapi.koreaexim.go.kr', port=443): Max retries exceeded with url: /site/program/financial/exchangeJSON?authkey=YOUR_EXIM_API_KEY_HERE&searchdate=20250818&data=AP01 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)')))
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/app/utils/api_handlers/exim.py", line 32, in _fetch_exim_data
-    response = await asyncio.to_thread(session.get, BASE_URL, params=params, timeout=10)
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py", line 25, in to_thread
-    return await loop.run_in_executor(None, func_call)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py", line 59, in run
-    result = self.fn(*self.args, **self.kwargs)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/sessions.py", line 602, in get
-    return self.request("GET", url, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/sessions.py", line 589, in request
-    resp = self.send(prep, **send_kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/sessions.py", line 703, in send
-    r = adapter.send(request, **kwargs)
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/adapters.py", line 698, in send
-    raise SSLError(e, request=request)
-requests.exceptions.SSLError: HTTPSConnectionPool(host='oapi.koreaexim.go.kr', port=443): Max retries exceeded with url: /site/program/financial/exchangeJSON?authkey=YOUR_EXIM_API_KEY_HERE&searchdate=20250818&data=AP01 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)')))
-2025-08-18 20:48:54 [INFO] [root] 수출입은행 API 요청: URL='https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON', Params='{'authkey': '[REDACTED]', 'searchdate': '20250818', 'data': 'AP01'}'
-2025-08-18 20:48:54 [ERROR] [root] 수출입은행 API(AP01) 처리 중 오류: HTTPSConnectionPool(host='oapi.koreaexim.go.kr', port=443): Max retries exceeded with url: /site/program/financial/exchangeJSON?authkey=YOUR_EXIM_API_KEY_HERE&searchdate=20250818&data=AP01 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)')))
-Traceback (most recent call last):
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 464, in _make_request
-    self._validate_conn(conn)
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 1093, in _validate_conn
-    conn.connect()
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connection.py", line 790, in connect
-    sock_and_verified = _ssl_wrap_socket_and_match_hostname(
-                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connection.py", line 969, in _ssl_wrap_socket_and_match_hostname
-    ssl_sock = ssl_wrap_socket(
-               ^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/util/ssl_.py", line 480, in ssl_wrap_socket
-    ssl_sock = _ssl_wrap_socket_impl(sock, context, tls_in_tls, server_hostname)
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/util/ssl_.py", line 524, in _ssl_wrap_socket_impl
-    return ssl_context.wrap_socket(sock, server_hostname=server_hostname)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/ssl.py", line 455, in wrap_socket
-    return self.sslsocket_class._create(
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/ssl.py", line 1041, in _create
-    self.do_handshake()
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/ssl.py", line 1319, in do_handshake
-    self._sslobj.do_handshake()
-ssl.SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 787, in urlopen
-    response = self._make_request(
-               ^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 488, in _make_request
-    raise new_e
-urllib3.exceptions.SSLError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)
-
-The above exception was the direct cause of the following exception:
-
-Traceback (most recent call last):
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/adapters.py", line 667, in send
-    resp = conn.urlopen(
-           ^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/connectionpool.py", line 841, in urlopen
-    retries = retries.increment(
-              ^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/urllib3/util/retry.py", line 519, in increment
-    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
-    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-urllib3.exceptions.MaxRetryError: HTTPSConnectionPool(host='oapi.koreaexim.go.kr', port=443): Max retries exceeded with url: /site/program/financial/exchangeJSON?authkey=YOUR_EXIM_API_KEY_HERE&searchdate=20250818&data=AP01 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)')))
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/app/utils/api_handlers/exim.py", line 32, in _fetch_exim_data
-    response = await asyncio.to_thread(session.get, BASE_URL, params=params, timeout=10)
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py", line 25, in to_thread
-    return await loop.run_in_executor(None, func_call)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py", line 59, in run
-    result = self.fn(*self.args, **self.kwargs)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/sessions.py", line 602, in get
-    return self.request("GET", url, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/sessions.py", line 589, in request
-    resp = self.send(prep, **send_kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/sessions.py", line 703, in send
-    r = adapter.send(request, **kwargs)
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/requests/adapters.py", line 698, in send
-    raise SSLError(e, request=request)
-requests.exceptions.SSLError: HTTPSConnectionPool(host='oapi.koreaexim.go.kr', port=443): Max retries exceeded with url: /site/program/financial/exchangeJSON?authkey=YOUR_EXIM_API_KEY_HERE&searchdate=20250818&data=AP01 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1010)')))
-2025-08-18 20:49:36 [INFO] [root] 수출입은행 API 요청: URL='https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON', Params='{'authkey': '[REDACTED]', 'searchdate': '20250818', 'data': 'AP01'}'
-2025-08-18 20:49:37 [WARNING] [root] 수출입은행 환율 API 응답에서 'USD' 통화를 찾지 못했습니다.
-2025-08-18 20:49:37 [INFO] [root] 수출입은행 API 요청: URL='https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON', Params='{'authkey': '[REDACTED]', 'searchdate': '20250818', 'data': 'AP01'}'
-2025-08-18 20:49:38 [WARNING] [root] 수출입은행 환율 API 응답에서 'JPY' 통화를 찾지 못했습니다.
-{"timestamp": "2025-08-18T21:24:36.819337+09:00", "level": "WARNING", "name": "root", "message": "수출입은행 환율 API 응답에서 'EUR' 통화를 찾지 못했습니다."}
-{"timestamp": "2025-08-18T21:39:51.293614+09:00", "level": "WARNING", "name": "root", "message": "수출입은행 환율 API 응답에서 'EUR' 통화를 찾지 못했습니다."}
-{"timestamp": "2025-08-18T21:39:51.300972+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Eiffel Tower'"}
-{"timestamp": "2025-08-18T21:39:52.415088+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Springfield'"}
-{"timestamp": "2025-08-18T21:39:53.523986+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'a_made_up_place_12345'"}
-{"timestamp": "2025-08-18T21:39:54.632579+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Tokyo'"}
-{"timestamp": "2025-08-18T21:39:55.736394+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache HIT for query: 'Tokyo'"}
-{"timestamp": "2025-08-18T21:51:05.067844+09:00", "level": "WARNING", "name": "root", "message": "수출입은행 환율 API 응답에서 'EUR' 통화를 찾지 못했습니다."}
-{"timestamp": "2025-08-18T21:51:05.074280+09:00", "level": "ERROR", "name": "root", "message": "Foursquare API 키(FOURSQUARE_API_KEY)가 설정되지 않았습니다."}
-{"timestamp": "2025-08-18T21:51:05.132391+09:00", "level": "ERROR", "name": "root", "message": "Foursquare API 키(FOURSQUARE_API_KEY)가 설정되지 않았습니다."}
-{"timestamp": "2025-08-18T21:51:05.139914+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Eiffel Tower'"}
-{"timestamp": "2025-08-18T21:51:06.251480+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Springfield'"}
-{"timestamp": "2025-08-18T21:51:07.360992+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'a_made_up_place_12345'"}
-{"timestamp": "2025-08-18T21:51:08.470325+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Tokyo'"}
-{"timestamp": "2025-08-18T21:51:09.573747+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache HIT for query: 'Tokyo'"}
-{"timestamp": "2025-08-18T21:51:09.579652+09:00", "level": "ERROR", "name": "root", "message": "OpenWeatherMap API 키(OPENWEATHERMAP_API_KEY)가 설정되지 않았습니다."}
-{"timestamp": "2025-08-18T21:51:09.590047+09:00", "level": "ERROR", "name": "root", "message": "OpenWeatherMap API 키(OPENWEATHERMAP_API_KEY)가 설정되지 않았습니다."}
-{"timestamp": "2025-08-18T21:51:09.598200+09:00", "level": "ERROR", "name": "root", "message": "Ticketmaster API 키(TICKETMASTER_API_KEY)가 설정되지 않았습니다."}
-{"timestamp": "2025-08-18T21:51:09.605245+09:00", "level": "ERROR", "name": "root", "message": "Ticketmaster API 키(TICKETMASTER_API_KEY)가 설정되지 않았습니다."}
-{"timestamp": "2025-08-18T21:53:39.902899+09:00", "level": "WARNING", "name": "root", "message": "수출입은행 환율 API 응답에서 'EUR' 통화를 찾지 못했습니다."}
-{"timestamp": "2025-08-18T21:53:39.909880+09:00", "level": "INFO", "name": "root", "message": "Foursquare API 요청: URL='https://api.foursquare.com/v3/places/search', Params='{'ll': '35.68,139.69', 'limit': 10, 'sort': 'RELEVANCE'}'"}
-{"timestamp": "2025-08-18T21:53:39.918326+09:00", "level": "INFO", "name": "root", "message": "Foursquare API 요청: URL='https://api.foursquare.com/v3/places/search', Params='{'ll': '35.68,139.69', 'limit': 10, 'sort': 'RELEVANCE'}'"}
-{"timestamp": "2025-08-18T21:53:39.919559+09:00", "level": "ERROR", "name": "root", "message": "Foursquare API(35.68,139.69) 처리 중 예기치 않은 오류: Network Error", "exc_info": "Traceback (most recent call last):\n  File \"/app/utils/api_handlers/foursquare.py\", line 33, in get_places_by_coords\n    response = await asyncio.to_thread(session.get, url, headers=headers, params=params, timeout=15)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1139, in __call__\n    return self._mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1143, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1198, in _execute_mock_call\n    raise effect\nException: Network Error"}
-{"timestamp": "2025-08-18T21:53:40.001565+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Eiffel Tower'"}
-{"timestamp": "2025-08-18T21:53:41.111023+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Springfield'"}
-{"timestamp": "2025-08-18T21:53:42.220951+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'a_made_up_place_12345'"}
-{"timestamp": "2025-08-18T21:53:43.334190+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Tokyo'"}
-{"timestamp": "2025-08-18T21:53:44.439744+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache HIT for query: 'Tokyo'"}
-{"timestamp": "2025-08-18T21:53:44.451409+09:00", "level": "INFO", "name": "root", "message": "OpenWeatherMap API 요청: URL='https://api.openweathermap.org/data/2.5/weather', Params='{'lat': 35.68, 'lon': 139.69, 'appid': '[REDACTED]', 'units': 'metric', 'lang': 'kr'}'"}
-{"timestamp": "2025-08-18T21:53:44.466134+09:00", "level": "INFO", "name": "root", "message": "OpenWeatherMap API 요청: URL='https://api.openweathermap.org/data/2.5/weather', Params='{'lat': 35.68, 'lon': 139.69, 'appid': '[REDACTED]', 'units': 'metric', 'lang': 'kr'}'"}
-{"timestamp": "2025-08-18T21:53:44.467961+09:00", "level": "ERROR", "name": "root", "message": "OpenWeatherMap API(35.68,139.69) 처리 중 예기치 않은 오류: Network Error", "exc_info": "Traceback (most recent call last):\n  File \"/app/utils/api_handlers/openweathermap.py\", line 31, in get_weather_by_coords\n    response = await asyncio.to_thread(session.get, url, params=params, timeout=10)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1139, in __call__\n    return self._mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1143, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1198, in _execute_mock_call\n    raise effect\nException: Network Error"}
-{"timestamp": "2025-08-18T21:53:44.488492+09:00", "level": "INFO", "name": "root", "message": "Ticketmaster API 요청: URL='https://app.ticketmaster.com/discovery/v2/events.json', Params='{'apikey': 'DUMMY_API_KEY', 'latlong': '35.68,139.69', 'radius': 50, 'unit': 'km', 'startDateTime': '2025-08-18T12:53:44Z', 'endDateTime': '2025-09-17T12:53:44Z', 'sort': 'date,asc'}'"}
-{"timestamp": "2025-08-18T21:53:44.497724+09:00", "level": "INFO", "name": "root", "message": "Ticketmaster API 요청: URL='https://app.ticketmaster.com/discovery/v2/events.json', Params='{'apikey': 'DUMMY_API_KEY', 'latlong': '35.68,139.69', 'radius': 50, 'unit': 'km', 'startDateTime': '2025-08-18T12:53:44Z', 'endDateTime': '2025-09-17T12:53:44Z', 'sort': 'date,asc'}'"}
-{"timestamp": "2025-08-18T21:53:44.499382+09:00", "level": "ERROR", "name": "root", "message": "Ticketmaster API(35.68,139.69) 처리 중 예기치 않은 오류: Network Error", "exc_info": "Traceback (most recent call last):\n  File \"/app/utils/api_handlers/ticketmaster.py\", line 37, in get_events_by_coords\n    response = await asyncio.to_thread(session.get, url, params=params, timeout=15)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1139, in __call__\n    return self._mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1143, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1198, in _execute_mock_call\n    raise effect\nException: Network Error"}
-{"timestamp": "2025-08-18T21:54:59.322125+09:00", "level": "WARNING", "name": "root", "message": "수출입은행 환율 API 응답에서 'EUR' 통화를 찾지 못했습니다."}
-{"timestamp": "2025-08-18T21:54:59.328963+09:00", "level": "INFO", "name": "root", "message": "Foursquare API 요청: URL='https://api.foursquare.com/v3/places/search', Params='{'ll': '35.68,139.69', 'limit': 10, 'sort': 'RELEVANCE'}'"}
-{"timestamp": "2025-08-18T21:54:59.336524+09:00", "level": "INFO", "name": "root", "message": "Foursquare API 요청: URL='https://api.foursquare.com/v3/places/search', Params='{'ll': '35.68,139.69', 'limit': 10, 'sort': 'RELEVANCE'}'"}
-{"timestamp": "2025-08-18T21:54:59.337739+09:00", "level": "ERROR", "name": "root", "message": "Foursquare API(35.68,139.69) 요청 중 오류: Network Error", "exc_info": "Traceback (most recent call last):\n  File \"/app/utils/api_handlers/foursquare.py\", line 33, in get_places_by_coords\n    response = await asyncio.to_thread(session.get, url, headers=headers, params=params, timeout=15)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1139, in __call__\n    return self._mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1143, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1198, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error"}
-{"timestamp": "2025-08-18T21:54:59.349668+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Eiffel Tower'"}
-{"timestamp": "2025-08-18T21:55:00.458903+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Springfield'"}
-{"timestamp": "2025-08-18T21:55:01.567863+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'a_made_up_place_12345'"}
-{"timestamp": "2025-08-18T21:55:02.677195+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Tokyo'"}
-{"timestamp": "2025-08-18T21:55:03.781080+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache HIT for query: 'Tokyo'"}
-{"timestamp": "2025-08-18T21:55:03.787445+09:00", "level": "INFO", "name": "root", "message": "OpenWeatherMap API 요청: URL='https://api.openweathermap.org/data/2.5/weather', Params='{'lat': 35.68, 'lon': 139.69, 'appid': '[REDACTED]', 'units': 'metric', 'lang': 'kr'}'"}
-{"timestamp": "2025-08-18T21:55:03.795371+09:00", "level": "INFO", "name": "root", "message": "OpenWeatherMap API 요청: URL='https://api.openweathermap.org/data/2.5/weather', Params='{'lat': 35.68, 'lon': 139.69, 'appid': '[REDACTED]', 'units': 'metric', 'lang': 'kr'}'"}
-{"timestamp": "2025-08-18T21:55:03.796875+09:00", "level": "ERROR", "name": "root", "message": "OpenWeatherMap API(35.68,139.69) 요청 중 오류: Network Error", "exc_info": "Traceback (most recent call last):\n  File \"/app/utils/api_handlers/openweathermap.py\", line 31, in get_weather_by_coords\n    response = await asyncio.to_thread(session.get, url, params=params, timeout=10)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1139, in __call__\n    return self._mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1143, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1198, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error"}
-{"timestamp": "2025-08-18T21:55:03.805154+09:00", "level": "INFO", "name": "root", "message": "Ticketmaster API 요청: URL='https://app.ticketmaster.com/discovery/v2/events.json', Params='{'apikey': 'DUMMY_API_KEY', 'latlong': '35.68,139.69', 'radius': 50, 'unit': 'km', 'startDateTime': '2025-08-18T12:55:03Z', 'endDateTime': '2025-09-17T12:55:03Z', 'sort': 'date,asc'}'"}
-{"timestamp": "2025-08-18T21:55:03.810981+09:00", "level": "INFO", "name": "root", "message": "Ticketmaster API 요청: URL='https://app.ticketmaster.com/discovery/v2/events.json', Params='{'apikey': 'DUMMY_API_KEY', 'latlong': '35.68,139.69', 'radius': 50, 'unit': 'km', 'startDateTime': '2025-08-18T12:55:03Z', 'endDateTime': '2025-09-17T12:55:03Z', 'sort': 'date,asc'}'"}
-{"timestamp": "2025-08-18T21:55:03.811924+09:00", "level": "ERROR", "name": "root", "message": "Ticketmaster API(35.68,139.69) 요청 중 오류: Network Error", "exc_info": "Traceback (most recent call last):\n  File \"/app/utils/api_handlers/ticketmaster.py\", line 37, in get_events_by_coords\n    response = await asyncio.to_thread(session.get, url, params=params, timeout=15)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1139, in __call__\n    return self._mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1143, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1198, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error"}
-{"timestamp": "2025-08-18T22:07:38.179631+09:00", "level": "WARNING", "name": "root", "message": "수출입은행 환율 API 응답에서 'EUR' 통화를 찾지 못했습니다."}
-{"timestamp": "2025-08-18T22:07:38.186666+09:00", "level": "INFO", "name": "root", "message": "Foursquare API 요청: URL='https://api.foursquare.com/v3/places/search', Params='{'ll': '35.68,139.69', 'limit': 10, 'sort': 'RELEVANCE'}'"}
-{"timestamp": "2025-08-18T22:07:38.194676+09:00", "level": "INFO", "name": "root", "message": "Foursquare API 요청: URL='https://api.foursquare.com/v3/places/search', Params='{'ll': '35.68,139.69', 'limit': 10, 'sort': 'RELEVANCE'}'"}
-{"timestamp": "2025-08-18T22:07:38.195466+09:00", "level": "ERROR", "name": "root", "message": "Foursquare API(35.68,139.69) 요청 중 오류: Network Error", "exc_info": "Traceback (most recent call last):\n  File \"/app/utils/api_handlers/foursquare.py\", line 33, in get_places_by_coords\n    response = await asyncio.to_thread(session.get, url, headers=headers, params=params, timeout=15)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1139, in __call__\n    return self._mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1143, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1198, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error"}
-{"timestamp": "2025-08-18T22:07:38.206612+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Eiffel Tower'"}
-{"timestamp": "2025-08-18T22:07:39.314599+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Springfield'"}
-{"timestamp": "2025-08-18T22:07:40.423429+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'a_made_up_place_12345'"}
-{"timestamp": "2025-08-18T22:07:41.531864+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Tokyo'"}
-{"timestamp": "2025-08-18T22:07:42.635085+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache HIT for query: 'Tokyo'"}
-{"timestamp": "2025-08-18T22:07:42.640598+09:00", "level": "INFO", "name": "root", "message": "OpenWeatherMap API 요청: URL='https://api.openweathermap.org/data/2.5/weather', Params='{'lat': 35.68, 'lon': 139.69, 'appid': '[REDACTED]', 'units': 'metric', 'lang': 'kr'}'"}
-{"timestamp": "2025-08-18T22:07:42.645472+09:00", "level": "INFO", "name": "root", "message": "OpenWeatherMap API 요청: URL='https://api.openweathermap.org/data/2.5/weather', Params='{'lat': 35.68, 'lon': 139.69, 'appid': '[REDACTED]', 'units': 'metric', 'lang': 'kr'}'"}
-{"timestamp": "2025-08-18T22:07:42.646200+09:00", "level": "ERROR", "name": "root", "message": "OpenWeatherMap API(35.68,139.69) 요청 중 오류: Network Error", "exc_info": "Traceback (most recent call last):\n  File \"/app/utils/api_handlers/openweathermap.py\", line 31, in get_weather_by_coords\n    response = await asyncio.to_thread(session.get, url, params=params, timeout=10)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1139, in __call__\n    return self._mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1143, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1198, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error"}
-{"timestamp": "2025-08-18T22:07:42.653726+09:00", "level": "INFO", "name": "root", "message": "Ticketmaster API 요청: URL='https://app.ticketmaster.com/discovery/v2/events.json', Params='{'apikey': 'DUMMY_API_KEY', 'latlong': '35.68,139.69', 'radius': 50, 'unit': 'km', 'startDateTime': '2025-08-18T13:07:42Z', 'endDateTime': '2025-09-17T13:07:42Z', 'sort': 'date,asc'}'"}
-{"timestamp": "2025-08-18T22:07:42.658585+09:00", "level": "INFO", "name": "root", "message": "Ticketmaster API 요청: URL='https://app.ticketmaster.com/discovery/v2/events.json', Params='{'apikey': 'DUMMY_API_KEY', 'latlong': '35.68,139.69', 'radius': 50, 'unit': 'km', 'startDateTime': '2025-08-18T13:07:42Z', 'endDateTime': '2025-09-17T13:07:42Z', 'sort': 'date,asc'}'"}
-{"timestamp": "2025-08-18T22:07:42.659356+09:00", "level": "ERROR", "name": "root", "message": "Ticketmaster API(35.68,139.69) 요청 중 오류: Network Error", "exc_info": "Traceback (most recent call last):\n  File \"/app/utils/api_handlers/ticketmaster.py\", line 37, in get_events_by_coords\n    response = await asyncio.to_thread(session.get, url, params=params, timeout=15)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1139, in __call__\n    return self._mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1143, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1198, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error"}
-{"timestamp": "2025-08-18T22:07:42.665108+09:00", "level": "INFO", "name": "root", "message": "ToolsCog 초기화 완료."}
-{"timestamp": "2025-08-18T22:07:42.667952+09:00", "level": "INFO", "name": "root", "message": "Travel recommendation for 'Seoul, South Korea' (37.56, 126.97), country: kr"}
-{"timestamp": "2025-08-18T22:07:42.670773+09:00", "level": "INFO", "name": "root", "message": "ToolsCog 초기화 완료."}
-{"timestamp": "2025-08-18T22:07:42.674559+09:00", "level": "INFO", "name": "root", "message": "Travel recommendation for 'Paris, France' (48.85, 2.29), country: fr"}
-{"timestamp": "2025-08-18T22:13:52.472954+09:00", "level": "WARNING", "name": "root", "message": "수출입은행 환율 API 응답에서 'EUR' 통화를 찾지 못했습니다."}
-{"timestamp": "2025-08-18T22:13:52.482488+09:00", "level": "INFO", "name": "root", "message": "Foursquare API 요청: URL='https://api.foursquare.com/v3/places/search', Params='{'ll': '35.68,139.69', 'limit': 10, 'sort': 'RELEVANCE'}'"}
-{"timestamp": "2025-08-18T22:13:52.492222+09:00", "level": "INFO", "name": "root", "message": "Foursquare API 요청: URL='https://api.foursquare.com/v3/places/search', Params='{'ll': '35.68,139.69', 'limit': 10, 'sort': 'RELEVANCE'}'"}
-{"timestamp": "2025-08-18T22:13:52.493400+09:00", "level": "ERROR", "name": "root", "message": "Foursquare API(35.68,139.69) 요청 중 오류: Network Error", "exc_info": "Traceback (most recent call last):\n  File \"/app/utils/api_handlers/foursquare.py\", line 33, in get_places_by_coords\n    response = await asyncio.to_thread(session.get, url, headers=headers, params=params, timeout=15)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1139, in __call__\n    return self._mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1143, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1198, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error"}
-{"timestamp": "2025-08-18T22:13:52.507782+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Eiffel Tower'"}
-{"timestamp": "2025-08-18T22:13:53.618132+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Springfield'"}
-{"timestamp": "2025-08-18T22:13:54.728275+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'a_made_up_place_12345'"}
-{"timestamp": "2025-08-18T22:13:55.839011+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Tokyo'"}
-{"timestamp": "2025-08-18T22:13:56.943204+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache HIT for query: 'Tokyo'"}
-{"timestamp": "2025-08-18T22:13:56.949946+09:00", "level": "INFO", "name": "root", "message": "OpenWeatherMap API 요청: URL='https://api.openweathermap.org/data/2.5/weather', Params='{'lat': 35.68, 'lon': 139.69, 'appid': '[REDACTED]', 'units': 'metric', 'lang': 'kr'}'"}
-{"timestamp": "2025-08-18T22:13:56.958299+09:00", "level": "INFO", "name": "root", "message": "OpenWeatherMap API 요청: URL='https://api.openweathermap.org/data/2.5/weather', Params='{'lat': 35.68, 'lon': 139.69, 'appid': '[REDACTED]', 'units': 'metric', 'lang': 'kr'}'"}
-{"timestamp": "2025-08-18T22:13:56.959713+09:00", "level": "ERROR", "name": "root", "message": "OpenWeatherMap API(35.68,139.69) 요청 중 오류: Network Error", "exc_info": "Traceback (most recent call last):\n  File \"/app/utils/api_handlers/openweathermap.py\", line 31, in get_weather_by_coords\n    response = await asyncio.to_thread(session.get, url, params=params, timeout=10)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1139, in __call__\n    return self._mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1143, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1198, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error"}
-{"timestamp": "2025-08-18T22:13:56.969551+09:00", "level": "INFO", "name": "root", "message": "Ticketmaster API 요청: URL='https://app.ticketmaster.com/discovery/v2/events.json', Params='{'apikey': 'DUMMY_API_KEY', 'latlong': '35.68,139.69', 'radius': 50, 'unit': 'km', 'startDateTime': '2025-08-18T13:13:56Z', 'endDateTime': '2025-09-17T13:13:56Z', 'sort': 'date,asc'}'"}
-{"timestamp": "2025-08-18T22:13:56.979155+09:00", "level": "INFO", "name": "root", "message": "Ticketmaster API 요청: URL='https://app.ticketmaster.com/discovery/v2/events.json', Params='{'apikey': 'DUMMY_API_KEY', 'latlong': '35.68,139.69', 'radius': 50, 'unit': 'km', 'startDateTime': '2025-08-18T13:13:56Z', 'endDateTime': '2025-09-17T13:13:56Z', 'sort': 'date,asc'}'"}
-{"timestamp": "2025-08-18T22:13:56.980504+09:00", "level": "ERROR", "name": "root", "message": "Ticketmaster API(35.68,139.69) 요청 중 오류: Network Error", "exc_info": "Traceback (most recent call last):\n  File \"/app/utils/api_handlers/ticketmaster.py\", line 37, in get_events_by_coords\n    response = await asyncio.to_thread(session.get, url, params=params, timeout=15)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1139, in __call__\n    return self._mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1143, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1198, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error"}
-{"timestamp": "2025-08-18T22:13:56.988922+09:00", "level": "INFO", "name": "root", "message": "ToolsCog 초기화 완료."}
-{"timestamp": "2025-08-18T22:13:56.997080+09:00", "level": "INFO", "name": "root", "message": "Travel recommendation for 'Seoul, South Korea' (37.56, 126.97), country: kr"}
-{"timestamp": "2025-08-18T22:13:57.000874+09:00", "level": "INFO", "name": "root", "message": "ToolsCog 초기화 완료."}
-{"timestamp": "2025-08-18T22:13:57.003679+09:00", "level": "INFO", "name": "root", "message": "Travel recommendation for 'Paris, France' (48.85, 2.29), country: fr"}
-{"timestamp": "2025-08-18T22:15:16.605515+09:00", "level": "WARNING", "name": "root", "message": "수출입은행 환율 API 응답에서 'EUR' 통화를 찾지 못했습니다."}
-{"timestamp": "2025-08-18T22:15:16.615189+09:00", "level": "INFO", "name": "root", "message": "Foursquare API 요청: URL='https://api.foursquare.com/v3/places/search', Params='{'ll': '35.68,139.69', 'limit': 10, 'sort': 'RELEVANCE'}'"}
-{"timestamp": "2025-08-18T22:15:16.626512+09:00", "level": "INFO", "name": "root", "message": "Foursquare API 요청: URL='https://api.foursquare.com/v3/places/search', Params='{'ll': '35.68,139.69', 'limit': 10, 'sort': 'RELEVANCE'}'"}
-{"timestamp": "2025-08-18T22:15:16.628030+09:00", "level": "ERROR", "name": "root", "message": "Foursquare API(35.68,139.69) 요청 중 오류: Network Error", "exc_info": "Traceback (most recent call last):\n  File \"/app/utils/api_handlers/foursquare.py\", line 33, in get_places_by_coords\n    response = await asyncio.to_thread(session.get, url, headers=headers, params=params, timeout=15)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1139, in __call__\n    return self._mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1143, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1198, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error"}
-{"timestamp": "2025-08-18T22:15:16.642954+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Eiffel Tower'"}
-{"timestamp": "2025-08-18T22:15:17.762669+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Springfield'"}
-{"timestamp": "2025-08-18T22:15:18.894773+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'a_made_up_place_12345'"}
-{"timestamp": "2025-08-18T22:15:20.009887+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Tokyo'"}
-{"timestamp": "2025-08-18T22:15:21.115014+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache HIT for query: 'Tokyo'"}
-{"timestamp": "2025-08-18T22:15:21.138004+09:00", "level": "INFO", "name": "root", "message": "OpenWeatherMap API 요청: URL='https://api.openweathermap.org/data/2.5/weather', Params='{'lat': 35.68, 'lon': 139.69, 'appid': '[REDACTED]', 'units': 'metric', 'lang': 'kr'}'"}
-{"timestamp": "2025-08-18T22:15:21.148845+09:00", "level": "INFO", "name": "root", "message": "OpenWeatherMap API 요청: URL='https://api.openweathermap.org/data/2.5/weather', Params='{'lat': 35.68, 'lon': 139.69, 'appid': '[REDACTED]', 'units': 'metric', 'lang': 'kr'}'"}
-{"timestamp": "2025-08-18T22:15:21.151082+09:00", "level": "ERROR", "name": "root", "message": "OpenWeatherMap API(35.68,139.69) 요청 중 오류: Network Error", "exc_info": "Traceback (most recent call last):\n  File \"/app/utils/api_handlers/openweathermap.py\", line 31, in get_weather_by_coords\n    response = await asyncio.to_thread(session.get, url, params=params, timeout=10)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1139, in __call__\n    return self._mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1143, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1198, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error"}
-{"timestamp": "2025-08-18T22:15:21.165914+09:00", "level": "INFO", "name": "root", "message": "Ticketmaster API 요청: URL='https://app.ticketmaster.com/discovery/v2/events.json', Params='{'apikey': 'DUMMY_API_KEY', 'latlong': '35.68,139.69', 'radius': 50, 'unit': 'km', 'startDateTime': '2025-08-18T13:15:21Z', 'endDateTime': '2025-09-17T13:15:21Z', 'sort': 'date,asc'}'"}
-{"timestamp": "2025-08-18T22:15:21.175016+09:00", "level": "INFO", "name": "root", "message": "Ticketmaster API 요청: URL='https://app.ticketmaster.com/discovery/v2/events.json', Params='{'apikey': 'DUMMY_API_KEY', 'latlong': '35.68,139.69', 'radius': 50, 'unit': 'km', 'startDateTime': '2025-08-18T13:15:21Z', 'endDateTime': '2025-09-17T13:15:21Z', 'sort': 'date,asc'}'"}
-{"timestamp": "2025-08-18T22:15:21.176613+09:00", "level": "ERROR", "name": "root", "message": "Ticketmaster API(35.68,139.69) 요청 중 오류: Network Error", "exc_info": "Traceback (most recent call last):\n  File \"/app/utils/api_handlers/ticketmaster.py\", line 37, in get_events_by_coords\n    response = await asyncio.to_thread(session.get, url, params=params, timeout=15)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1139, in __call__\n    return self._mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1143, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1198, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error"}
-{"timestamp": "2025-08-18T22:15:21.186141+09:00", "level": "INFO", "name": "root", "message": "ToolsCog 초기화 완료."}
-{"timestamp": "2025-08-18T22:15:21.193331+09:00", "level": "INFO", "name": "root", "message": "Travel recommendation for 'Seoul, South Korea' (37.56, 126.97), country: kr"}
-{"timestamp": "2025-08-18T22:15:21.197169+09:00", "level": "INFO", "name": "root", "message": "ToolsCog 초기화 완료."}
-{"timestamp": "2025-08-18T22:15:21.199594+09:00", "level": "INFO", "name": "root", "message": "Travel recommendation for 'Paris, France' (48.85, 2.29), country: fr"}
-{"timestamp": "2025-08-18T22:16:26.723751+09:00", "level": "WARNING", "name": "root", "message": "수출입은행 환율 API 응답에서 'EUR' 통화를 찾지 못했습니다."}
-{"timestamp": "2025-08-18T22:16:26.732834+09:00", "level": "INFO", "name": "root", "message": "Foursquare API 요청: URL='https://api.foursquare.com/v3/places/search', Params='{'ll': '35.68,139.69', 'limit': 10, 'sort': 'RELEVANCE'}'"}
-{"timestamp": "2025-08-18T22:16:26.741060+09:00", "level": "INFO", "name": "root", "message": "Foursquare API 요청: URL='https://api.foursquare.com/v3/places/search', Params='{'ll': '35.68,139.69', 'limit': 10, 'sort': 'RELEVANCE'}'"}
-{"timestamp": "2025-08-18T22:16:26.742068+09:00", "level": "ERROR", "name": "root", "message": "Foursquare API(35.68,139.69) 요청 중 오류: Network Error", "exc_info": "Traceback (most recent call last):\n  File \"/app/utils/api_handlers/foursquare.py\", line 33, in get_places_by_coords\n    response = await asyncio.to_thread(session.get, url, headers=headers, params=params, timeout=15)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1139, in __call__\n    return self._mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1143, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1198, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error"}
-{"timestamp": "2025-08-18T22:16:26.750766+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Eiffel Tower'"}
-{"timestamp": "2025-08-18T22:16:27.858946+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Springfield'"}
-{"timestamp": "2025-08-18T22:16:28.968663+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'a_made_up_place_12345'"}
-{"timestamp": "2025-08-18T22:16:30.077164+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Tokyo'"}
-{"timestamp": "2025-08-18T22:16:31.180658+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache HIT for query: 'Tokyo'"}
-{"timestamp": "2025-08-18T22:16:31.186990+09:00", "level": "INFO", "name": "root", "message": "OpenWeatherMap API 요청: URL='https://api.openweathermap.org/data/2.5/weather', Params='{'lat': 35.68, 'lon': 139.69, 'appid': '[REDACTED]', 'units': 'metric', 'lang': 'kr'}'"}
-{"timestamp": "2025-08-18T22:16:31.194682+09:00", "level": "INFO", "name": "root", "message": "OpenWeatherMap API 요청: URL='https://api.openweathermap.org/data/2.5/weather', Params='{'lat': 35.68, 'lon': 139.69, 'appid': '[REDACTED]', 'units': 'metric', 'lang': 'kr'}'"}
-{"timestamp": "2025-08-18T22:16:31.196337+09:00", "level": "ERROR", "name": "root", "message": "OpenWeatherMap API(35.68,139.69) 요청 중 오류: Network Error", "exc_info": "Traceback (most recent call last):\n  File \"/app/utils/api_handlers/openweathermap.py\", line 31, in get_weather_by_coords\n    response = await asyncio.to_thread(session.get, url, params=params, timeout=10)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1139, in __call__\n    return self._mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1143, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1198, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error"}
-{"timestamp": "2025-08-18T22:16:31.205783+09:00", "level": "INFO", "name": "root", "message": "Ticketmaster API 요청: URL='https://app.ticketmaster.com/discovery/v2/events.json', Params='{'apikey': 'DUMMY_API_KEY', 'latlong': '35.68,139.69', 'radius': 50, 'unit': 'km', 'startDateTime': '2025-08-18T13:16:31Z', 'endDateTime': '2025-09-17T13:16:31Z', 'sort': 'date,asc'}'"}
-{"timestamp": "2025-08-18T22:16:31.212038+09:00", "level": "INFO", "name": "root", "message": "Ticketmaster API 요청: URL='https://app.ticketmaster.com/discovery/v2/events.json', Params='{'apikey': 'DUMMY_API_KEY', 'latlong': '35.68,139.69', 'radius': 50, 'unit': 'km', 'startDateTime': '2025-08-18T13:16:31Z', 'endDateTime': '2025-09-17T13:16:31Z', 'sort': 'date,asc'}'"}
-{"timestamp": "2025-08-18T22:16:31.213139+09:00", "level": "ERROR", "name": "root", "message": "Ticketmaster API(35.68,139.69) 요청 중 오류: Network Error", "exc_info": "Traceback (most recent call last):\n  File \"/app/utils/api_handlers/ticketmaster.py\", line 37, in get_events_by_coords\n    response = await asyncio.to_thread(session.get, url, params=params, timeout=15)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1139, in __call__\n    return self._mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1143, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/unittest/mock.py\", line 1198, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error"}
-{"timestamp": "2025-08-18T22:16:31.221386+09:00", "level": "INFO", "name": "root", "message": "ToolsCog 초기화 완료."}
-{"timestamp": "2025-08-18T22:16:31.226684+09:00", "level": "INFO", "name": "root", "message": "Travel recommendation for 'Seoul, South Korea' (37.56, 126.97), country: kr"}
-{"timestamp": "2025-08-18T22:16:31.230989+09:00", "level": "INFO", "name": "root", "message": "ToolsCog 초기화 완료."}
-{"timestamp": "2025-08-18T22:16:31.233352+09:00", "level": "INFO", "name": "root", "message": "Travel recommendation for 'Paris, France' (48.85, 2.29), country: fr"}
-{"timestamp": "2025-08-18T22:16:31.241847+09:00", "level": "INFO", "name": "root", "message": "에이전트 처리 시작 (2-step). Query: 'Tell me about Testville'", "guild_id": 123, "user_id": 789, "channel_id": 456}
-{"timestamp": "2025-08-18T22:16:31.242821+09:00", "level": "INFO", "name": "root", "message": "1단계: Lite 모델 호출 시작...", "guild_id": 123, "user_id": 789, "channel_id": 456}
-{"timestamp": "2025-08-18T22:16:31.243337+09:00", "level": "INFO", "name": "root", "message": "Lite 모델 응답: '<tool_call>{\"tool_to_use\": \"get_travel_recommendation\", \"parameters\": {\"location_name\": \"Testville\"}...'", "guild_id": 123, "user_id": 789, "channel_id": 456}
-{"timestamp": "2025-08-18T22:16:31.243802+09:00", "level": "INFO", "name": "root", "message": "분기: 도구 사용으로 판단. Tool: {'tool_to_use': 'get_travel_recommendation', 'parameters': {'location_name': 'Testville'}}", "guild_id": 123, "user_id": 789, "channel_id": 456}
-{"timestamp": "2025-08-18T22:16:31.244213+09:00", "level": "INFO", "name": "root", "message": "2단계: Main 모델 호출 시작...", "guild_id": 123, "user_id": 789, "channel_id": 456}
-{"timestamp": "2025-08-18T22:16:31.244374+09:00", "level": "INFO", "name": "root", "message": "여행 추천 도구 결과에 특수 프롬프트를 사용합니다.", "guild_id": 123, "user_id": 789, "channel_id": 456}
-{"timestamp": "2025-08-18T22:16:31.244822+09:00", "level": "INFO", "name": "root", "message": "Main 모델이 최종 답변을 생성했습니다.", "guild_id": 123, "user_id": 789, "channel_id": 456}
-{"timestamp": "2025-08-18T23:22:41.355979+09:00", "level": "INFO", "name": "root", "message": "--- Starting Default Weather Test ---"}
-{"timestamp": "2025-08-18T23:22:41.357519+09:00", "level": "INFO", "name": "root", "message": "ToolsCog 초기화 완료."}
-{"timestamp": "2025-08-18T23:22:41.357779+09:00", "level": "INFO", "name": "root", "message": "Calling get_current_weather with no location..."}
-{"timestamp": "2025-08-18T23:22:41.366012+09:00", "level": "ERROR", "name": "root", "message": "Test script failed: not enough values to unpack (expected 2, got 0)", "exc_info": "Traceback (most recent call last):\n  File \"/app/test_default_weather.py\", line 56, in <module>\n    asyncio.run(main())\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/runners.py\", line 195, in run\n    return runner.run(main)\n           ^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/runners.py\", line 118, in run\n    return self._loop.run_until_complete(task)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/base_events.py\", line 691, in run_until_complete\n    return future.result()\n           ^^^^^^^^^^^^^^^\n  File \"/app/test_default_weather.py\", line 45, in main\n    result = await tools_cog.get_current_weather(location=None)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/app/cogs/tools_cog.py\", line 119, in get_current_weather\n    weather_data, error_msg = await self.weather_cog.get_formatted_weather_string(day_offset, location_name, nx, ny)\n                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/app/cogs/weather_cog.py\", line 53, in get_formatted_weather_string\n    current_weather_data = await weather_utils.get_current_weather_from_kma(self.bot.db, nx, ny)\n                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/app/utils/weather.py\", line 93, in get_current_weather_from_kma\n    return await _fetch_kma_api(db, \"getUltraSrtNcst\", params)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/app/utils/weather.py\", line 34, in _fetch_kma_api\n    if await db_utils.is_api_limit_reached(db, 'kma_daily_calls', config.KMA_API_DAILY_CALL_LIMIT):\n       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/app/utils/db.py\", line 79, in is_api_limit_reached\n    count, last_reset_at_iso = result\n    ^^^^^^^^^^^^^^^^^^^^^^^^\nValueError: not enough values to unpack (expected 2, got 0)"}
-{"timestamp": "2025-08-18T23:24:56.856829+09:00", "level": "INFO", "name": "root", "message": "--- Starting Default Weather Test ---"}
-{"timestamp": "2025-08-18T23:24:56.858159+09:00", "level": "INFO", "name": "root", "message": "ToolsCog 초기화 완료."}
-{"timestamp": "2025-08-18T23:24:56.858345+09:00", "level": "INFO", "name": "root", "message": "Calling get_current_weather with no location..."}
-{"timestamp": "2025-08-18T23:24:56.863514+09:00", "level": "ERROR", "name": "root", "message": "Test script failed: not enough values to unpack (expected 2, got 0)", "exc_info": "Traceback (most recent call last):\n  File \"/app/test_default_weather.py\", line 56, in <module>\n    asyncio.run(main())\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/runners.py\", line 195, in run\n    return runner.run(main)\n           ^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/runners.py\", line 118, in run\n    return self._loop.run_until_complete(task)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/jules/.pyenv/versions/3.12.11/lib/python3.12/asyncio/base_events.py\", line 691, in run_until_complete\n    return future.result()\n           ^^^^^^^^^^^^^^^\n  File \"/app/test_default_weather.py\", line 45, in main\n    result = await tools_cog.get_current_weather(location=None)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/app/cogs/tools_cog.py\", line 119, in get_current_weather\n    weather_data, error_msg = await self.weather_cog.get_formatted_weather_string(day_offset, location_name, nx, ny)\n                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/app/cogs/weather_cog.py\", line 53, in get_formatted_weather_string\n    current_weather_data = await weather_utils.get_current_weather_from_kma(self.bot.db, nx, ny)\n                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/app/utils/weather.py\", line 93, in get_current_weather_from_kma\n    return await _fetch_kma_api(db, \"getUltraSrtNcst\", params)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/app/utils/weather.py\", line 34, in _fetch_kma_api\n    if await db_utils.is_api_limit_reached(db, 'kma_daily_calls', config.KMA_API_DAILY_CALL_LIMIT):\n       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/app/utils/db.py\", line 85, in is_api_limit_reached\n    count, last_reset_at_iso = result\n    ^^^^^^^^^^^^^^^^^^^^^^^^\nValueError: not enough values to unpack (expected 2, got 0)"}
-{"timestamp": "2025-08-18T23:28:20.560923+09:00", "level": "INFO", "name": "root", "message": "ToolsCog 초기화 완료."}
-{"timestamp": "2025-08-18T23:28:20.561906+09:00", "level": "WARNING", "name": "root", "message": "기상청 API 키(KMA_API_KEY)가 config.py에 설정되지 않았거나 기본값입니다."}
-{"timestamp": "2025-08-18T23:28:20.562172+09:00", "level": "ERROR", "name": "root", "message": "기상청 API 키가 없어 날씨를 조회할 수 없습니다."}
-{"timestamp": "2025-08-18T23:29:35.013852+09:00", "level": "INFO", "name": "root", "message": "ToolsCog 초기화 완료."}
-{"timestamp": "2025-08-18T23:29:35.014884+09:00", "level": "INFO", "name": "root", "message": "기상청 API 요청: URL='https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getUltraSrtNcst', Params='{'authKey': '[REDACTED]', 'pageNo': '1', 'numOfRows': '1000', 'dataType': 'JSON', 'base_date': '20250818', 'base_time': '2200', 'nx': '70', 'ny': '65'}'"}
-{"timestamp": "2025-08-18T23:29:35.022374+09:00", "level": "ERROR", "name": "root", "message": "기상청 API 응답 파싱 중 오류: object MagicMock can't be used in 'await' expression. 응답: <MagicMock name='mock.get().text' id='140634436032112'>", "exc_info": "Traceback (most recent call last):\n  File \"/app/utils/weather.py\", line 64, in _fetch_kma_api\n    await db_utils.increment_api_counter(db, 'kma_daily_calls')\n  File \"/app/utils/db.py\", line 107, in increment_api_counter\n    await db.execute(\"UPDATE system_counters SET counter_value = counter_value + 1 WHERE counter_name = ?\", (counter_name,))\nTypeError: object MagicMock can't be used in 'await' expression"}
-{"timestamp": "2025-08-18T23:30:48.621848+09:00", "level": "INFO", "name": "root", "message": "ToolsCog 초기화 완료."}
-{"timestamp": "2025-08-18T23:30:48.623006+09:00", "level": "INFO", "name": "root", "message": "기상청 API 요청: URL='https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getUltraSrtNcst', Params='{'authKey': '[REDACTED]', 'pageNo': '1', 'numOfRows': '1000', 'dataType': 'JSON', 'base_date': '20250818', 'base_time': '2200', 'nx': '70', 'ny': '65'}'"}
-{"timestamp": "2025-08-18T23:30:48.627607+09:00", "level": "WARNING", "name": "root", "message": "초단기실황 데이터 일부 누락: {}"}
-{"timestamp": "2025-08-18T23:30:48.627994+09:00", "level": "INFO", "name": "root", "message": "기상청 API 요청: URL='https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getVilageFcst', Params='{'authKey': '[REDACTED]', 'pageNo': '1', 'numOfRows': '1000', 'dataType': 'JSON', 'base_date': '20250818', 'base_time': '2300', 'nx': '70', 'ny': '65'}'"}
-{"timestamp": "2025-08-18T23:33:44.555755+09:00", "level": "INFO", "name": "root", "message": "ToolsCog 초기화 완료."}
-{"timestamp": "2025-08-18T23:33:44.556740+09:00", "level": "INFO", "name": "root", "message": "기상청 API 요청: URL='https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getUltraSrtNcst', Params='{'authKey': '[REDACTED]', 'pageNo': '1', 'numOfRows': '1000', 'dataType': 'JSON', 'base_date': '20250818', 'base_time': '2200', 'nx': '70', 'ny': '65'}'"}
-{"timestamp": "2025-08-18T23:33:44.564277+09:00", "level": "WARNING", "name": "root", "message": "초단기실황 데이터 일부 누락: {}"}
-{"timestamp": "2025-08-18T23:33:44.564991+09:00", "level": "INFO", "name": "root", "message": "기상청 API 요청: URL='https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getVilageFcst', Params='{'authKey': '[REDACTED]', 'pageNo': '1', 'numOfRows': '1000', 'dataType': 'JSON', 'base_date': '20250818', 'base_time': '2300', 'nx': '70', 'ny': '65'}'"}
+{"timestamp": "2025-09-16T16:13:58.187540+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:13:58.187798+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:13:58.188963+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:13:58.189404+09:00", "level": "WARNING", "name": "root", "message": "수출입은행 환율 API 응답에서 'EUR' 통화를 찾지 못했습니다.", "source": "exim.py:61", "function": "get_exchange_rate", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:13:58.189953+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:13:58.191099+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:13:58.191798+09:00", "level": "INFO", "name": "root", "message": "Foursquare API 요청: URL='https://api.foursquare.com/v3/places/search', Params='{'ll': '35.68,139.69', 'limit': 10, 'sort': 'RELEVANCE'}'", "source": "foursquare.py:29", "function": "get_places_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:13:58.192665+09:00", "level": "DEBUG", "name": "root", "message": "Foursquare API 응답 수신: {'results': [{'name': 'Tokyo Tower', 'location': {'formatted_address': 'Tokyo, Japan'}, 'categories': [{'name': 'Landmark'}]}]}", "source": "foursquare.py:36", "function": "get_places_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:13:58.193428+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:13:58.193863+09:00", "level": "INFO", "name": "root", "message": "Foursquare API 요청: URL='https://api.foursquare.com/v3/places/search', Params='{'ll': '35.68,139.69', 'limit': 10, 'sort': 'RELEVANCE'}'", "source": "foursquare.py:29", "function": "get_places_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:13:58.194054+09:00", "level": "ERROR", "name": "root", "message": "Foursquare API(35.68,139.69) 요청 중 오류: Network Error", "source": "foursquare.py:51", "function": "get_places_by_coords", "exc_info": "Traceback (most recent call last):\n  File \"/Users/gimhyeonmin/masamong/utils/api_handlers/foursquare.py\", line 33, in get_places_by_coords\n    response = await asyncio.to_thread(session.get, url, headers=headers, params=params, timeout=15)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1167, in __call__\n    return self._mock_call(*args, **kwargs)\n           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1171, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1226, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:13:58.196999+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:13:58.197715+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Eiffel Tower'", "source": "nominatim.py:22", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:13:59.300025+09:00", "level": "DEBUG", "name": "root", "message": "Nominatim API 응답 수신: [{'place_id': 1, 'lat': '48.8583701', 'lon': '2.2944813', 'display_name': 'Eiffel Tower, Paris, France', 'address': {'country_code': 'fr'}}]", "source": "nominatim.py:42", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:13:59.304480+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:13:59.306598+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Springfield'", "source": "nominatim.py:22", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:00.409285+09:00", "level": "DEBUG", "name": "root", "message": "Nominatim API 응답 수신: [{'display_name': 'Springfield, Illinois, USA'}, {'display_name': 'Springfield, Massachusetts, USA'}]", "source": "nominatim.py:42", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:00.414067+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:00.416356+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'a_made_up_place_12345'", "source": "nominatim.py:22", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:01.518853+09:00", "level": "DEBUG", "name": "root", "message": "Nominatim API 응답 수신: []", "source": "nominatim.py:42", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:01.522341+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:01.524670+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Tokyo'", "source": "nominatim.py:22", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:02.627427+09:00", "level": "DEBUG", "name": "root", "message": "Nominatim API 응답 수신: [{'place_id': 2, 'lat': '35.6895', 'lon': '139.6917', 'display_name': 'Tokyo, Japan', 'address': {'country_code': 'jp'}}]", "source": "nominatim.py:42", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:02.628124+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache HIT for query: 'Tokyo'", "source": "nominatim.py:19", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:02.631617+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:02.633338+09:00", "level": "INFO", "name": "root", "message": "OpenWeatherMap API 요청: URL='https://api.openweathermap.org/data/2.5/weather', Params='{'lat': 35.68, 'lon': 139.69, 'appid': '[REDACTED]', 'units': 'metric', 'lang': 'kr'}'", "source": "openweathermap.py:27", "function": "get_weather_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:02.634305+09:00", "level": "DEBUG", "name": "root", "message": "OpenWeatherMap API 응답 수신: {'weather': [{'description': 'clear sky'}], 'main': {'temp': 25, 'feels_like': 26, 'humidity': 50}, 'wind': {'speed': 5}, 'sys': {'sunrise': 1622582400, 'sunset': 1622634000}}", "source": "openweathermap.py:34", "function": "get_weather_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:02.636145+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:02.637225+09:00", "level": "INFO", "name": "root", "message": "OpenWeatherMap API 요청: URL='https://api.openweathermap.org/data/2.5/weather', Params='{'lat': 35.68, 'lon': 139.69, 'appid': '[REDACTED]', 'units': 'metric', 'lang': 'kr'}'", "source": "openweathermap.py:27", "function": "get_weather_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:02.637731+09:00", "level": "ERROR", "name": "root", "message": "OpenWeatherMap API(35.68,139.69) 요청 중 오류: Network Error", "source": "openweathermap.py:53", "function": "get_weather_by_coords", "exc_info": "Traceback (most recent call last):\n  File \"/Users/gimhyeonmin/masamong/utils/api_handlers/openweathermap.py\", line 31, in get_weather_by_coords\n    response = await asyncio.to_thread(session.get, url, params=params, timeout=10)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1167, in __call__\n    return self._mock_call(*args, **kwargs)\n           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1171, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1226, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:02.641908+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:02.643632+09:00", "level": "INFO", "name": "root", "message": "Ticketmaster API 요청: URL='https://app.ticketmaster.com/discovery/v2/events.json', Params='{'apikey': 'DUMMY_API_KEY', 'latlong': '35.68,139.69', 'radius': 50, 'unit': 'km', 'startDateTime': '2025-09-16T07:14:02Z', 'endDateTime': '2025-10-16T07:14:02Z', 'sort': 'date,asc'}'", "source": "ticketmaster.py:33", "function": "get_events_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:02.644216+09:00", "level": "DEBUG", "name": "root", "message": "Ticketmaster API 응답 수신: {'_embedded': {'events': [{'name': 'Rock Festival', 'url': 'http://example.com/rock', 'dates': {'start': {'localDate': '2025-09-01'}}}]}}", "source": "ticketmaster.py:40", "function": "get_events_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:02.645677+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:02.646547+09:00", "level": "INFO", "name": "root", "message": "Ticketmaster API 요청: URL='https://app.ticketmaster.com/discovery/v2/events.json', Params='{'apikey': 'DUMMY_API_KEY', 'latlong': '35.68,139.69', 'radius': 50, 'unit': 'km', 'startDateTime': '2025-09-16T07:14:02Z', 'endDateTime': '2025-10-16T07:14:02Z', 'sort': 'date,asc'}'", "source": "ticketmaster.py:33", "function": "get_events_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:02.646887+09:00", "level": "ERROR", "name": "root", "message": "Ticketmaster API(35.68,139.69) 요청 중 오류: Network Error", "source": "ticketmaster.py:57", "function": "get_events_by_coords", "exc_info": "Traceback (most recent call last):\n  File \"/Users/gimhyeonmin/masamong/utils/api_handlers/ticketmaster.py\", line 37, in get_events_by_coords\n    response = await asyncio.to_thread(session.get, url, params=params, timeout=15)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1167, in __call__\n    return self._mock_call(*args, **kwargs)\n           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1171, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1226, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:02.650211+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:02.650643+09:00", "level": "INFO", "name": "root", "message": "ToolsCog 초기화 완료.", "source": "tools_cog.py:28", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:02.651971+09:00", "level": "INFO", "name": "root", "message": "Travel recommendation for 'Seoul, South Korea' (37.56, 126.97), country: kr", "source": "tools_cog.py:49", "function": "get_travel_recommendation", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:02.653203+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:02.653621+09:00", "level": "INFO", "name": "root", "message": "ToolsCog 초기화 완료.", "source": "tools_cog.py:28", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:02.654648+09:00", "level": "INFO", "name": "root", "message": "Travel recommendation for 'Paris, France' (48.85, 2.29), country: fr", "source": "tools_cog.py:49", "function": "get_travel_recommendation", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:02.655745+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:14:02.658136+09:00", "level": "INFO", "name": "root", "message": "에이전트 처리 시작 (2-step). Query: 'Tell me about Testville'", "source": "ai_handler.py:223", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "286aeb3b"}
+{"timestamp": "2025-09-16T16:14:02.658463+09:00", "level": "INFO", "name": "root", "message": "1단계: Lite 모델 호출 시작...", "source": "ai_handler.py:238", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "286aeb3b"}
+{"timestamp": "2025-09-16T16:14:02.658810+09:00", "level": "INFO", "name": "root", "message": "Lite 모델 응답: '<tool_call>{\"tool_to_use\": \"get_travel_recommendation\", \"parameters\": {\"location_name\": \"Testville\"}...'", "source": "ai_handler.py:247", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "286aeb3b"}
+{"timestamp": "2025-09-16T16:14:02.659004+09:00", "level": "INFO", "name": "root", "message": "분기: 도구 사용으로 판단. Tool: {'tool_to_use': 'get_travel_recommendation', 'parameters': {'location_name': 'Testville'}}", "source": "ai_handler.py:258", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "286aeb3b"}
+{"timestamp": "2025-09-16T16:14:02.659100+09:00", "level": "INFO", "name": "root", "message": "2단계: Main 모델 호출 시작...", "source": "ai_handler.py:269", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "286aeb3b"}
+{"timestamp": "2025-09-16T16:14:02.659163+09:00", "level": "INFO", "name": "root", "message": "여행 추천 도구 결과에 특수 프롬프트를 사용합니다.", "source": "ai_handler.py:279", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "286aeb3b"}
+{"timestamp": "2025-09-16T16:14:02.659301+09:00", "level": "INFO", "name": "root", "message": "Main 모델이 최종 답변을 생성했습니다.", "source": "ai_handler.py:296", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "286aeb3b"}
+{"timestamp": "2025-09-16T16:15:10.694970+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:10.695400+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:10.723014+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:10.724986+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:10.726857+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:10.727539+09:00", "level": "INFO", "name": "root", "message": "Foursquare API 요청: URL='https://api.foursquare.com/v3/places/search', Params='{'ll': '35.68,139.69', 'limit': 10, 'sort': 'RELEVANCE'}'", "source": "foursquare.py:29", "function": "get_places_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:10.728482+09:00", "level": "DEBUG", "name": "root", "message": "Foursquare API 응답 수신: {'results': [{'name': 'Tokyo Tower', 'location': {'formatted_address': 'Tokyo, Japan'}, 'categories': [{'name': 'Landmark'}]}]}", "source": "foursquare.py:36", "function": "get_places_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:10.729234+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:10.729889+09:00", "level": "INFO", "name": "root", "message": "Foursquare API 요청: URL='https://api.foursquare.com/v3/places/search', Params='{'ll': '35.68,139.69', 'limit': 10, 'sort': 'RELEVANCE'}'", "source": "foursquare.py:29", "function": "get_places_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:10.730088+09:00", "level": "ERROR", "name": "root", "message": "Foursquare API(35.68,139.69) 요청 중 오류: Network Error", "source": "foursquare.py:51", "function": "get_places_by_coords", "exc_info": "Traceback (most recent call last):\n  File \"/Users/gimhyeonmin/masamong/utils/api_handlers/foursquare.py\", line 33, in get_places_by_coords\n    response = await asyncio.to_thread(session.get, url, headers=headers, params=params, timeout=15)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1167, in __call__\n    return self._mock_call(*args, **kwargs)\n           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1171, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1226, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:10.733331+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:10.733808+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Eiffel Tower'", "source": "nominatim.py:22", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:11.835915+09:00", "level": "DEBUG", "name": "root", "message": "Nominatim API 응답 수신: [{'place_id': 1, 'lat': '48.8583701', 'lon': '2.2944813', 'display_name': 'Eiffel Tower, Paris, France', 'address': {'country_code': 'fr'}}]", "source": "nominatim.py:42", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:11.839872+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:11.841854+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Springfield'", "source": "nominatim.py:22", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:12.944447+09:00", "level": "DEBUG", "name": "root", "message": "Nominatim API 응답 수신: [{'display_name': 'Springfield, Illinois, USA'}, {'display_name': 'Springfield, Massachusetts, USA'}]", "source": "nominatim.py:42", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:12.949113+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:12.952130+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'a_made_up_place_12345'", "source": "nominatim.py:22", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:14.054860+09:00", "level": "DEBUG", "name": "root", "message": "Nominatim API 응답 수신: []", "source": "nominatim.py:42", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:14.058092+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:14.060107+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Tokyo'", "source": "nominatim.py:22", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:15.162717+09:00", "level": "DEBUG", "name": "root", "message": "Nominatim API 응답 수신: [{'place_id': 2, 'lat': '35.6895', 'lon': '139.6917', 'display_name': 'Tokyo, Japan', 'address': {'country_code': 'jp'}}]", "source": "nominatim.py:42", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:15.163144+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache HIT for query: 'Tokyo'", "source": "nominatim.py:19", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:15.165853+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:15.167391+09:00", "level": "INFO", "name": "root", "message": "OpenWeatherMap API 요청: URL='https://api.openweathermap.org/data/2.5/weather', Params='{'lat': 35.68, 'lon': 139.69, 'appid': '[REDACTED]', 'units': 'metric', 'lang': 'kr'}'", "source": "openweathermap.py:27", "function": "get_weather_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:15.168377+09:00", "level": "DEBUG", "name": "root", "message": "OpenWeatherMap API 응답 수신: {'weather': [{'description': 'clear sky'}], 'main': {'temp': 25, 'feels_like': 26, 'humidity': 50}, 'wind': {'speed': 5}, 'sys': {'sunrise': 1622582400, 'sunset': 1622634000}}", "source": "openweathermap.py:34", "function": "get_weather_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:15.170048+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:15.171166+09:00", "level": "INFO", "name": "root", "message": "OpenWeatherMap API 요청: URL='https://api.openweathermap.org/data/2.5/weather', Params='{'lat': 35.68, 'lon': 139.69, 'appid': '[REDACTED]', 'units': 'metric', 'lang': 'kr'}'", "source": "openweathermap.py:27", "function": "get_weather_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:15.171710+09:00", "level": "ERROR", "name": "root", "message": "OpenWeatherMap API(35.68,139.69) 요청 중 오류: Network Error", "source": "openweathermap.py:53", "function": "get_weather_by_coords", "exc_info": "Traceback (most recent call last):\n  File \"/Users/gimhyeonmin/masamong/utils/api_handlers/openweathermap.py\", line 31, in get_weather_by_coords\n    response = await asyncio.to_thread(session.get, url, params=params, timeout=10)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1167, in __call__\n    return self._mock_call(*args, **kwargs)\n           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1171, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1226, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:15.176183+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:15.184643+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:15.189098+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:15.189486+09:00", "level": "INFO", "name": "root", "message": "ToolsCog 초기화 완료.", "source": "tools_cog.py:28", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:15.190435+09:00", "level": "INFO", "name": "root", "message": "Travel recommendation for 'Seoul, South Korea' (37.56, 126.97), country: kr", "source": "tools_cog.py:49", "function": "get_travel_recommendation", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:15.191937+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:15.192281+09:00", "level": "INFO", "name": "root", "message": "ToolsCog 초기화 완료.", "source": "tools_cog.py:28", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:15.192998+09:00", "level": "INFO", "name": "root", "message": "Travel recommendation for 'Paris, France' (48.85, 2.29), country: fr", "source": "tools_cog.py:49", "function": "get_travel_recommendation", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:15.193841+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:15:15.195959+09:00", "level": "INFO", "name": "root", "message": "에이전트 처리 시작 (2-step). Query: 'Tell me about Testville'", "source": "ai_handler.py:223", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "23c2d595"}
+{"timestamp": "2025-09-16T16:15:15.196249+09:00", "level": "INFO", "name": "root", "message": "1단계: Lite 모델 호출 시작...", "source": "ai_handler.py:238", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "23c2d595"}
+{"timestamp": "2025-09-16T16:15:15.196400+09:00", "level": "INFO", "name": "root", "message": "Lite 모델 응답: '<tool_call>{\"tool_to_use\": \"get_travel_recommendation\", \"parameters\": {\"location_name\": \"Testville\"}...'", "source": "ai_handler.py:247", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "23c2d595"}
+{"timestamp": "2025-09-16T16:15:15.196579+09:00", "level": "INFO", "name": "root", "message": "분기: 도구 사용으로 판단. Tool: {'tool_to_use': 'get_travel_recommendation', 'parameters': {'location_name': 'Testville'}}", "source": "ai_handler.py:258", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "23c2d595"}
+{"timestamp": "2025-09-16T16:15:15.196659+09:00", "level": "INFO", "name": "root", "message": "2단계: Main 모델 호출 시작...", "source": "ai_handler.py:269", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "23c2d595"}
+{"timestamp": "2025-09-16T16:15:15.196713+09:00", "level": "INFO", "name": "root", "message": "여행 추천 도구 결과에 특수 프롬프트를 사용합니다.", "source": "ai_handler.py:279", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "23c2d595"}
+{"timestamp": "2025-09-16T16:15:15.196851+09:00", "level": "INFO", "name": "root", "message": "Main 모델이 최종 답변을 생성했습니다.", "source": "ai_handler.py:296", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "23c2d595"}
+{"timestamp": "2025-09-16T16:16:08.867433+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:08.867815+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:08.894111+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:08.894609+09:00", "level": "WARNING", "name": "root", "message": "수출입은행 환율 API 응답에서 'EUR' 통화를 찾지 못했습니다.", "source": "exim.py:59", "function": "get_krw_exchange_rate", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:08.895189+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:08.896956+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:08.897655+09:00", "level": "INFO", "name": "root", "message": "Foursquare API 요청: URL='https://api.foursquare.com/v3/places/search', Params='{'ll': '35.68,139.69', 'limit': 10, 'sort': 'RELEVANCE'}'", "source": "foursquare.py:29", "function": "get_places_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:08.898650+09:00", "level": "DEBUG", "name": "root", "message": "Foursquare API 응답 수신: {'results': [{'name': 'Tokyo Tower', 'location': {'formatted_address': 'Tokyo, Japan'}, 'categories': [{'name': 'Landmark'}]}]}", "source": "foursquare.py:36", "function": "get_places_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:08.899444+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:08.899813+09:00", "level": "INFO", "name": "root", "message": "Foursquare API 요청: URL='https://api.foursquare.com/v3/places/search', Params='{'ll': '35.68,139.69', 'limit': 10, 'sort': 'RELEVANCE'}'", "source": "foursquare.py:29", "function": "get_places_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:08.900208+09:00", "level": "ERROR", "name": "root", "message": "Foursquare API(35.68,139.69) 요청 중 오류: Network Error", "source": "foursquare.py:51", "function": "get_places_by_coords", "exc_info": "Traceback (most recent call last):\n  File \"/Users/gimhyeonmin/masamong/utils/api_handlers/foursquare.py\", line 33, in get_places_by_coords\n    response = await asyncio.to_thread(session.get, url, headers=headers, params=params, timeout=15)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1167, in __call__\n    return self._mock_call(*args, **kwargs)\n           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1171, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1226, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:08.903310+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:08.903774+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Eiffel Tower'", "source": "nominatim.py:22", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:10.006017+09:00", "level": "DEBUG", "name": "root", "message": "Nominatim API 응답 수신: [{'place_id': 1, 'lat': '48.8583701', 'lon': '2.2944813', 'display_name': 'Eiffel Tower, Paris, France', 'address': {'country_code': 'fr'}}]", "source": "nominatim.py:42", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:10.009818+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:10.011674+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Springfield'", "source": "nominatim.py:22", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:11.114316+09:00", "level": "DEBUG", "name": "root", "message": "Nominatim API 응답 수신: [{'display_name': 'Springfield, Illinois, USA'}, {'display_name': 'Springfield, Massachusetts, USA'}]", "source": "nominatim.py:42", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:11.117795+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:11.120821+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'a_made_up_place_12345'", "source": "nominatim.py:22", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:12.223323+09:00", "level": "DEBUG", "name": "root", "message": "Nominatim API 응답 수신: []", "source": "nominatim.py:42", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:12.226541+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:12.228726+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Tokyo'", "source": "nominatim.py:22", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:13.331456+09:00", "level": "DEBUG", "name": "root", "message": "Nominatim API 응답 수신: [{'place_id': 2, 'lat': '35.6895', 'lon': '139.6917', 'display_name': 'Tokyo, Japan', 'address': {'country_code': 'jp'}}]", "source": "nominatim.py:42", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:13.332073+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache HIT for query: 'Tokyo'", "source": "nominatim.py:19", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:13.336028+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:13.338327+09:00", "level": "INFO", "name": "root", "message": "OpenWeatherMap API 요청: URL='https://api.openweathermap.org/data/2.5/weather', Params='{'lat': 35.68, 'lon': 139.69, 'appid': '[REDACTED]', 'units': 'metric', 'lang': 'kr'}'", "source": "openweathermap.py:27", "function": "get_weather_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:13.339757+09:00", "level": "DEBUG", "name": "root", "message": "OpenWeatherMap API 응답 수신: {'weather': [{'description': 'clear sky'}], 'main': {'temp': 25, 'feels_like': 26, 'humidity': 50}, 'wind': {'speed': 5}, 'sys': {'sunrise': 1622582400, 'sunset': 1622634000}}", "source": "openweathermap.py:34", "function": "get_weather_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:13.342262+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:13.344197+09:00", "level": "INFO", "name": "root", "message": "OpenWeatherMap API 요청: URL='https://api.openweathermap.org/data/2.5/weather', Params='{'lat': 35.68, 'lon': 139.69, 'appid': '[REDACTED]', 'units': 'metric', 'lang': 'kr'}'", "source": "openweathermap.py:27", "function": "get_weather_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:13.344814+09:00", "level": "ERROR", "name": "root", "message": "OpenWeatherMap API(35.68,139.69) 요청 중 오류: Network Error", "source": "openweathermap.py:53", "function": "get_weather_by_coords", "exc_info": "Traceback (most recent call last):\n  File \"/Users/gimhyeonmin/masamong/utils/api_handlers/openweathermap.py\", line 31, in get_weather_by_coords\n    response = await asyncio.to_thread(session.get, url, params=params, timeout=10)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1167, in __call__\n    return self._mock_call(*args, **kwargs)\n           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1171, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1226, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:13.349829+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:13.350958+09:00", "level": "INFO", "name": "root", "message": "Ticketmaster API 요청: URL='https://app.ticketmaster.com/discovery/v2/events.json', Params='{'apikey': 'DUMMY_API_KEY', 'latlong': '35.68,139.69', 'radius': 50, 'unit': 'km', 'startDateTime': '2025-09-16T07:16:13Z', 'endDateTime': '2025-10-16T07:16:13Z', 'sort': 'date,asc'}'", "source": "ticketmaster.py:33", "function": "get_events_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:13.351477+09:00", "level": "DEBUG", "name": "root", "message": "Ticketmaster API 응답 수신: {'_embedded': {'events': [{'name': 'Rock Festival', 'url': 'http://example.com/rock', 'dates': {'start': {'localDate': '2025-09-01'}}}]}}", "source": "ticketmaster.py:40", "function": "get_events_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:13.352657+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:13.353475+09:00", "level": "INFO", "name": "root", "message": "Ticketmaster API 요청: URL='https://app.ticketmaster.com/discovery/v2/events.json', Params='{'apikey': 'DUMMY_API_KEY', 'latlong': '35.68,139.69', 'radius': 50, 'unit': 'km', 'startDateTime': '2025-09-16T07:16:13Z', 'endDateTime': '2025-10-16T07:16:13Z', 'sort': 'date,asc'}'", "source": "ticketmaster.py:33", "function": "get_events_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:13.353824+09:00", "level": "ERROR", "name": "root", "message": "Ticketmaster API(35.68,139.69) 요청 중 오류: Network Error", "source": "ticketmaster.py:57", "function": "get_events_by_coords", "exc_info": "Traceback (most recent call last):\n  File \"/Users/gimhyeonmin/masamong/utils/api_handlers/ticketmaster.py\", line 37, in get_events_by_coords\n    response = await asyncio.to_thread(session.get, url, params=params, timeout=15)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1167, in __call__\n    return self._mock_call(*args, **kwargs)\n           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1171, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1226, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:13.357333+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:13.357799+09:00", "level": "INFO", "name": "root", "message": "ToolsCog 초기화 완료.", "source": "tools_cog.py:28", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:13.361679+09:00", "level": "INFO", "name": "root", "message": "Travel recommendation for 'Seoul, South Korea' (37.56, 126.97), country: kr", "source": "tools_cog.py:49", "function": "get_travel_recommendation", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:13.363077+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:13.363479+09:00", "level": "INFO", "name": "root", "message": "ToolsCog 초기화 완료.", "source": "tools_cog.py:28", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:13.364186+09:00", "level": "INFO", "name": "root", "message": "Travel recommendation for 'Paris, France' (48.85, 2.29), country: fr", "source": "tools_cog.py:49", "function": "get_travel_recommendation", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:13.365401+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:13.367461+09:00", "level": "INFO", "name": "root", "message": "에이전트 처리 시작 (2-step). Query: 'Tell me about Testville'", "source": "ai_handler.py:223", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "2de7372c"}
+{"timestamp": "2025-09-16T16:16:13.367716+09:00", "level": "INFO", "name": "root", "message": "1단계: Lite 모델 호출 시작...", "source": "ai_handler.py:238", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "2de7372c"}
+{"timestamp": "2025-09-16T16:16:13.367865+09:00", "level": "INFO", "name": "root", "message": "Lite 모델 응답: '<tool_call>{\"tool_to_use\": \"get_travel_recommendation\", \"parameters\": {\"location_name\": \"Testville\"}...'", "source": "ai_handler.py:247", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "2de7372c"}
+{"timestamp": "2025-09-16T16:16:13.368043+09:00", "level": "INFO", "name": "root", "message": "분기: 도구 사용으로 판단. Tool: {'tool_to_use': 'get_travel_recommendation', 'parameters': {'location_name': 'Testville'}}", "source": "ai_handler.py:258", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "2de7372c"}
+{"timestamp": "2025-09-16T16:16:13.368127+09:00", "level": "INFO", "name": "root", "message": "2단계: Main 모델 호출 시작...", "source": "ai_handler.py:269", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "2de7372c"}
+{"timestamp": "2025-09-16T16:16:13.368184+09:00", "level": "INFO", "name": "root", "message": "여행 추천 도구 결과에 특수 프롬프트를 사용합니다.", "source": "ai_handler.py:279", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "2de7372c"}
+{"timestamp": "2025-09-16T16:16:13.368324+09:00", "level": "INFO", "name": "root", "message": "Main 모델이 최종 답변을 생성했습니다.", "source": "ai_handler.py:296", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "2de7372c"}
+{"timestamp": "2025-09-16T16:16:25.221023+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:25.221280+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:25.222407+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:25.222833+09:00", "level": "WARNING", "name": "root", "message": "수출입은행 환율 API 응답에서 'EUR' 통화를 찾지 못했습니다.", "source": "exim.py:59", "function": "get_krw_exchange_rate", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:25.223352+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:25.224423+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:25.225053+09:00", "level": "INFO", "name": "root", "message": "Foursquare API 요청: URL='https://api.foursquare.com/v3/places/search', Params='{'ll': '35.68,139.69', 'limit': 10, 'sort': 'RELEVANCE'}'", "source": "foursquare.py:29", "function": "get_places_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:25.225708+09:00", "level": "DEBUG", "name": "root", "message": "Foursquare API 응답 수신: {'results': [{'name': 'Tokyo Tower', 'location': {'formatted_address': 'Tokyo, Japan'}, 'categories': [{'name': 'Landmark'}]}]}", "source": "foursquare.py:36", "function": "get_places_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:25.226520+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:25.226934+09:00", "level": "INFO", "name": "root", "message": "Foursquare API 요청: URL='https://api.foursquare.com/v3/places/search', Params='{'ll': '35.68,139.69', 'limit': 10, 'sort': 'RELEVANCE'}'", "source": "foursquare.py:29", "function": "get_places_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:25.227175+09:00", "level": "ERROR", "name": "root", "message": "Foursquare API(35.68,139.69) 요청 중 오류: Network Error", "source": "foursquare.py:51", "function": "get_places_by_coords", "exc_info": "Traceback (most recent call last):\n  File \"/Users/gimhyeonmin/masamong/utils/api_handlers/foursquare.py\", line 33, in get_places_by_coords\n    response = await asyncio.to_thread(session.get, url, headers=headers, params=params, timeout=15)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1167, in __call__\n    return self._mock_call(*args, **kwargs)\n           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1171, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1226, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:25.229699+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:25.230432+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Eiffel Tower'", "source": "nominatim.py:22", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:26.332413+09:00", "level": "DEBUG", "name": "root", "message": "Nominatim API 응답 수신: [{'place_id': 1, 'lat': '48.8583701', 'lon': '2.2944813', 'display_name': 'Eiffel Tower, Paris, France', 'address': {'country_code': 'fr'}}]", "source": "nominatim.py:42", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:26.335664+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:26.337923+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Springfield'", "source": "nominatim.py:22", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:27.440857+09:00", "level": "DEBUG", "name": "root", "message": "Nominatim API 응답 수신: [{'display_name': 'Springfield, Illinois, USA'}, {'display_name': 'Springfield, Massachusetts, USA'}]", "source": "nominatim.py:42", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:27.446272+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:27.448661+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'a_made_up_place_12345'", "source": "nominatim.py:22", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:28.551421+09:00", "level": "DEBUG", "name": "root", "message": "Nominatim API 응답 수신: []", "source": "nominatim.py:42", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:28.555116+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:28.558104+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache MISS for query: 'Tokyo'", "source": "nominatim.py:22", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:29.660845+09:00", "level": "DEBUG", "name": "root", "message": "Nominatim API 응답 수신: [{'place_id': 2, 'lat': '35.6895', 'lon': '139.6917', 'display_name': 'Tokyo, Japan', 'address': {'country_code': 'jp'}}]", "source": "nominatim.py:42", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:29.661497+09:00", "level": "INFO", "name": "root", "message": "Geocoding cache HIT for query: 'Tokyo'", "source": "nominatim.py:19", "function": "geocode_location", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:29.666874+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:29.668962+09:00", "level": "INFO", "name": "root", "message": "OpenWeatherMap API 요청: URL='https://api.openweathermap.org/data/2.5/weather', Params='{'lat': 35.68, 'lon': 139.69, 'appid': '[REDACTED]', 'units': 'metric', 'lang': 'kr'}'", "source": "openweathermap.py:27", "function": "get_weather_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:29.670724+09:00", "level": "DEBUG", "name": "root", "message": "OpenWeatherMap API 응답 수신: {'weather': [{'description': 'clear sky'}], 'main': {'temp': 25, 'feels_like': 26, 'humidity': 50}, 'wind': {'speed': 5}, 'sys': {'sunrise': 1622582400, 'sunset': 1622634000}}", "source": "openweathermap.py:34", "function": "get_weather_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:29.673446+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:29.674825+09:00", "level": "INFO", "name": "root", "message": "OpenWeatherMap API 요청: URL='https://api.openweathermap.org/data/2.5/weather', Params='{'lat': 35.68, 'lon': 139.69, 'appid': '[REDACTED]', 'units': 'metric', 'lang': 'kr'}'", "source": "openweathermap.py:27", "function": "get_weather_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:29.675554+09:00", "level": "ERROR", "name": "root", "message": "OpenWeatherMap API(35.68,139.69) 요청 중 오류: Network Error", "source": "openweathermap.py:53", "function": "get_weather_by_coords", "exc_info": "Traceback (most recent call last):\n  File \"/Users/gimhyeonmin/masamong/utils/api_handlers/openweathermap.py\", line 31, in get_weather_by_coords\n    response = await asyncio.to_thread(session.get, url, params=params, timeout=10)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1167, in __call__\n    return self._mock_call(*args, **kwargs)\n           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1171, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1226, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:29.680166+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:29.682000+09:00", "level": "INFO", "name": "root", "message": "Ticketmaster API 요청: URL='https://app.ticketmaster.com/discovery/v2/events.json', Params='{'apikey': 'DUMMY_API_KEY', 'latlong': '35.68,139.69', 'radius': 50, 'unit': 'km', 'startDateTime': '2025-09-16T07:16:29Z', 'endDateTime': '2025-10-16T07:16:29Z', 'sort': 'date,asc'}'", "source": "ticketmaster.py:33", "function": "get_events_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:29.682656+09:00", "level": "DEBUG", "name": "root", "message": "Ticketmaster API 응답 수신: {'_embedded': {'events': [{'name': 'Rock Festival', 'url': 'http://example.com/rock', 'dates': {'start': {'localDate': '2025-09-01'}}}]}}", "source": "ticketmaster.py:40", "function": "get_events_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:29.684033+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:29.684769+09:00", "level": "INFO", "name": "root", "message": "Ticketmaster API 요청: URL='https://app.ticketmaster.com/discovery/v2/events.json', Params='{'apikey': 'DUMMY_API_KEY', 'latlong': '35.68,139.69', 'radius': 50, 'unit': 'km', 'startDateTime': '2025-09-16T07:16:29Z', 'endDateTime': '2025-10-16T07:16:29Z', 'sort': 'date,asc'}'", "source": "ticketmaster.py:33", "function": "get_events_by_coords", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:29.685093+09:00", "level": "ERROR", "name": "root", "message": "Ticketmaster API(35.68,139.69) 요청 중 오류: Network Error", "source": "ticketmaster.py:57", "function": "get_events_by_coords", "exc_info": "Traceback (most recent call last):\n  File \"/Users/gimhyeonmin/masamong/utils/api_handlers/ticketmaster.py\", line 37, in get_events_by_coords\n    response = await asyncio.to_thread(session.get, url, params=params, timeout=15)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/threads.py\", line 25, in to_thread\n    return await loop.run_in_executor(None, func_call)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1167, in __call__\n    return self._mock_call(*args, **kwargs)\n           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1171, in _mock_call\n    return self._execute_mock_call(*args, **kwargs)\n           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/unittest/mock.py\", line 1226, in _execute_mock_call\n    raise effect\nrequests.exceptions.RequestException: Network Error", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:29.688551+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:29.689073+09:00", "level": "INFO", "name": "root", "message": "ToolsCog 초기화 완료.", "source": "tools_cog.py:28", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:29.692752+09:00", "level": "INFO", "name": "root", "message": "Travel recommendation for 'Seoul, South Korea' (37.56, 126.97), country: kr", "source": "tools_cog.py:49", "function": "get_travel_recommendation", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:29.694510+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:29.694977+09:00", "level": "INFO", "name": "root", "message": "ToolsCog 초기화 완료.", "source": "tools_cog.py:28", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:29.695810+09:00", "level": "INFO", "name": "root", "message": "Travel recommendation for 'Paris, France' (48.85, 2.29), country: fr", "source": "tools_cog.py:49", "function": "get_travel_recommendation", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:29.696901+09:00", "level": "DEBUG", "name": "asyncio", "message": "Using selector: KqueueSelector", "source": "selector_events.py:64", "function": "__init__", "trace_id": "N/A"}
+{"timestamp": "2025-09-16T16:16:29.699479+09:00", "level": "INFO", "name": "root", "message": "에이전트 처리 시작 (2-step). Query: 'Tell me about Testville'", "source": "ai_handler.py:223", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "27950940"}
+{"timestamp": "2025-09-16T16:16:29.699762+09:00", "level": "INFO", "name": "root", "message": "1단계: Lite 모델 호출 시작...", "source": "ai_handler.py:238", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "27950940"}
+{"timestamp": "2025-09-16T16:16:29.699922+09:00", "level": "INFO", "name": "root", "message": "Lite 모델 응답: '<tool_call>{\"tool_to_use\": \"get_travel_recommendation\", \"parameters\": {\"location_name\": \"Testville\"}...'", "source": "ai_handler.py:247", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "27950940"}
+{"timestamp": "2025-09-16T16:16:29.700275+09:00", "level": "INFO", "name": "root", "message": "분기: 도구 사용으로 판단. Tool: {'tool_to_use': 'get_travel_recommendation', 'parameters': {'location_name': 'Testville'}}", "source": "ai_handler.py:258", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "27950940"}
+{"timestamp": "2025-09-16T16:16:29.700366+09:00", "level": "INFO", "name": "root", "message": "2단계: Main 모델 호출 시작...", "source": "ai_handler.py:269", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "27950940"}
+{"timestamp": "2025-09-16T16:16:29.700423+09:00", "level": "INFO", "name": "root", "message": "여행 추천 도구 결과에 특수 프롬프트를 사용합니다.", "source": "ai_handler.py:279", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "27950940"}
+{"timestamp": "2025-09-16T16:16:29.700556+09:00", "level": "INFO", "name": "root", "message": "Main 모델이 최종 답변을 생성했습니다.", "source": "ai_handler.py:296", "function": "process_agent_message", "guild_id": 123, "user_id": 789, "channel_id": 456, "trace_id": "27950940"}

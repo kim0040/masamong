@@ -25,8 +25,8 @@ async def _fetch_exim_data(data_param: str) -> list | dict:
     logger.info(f"수출입은행 API 요청: URL='{config.EXIM_BASE_URL}', Params='{log_params}'")
 
     try:
-        # 특정 TLS 암호화 스위트를 사용하는 커스텀 세션으로 연결
-        session = http.get_modern_tls_session()
+        # 한국수출입은행 API는 SSL 인증서 문제가 있을 수 있으므로 인증되지 않은 세션 사용
+        session = http.get_insecure_session()
         response = await asyncio.to_thread(session.get, config.EXIM_BASE_URL, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
@@ -44,50 +44,47 @@ async def _fetch_exim_data(data_param: str) -> list | dict:
         return {"error": "API 응답 데이터 파싱 중 오류 발생"}
 
 
-async def get_exchange_rate(target_currency: str = "USD") -> dict:
+async def get_krw_exchange_rate(target_currency: str = "USD") -> str:
     """환율 정보를 조회합니다 (data=AP01)."""
     data = await _fetch_exim_data("AP01")
     if isinstance(data, dict) and "error" in data:
-        return data
+        return data.get("error", "환율 정보를 가져오는 중 오류가 발생했습니다.")
 
     for rate_info in data:
         if rate_info.get('cur_unit') == target_currency.upper():
-            return {
-                "currency_code": rate_info.get('cur_unit'),
-                "currency_name": rate_info.get('cur_nm'),
-                "rate": float(rate_info.get('deal_bas_r', '0').replace(',', ''))
-            }
+            currency_name = rate_info.get('cur_nm')
+            rate = float(rate_info.get('deal_bas_r', '0').replace(',', ''))
+            return f"💰 {target_currency.upper()} → KRW: {rate:,.2f}원 ({currency_name})"
 
     logger.warning(f"수출입은행 환율 API 응답에서 '{target_currency}' 통화를 찾지 못했습니다.")
-    return {"error": f"'{target_currency}' 통화를 찾을 수 없습니다."}
+    return f"❌ '{target_currency}' 통화를 찾을 수 없습니다."
 
-async def get_loan_interest_rates() -> dict:
+async def get_loan_rates() -> str:
     """대출 금리 정보를 조회합니다 (data=AP02 - 가정)."""
     data = await _fetch_exim_data("AP02")
     if isinstance(data, dict) and "error" in data:
-        return data
+        return data.get("error", "대출 금리 정보를 가져오는 중 오류가 발생했습니다.")
 
-    formatted_rates = [
-        {
-            "rate_name": item.get("rate_name", "N/A"),
-            "interest_rate": item.get("interest_rate", "N/A")
-        }
+    if not data:
+        return "❌ 대출 금리 정보를 찾을 수 없습니다."
+    
+    rate_strings = [
+        f"• {item.get('rate_name', 'N/A')}: {item.get('interest_rate', 'N/A')}%"
         for item in data
     ]
-    return {"loan_rates": formatted_rates}
+    return f"🏦 **대출 금리 정보**\n" + "\n".join(rate_strings)
 
-async def get_international_interest_rates() -> dict:
+async def get_international_rates() -> str:
     """국제 금리 정보를 조회합니다 (data=AP03 - 가정)."""
     data = await _fetch_exim_data("AP03")
     if isinstance(data, dict) and "error" in data:
-        return data
+        return data.get("error", "국제 금리 정보를 가져오는 중 오류가 발생했습니다.")
 
-    formatted_rates = [
-        {
-            "country": item.get("country", "N/A"),
-            "rate_type": item.get("rate_type", "N/A"),
-            "interest_rate": item.get("interest_rate", "N/A")
-        }
+    if not data:
+        return "❌ 국제 금리 정보를 찾을 수 없습니다."
+    
+    rate_strings = [
+        f"• {item.get('country', 'N/A')} ({item.get('rate_type', 'N/A')}): {item.get('interest_rate', 'N/A')}%"
         for item in data
     ]
-    return {"international_rates": formatted_rates}
+    return f"🌍 **국제 금리 정보**\n" + "\n".join(rate_strings)
