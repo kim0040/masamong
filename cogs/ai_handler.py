@@ -67,8 +67,6 @@ class AIHandler(commands.Cog):
 
             if await db_utils.check_api_rate_limit(self.bot.db, limit_key, rpm, rpd):
                 logger.warning(f"Gemini API 호출 속도 제한에 도달했습니다 ({limit_key}).", extra=log_extra)
-                # 이 경우, 호출한 쪽에서 사용자에게 메시지를 보낼 수 있도록 None 대신 특정 값을 반환할 수도 있으나,
-                # 현재는 호출을 막고 None을 반환하여 실패 처리합니다.
                 return None
 
             response = await model.generate_content_async(
@@ -79,11 +77,25 @@ class AIHandler(commands.Cog):
             return response
         except google.api_core.exceptions.ResourceExhausted as e:
             logger.error(f"Gemini API 할당량 초과: {e}", extra=log_extra, exc_info=True)
+            return None
         except google.api_core.exceptions.GoogleAPICallError as e:
             logger.error(f"Gemini API 호출 오류: {e}", extra=log_extra, exc_info=True)
+            return None
+        except google.api_core.exceptions.InvalidArgument as e:
+            logger.error(f"Gemini API 잘못된 인수: {e}", extra=log_extra, exc_info=True)
+            return None
+        except google.api_core.exceptions.PermissionDenied as e:
+            logger.error(f"Gemini API 권한 거부: {e}", extra=log_extra, exc_info=True)
+            return None
+        except google.api_core.exceptions.DeadlineExceeded as e:
+            logger.error(f"Gemini API 타임아웃: {e}", extra=log_extra, exc_info=True)
+            return None
+        except google.api_core.exceptions.ServiceUnavailable as e:
+            logger.error(f"Gemini API 서비스 불가: {e}", extra=log_extra, exc_info=True)
+            return None
         except Exception as e:
             logger.error(f"Gemini 응답 생성 중 예기치 않은 오류: {e}", extra=log_extra, exc_info=True)
-        return None
+            return None
 
     async def _safe_embed_content(self, model_name: str, content: str, task_type: str, log_extra: dict) -> dict | None:
         """

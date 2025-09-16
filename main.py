@@ -58,7 +58,8 @@ class ReMasamongBot(commands.Bot):
             'weather_cog', # ToolsCog가 의존하므로 먼저 로드
             'tools_cog', # 다른 Cog들이 의존할 수 있으므로 먼저 로드
             'events', 'commands', 'ai_handler', 'fun_cog',
-            'activity_cog', 'poll_cog', 'settings_cog', 'maintenance_cog'
+            'activity_cog', 'poll_cog', 'settings_cog', 'maintenance_cog',
+            'proactive_assistant' # 능동적 비서 기능
         ]
         # settings_cog와 같이 UI와 관련된 cog는 다른 cog보다 먼저 로드하는 것이 좋을 수 있습니다.
         # 순서가 중요하다면 리스트의 순서를 조정하세요.
