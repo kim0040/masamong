@@ -40,11 +40,22 @@ class WeatherDataFormatter:
             # 풍향 변환
             wind_dir = WeatherDataFormatter._get_wind_direction(float(vec))
             
-            # 결과 조합
+            # 결과 조합 및 상세 정보 추가
             result = f"🌡️ 기온: {temp}°C, 💧 습도: {reh}%"
             if pty != "없음":
                 result += f", ☔ 강수: {pty} (시간당 {rn1}mm)"
-            result += f", 💨 바람: {wind_dir} {wsd}m/s"
+
+            # 바람 정보 상세화
+            wind_speed = float(wsd)
+            if wind_speed < 1:
+                wind_desc = "바람 없음"
+            elif wind_speed < 4:
+                wind_desc = "약한 바람"
+            elif wind_speed < 8:
+                wind_desc = "보통 바람"
+            else:
+                wind_desc = "강한 바람"
+            result += f", 💨 바람: {wind_dir} {wsd}m/s ({wind_desc})"
             
             return result
             
@@ -120,7 +131,8 @@ class FinancialDataFormatter:
                     result += f"• 매매기준율: {deal_rate:,.2f}원 ({currency_name})\n"
                     if ttb > 0 and tts > 0:
                         result += f"• 현찰 살 때(TTB): {ttb:,.2f}원\n"
-                        result += f"• 현찰 팔 때(TTS): {tts:,.2f}원"
+                        result += f"• 현찰 팔 때(TTS): {tts:,.2f}원\n"
+                        result += f"• 스프레드: {tts-ttb:,.2f}원 ({((tts-ttb)/deal_rate*100):.2f}%)"
                     
                     return result
             
@@ -203,8 +215,12 @@ class GameDataFormatter:
                 result += f"   • 출시일: {released}\n"
                 result += f"   • 평점: {rating:.1f}/5.0"
                 if metacritic > 0:
-                    result += f" (메타크리틱: {metacritic})"
-                result += f"\n   • 플레이타임: {playtime}시간\n"
+                    result += f" (메타크리틱: {metacritic}/100)"
+                result += f"\n   • 평균 플레이타임: {playtime}시간\n"
+                if metacritic > 85:
+                    result += f"   • 품질: 최고 등급 🏆\n"
+                elif metacritic > 70:
+                    result += f"   • 품질: 우수 등급 ⭐\n"
                 result += f"   • 장르: {genre_str}\n"
                 result += f"   • 플랫폼: {platform_str}\n\n"
             
@@ -231,7 +247,7 @@ class TravelDataFormatter:
                 name = place.get('name', '알 수 없음')
                 category = place.get('categories', [{}])[0].get('name', 'N/A')
                 distance = place.get('distance', 0)
-                address = place.get.get('location', {}).get('formatted_address', 'N/A')
+                address = place.get('location', {}).get('formatted_address', 'N/A')
                 
                 result += f"{i}. **{name}**\n"
                 result += f"   • 카테고리: {category}\n"
