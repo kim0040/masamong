@@ -3,7 +3,6 @@ import asyncio
 import requests
 import config
 from logger_config import logger
-from .. import http
 
 def _format_krx_price_data(stock_info: dict) -> str:
     """KRX 주식 가격 데이터를 LLM 친화적인 문자열로 포맷팅합니다."""
@@ -22,7 +21,7 @@ def _format_krx_price_data(stock_info: dict) -> str:
 async def get_stock_price(stock_name: str) -> str | None:
     """
     공공데이터포털(KRX) API로 주식 정보를 조회하고, LLM 친화적인 문자열로 반환합니다.
-    [수정] 반환 형식을 dict에서 str으로 변경하여 토큰 사용량을 최적화합니다.
+    [수정] 호환성을 위해 표준 requests.Session을 사용하도록 변경.
     """
     if not config.GO_DATA_API_KEY_KR or config.GO_DATA_API_KEY_KR == 'YOUR_GO_DATA_API_KEY_KR':
         logger.error("공공데이터포털 API 키(GO_DATA_API_KEY_KR)가 설정되지 않았습니다.")
@@ -34,7 +33,11 @@ async def get_stock_price(stock_name: str) -> str | None:
     logger.info(f"KRX API 요청: URL='{config.KRX_BASE_URL}', Params='{log_params}'")
 
     try:
-        session = http.get_modern_tls_session()
+        # 표준 requests.Session 사용
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Masamong-Bot/3.5 (Discord Bot; +https://github.com/kim0040/masamong)'
+        })
         response = await asyncio.to_thread(session.get, config.KRX_BASE_URL, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
