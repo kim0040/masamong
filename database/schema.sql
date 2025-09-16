@@ -72,3 +72,12 @@ CREATE TABLE IF NOT EXISTS conversation_history_archive (
     created_at TEXT NOT NULL,
     embedding BLOB
 );
+
+-- 사용자 선호도 및 알림 설정을 저장하는 테이블
+CREATE TABLE IF NOT EXISTS user_preferences (
+    user_id INTEGER NOT NULL,
+    preference_type TEXT NOT NULL,
+    preference_value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc')),
+    PRIMARY KEY(user_id, preference_type)
+);
