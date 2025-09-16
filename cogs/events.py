@@ -108,19 +108,28 @@ class EventListeners(commands.Cog):
         if message.author.bot or not message.guild or isinstance(message.channel, discord.DMChannel):
             return
 
-        # Phase 1 개선: 명령어와 AI 대화의 역할 분리
-        # 명령어 접두사로 시작하는 메시지는 AI 상호작용을 완전히 차단하고 바로 명령어 처리
+        # 1. 명령어 접두사로 시작하는 메시지 우선 처리
         if message.content.startswith(config.COMMAND_PREFIX if hasattr(config, 'COMMAND_PREFIX') else self.bot.command_prefix):
             await self.bot.process_commands(message)
             return
 
-        # 아래 로직은 명령어가 아닌 일반 메시지에 대해서만 실행됩니다.
+        # 2. 봇이 직접 멘션되었는지 확인 (교통 경찰 역할)
+        is_bot_mentioned = self.bot.user.mentioned_in(message)
+
+        # 공통 로직: 활동 기록 및 메시지 히스토리 추가
         if self.activity_cog:
             await self.activity_cog.record_message(message)
-
         if self.ai_handler:
             await self.ai_handler.add_message_to_history(message)
 
+        if is_bot_mentioned:
+            # 봇이 멘션된 경우, AI 상호작용을 즉시 처리
+            await self._handle_ai_interaction(message)
+            return
+
+        # --- 아래는 봇이 멘션되지 않은 경우에만 실행됩니다 ---
+
+        # Fun 키워드 트리거 확인
         if await self._handle_keyword_triggers(message):
             return
 
@@ -130,7 +139,9 @@ class EventListeners(commands.Cog):
             if proactive_suggestion:
                 await message.reply(proactive_suggestion, mention_author=False)
                 return
-
+        
+        # (멘션 없이도) 능동적으로 응답해야 하는 경우 AI 상호작용 처리
+        # _handle_ai_interaction 내부의 should_proactively_respond가 이 경우를 담당합니다.
         await self._handle_ai_interaction(message)
 
     @commands.Cog.listener()
