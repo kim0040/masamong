@@ -108,9 +108,9 @@ class EventListeners(commands.Cog):
         if message.author.bot or not message.guild or isinstance(message.channel, discord.DMChannel):
             return
 
-        # [수정] AI가 명령어를 기억하거나 반응하지 않도록, 명령어 처리를 최우선으로 실행합니다.
-        # 이렇게 하면 명령어는 AI 대화 기록에 추가되지 않으며, AI 상호작용 로직을 타지 않습니다.
-        if message.content.startswith(self.bot.command_prefix):
+        # Phase 1 개선: 명령어와 AI 대화의 역할 분리
+        # 명령어 접두사로 시작하는 메시지는 AI 상호작용을 완전히 차단하고 바로 명령어 처리
+        if message.content.startswith(config.COMMAND_PREFIX if hasattr(config, 'COMMAND_PREFIX') else self.bot.command_prefix):
             await self.bot.process_commands(message)
             return
 

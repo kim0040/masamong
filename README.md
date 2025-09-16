@@ -38,23 +38,32 @@
 - Discord 봇 토큰
 - Google Gemini API 키
 
-### 2. 설치
+### 2. 설치 (Ubuntu 기준)
 
 ```bash
+# 시스템 패키지 업데이트
+sudo apt update && sudo apt upgrade -y
+
+# Python 3.9+ 및 관련 도구 설치
+sudo apt install python3.9 python3.9-venv python3-pip git -y
+
 # 저장소 클론
 git clone https://github.com/kim0040/masamong.git
 cd masamong
 
 # 가상환경 생성 및 활성화
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+python3.9 -m venv venv
+source venv/bin/activate
+
+# pip 업그레이드
+pip install --upgrade pip
 
 # 의존성 설치
 pip install -r requirements.txt
 
 # 환경 변수 설정
 cp .env.example .env
-# .env 파일을 편집하여 API 키들을 설정
+nano .env  # 또는 vim .env로 API 키들을 설정
 
 # 데이터베이스 초기화
 python database/init_db.py
@@ -63,32 +72,80 @@ python database/init_db.py
 python main.py
 ```
 
+#### 백그라운드 실행 (Ubuntu 서버용)
+
+```bash
+# systemd 서비스 파일 생성
+sudo nano /etc/systemd/system/masamong.service
+
+# 서비스 내용:
+[Unit]
+Description=Masamong Discord Bot
+After=network.target
+
+[Service]
+Type=simple
+User=your_username
+WorkingDirectory=/path/to/masamong
+Environment=PATH=/path/to/masamong/venv/bin
+ExecStart=/path/to/masamong/venv/bin/python main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+
+# 서비스 활성화 및 시작
+sudo systemctl daemon-reload
+sudo systemctl enable masamong
+sudo systemctl start masamong
+
+# 상태 확인
+sudo systemctl status masamong
+```
+
 ### 3. 환경 변수 설정
 
 `.env` 파일에 다음 API 키들을 설정하세요:
 
 ```env
-# 필수
-DISCORD_BOT_TOKEN=your_discord_bot_token
-GEMINI_API_KEY=your_gemini_api_key
+# 필수 (무료)
+DISCORD_BOT_TOKEN=your_discord_bot_token        # Discord Developer Portal
+GEMINI_API_KEY=your_gemini_api_key              # Google AI Studio
 
 # 날씨 (한국)
-KMA_API_KEY=your_kma_api_key
+KMA_API_KEY=your_kma_api_key                   # 기상청 API 허브
 
 # 여행 어시스턴트
-OPENWEATHERMAP_API_KEY=your_openweathermap_api_key
-FOURSQUARE_API_KEY=your_foursquare_api_key
-TICKETMASTER_API_KEY=your_ticketmaster_api_key
+OPENWEATHERMAP_API_KEY=your_openweathermap_api_key  # OpenWeatherMap
+FOURSQUARE_API_KEY=your_foursquare_api_key      # Foursquare Developers
+TICKETMASTER_API_KEY=your_ticketmaster_api_key  # Ticketmaster Developer
 
 # 금융
-FINNHUB_API_KEY=your_finnhub_api_key
-GO_DATA_API_KEY_KR=your_go_data_api_key
-EXIM_API_KEY_KR=your_exim_api_key
+FINNHUB_API_KEY=your_finnhub_api_key           # Finnhub Stock API
+GO_DATA_API_KEY_KR=your_go_data_api_key        # 공공데이터포털
+EXIM_API_KEY_KR=your_exim_api_key              # 한국수출입은행
 
 # 기타
-RAWG_API_KEY=your_rawg_api_key
-KAKAO_API_KEY=your_kakao_api_key
+RAWG_API_KEY=your_rawg_api_key                 # RAWG Video Games Database
+KAKAO_API_KEY=your_kakao_api_key               # Kakao Developers
 ```
+
+#### API 키 발급 가이드
+
+| 서비스 | 발급처 | 무료 할당량 | 필수도 |
+|--------|--------|-------------|---------|
+| **Discord Bot** | [Discord Developer Portal](https://discord.com/developers/applications) | 무제한 | 필수 |
+| **Google Gemini** | [Google AI Studio](https://aistudio.google.com/app/apikey) | 15 RPM, 1M RPD | 필수 |
+| **기상청 API** | [API 허브](https://apihub.kma.go.kr/) | 10,000/일 | 권장 |
+| **OpenWeatherMap** | [OpenWeatherMap](https://openweathermap.org/api) | 1,000/일 | 권장 |
+| **Foursquare** | [Developers](https://developer.foursquare.com/) | 950/일 | 선택 |
+| **Ticketmaster** | [Developer](https://developer.ticketmaster.com/) | 5,000/일 | 선택 |
+| **Finnhub** | [Stock API](https://finnhub.io/) | 60/분 | 선택 |
+| **공공데이터** | [공공데이터포털](https://data.go.kr/) | 다양 | 선택 |
+| **수출입은행** | [환율 API](https://www.koreaexim.go.kr/ir/HPHKIR020M01) | 무제한 | 선택 |
+| **RAWG** | [RAWG](https://rawg.io/apidocs) | 20,000/월 | 선택 |
+| **Kakao** | [Kakao Developers](https://developers.kakao.com/) | 100,000/일 | 선택 |
 
 ## 📖 사용법
 
