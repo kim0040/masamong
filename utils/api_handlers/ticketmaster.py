@@ -4,7 +4,7 @@ import requests
 import config
 from logger_config import logger
 from .. import http
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 async def get_events_by_coords(lat: float, lon: float, radius: int = 50, unit: str = 'km') -> dict:
     """
@@ -17,8 +17,8 @@ async def get_events_by_coords(lat: float, lon: float, radius: int = 50, unit: s
     url = f"{config.TICKETMASTER_BASE_URL}/events.json"
 
     # 날짜 범위 설정 (오늘부터 30일 후까지)
-    start_date_time = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
-    end_date_time = (datetime.utcnow() + timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    start_date_time = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    end_date_time = (datetime.now(timezone.utc) + timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%SZ')
 
     params = {
         "apikey": config.TICKETMASTER_API_KEY,
