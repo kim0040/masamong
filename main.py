@@ -104,7 +104,7 @@ class ReMasamongBot(commands.Bot):
 # --- 메인 실행 로직 ---
 # 최종 안정화 버전
 async def main():
-    bot = ReMasamongBot(command_prefix='!', intents=config.intents)
+    bot = ReMasamongBot(command_prefix=config.COMMAND_PREFIX, intents=config.intents)
 
     # Discord 로깅 핸들러 등록 및 태스크 시작
     import logger_config

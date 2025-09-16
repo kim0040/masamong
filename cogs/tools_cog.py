@@ -27,9 +27,9 @@ class ToolsCog(commands.Cog):
         self.weather_cog: WeatherCog = self.bot.get_cog('WeatherCog')
         logger.info("ToolsCog 초기화 완료.")
 
-    async def get_travel_recommendation(self, location_name: str) -> dict:
+    async def get_travel_recommendation(self, location_name: str) -> str:
         """
-        주어진 위치에 대한 날씨, 명소, 이벤트 등 여행 정보를 종합하여 반환합니다.
+        주어진 위치에 대한 날씨, 명소, 이벤트 등 여행 정보를 종합하여 LLM 친화적인 문자열로 반환합니다.
         This is a high-level meta-tool that acts as an intelligent router.
         """
         # 1. Geocode the location name
@@ -85,16 +85,34 @@ class ToolsCog(commands.Cog):
             events_result = {"error": "주변 이벤트 정보 조회 실패"}
 
         # 3. Aggregate results
-        return {
-            "location_info": geo_info,
-            "weather": weather_result,
-            "points_of_interest": poi_result.get("places", []),
-            "events": events_result.get("events", [])
-        }
+        # 여행 정보를 종합하여 포맷팅
+        result = f"🌍 {display_name} 여행 정보\n\n"
 
-    async def get_current_time(self) -> dict:
-        """현재 시간과 날짜를 반환합니다."""
-        return {"current_time": db_utils.get_current_time()}
+        # 날씨 정보 추가
+        if weather_result and not weather_result.get("error"):
+            result += f"🌤️ **날씨**: {weather_result.get('current_weather', '정보 없음')}\n\n"
+
+        # 명소 정보 추가
+        poi_places = poi_result.get("places", [])
+        if poi_places:
+            result += "📍 **주요 명소**:\n"
+            for i, place in enumerate(poi_places[:3], 1):
+                result += f"   {i}. {place.get('name', 'N/A')}\n"
+            result += "\n"
+
+        # 이벤트 정보 추가
+        events = events_result.get("events", [])
+        if events:
+            result += "🎪 **진행 중인 이벤트**:\n"
+            for i, event in enumerate(events[:3], 1):
+                result += f"   {i}. {event.get('name', 'N/A')}\n"
+
+        return result.strip()
+
+    async def get_current_time(self) -> str:
+        """현재 시간과 날짜를 LLM 친화적인 문자열로 반환합니다."""
+        current_time = db_utils.get_current_time()
+        return f"현재 시간: {current_time}"
 
     async def get_current_weather(self, location: str = None, day_offset: int = 0) -> str:
         """
@@ -148,26 +166,26 @@ class ToolsCog(commands.Cog):
 
     async def geocode(self, location_name: str) -> dict:
         """
-        장소 이름을 지리적 좌표(위도/경도)로 변환합니다.
+        장소 이름을 지리적 좌표(위도/경도)로 변환합니다. (내부 사용용 - dict 반환 유지)
         결과가 여러 개일 경우, 사용자에게 선택지를 제공합니다.
         """
         return await nominatim.geocode_location(location_name)
 
     async def get_foreign_weather(self, lat: float, lon: float) -> dict:
         """
-        주어진 위도/경도를 기반으로 해외 날씨 정보를 조회합니다.
+        주어진 위도/경도를 기반으로 해외 날씨 정보를 조회합니다. (내부 사용용 - dict 반환 유지)
         """
         return await openweathermap.get_weather_by_coords(lat, lon)
 
     async def find_points_of_interest(self, lat: float, lon: float, query: str = None, limit: int = 10) -> dict:
         """
-        주어진 위도/경도 주변의 주요 장소(POI)를 검색합니다.
+        주어진 위도/경도 주변의 주요 장소(POI)를 검색합니다. (내부 사용용 - dict 반환 유지)
         """
         return await foursquare.get_places_by_coords(lat, lon, query, limit)
 
     async def find_events(self, lat: float, lon: float, radius: int = 50) -> dict:
         """
-        주어진 위도/경도 주변의 이벤트를 검색합니다.
+        주어진 위도/경도 주변의 이벤트를 검색합니다. (내부 사용용 - dict 반환 유지)
         """
         return await ticketmaster.get_events_by_coords(lat, lon, radius)
 
