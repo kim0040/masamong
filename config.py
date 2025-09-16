@@ -30,6 +30,7 @@ def load_config_value(key, default=None):
 
 # --- Discord 봇 설정 ---
 TOKEN = load_config_value('DISCORD_BOT_TOKEN')
+COMMAND_PREFIX = "!"  # Phase 1: 명령어 접두사 명시적 정의
 
 # --- 로깅 설정 ---
 LOG_FILE_NAME = "discord_logs.txt"
