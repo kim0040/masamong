@@ -75,7 +75,7 @@ async def get_games(ordering: str = '-released', dates: str = None, genres: str 
                 "name": game.get('name'),
                 "metacritic": game.get('metacritic'),
                 "playtime": game.get('playtime', 0),
-                "stores": [store['store']['name'] for store in game.get('stores') or [] if store.get('store')]
+                "stores": [store['store']['name'] for store in game.get('stores') or [] if store and store.get('store')]
             }
             for game in results
         ]
