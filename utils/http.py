@@ -25,6 +25,17 @@ class ModernTlsAdapter(HTTPAdapter):
         kwargs['ssl_context'] = context
         return super().init_poolmanager(*args, **kwargs)
 
+class TlsV12Adapter(HTTPAdapter):
+    """
+    A custom HTTP adapter that forces the TLSv1.2 protocol.
+    This is for compatibility with older servers like data.go.kr.
+    """
+    def init_poolmanager(self, *args, **kwargs):
+        context = ssl.create_default_context()
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        kwargs['ssl_context'] = context
+        return super().init_poolmanager(*args, **kwargs)
+
 def get_modern_tls_session() -> requests.Session:
     """
     Returns a requests.Session object configured with a modern TLS cipher suite
@@ -33,6 +44,17 @@ def get_modern_tls_session() -> requests.Session:
     session = requests.Session()
     session.mount('https://', ModernTlsAdapter())
     # Set default timeout and headers for better reliability
+    session.headers.update({
+        'User-Agent': 'Masamong-Bot/3.5 (Discord Bot; +https://github.com/kim0040/masamong)'
+    })
+    return session
+
+def get_tlsv12_session() -> requests.Session:
+    """
+    Returns a requests.Session object configured to use TLSv1.2.
+    """
+    session = requests.Session()
+    session.mount('https://', TlsV12Adapter())
     session.headers.update({
         'User-Agent': 'Masamong-Bot/3.5 (Discord Bot; +https://github.com/kim0040/masamong)'
     })
