@@ -1,25 +1,22 @@
 # Environment variables
 .env
-.env.local
-.env.production
+.env.*
+
+# Configuration files
 config.json
 
 # Log files
 *.log
-discord_logs.txt
-error_logs.txt
 *.txt
-discord_logs.txt
-error_logs.txt
 
 # Database files
 *.db
 *.sqlite
 *.sqlite3
-database/*.db
 
-# Python cache
+# Python cache & artifacts
 __pycache__/
+.pytest_cache/
 *.pyc
 *.pyo
 *.pyd

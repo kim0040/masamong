@@ -68,13 +68,14 @@ def _format_finnhub_quote_data(symbol: str, quote_data: dict) -> str:
     price = quote_data.get('current_price', 0)
     change = quote_data.get('change', 0)
 
-    change_str = "변동 없음"
     if change > 0:
-        change_str = f"{change:.2f} 상승"
+        change_str = f"+{change:.2f}"
     elif change < 0:
-        change_str = f"{abs(change):.2f} 하락"
+        change_str = f"{change:.2f}"
+    else:
+        change_str = "0.00"
 
-    return f"종목 '{symbol}'의 현재가는 {price:.2f} USD이며, 전일 대비 {change_str}했습니다."
+    return f"{symbol}: {price:.2f} USD ({change_str})"
 
 def _format_finnhub_news_data(symbol: str, news_items: list) -> str:
     """Finnhub 뉴스 데이터를 LLM 친화적인 문자열로 포맷팅합니다."""
