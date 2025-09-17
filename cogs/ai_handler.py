@@ -315,6 +315,30 @@ class AIHandler(commands.Cog):
                         "result": result
                     })
 
+                # --- 2.5단계: 도구 실패 시 웹 검색으로 대체 (Fallback) ---
+                def is_tool_failed(result):
+                    """도구 결과가 실패했는지 여부를 간단히 확인합니다."""
+                    if result is None: return True
+                    res_str = str(result).lower()
+                    # 실패를 나타내는 키워드 목록
+                    fail_keywords = ["error", "오류", "실패", "없습니다", "알 수 없는", "찾을 수"]
+                    return any(keyword in res_str for keyword in fail_keywords)
+
+                all_failed = all(is_tool_failed(res.get("result")) for res in tool_results)
+                use_fallback_prompt = False
+
+                if tool_plan and all_failed:
+                    logger.info("모든 도구 실행에 실패하여 웹 검색으로 대체합니다.", extra=log_extra)
+                    web_search_result = await self.tools_cog.web_search(user_query)
+                    # 기존의 실패한 결과 대신 웹 검색 결과를 사용
+                    tool_results = [{
+                        "step": 1,
+                        "tool_name": "web_search",
+                        "parameters": {"query": user_query},
+                        "result": web_search_result
+                    }]
+                    use_fallback_prompt = True
+
                 # 모든 도구의 실행 결과를 하나의 문자열로 통합
                 tool_results_str = json.dumps(tool_results, ensure_ascii=False, indent=2)
 
@@ -324,7 +348,13 @@ class AIHandler(commands.Cog):
                 # 도구 사용 여부에 따라 적절한 시스템 프롬프트 선택
                 is_travel_tool_used = any(tc.get('tool_to_use') == 'get_travel_recommendation' for tc in tool_plan)
 
-                if is_travel_tool_used:
+                if use_fallback_prompt:
+                    main_system_prompt = config.WEB_FALLBACK_PROMPT.format(
+                        user_query=user_query,
+                        tool_result=tool_results_str
+                    )
+                    main_prompt = "" # 프롬프트에 이미 질문이 포함되어 있으므로 비워둠
+                elif is_travel_tool_used:
                     main_system_prompt = config.SPECIALIZED_PROMPTS["travel_assistant"].format(
                         user_query=user_query,
                         tool_result=tool_results_str

@@ -3,6 +3,7 @@ import asyncio
 import requests
 import config
 from logger_config import logger
+from .. import http
 
 def _format_places_data(query: str, places: list) -> str:
     """장소 검색 결과를 LLM 친화적인 문자열로 포맷팅합니다."""
@@ -16,6 +17,7 @@ async def search_place_by_keyword(query: str, page_size: int = 5) -> str:
     """
     카카오 로컬 API로 장소를 검색하고, LLM 친화적인 문자열로 반환합니다.
     [수정] 호환성을 위해 표준 requests.Session을 사용하도록 변경.
+    [주의] 카카오 로컬 API는 일일 100,000회까지 무료로 호출할 수 있습니다.
     """
     if not config.KAKAO_API_KEY or config.KAKAO_API_KEY == 'YOUR_KAKAO_API_KEY':
         logger.error("카카오 API 키(KAKAO_API_KEY)가 설정되지 않았습니다.")
@@ -49,6 +51,7 @@ async def search_place_by_keyword(query: str, page_size: int = 5) -> str:
 async def search_web(query: str, page_size: int = 1) -> list | None:
     """
     카카오 웹 검색 API로 검색을 수행하고, 결과 문서 리스트를 반환합니다.
+    [주의] 카카오 웹 검색 API는 일일 30,000회까지 무료로 호출할 수 있습니다.
     """
     if not config.KAKAO_API_KEY or config.KAKAO_API_KEY == 'YOUR_KAKAO_API_KEY':
         logger.error("카카오 API 키(KAKAO_API_KEY)가 설정되지 않았습니다.")

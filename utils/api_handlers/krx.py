@@ -58,13 +58,14 @@ def _format_krx_price_data(stock_info: dict) -> str:
     price = stock_info.get('price', 0)
     change_value = stock_info.get('change_value', 0)
 
-    change_str = "변동 없음"
     if change_value > 0:
-        change_str = f"{change_value:,}원 상승"
+        change_str = f"+{change_value:,}"
     elif change_value < 0:
-        change_str = f"{abs(change_value):,}원 하락"
+        change_str = f"{change_value:,}"
+    else:
+        change_str = "0"
 
-    return f"종목 '{name}'의 현재가는 {price:,}원이며, 전일 대비 {change_str}했습니다."
+    return f"{name}: {price:,}원 ({change_str})"
 
 async def _search_for_full_name(alias: str) -> str | None:
     """Use Kakao web search to find the full company name for a stock alias."""
