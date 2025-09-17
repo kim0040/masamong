@@ -201,6 +201,28 @@ class ToolsCog(commands.Cog):
         """
         return await rawg.get_games(ordering=ordering, genres=genres, page_size=page_size)
 
+    async def web_search(self, query: str) -> str:
+        """
+        주어진 쿼리로 웹을 검색하여 결과를 요약하고, LLM 친화적인 문자열로 반환합니다.
+        일반적인 질문이나 다른 도구로 찾을 수 없는 정보에 사용됩니다.
+        """
+        logger.info(f"Executing web search for query: '{query}'")
+        search_results = await kakao.search_web(query, page_size=3) # Get top 3 results
+
+        if not search_results:
+            return f"'{query}'에 대한 웹 검색 결과가 없습니다."
+
+        # Format the results concisely for the LLM
+        formatted_results = []
+        for i, result in enumerate(search_results, 1):
+            title = result.get('title', '제목 없음').replace("<b>", "").replace("</b>", "")
+            snippet = result.get('contents', '내용 없음').replace("<b>", "").replace("</b>", "")
+            # Truncate snippet to save tokens
+            snippet = snippet[:150] + '...' if len(snippet) > 150 else snippet
+            formatted_results.append(f"{i}. {title}\n   - {snippet}")
+
+        return f"'{query}'에 대한 웹 검색 결과 요약:\n" + "\n".join(formatted_results)
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(ToolsCog(bot))
     logger.info("ToolsCog 로드 완료.")
