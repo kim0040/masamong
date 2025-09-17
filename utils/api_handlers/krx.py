@@ -113,15 +113,22 @@ async def get_stock_price(stock_name: str) -> str | None:
     async def _get_price_from_krx(name_to_search: str) -> dict | None:
         """Internal function to fetch price from KRX API."""
         today_str = datetime.now().strftime('%Y%m%d')
-        params = {"serviceKey": config.GO_DATA_API_KEY_KR, "itmsNm": name_to_search, "resultType": "json", "numOfRows": "1", "basDt": today_str}
+        # serviceKey는 URL 인코딩 문제를 피하기 위해 URL에 직접 추가합니다.
+        params = {
+            "itmsNm": name_to_search, 
+            "resultType": "json", 
+            "numOfRows": "1", 
+            "basDt": today_str
+        }
+        url = f"{config.KRX_BASE_URL}?serviceKey={config.GO_DATA_API_KEY_KR}"
         
-        log_params = params.copy()
+        log_params = params.copy() # 로그에는 전체 파라미터를 보여주되, 키는 숨깁니다.
         log_params["serviceKey"] = "[REDACTED]"
         logger.info(f"KRX API 요청: URL='{config.KRX_BASE_URL}', Params='{log_params}'")
 
         # Use a session that forces TLSv1.2 for compatibility with data.go.kr
         session = http.get_tlsv12_session()
-        response = await asyncio.to_thread(session.get, config.KRX_BASE_URL, params=params, timeout=10)
+        response = await asyncio.to_thread(session.get, url, params=params, timeout=10)
         response.raise_for_status()
         try:
             data = response.json()
