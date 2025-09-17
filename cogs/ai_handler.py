@@ -353,19 +353,17 @@ class AIHandler(commands.Cog):
                         user_query=user_query,
                         tool_result=tool_results_str
                     )
-                    main_prompt = "" # 프롬프트에 이미 질문이 포함되어 있으므로 비워둠
                 elif is_travel_tool_used:
                     main_system_prompt = config.SPECIALIZED_PROMPTS["travel_assistant"].format(
                         user_query=user_query,
                         tool_result=tool_results_str
                     )
-                    main_prompt = "" # 프롬프트에 이미 질문이 포함되어 있으므로 비워둠
                 else:
                     main_system_prompt = config.AGENT_SYSTEM_PROMPT.format(
                         user_query=user_query, 
                         tool_result=tool_results_str
                     )
-                    main_prompt = user_query
+                main_prompt = user_query
 
                 # 페르소나 적용
                 custom_persona = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'persona_text')
