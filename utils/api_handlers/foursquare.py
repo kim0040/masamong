@@ -3,6 +3,7 @@ import asyncio
 import requests
 import config
 from logger_config import logger
+from .. import http
 
 async def get_places_by_coords(lat: float, lon: float, query: str = None, limit: int = 10) -> dict:
     """
@@ -16,8 +17,7 @@ async def get_places_by_coords(lat: float, lon: float, query: str = None, limit:
     url = f"{config.FOURSQUARE_BASE_URL}/search"
     headers = {
         "Authorization": config.FOURSQUARE_API_KEY,
-        "Accept": "application/json",
-        "User-Agent": "Masamong-Bot/3.5 (Discord Bot; +https://github.com/kim0040/masamong)"
+        "Accept": "application/json"
     }
     params = {
         "ll": f"{lat},{lon}",
@@ -31,7 +31,7 @@ async def get_places_by_coords(lat: float, lon: float, query: str = None, limit:
 
     try:
         # 표준 requests.Session 사용
-        session = requests.Session()
+        session = http.get_modern_tls_session()
         response = await asyncio.to_thread(session.get, url, headers=headers, params=params, timeout=15)
         response.raise_for_status()
         data = response.json()
