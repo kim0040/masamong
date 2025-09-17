@@ -123,7 +123,11 @@ async def get_stock_price(stock_name: str) -> str | None:
         session = http.get_tlsv12_session()
         response = await asyncio.to_thread(session.get, config.KRX_BASE_URL, params=params, timeout=10)
         response.raise_for_status()
-        data = response.json()
+        try:
+            data = response.json()
+        except requests.exceptions.JSONDecodeError:
+            logger.error(f"KRX API가 유효한 JSON을 반환하지 않았습니다. 응답 내용: {response.text}")
+            return None
         
         items = data.get('response', {}).get('body', {}).get('items', {}).get('item', [])
         if items:
