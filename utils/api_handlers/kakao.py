@@ -23,12 +23,11 @@ async def search_place_by_keyword(query: str, page_size: int = 5) -> str:
 
     headers = {
         "Authorization": f"KakaoAK {config.KAKAO_API_KEY}",
-        "User-Agent": "Masamong-Bot/3.5 (Discord Bot; +https://github.com/kim0040/masamong)"
     }
     params = {"query": query, "size": page_size}
 
     try:
-        session = requests.Session()
+        session = http.get_modern_tls_session()
         response = await asyncio.to_thread(session.get, config.KAKAO_BASE_URL, headers=headers, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
@@ -46,3 +45,35 @@ async def search_place_by_keyword(query: str, page_size: int = 5) -> str:
     except Exception as e:
         logger.error(f"카카오맵 API('{query}') 처리 중 예기치 않은 오류: {e}", exc_info=True)
         return "장소 검색 중 알 수 없는 오류가 발생했습니다."
+
+async def search_web(query: str, page_size: int = 1) -> list | None:
+    """
+    카카오 웹 검색 API로 검색을 수행하고, 결과 문서 리스트를 반환합니다.
+    """
+    if not config.KAKAO_API_KEY or config.KAKAO_API_KEY == 'YOUR_KAKAO_API_KEY':
+        logger.error("카카오 API 키(KAKAO_API_KEY)가 설정되지 않았습니다.")
+        return None
+
+    headers = {
+        "Authorization": f"KakaoAK {config.KAKAO_API_KEY}",
+    }
+    params = {"query": query, "size": page_size}
+    url = "https://dapi.kakao.com/v2/search/web"
+
+    try:
+        session = http.get_modern_tls_session()
+        response = await asyncio.to_thread(session.get, url, headers=headers, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        return data.get('documents')
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"카카오 웹 검색 API('{query}') 요청 중 오류: {e}", exc_info=True)
+        return None
+    except (ValueError, KeyError) as e:
+        response_text = response.text if 'response' in locals() else 'N/A'
+        logger.error(f"카카오 웹 검색 API('{query}') 응답 파싱 중 오류: {e}. 응답: {response_text}", exc_info=True)
+        return None
+    except Exception as e:
+        logger.error(f"카카오 웹 검색 API('{query}') 처리 중 예기치 않은 오류: {e}", exc_info=True)
+        return None
