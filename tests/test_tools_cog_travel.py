@@ -1,12 +1,23 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from cogs.tools_cog import ToolsCog
+import google.generativeai as genai
 
 # Mock bot and other dependencies needed by ToolsCog
 @pytest.fixture
 def mock_bot():
     bot = MagicMock()
-    bot.get_cog.return_value = MagicMock()
+    # Mock the weather_cog dependency
+    weather_cog_mock = MagicMock()
+    weather_cog_mock.get_formatted_weather_string = AsyncMock()
+    
+    # Set up the bot to return the mocked cog
+    def get_cog_side_effect(name):
+        if name == 'WeatherCog':
+            return weather_cog_mock
+        return MagicMock()
+        
+    bot.get_cog.side_effect = get_cog_side_effect
     return bot
 
 @pytest.mark.asyncio
@@ -22,7 +33,7 @@ async def test_travel_recommendation_korea(mock_bot, mocker):
         "status": "found", "lat": 37.56, "lon": 126.97, "country_code": "kr", "display_name": "Seoul, South Korea"
     })
     # Mock the internal weather cog function that gets called for KR locations
-    mocker.patch.object(tools_cog.weather_cog, 'get_formatted_weather_string', new_callable=AsyncMock, return_value=("맑음", None))
+    tools_cog.weather_cog.get_formatted_weather_string.return_value = ("맑음", None)
     mocker.patch.object(tools_cog, 'find_points_of_interest', new_callable=AsyncMock, return_value={"places": [{"name": "Gyeongbok Palace"}]})
     mocker.patch.object(tools_cog, 'find_events', new_callable=AsyncMock, return_value={"events": [{"name": "Seoul Jazz Festival"}]})
 
@@ -34,11 +45,11 @@ async def test_travel_recommendation_korea(mock_bot, mocker):
     # Assertions
     assert "error" not in result
     assert result["location_info"]["country_code"] == "kr"
-    assert result["weather"] == "맑음"
-    assert len(result["points_of_interest"]) == 1
-    assert result["points_of_interest"][0]["name"] == "Gyeongbok Palace"
-    assert len(result["events"]) == 1
-    assert result["events"][0]["name"] == "Seoul Jazz Festival"
+    assert result["weather"]["current_weather"] == "맑음"
+    assert len(result["points_of_interest"]["places"]) == 1
+    assert result["points_of_interest"]["places"][0]["name"] == "Gyeongbok Palace"
+    assert len(result["events"]["events"]) == 1
+    assert result["events"]["events"][0]["name"] == "Seoul Jazz Festival"
 
     # Verify that the correct functions were called
     tools_cog.geocode.assert_called_once_with("서울")
@@ -68,9 +79,9 @@ async def test_travel_recommendation_foreign(mock_bot, mocker):
     assert "error" not in result
     assert result["location_info"]["country_code"] == "fr"
     assert result["weather"]["description"] == "clear sky"
-    assert len(result["points_of_interest"]) == 1
-    assert result["points_of_interest"][0]["name"] == "Eiffel Tower"
-    assert len(result["events"]) == 0
+    assert len(result["points_of_interest"]["places"]) == 1
+    assert result["points_of_interest"]["places"][0]["name"] == "Eiffel Tower"
+    assert len(result["events"]["events"]) == 0
 
     # Verify that the correct functions were called
     tools_cog.geocode.assert_called_once_with("Paris")
@@ -89,14 +100,19 @@ async def test_ai_handler_uses_strict_prompt_for_travel(mocker):
     # Mock AIHandler and its dependencies
     from cogs.ai_handler import AIHandler
     mock_bot = MagicMock()
-    mock_bot.db = MagicMock()
+    # Use AsyncMock for the database to handle await calls
+    mock_bot.db = AsyncMock()
+    # Set up the execute method on the mock db
+    mock_bot.db.execute = AsyncMock()
     mock_tools_cog = MagicMock()
     mock_bot.get_cog.return_value = mock_tools_cog
 
     ai_handler = AIHandler(mock_bot)
-    ai_handler.gemini_configured = True # Set the underlying property instead of the read-only one
+    ai_handler.gemini_configured = True
 
     # Mock internal helper functions
+    mocker.patch('utils.db.check_api_rate_limit', new_callable=AsyncMock, return_value=False)
+    mocker.patch('utils.db.get_guild_setting', new_callable=AsyncMock, return_value=None) # Mock guild settings to avoid another db call
     mocker.patch.object(ai_handler, '_get_rag_context', new_callable=AsyncMock, return_value=("", []))
     mocker.patch.object(ai_handler, '_get_recent_history', new_callable=AsyncMock, return_value=[])
 
@@ -105,19 +121,25 @@ async def test_ai_handler_uses_strict_prompt_for_travel(mocker):
     mocker.patch.object(ai_handler, '_execute_tool', new_callable=AsyncMock, return_value=travel_data)
 
     # --- Mock the two-step LLM calls ---
+    # Mock the GenerativeModel class itself
+    mock_generative_model_class = mocker.patch('google.generativeai.GenerativeModel')
+    
+    # Create mock instances for the two models (lite and main)
+    mock_lite_model_instance = AsyncMock()
+    mock_main_model_instance = AsyncMock()
+    
+    # The class will return the lite model first, then the main model
+    mock_generative_model_class.side_effect = [mock_lite_model_instance, mock_main_model_instance]
+
     # 1. Lite model returns a tool call
     lite_response_mock = MagicMock()
     lite_response_mock.text = '<tool_call>{"tool_to_use": "get_travel_recommendation", "parameters": {"location_name": "Testville"}}</tool_call>'
+    mock_lite_model_instance.generate_content_async.return_value = lite_response_mock
 
     # 2. Main model returns a final answer
     main_response_mock = MagicMock()
     main_response_mock.text = "Here is your travel summary."
-
-    # Mock the underlying Gemini API call
-    safe_generate_mock = mocker.patch.object(ai_handler, '_safe_generate_content', new_callable=AsyncMock, side_effect=[
-        lite_response_mock,
-        main_response_mock
-    ])
+    mock_main_model_instance.generate_content_async.return_value = main_response_mock
 
     # --- Execution ---
     mock_message = MagicMock()
@@ -125,8 +147,6 @@ async def test_ai_handler_uses_strict_prompt_for_travel(mocker):
     mock_message.guild.id = 123
     mock_message.channel.id = 456
     mock_message.author.id = 789
-    # Configure the 'typing' context manager
-    mock_message.channel.typing = MagicMock()
     mock_message.channel.typing.return_value.__aenter__ = AsyncMock(return_value=None)
     mock_message.channel.typing.return_value.__aexit__ = AsyncMock(return_value=None)
     mock_message.reply = AsyncMock()
@@ -137,14 +157,16 @@ async def test_ai_handler_uses_strict_prompt_for_travel(mocker):
     # Check that the final reply was called
     mock_message.reply.assert_called_once_with("Here is your travel summary.", mention_author=False)
 
-    # Crucially, check the prompt sent to the MAIN model (the second call)
-    assert safe_generate_mock.call_count == 2
-    main_model_call_args = safe_generate_mock.call_args_list[1]
-
-    # The prompt is the second positional argument (index 1) in the call to _safe_generate_content
-    main_prompt_arg = main_model_call_args.args[1]
-
+    # Crucially, check the system prompt sent to the MAIN model
+    assert mock_generative_model_class.call_count == 2
+    main_model_init_kwargs = mock_generative_model_class.call_args_list[1].kwargs
+    main_system_prompt = main_model_init_kwargs.get("system_instruction", "")
+    
     # Verify it's using the specialized prompt
-    assert "너는 오직 아래 [제공된 정보]만을 사용하여" in main_prompt_arg
-    assert "Testville" in main_prompt_arg # Check that the tool data was included
-    assert "AGENT_SYSTEM_PROMPT" not in main_prompt_arg # Ensure default prompt was NOT used
+    assert "너는 오직 아래 [제공된 정보]만을 사용하여" in main_system_prompt
+    assert "Testville" in main_system_prompt # Check that the tool data was included
+    
+    # Verify the user prompt for the main model was empty
+    main_model_call_args = mock_main_model_instance.generate_content_async.call_args
+    main_user_prompt = main_model_call_args.args[0]
+    assert main_user_prompt == ""
