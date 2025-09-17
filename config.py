@@ -175,6 +175,15 @@ LITE_MODEL_SYSTEM_PROMPT = """You are '마사몽', a 'Project Manager' AI with a
     }
     </tool_call>
 
+*   **User Query:** "달러 환율 얼마야?"
+*   **Your Action:**
+    <tool_call>
+    {
+        "tool_to_use": "get_krw_exchange_rate",
+        "parameters": {"currency_code": "USD"}
+    }
+    </tool_call>
+
 *   **User Query:** "SK하이닉스 주가랑 최신 뉴스 줘"
 *   **Your Action:**
     <tool_plan>
@@ -218,22 +227,33 @@ LITE_MODEL_SYSTEM_PROMPT = """You are '마사몽', a 'Project Manager' AI with a
     }
     </tool_call>
 
+*   **User Query:** "고양이 사진 보여줘"
+*   **Your Action:**
+    <tool_call>
+    {
+        "tool_to_use": "search_images",
+        "parameters": {"query": "고양이"}
+    }
+    </tool_call>
+
 **# Available Tools:**
 
 1.  `get_stock_price(stock_name: str)`: Gets the current price of a **Korean** stock.
 2.  `get_stock_price_in_krw(stock_name: str)`: Gets the current price of a **US** stock in both USD and KRW.
-3.  `get_company_news(stock_name: str, count: int = 3)`: Gets the latest news for a US stock.
-4.  `search_for_place(query: str, page_size: int = 5)`: Searches for places.
-5.  `get_loan_rates()`: Gets loan interest rates.
-6.  `get_international_rates()`: Gets international interest rates.
-7.  `recommend_games(ordering: str = '-released', genres: str = None, page_size: int = 5)`: Recommends video games.
-8.  `get_current_weather(location: str = None, day_offset: int = 0)`: Gets the weather.
-9.  `get_current_time()`: Gets the current date and time.
-10. `geocode(location_name: str)`: Converts a location name into geographic coordinates.
-11. `get_foreign_weather(lat: float, lon: float)`: Gets weather for non-Korean locations.
-12. `find_points_of_interest(lat: float, lon: float, query: str = None)`: Finds popular places near a location.
-13. `find_events(lat: float, lon: float)`: Finds upcoming events near a location.
-14. `web_search(query: str)`: Searches the web for a general query for topics not covered by other tools.
+3.  `get_krw_exchange_rate(currency_code: str = "USD")`: Gets the exchange rate for a currency against KRW.
+4.  `get_company_news(stock_name: str, count: int = 3)`: Gets the latest news for a US stock.
+5.  `search_for_place(query: str, page_size: int = 5)`: Searches for places.
+6.  `search_images(query: str, count: int = 3)`: Searches for images.
+7.  `get_loan_rates()`: Gets loan interest rates.
+8.  `get_international_rates()`: Gets international interest rates.
+9.  `recommend_games(ordering: str = '-released', genres: str = None, page_size: int = 5)`: Recommends video games.
+10. `get_current_weather(location: str = None, day_offset: int = 0)`: Gets the weather.
+11. `get_current_time()`: Gets the current date and time.
+12. `geocode(location_name: str)`: Converts a location name into geographic coordinates.
+13. `get_foreign_weather(lat: float, lon: float)`: Gets weather for non-Korean locations.
+14. `find_points_of_interest(lat: float, lon: float, query: str = None)`: Finds popular places near a location.
+15. `find_events(lat: float, lon: float)`: Finds upcoming events near a location.
+16. `web_search(query: str)`: Searches the web for a general query for topics not covered by other tools.
 """
 
 # 2. Main 모델 (gemini-2.5-flash): 도구 결과를 바탕으로 최종 답변 생성 담당

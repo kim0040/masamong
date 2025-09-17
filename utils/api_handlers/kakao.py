@@ -80,3 +80,36 @@ async def search_web(query: str, page_size: int = 1) -> list | None:
     except Exception as e:
         logger.error(f"카카오 웹 검색 API('{query}') 처리 중 예기치 않은 오류: {e}", exc_info=True)
         return None
+
+async def search_image(query: str, page_size: int = 1) -> list | None:
+    """
+    카카오 이미지 검색 API로 검색을 수행하고, 결과 문서 리스트를 반환합니다.
+    [주의] 카카오 이미지 검색 API는 일일 30,000회까지 무료로 호출할 수 있습니다.
+    """
+    if not config.KAKAO_API_KEY or config.KAKAO_API_KEY == 'YOUR_KAKAO_API_KEY':
+        logger.error("카카오 API 키(KAKAO_API_KEY)가 설정되지 않았습니다.")
+        return None
+
+    headers = {
+        "Authorization": f"KakaoAK {config.KAKAO_API_KEY}",
+    }
+    params = {"query": query, "size": page_size}
+    url = "https://dapi.kakao.com/v2/search/image"
+
+    try:
+        session = http.get_modern_tls_session()
+        response = await asyncio.to_thread(session.get, url, headers=headers, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        return data.get('documents')
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"카카오 이미지 검색 API('{query}') 요청 중 오류: {e}", exc_info=True)
+        return None
+    except (ValueError, KeyError) as e:
+        response_text = response.text if 'response' in locals() else 'N/A'
+        logger.error(f"카카오 이미지 검색 API('{query}') 응답 파싱 중 오류: {e}. 응답: {response_text}", exc_info=True)
+        return None
+    except Exception as e:
+        logger.error(f"카카오 이미지 검색 API('{query}') 처리 중 예기치 않은 오류: {e}", exc_info=True)
+        return None

@@ -324,11 +324,11 @@ class AIHandler(commands.Cog):
                     fail_keywords = ["error", "오류", "실패", "없습니다", "알 수 없는", "찾을 수"]
                     return any(keyword in res_str for keyword in fail_keywords)
 
-                all_failed = all(is_tool_failed(res.get("result")) for res in tool_results)
+                any_failed = any(is_tool_failed(res.get("result")) for res in tool_results)
                 use_fallback_prompt = False
 
-                if tool_plan and all_failed:
-                    logger.info("모든 도구 실행에 실패하여 웹 검색으로 대체합니다.", extra=log_extra)
+                if tool_plan and any_failed and not any(tc.get('tool_to_use') == 'web_search' for tc in tool_plan):
+                    logger.info("하나 이상의 도구 실행에 실패하여 웹 검색으로 대체합니다.", extra=log_extra)
                     web_search_result = await self.tools_cog.web_search(user_query)
                     # 기존의 실패한 결과 대신 웹 검색 결과를 사용
                     tool_results = [{
