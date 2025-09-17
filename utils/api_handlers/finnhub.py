@@ -10,25 +10,47 @@ from .. import http
 # Popular company names/aliases to ticker symbol mapping
 # This helps the agent understand natural language queries
 ALIAS_TO_TICKER = {
-    "애플": "AAPL",
-    "apple": "AAPL",
-    "마이크로소프트": "MSFT",
-    "microsoft": "MSFT",
-    "마소": "MSFT",
-    "구글": "GOOGL",
-    "google": "GOOGL",
-    "알파벳": "GOOGL",
-    "alphabet": "GOOGL",
-    "아마존": "AMZN",
-    "amazon": "AMZN",
-    "테슬라": "TSLA",
-    "tesla": "TSLA",
-    "엔비디아": "NVDA",
-    "nvidia": "NVDA",
-    "메타": "META",
-    "meta": "META",
-    "페이스북": "META",
-    "facebook": "META",
+    # Top 40 US companies by market cap + common aliases
+    "nvidia": "NVDA", "엔비디아": "NVDA",
+    "microsoft": "MSFT", "마이크로소프트": "MSFT", "마소": "MSFT",
+    "apple": "AAPL", "애플": "AAPL",
+    "alphabet": "GOOGL", "알파벳": "GOOGL", "google": "GOOGL", "구글": "GOOGL",
+    "amazon": "AMZN", "아마존": "AMZN",
+    "meta platforms": "META", "meta": "META", "메타": "META", "facebook": "META", "페이스북": "META",
+    "broadcom": "AVGO", "브로드컴": "AVGO",
+    "tesla": "TSLA", "테슬라": "TSLA",
+    "berkshire hathaway": "BRK.B", "버크셔해서웨이": "BRK.B",
+    "jpmorgan chase": "JPM", "jp모건": "JPM",
+    "oracle": "ORCL", "오라클": "ORCL",
+    "walmart": "WMT", "월마트": "WMT",
+    "eli lilly": "LLY", "일라이릴리": "LLY",
+    "visa": "V", "비자": "V",
+    "mastercard": "MA", "마스터카드": "MA",
+    "netflix": "NFLX", "넷플릭스": "NFLX",
+    "exxon mobil": "XOM", "엑슨모빌": "XOM",
+    "costco": "COST", "코스트코": "COST",
+    "johnson & johnson": "JNJ", "존슨앤드존슨": "JNJ",
+    "home depot": "HD", "홈디포": "HD",
+    "palantir": "PLTR", "팔란티어": "PLTR",
+    "abbvie": "ABBV", "애브비": "ABBV",
+    "bank of america": "BAC", "뱅크오브아메리카": "BAC",
+    "procter & gamble": "PG", "프록터앤드갬블": "PG", "p&g": "PG",
+    "chevron": "CVX", "쉐브론": "CVX",
+    "unitedhealth group": "UNH", "유나이티드헬스": "UNH",
+    "general electric": "GE", "제너럴일렉트릭": "GE",
+    "coca-cola": "KO", "코카콜라": "KO",
+    "cisco": "CSCO", "시스코": "CSCO",
+    "wells fargo": "WFC", "웰스파고": "WFC",
+    "philip morris": "PM", "필립모리스": "PM",
+    "amd": "AMD", "advanced micro devices": "AMD",
+    "morgan stanley": "MS", "모건스탠리": "MS",
+    "goldman sachs": "GS", "골드만삭스": "GS",
+    "ibm": "IBM", "international business machines": "IBM",
+    "abbott laboratories": "ABT", "애보트": "ABT",
+    "salesforce": "CRM", "세일즈포스": "CRM",
+    "american express": "AXP", "아메리칸익스프레스": "AXP",
+    "linde": "LIN", "린데": "LIN",
+    "mcdonald's": "MCD", "맥도날드": "MCD",
 }
 
 BASE_URL = config.FINNHUB_BASE_URL
@@ -59,7 +81,7 @@ def _format_finnhub_news_data(symbol: str, news_items: list) -> str:
     if not news_items:
         return f"'{symbol}'에 대한 최신 뉴스를 찾을 수 없습니다."
 
-    headlines = [f"- {item['headline']} ({item['url']})") for item in news_items]
+    headlines = [f"- {item['headline']} ({item['url']})" for item in news_items]
     return f"'{symbol}' 관련 최신 뉴스:\n" + "\n".join(headlines)
 
 async def _search_symbol(query: str) -> str | None:

@@ -321,12 +321,21 @@ class AIHandler(commands.Cog):
                 # --- 3단계: Main 모델로 최종 답변 생성 ---
                 logger.info("3단계: Main 모델 호출 시작...", extra=log_extra)
 
-                # PM v5.2: 시스템 프롬프트가 여러 도구 결과를 처리하도록 수정됨
-                main_system_prompt = config.AGENT_SYSTEM_PROMPT.format(
-                    user_query=user_query, 
-                    tool_result=tool_results_str # 이제 tool_result는 모든 결과의 집합
-                )
-                main_prompt = user_query
+                # 도구 사용 여부에 따라 적절한 시스템 프롬프트 선택
+                is_travel_tool_used = any(tc.get('tool_to_use') == 'get_travel_recommendation' for tc in tool_plan)
+
+                if is_travel_tool_used:
+                    main_system_prompt = config.SPECIALIZED_PROMPTS["travel_assistant"].format(
+                        user_query=user_query,
+                        tool_result=tool_results_str
+                    )
+                    main_prompt = "" # 프롬프트에 이미 질문이 포함되어 있으므로 비워둠
+                else:
+                    main_system_prompt = config.AGENT_SYSTEM_PROMPT.format(
+                        user_query=user_query, 
+                        tool_result=tool_results_str
+                    )
+                    main_prompt = user_query
 
                 # 페르소나 적용
                 custom_persona = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'persona_text')
