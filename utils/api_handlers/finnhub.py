@@ -7,6 +7,30 @@ from logger_config import logger
 
 from .. import http
 
+# Popular company names/aliases to ticker symbol mapping
+# This helps the agent understand natural language queries
+ALIAS_TO_TICKER = {
+    "애플": "AAPL",
+    "apple": "AAPL",
+    "마이크로소프트": "MSFT",
+    "microsoft": "MSFT",
+    "마소": "MSFT",
+    "구글": "GOOGL",
+    "google": "GOOGL",
+    "알파벳": "GOOGL",
+    "alphabet": "GOOGL",
+    "아마존": "AMZN",
+    "amazon": "AMZN",
+    "테슬라": "TSLA",
+    "tesla": "TSLA",
+    "엔비디아": "NVDA",
+    "nvidia": "NVDA",
+    "메타": "META",
+    "meta": "META",
+    "페이스북": "META",
+    "facebook": "META",
+}
+
 BASE_URL = config.FINNHUB_BASE_URL
 
 def _get_client():
@@ -33,20 +57,7 @@ def _format_finnhub_quote_data(symbol: str, quote_data: dict) -> str:
 def _format_finnhub_news_data(symbol: str, news_items: list) -> str:
     """Finnhub 뉴스 데이터를 LLM 친화적인 문자열로 포맷팅합니다."""
     if not news_items:
-        return f"'{symbol}'에 대한 최신 뉴스를 찾을 수 없습니다."
-
-    headlines = [f"- {item['headline']} ({item['url']})" for item in news_items]
-    return f"'{symbol}' 관련 최신 뉴스:\n" + "\n".join(headlines)
-
-async def get_stock_quote(symbol: str) -> str:
-    """
-    Finnhub API로 해외 주식 시세를 조회하고, LLM 친화적인 문자열로 반환합니다.
-    [수정] 반환 형식을 dict에서 str으로 변경하여 토큰 사용량을 최적화합니다.
-    """
-    params = _get_client()
-    if not params:
-        return f"'{symbol}' 주식 정보를 조회할 수 없습니다 (API 키 미설정)."
-    params['symbol'] = symbol.upper()
+        return f
 
     try:
         session = http.get_modern_tls_session()
