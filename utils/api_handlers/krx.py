@@ -9,6 +9,7 @@ from datetime import datetime
 from . import kakao # Import kakao handler
 
 # KRX stock name normalization mapping (fast path for common stocks)
+# Top 30 KR companies by market cap + common aliases
 KR_ALIAS_TO_NAME = {
     "삼성전자": "삼성전자",
     "삼전": "삼성전자",
@@ -17,18 +18,38 @@ KR_ALIAS_TO_NAME = {
     "하닉": "SK하이닉스",
     "lg에너지솔루션": "LG에너지솔루션",
     "엔솔": "LG에너지솔루션",
-    "현대차": "현대차",
-    "현대자동차": "현대차",
     "삼성바이오로직스": "삼성바이오로직스",
     "삼바": "삼성바이오로직스",
+    "한화에어로스페이스": "한화에어로스페이스",
+    "삼성전자우": "삼성전자우",
+    "kb금융": "KB금융",
+    "hd현대중공업": "HD현대중공업",
+    "현대차": "현대차",
+    "현대자동차": "현대차",
     "기아": "기아",
+    "두산에너빌리티": "두산에너빌리티",
     "셀트리온": "셀트리온",
-    "posco홀딩스": "POSCO홀딩스",
-    "포스코홀딩스": "POSCO홀딩스",
     "네이버": "NAVER",
     "naver": "NAVER",
+    "한화오션": "한화오션",
+    "신한지주": "신한지주",
+    "삼성물산": "삼성물산",
+    "삼성생명": "삼성생명",
+    "hd한국조선해양": "HD한국조선해양",
+    "현대모비스": "현대모비스",
     "카카오": "카카오",
     "kakao": "카카오",
+    "sk스퀘어": "SK스퀘어",
+    "하나금융지주": "하나금융지주",
+    "hmm": "HMM",
+    "한국전력": "한국전력",
+    "현대로템": "현대로템",
+    "posco홀딩스": "POSCO홀딩스",
+    "포스코홀딩스": "POSCO홀딩스",
+    "메리츠금융지주": "메리츠금융지주",
+    "hd현대일렉트릭": "HD현대일렉트릭",
+    "삼성화재": "삼성화재",
+    "고려아연": "고려아연",
 }
 
 def _format_krx_price_data(stock_info: dict) -> str:

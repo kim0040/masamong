@@ -27,9 +27,9 @@ class ToolsCog(commands.Cog):
         self.weather_cog: WeatherCog = self.bot.get_cog('WeatherCog')
         logger.info("ToolsCog 초기화 완료.")
 
-    async def get_travel_recommendation(self, location_name: str) -> str:
+    async def get_travel_recommendation(self, location_name: str) -> dict:
         """
-        주어진 위치에 대한 날씨, 명소, 이벤트 등 여행 정보를 종합하여 LLM 친화적인 문자열로 반환합니다.
+        주어진 위치에 대한 날씨, 명소, 이벤트 등 여행 정보를 종합하여 사전(dict) 형태로 반환합니다.
         This is a high-level meta-tool that acts as an intelligent router.
         """
         # 1. Geocode the location name
@@ -71,10 +71,11 @@ class ToolsCog(commands.Cog):
         if isinstance(weather_result, Exception):
             logger.error("Weather task failed in gather", exc_info=weather_result)
             weather_result = {"error": "날씨 정보 조회 실패"}
-        # The korean weather function returns a tuple
         elif isinstance(weather_result, tuple):
-             weather_result = weather_result[0] if weather_result[0] else {"error": weather_result[1]}
-
+            if weather_result[0]:
+                weather_result = {"current_weather": weather_result[0]}
+            else:
+                weather_result = {"error": weather_result[1]}
 
         if isinstance(poi_result, Exception):
             logger.error("POI task failed in gather", exc_info=poi_result)
@@ -84,30 +85,13 @@ class ToolsCog(commands.Cog):
             logger.error("Events task failed in gather", exc_info=events_result)
             events_result = {"error": "주변 이벤트 정보 조회 실패"}
 
-        # 3. Aggregate results
-        # 여행 정보를 종합하여 포맷팅
-        result = f"🌍 {display_name} 여행 정보\n\n"
-
-        # 날씨 정보 추가
-        if weather_result and not weather_result.get("error"):
-            result += f"🌤️ **날씨**: {weather_result.get('current_weather', '정보 없음')}\n\n"
-
-        # 명소 정보 추가
-        poi_places = poi_result.get("places", [])
-        if poi_places:
-            result += "📍 **주요 명소**:\n"
-            for i, place in enumerate(poi_places[:3], 1):
-                result += f"   {i}. {place.get('name', 'N/A')}\n"
-            result += "\n"
-
-        # 이벤트 정보 추가
-        events = events_result.get("events", [])
-        if events:
-            result += "🎪 **진행 중인 이벤트**:\n"
-            for i, event in enumerate(events[:3], 1):
-                result += f"   {i}. {event.get('name', 'N/A')}\n"
-
-        return result.strip()
+        # 3. Aggregate results into a dictionary
+        return {
+            "location_info": geo_info,
+            "weather": weather_result,
+            "points_of_interest": poi_result,
+            "events": events_result,
+        }
 
     async def get_current_time(self) -> str:
         """현재 시간과 날짜를 LLM 친화적인 문자열로 반환합니다."""
