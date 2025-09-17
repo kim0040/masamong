@@ -3,6 +3,8 @@ import asyncio
 import requests
 import config
 from logger_config import logger
+from .. import http
+from datetime import datetime
 
 def _format_krx_price_data(stock_info: dict) -> str:
     """KRX 주식 가격 데이터를 LLM 친화적인 문자열로 포맷팅합니다."""
@@ -22,22 +24,21 @@ async def get_stock_price(stock_name: str) -> str | None:
     """
     공공데이터포털(KRX) API로 주식 정보를 조회하고, LLM 친화적인 문자열로 반환합니다.
     [수정] 호환성을 위해 표준 requests.Session을 사용하도록 변경.
+    [수정] API 요청 시 현재 날짜(basDt)를 포함하도록 수정.
     """
     if not config.GO_DATA_API_KEY_KR or config.GO_DATA_API_KEY_KR == 'YOUR_GO_DATA_API_KEY_KR':
         logger.error("공공데이터포털 API 키(GO_DATA_API_KEY_KR)가 설정되지 않았습니다.")
         return f"{stock_name} 주식 정보를 조회할 수 없습니다 (API 키 미설정)."
 
-    params = {"serviceKey": config.GO_DATA_API_KEY_KR, "itmsNm": stock_name, "resultType": "json", "numOfRows": "1"}
+    today_str = datetime.now().strftime('%Y%m%d')
+    params = {"serviceKey": config.GO_DATA_API_KEY_KR, "itmsNm": stock_name, "resultType": "json", "numOfRows": "1", "basDt": today_str}
     log_params = params.copy()
     log_params["serviceKey"] = "[REDACTED]"
     logger.info(f"KRX API 요청: URL='{config.KRX_BASE_URL}', Params='{log_params}'")
 
     try:
-        # 표준 requests.Session 사용
-        session = requests.Session()
-        session.headers.update({
-            'User-Agent': 'Masamong-Bot/3.5 (Discord Bot; +https://github.com/kim0040/masamong)'
-        })
+        # Modern TLS Session 사용
+        session = http.get_modern_tls_session()
         response = await asyncio.to_thread(session.get, config.KRX_BASE_URL, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
