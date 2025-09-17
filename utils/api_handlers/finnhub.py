@@ -57,29 +57,89 @@ def _format_finnhub_quote_data(symbol: str, quote_data: dict) -> str:
 def _format_finnhub_news_data(symbol: str, news_items: list) -> str:
     """Finnhub 뉴스 데이터를 LLM 친화적인 문자열로 포맷팅합니다."""
     if not news_items:
-        return f
+        return f"'{symbol}'에 대한 최신 뉴스를 찾을 수 없습니다."
+
+    headlines = [f"- {item['headline']} ({item['url']})") for item in news_items]
+    return f"'{symbol}' 관련 최신 뉴스:\n" + "\n".join(headlines)
+
+async def _search_symbol(query: str) -> str | None:
+    """Search for a stock symbol using a query string."""
+    params = _get_client()
+    if not params:
+        return None
+    params['q'] = query
 
     try:
+        session = http.get_modern_tls_session()
+        response = await asyncio.to_thread(session.get, f"{BASE_URL}/search", params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get('result') and len(data['result']) > 0:
+            for item in data['result']:
+                if '.' not in item.get('symbol', '') and item.get('type') == 'Common Stock':
+                    logger.info(f"Finnhub search: Found symbol '{item['symbol']}' for query '{query}'")
+                    return item['symbol']
+            first_result = data['result'][0]
+            logger.info(f"Finnhub search: Falling back to first result '{first_result['symbol']}' for query '{query}'")
+            return first_result['symbol']
+
+        logger.warning(f"Finnhub search: No results found for query '{query}'")
+        return None
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Finnhub search API ('{query}') 요청 중 오류: {e}", exc_info=True)
+        return None
+
+async def get_stock_quote(symbol: str) -> str:
+    """
+    Finnhub API로 해외 주식 시세를 조회하고, LLM 친화적인 문자열로 반환합니다.
+    [수정] API 조회 실패 시 Ticker 검색 후 재시도 기능 추가.
+    """
+    params = _get_client()
+    if not params:
+        return f"'{symbol}' 주식 정보를 조회할 수 없습니다 (API 키 미설정)."
+
+    normalized_symbol = ALIAS_TO_TICKER.get(symbol.lower(), symbol).upper()
+    logger.info(f"Finnhub: Original symbol '{symbol}' normalized to '{normalized_symbol}'")
+
+    async def _get_quote_for_symbol(ticker: str) -> dict | None:
+        """Internal function to fetch quote for a given ticker."""
+        params['symbol'] = ticker
         session = http.get_modern_tls_session()
         response = await asyncio.to_thread(session.get, f"{BASE_URL}/quote", params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
+        if data.get('c') != 0 or data.get('d') is not None:
+            return data
+        return None
 
-        if data.get('c') == 0 and data.get('d') is None:
-             logger.warning(f"Finnhub API에서 '{symbol}' 종목 정보를 찾지 못했습니다. (데이터 없음)")
-             return f"'{symbol}' 종목 정보를 찾을 수 없습니다."
+    try:
+        quote_data = await _get_quote_for_symbol(normalized_symbol)
 
-        quote_data = {
-            "current_price": data.get('c'),
-            "change": data.get('d'),
+        if not quote_data:
+            logger.info(f"Finnhub API에서 '{normalized_symbol}' 종목 정보를 찾지 못했습니다. 검색을 시도합니다.")
+            searched_symbol = await _search_symbol(symbol)
+            if searched_symbol and searched_symbol != normalized_symbol:
+                logger.info(f"Finnhub: 검색된 Ticker '{searched_symbol}'(으)로 재시도합니다.")
+                quote_data = await _get_quote_for_symbol(searched_symbol)
+                normalized_symbol = searched_symbol
+
+        if not quote_data:
+            logger.warning(f"Finnhub: 최종적으로 '{symbol}'에 대한 정보를 찾지 못했습니다.")
+            return f"'{symbol}' 종목 정보를 찾을 수 없습니다. 티커나 회사 이름이 정확한지 확인해주세요."
+
+        formatted_data = {
+            "current_price": quote_data.get('c'),
+            "change": quote_data.get('d'),
         }
-        return _format_finnhub_quote_data(symbol, quote_data)
+        return _format_finnhub_quote_data(normalized_symbol, formatted_data)
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Finnhub API('{symbol}') 요청 중 오류: {e}", exc_info=True)
         return "해외 주식 조회 중 네트워크 오류가 발생했습니다."
     except (ValueError, KeyError) as e:
-        response_text = response.text if 'response' in locals() else 'N/A'
+        response_text = "N/A"
         logger.error(f"Finnhub API('{symbol}') 응답 파싱 중 오류: {e}. 응답: {response_text}", exc_info=True)
         return "해외 주식 조회 중 데이터 처리 오류가 발생했습니다."
     except Exception as e:
@@ -89,12 +149,14 @@ def _format_finnhub_news_data(symbol: str, news_items: list) -> str:
 async def get_company_news(symbol: str, count: int = 3) -> str:
     """
     Finnhub API로 최신 뉴스를 조회하고, LLM 친화적인 문자열로 반환합니다.
-    [수정] 반환 형식을 dict에서 str으로 변경하여 토큰 사용량을 최적화합니다.
     """
     params = _get_client()
     if not params:
         return f"'{symbol}' 관련 뉴스를 조회할 수 없습니다 (API 키 미설정)."
-    params['symbol'] = symbol.upper()
+    
+    normalized_symbol = ALIAS_TO_TICKER.get(symbol.lower(), symbol).upper()
+    logger.info(f"Finnhub News: Original symbol '{symbol}' normalized to '{normalized_symbol}'")
+    params['symbol'] = normalized_symbol
 
     today = datetime.now()
     one_week_ago = today - timedelta(days=7)
@@ -108,22 +170,22 @@ async def get_company_news(symbol: str, count: int = 3) -> str:
         news_items = response.json()
 
         if not isinstance(news_items, list):
-            logger.warning(f"Finnhub 뉴스 API('{symbol}')에서 예상치 못한 형식의 응답을 받았습니다: {news_items}")
-            return f"'{symbol}' 관련 뉴스를 가져왔지만, 형식이 올바르지 않습니다."
+            logger.warning(f"Finnhub 뉴스 API('{normalized_symbol}')에서 예상치 못한 형식의 응답을 받았습니다: {news_items}")
+            return f"'{normalized_symbol}' 관련 뉴스를 가져왔지만, 형식이 올바르지 않습니다."
 
         formatted_news = [
             {"headline": item.get('headline'), "summary": item.get('summary'), "url": item.get('url')}
             for item in news_items[:count]
         ]
-        return _format_finnhub_news_data(symbol, formatted_news)
+        return _format_finnhub_news_data(normalized_symbol, formatted_news)
 
     except requests.exceptions.RequestException as e:
-        logger.error(f"Finnhub 뉴스 API('{symbol}') 요청 중 오류: {e}", exc_info=True)
+        logger.error(f"Finnhub 뉴스 API('{normalized_symbol}') 요청 중 오류: {e}", exc_info=True)
         return "뉴스 조회 중 네트워크 오류가 발생했습니다."
     except (ValueError, KeyError) as e:
-        response_text = response.text if 'response' in locals() else 'N/A'
-        logger.error(f"Finnhub 뉴스 API('{symbol}') 응답 파싱 중 오류: {e}. 응답: {response_text}", exc_info=True)
+        response_text = "N/A"
+        logger.error(f"Finnhub 뉴스 API('{normalized_symbol}') 응답 파싱 중 오류: {e}. 응답: {response_text}", exc_info=True)
         return "뉴스 조회 중 데이터 처리 오류가 발생했습니다."
     except Exception as e:
-        logger.error(f"Finnhub 뉴스 API('{symbol}') 처리 중 예기치 않은 오류: {e}", exc_info=True)
+        logger.error(f"Finnhub 뉴스 API('{normalized_symbol}') 처리 중 예기치 않은 오류: {e}", exc_info=True)
         return "뉴스 조회 중 알 수 없는 오류가 발생했습니다."
