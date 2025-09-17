@@ -255,10 +255,28 @@ class ToolsCog(commands.Cog):
             title = result.get('title', '제목 없음').replace("<b>", "").replace("</b>", "")
             snippet = result.get('contents', '내용 없음').replace("<b>", "").replace("</b>", "")
             # Truncate snippet to save tokens
-            snippet = snippet[:150] + '...' if len(snippet) > 150 else snippet
+            snippet = snippet[:250] + '...' if len(snippet) > 250 else snippet
             formatted_results.append(f"{i}. {title}\n   - {snippet}")
 
         return f"'{query}'에 대한 웹 검색 결과 요약:\n" + "\n".join(formatted_results)
+
+    async def search_images(self, query: str, count: int = 3) -> str:
+        """
+        주어진 쿼리로 이미지를 검색하고, 결과 이미지 URL 목록을 문자열로 반환합니다.
+        """
+        logger.info(f"Executing image search for query: '{query}'")
+        image_results = await kakao.search_image(query, page_size=count)
+
+        if not image_results:
+            return f"'{query}'에 대한 이미지를 찾을 수 없습니다."
+
+        # Return a list of image URLs, separated by newlines
+        urls = [result.get('image_url') for result in image_results if result.get('image_url')]
+        
+        if not urls:
+            return f"'{query}'에 대한 이미지를 찾았지만, 유효한 URL이 없습니다."
+            
+        return f"'{query}' 이미지 검색 결과:\n" + "\n".join(urls)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ToolsCog(bot))
