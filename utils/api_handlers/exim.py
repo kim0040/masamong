@@ -59,6 +59,26 @@ async def get_krw_exchange_rate(target_currency: str = "USD") -> str:
     logger.warning(f"수출입은행 환율 API 응답에서 '{target_currency}' 통화를 찾지 못했습니다.")
     return f"❌ '{target_currency}' 통화를 찾을 수 없습니다."
 
+async def get_raw_exchange_rate(target_currency: str = "USD") -> float | None:
+    """
+    환율 정보를 조회하여 숫자(float) 값으로 반환합니다.
+    계산기 등 다른 도구에서 사용하기 위한 내부용 함수입니다.
+    """
+    data = await _fetch_exim_data("AP01")
+    if isinstance(data, dict) and "error" in data:
+        return None
+
+    for rate_info in data:
+        if rate_info.get('cur_unit') == target_currency.upper():
+            try:
+                return float(rate_info.get('deal_bas_r', '0').replace(',', ''))
+            except (ValueError, TypeError):
+                logger.error(f"수출입은행 환율 값 파싱 실패: {rate_info.get('deal_bas_r')}")
+                return None
+
+    logger.warning(f"수출입은행 환율 API 응답에서 '{target_currency}' 통화를 찾지 못했습니다.")
+    return None
+
 async def get_loan_rates() -> str:
     """대출 금리 정보를 조회합니다 (data=AP02 - 가정)."""
     data = await _fetch_exim_data("AP02")

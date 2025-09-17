@@ -114,17 +114,18 @@ async def _search_symbol(query: str) -> str | None:
         logger.error(f"Finnhub search API ('{query}') 요청 중 오류: {e}", exc_info=True)
         return None
 
-async def get_stock_quote(symbol: str) -> str:
+async def get_raw_stock_quote(symbol: str) -> dict | None:
     """
-    Finnhub API로 해외 주식 시세를 조회하고, LLM 친화적인 문자열로 반환합니다.
-    [수정] API 조회 실패 시 Ticker 검색 후 재시도 기능 추가.
+    Finnhub API로 해외 주식 시세를 조회하고, 주요 정보를 dict 형태로 반환합니다.
+    다른 도구에서 사용하기 위한 내부용 함수입니다.
     """
     params = _get_client()
     if not params:
-        return f"'{symbol}' 주식 정보를 조회할 수 없습니다 (API 키 미설정)."
+        logger.error("Finnhub API 키가 설정되지 않아 get_raw_stock_quote를 실행할 수 없습니다.")
+        return None
 
     normalized_symbol = ALIAS_TO_TICKER.get(symbol.lower(), symbol).upper()
-    logger.info(f"Finnhub: Original symbol '{symbol}' normalized to '{normalized_symbol}'")
+    logger.info(f"Finnhub (raw): Original symbol '{symbol}' normalized to '{normalized_symbol}'")
 
     async def _get_quote_for_symbol(ticker: str) -> dict | None:
         """Internal function to fetch quote for a given ticker."""
@@ -133,6 +134,7 @@ async def get_stock_quote(symbol: str) -> str:
         response = await asyncio.to_thread(session.get, f"{BASE_URL}/quote", params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
+        # 0, d=None은 유효하지 않은 응답으로 간주
         if data.get('c') != 0 or data.get('d') is not None:
             return data
         return None
@@ -140,34 +142,48 @@ async def get_stock_quote(symbol: str) -> str:
     try:
         quote_data = await _get_quote_for_symbol(normalized_symbol)
 
+        # 첫 시도 실패 시, 심볼 검색 후 재시도
         if not quote_data:
             logger.info(f"Finnhub API에서 '{normalized_symbol}' 종목 정보를 찾지 못했습니다. 검색을 시도합니다.")
             searched_symbol = await _search_symbol(symbol)
-            if searched_symbol and searched_symbol != normalized_symbol:
+            if searched_symbol and searched_symbol.lower() != normalized_symbol.lower():
                 logger.info(f"Finnhub: 검색된 Ticker '{searched_symbol}'(으)로 재시도합니다.")
                 quote_data = await _get_quote_for_symbol(searched_symbol)
                 normalized_symbol = searched_symbol
 
         if not quote_data:
             logger.warning(f"Finnhub: 최종적으로 '{symbol}'에 대한 정보를 찾지 못했습니다.")
-            return f"'{symbol}' 종목 정보를 찾을 수 없습니다. 티커나 회사 이름이 정확한지 확인해주세요."
+            return None
 
-        formatted_data = {
-            "current_price": quote_data.get('c'),
+        return {
+            "symbol": normalized_symbol,
+            "price": quote_data.get('c'),
             "change": quote_data.get('d'),
         }
-        return _format_finnhub_quote_data(normalized_symbol, formatted_data)
-
     except requests.exceptions.RequestException as e:
         logger.error(f"Finnhub API('{symbol}') 요청 중 오류: {e}", exc_info=True)
-        return "해외 주식 조회 중 네트워크 오류가 발생했습니다."
+        return None
     except (ValueError, KeyError) as e:
-        response_text = "N/A"
-        logger.error(f"Finnhub API('{symbol}') 응답 파싱 중 오류: {e}. 응답: {response_text}", exc_info=True)
-        return "해외 주식 조회 중 데이터 처리 오류가 발생했습니다."
+        logger.error(f"Finnhub API('{symbol}') 응답 파싱 중 오류: {e}", exc_info=True)
+        return None
     except Exception as e:
         logger.error(f"Finnhub API('{symbol}') 처리 중 예기치 않은 오류: {e}", exc_info=True)
-        return "해외 주식 조회 중 알 수 없는 오류가 발생했습니다."
+        return None
+
+async def get_stock_quote(symbol: str) -> str:
+    """
+    Finnhub API로 해외 주식 시세를 조회하고, LLM 친화적인 문자열로 반환합니다.
+    """
+    raw_data = await get_raw_stock_quote(symbol)
+    if not raw_data:
+        return f"'{symbol}'에 대한 주식 정보를 찾을 수 없습니다. 티커나 회사 이름이 정확한지 확인해주세요."
+    
+    # 포맷팅에 필요한 데이터만 전달
+    formatted_data = {
+        "current_price": raw_data.get('price'),
+        "change": raw_data.get('change'),
+    }
+    return _format_finnhub_quote_data(raw_data.get('symbol'), formatted_data)
 
 async def get_company_news(symbol: str, count: int = 3) -> str:
     """

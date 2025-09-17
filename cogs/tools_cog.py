@@ -134,6 +134,43 @@ class ToolsCog(commands.Cog):
             logger.info(f"'{stock_name}'은(는) Ticker로 간주하여 Finnhub API를 호출합니다.")
             return await finnhub.get_stock_quote(stock_name)
 
+    async def get_stock_price_in_krw(self, stock_name: str) -> str:
+        """
+        미국 주식의 현재 가격을 USD와 KRW로 계산하여 반환합니다.
+        이 기능은 미국 주식에만 사용할 수 있습니다.
+        """
+        logger.info(f"Executing get_stock_price_in_krw for: '{stock_name}'")
+
+        # 1. Get raw stock price
+        quote_data = await finnhub.get_raw_stock_quote(stock_name)
+        if not quote_data or 'price' not in quote_data:
+            return f"'{stock_name}'에 대한 미국 주식 정보를 찾을 수 없습니다."
+
+        stock_price_usd = quote_data['price']
+        stock_symbol = quote_data.get('symbol', stock_name.upper())
+
+        # 2. Get raw exchange rate
+        exchange_rate = await exim.get_raw_exchange_rate("USD")
+        if not exchange_rate:
+            # Fallback: return USD price only if exchange rate fails
+            logger.warning("환율 정보를 가져오지 못해 KRW 계산에 실패했습니다. USD 가격만 반환합니다.")
+            return await self.get_stock_price(stock_name)
+
+        # 3. Calculate and format
+        stock_price_krw = stock_price_usd * exchange_rate
+        
+        change = quote_data.get('change', 0)
+        if change > 0:
+            change_str = f"+{change:.2f}"
+        elif change < 0:
+            change_str = f"{change:.2f}"
+        else:
+            change_str = "0.00"
+        
+        usd_part = f"{stock_symbol}: {stock_price_usd:.2f} USD ({change_str})"
+        
+        return f"{usd_part} (약 {stock_price_krw:,.0f}원)"
+
     async def get_company_news(self, stock_name: str, count: int = 3) -> str:
         """
         특정 종목(Ticker Symbol)에 대한 최신 뉴스를 조회하여 LLM 친화적인 문자열로 반환합니다.
