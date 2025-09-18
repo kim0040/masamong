@@ -103,49 +103,7 @@ class EventListeners(commands.Cog):
         # The new agent orchestrator handles everything from planning to response.
         await self.ai_handler.process_agent_message(message)
 
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        logger.info(f"on_message called for message: {message.id}")
-        if message.author.bot or not message.guild or isinstance(message.channel, discord.DMChannel):
-            return
-
-        # 1. 명령어 접두사로 시작하는 메시지 우선 처리
-        if message.content.startswith(config.COMMAND_PREFIX if hasattr(config, 'COMMAND_PREFIX') else self.bot.command_prefix):
-            logger.info(f"Processing command for message: {message.id}")
-            await self.bot.process_commands(message)
-            return
-
-        # 2. 봇이 직접 멘션되었는지 확인 (교통 경찰 역할)
-        is_bot_mentioned = self.bot.user.mentioned_in(message)
-
-        # 공통 로직: 활동 기록 및 메시지 히스토리 추가
-        if self.activity_cog:
-            await self.activity_cog.record_message(message)
-        if self.ai_handler:
-            await self.ai_handler.add_message_to_history(message)
-
-        if is_bot_mentioned:
-            # 봇이 멘션된 경우, AI 상호작용을 즉시 처리
-            await self._handle_ai_interaction(message)
-            return
-
-        # --- 아래는 봇이 멘션되지 않은 경우에만 실행됩니다 ---
-
-        # Fun 키워드 트리거 확인
-        if await self._handle_keyword_triggers(message):
-            return
-
-        # 능동적 비서 기능 - 잠재적 의도 분석
-        if self.proactive_assistant:
-            proactive_suggestion = await self.proactive_assistant.analyze_user_intent(message)
-            if proactive_suggestion:
-                await message.reply(proactive_suggestion, mention_author=False)
-                return
-        
-        # (멘션 없이도) 능동적으로 응답해야 하는 경우 AI 상호작용 처리
-        # _handle_ai_interaction 내부의 should_proactively_respond가 이 경우를 담당합니다.
-        await self._handle_ai_interaction(message)
-        logger.info(f"on_message finished for message: {message.id}")
+    
 
     @commands.Cog.listener()
     async def on_command_completion(self, ctx: commands.Context):
