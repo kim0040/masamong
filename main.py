@@ -115,7 +115,7 @@ class ReMasamongBot(commands.Bot):
         if is_bot_mentioned:
             # 봇이 멘션된 경우, AI 상호작용을 즉시 처리
             if ai_handler:
-                await ai_handler._handle_ai_interaction(message)
+                await ai_handler.process_agent_message(message)
             return
 
         # --- 아래는 봇이 멘션되지 않은 경우에만 실행됩니다 ---
@@ -136,8 +136,9 @@ class ReMasamongBot(commands.Bot):
         
         # (멘션 없이도) 능동적으로 응답해야 하는 경우 AI 상호작용 처리
         # _handle_ai_interaction 내부의 should_proactively_respond가 이 경우를 담당합니다.
+        # _handle_ai_interaction 내부의 should_proactively_respond가 이 경우를 담당합니다。
         if ai_handler:
-            await ai_handler._handle_ai_interaction(message)
+            await ai_handler.process_agent_message(message)
 
     async def close(self):
         """
