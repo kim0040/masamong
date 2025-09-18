@@ -38,37 +38,63 @@
 - Discord 봇 토큰
 - Google Gemini API 키
 
-### 2. 설치 (Ubuntu 기준)
+### 2. 설치 (Ubuntu 20.04+ 기준)
+
+**1. 시스템 준비**
 
 ```bash
-# 시스템 패키지 업데이트
+# 시스템 패키지 목록을 최신 상태로 업데이트합니다.
 sudo apt update && sudo apt upgrade -y
 
-# Python 3.9+ 및 관련 도구 설치
-sudo apt install python3.9 python3.9-venv python3-pip git -y
+# Python 3.11, 가상 환경 도구, pip, git을 설치합니다.
+# (Python 3.8 이상이면 되지만, 3.11을 권장합니다.)
+sudo apt install python3.11 python3.11-venv python3-pip git -y
+```
 
-# 저장소 클론
+**2. 프로젝트 클론 및 설정**
+
+```bash
+# 원하는 위치에 프로젝트 소스 코드를 클론합니다.
 git clone https://github.com/kim0040/masamong.git
 cd masamong
 
-# 가상환경 생성 및 활성화
-python3.9 -m venv venv
+# 'venv'라는 이름의 가상 환경을 생성합니다.
+python3.11 -m venv venv
+
+# 가상 환경을 활성화합니다. (터미널 프롬프트 앞에 (venv)가 표시됩니다.)
 source venv/bin/activate
 
-# pip 업그레이드
+# pip를 최신 버전으로 업그레이드합니다.
 pip install --upgrade pip
 
-# 의존성 설치
+# requirements.txt 파일에 명시된 모든 파이썬 라이브러리를 설치합니다.
 pip install -r requirements.txt
+```
 
-# 환경 변수 설정
+**3. 환경 변수 및 API 키 설정**
+
+```bash
+# .env.example 파일을 복사하여 .env 파일을 생성합니다.
 cp .env.example .env
-nano .env  # 또는 vim .env로 API 키들을 설정
 
-# 데이터베이스 초기화
+# nano 또는 vim과 같은 텍스트 편집기로 .env 파일을 엽니다.
+nano .env
+```
+
+`.env` 파일 내부에 각 API 서비스에서 발급받은 키를 입력하고 저장합니다. `DISCORD_BOT_TOKEN`과 `GEMINI_API_KEY`는 봇의 핵심 기능을 위해 **반드시** 필요합니다.
+
+**4. 데이터베이스 초기화**
+
+```bash
+# database/schema.sql 파일의 내용에 따라 SQLite 데이터베이스 파일을 생성합니다.
+# 이 명령어는 봇을 처음 설정할 때 한 번만 실행하면 됩니다.
 python database/init_db.py
+```
 
-# 봇 실행
+**5. 봇 실행**
+
+```bash
+# 모든 설정이 완료되었습니다! 봇을 실행합니다.
 python main.py
 ```
 
@@ -330,31 +356,7 @@ Restart=always
 WantedBy=multi-user.target
 ```
 
-## 🤝 기여하기
 
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-## 📝 라이선스
-
-이 프로젝트는 MIT 라이선스 하에 배포됩니다. 자세한 내용은 [LICENSE](LICENSE) 파일을 참조하세요.
-
-## 🙏 감사의 말
-
-- [Discord.py](https://github.com/Rapptz/discord.py) - Discord API 래퍼
-- [Google Gemini](https://ai.google.dev/) - AI 모델 제공
-- [OpenWeatherMap](https://openweathermap.org/) - 날씨 데이터
-- [Foursquare](https://foursquare.com/) - 장소 데이터
-- [Ticketmaster](https://ticketmaster.com/) - 이벤트 데이터
-
-## 📞 지원
-
-- **이슈 리포트**: [GitHub Issues](https://github.com/kim0040/masamong/issues)
-- **문서**: [Wiki](https://github.com/kim0040/masamong/wiki)
-- **디스코드**: [서버 참여](https://discord.gg/your-invite)
 
 ---
 
