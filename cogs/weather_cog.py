@@ -254,11 +254,13 @@ class WeatherCog(commands.Cog):
         nx, ny = config.DEFAULT_NX, config.DEFAULT_NY
         today_forecast_raw = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
 
+        logger.info(f"today_forecast_raw: {today_forecast_raw}")
+
         weather_summary = f"오늘 {config.DEFAULT_LOCATION_NAME} 날씨 정보를 가져오는 데 실패했어. 😥"
-        if today_forecast_raw and not isinstance(today_forecast_raw, dict):
-            weather_summary = weather_utils.format_short_term_forecast(today_forecast_raw, "오늘", target_day_offset=0)
-        elif isinstance(today_forecast_raw, dict) and today_forecast_raw.get("error"):
-            weather_summary = today_forecast_raw.get("message", "날씨 정보 조회 중 오류가 발생했어.")
+        if today_forecast_raw and isinstance(today_forecast_raw, dict):
+            items = today_forecast_raw.get('response', {}).get('body', {}).get('items')
+            if items:
+                weather_summary = weather_utils.format_short_term_forecast(items, "오늘", target_day_offset=0)
 
         alert_context = ""
         alert_type_log = ""
@@ -283,8 +285,22 @@ class WeatherCog(commands.Cog):
             await notification_channel.send(final_message_to_send)
             log_message = f"{greeting_type} 인사 전송 ({'AI 생성' if ai_generated_message else '기본'}): {final_message_to_send}"
             logger.info(f"{context_log} " + log_message.replace('\n', ' '))
+            await db_utils.log_analytics(self.bot.db, "WEATHER_NOTIFICATION", {
+                "guild_id": notification_channel.guild.id,
+                "channel_id": notification_channel.id,
+                "greeting_type": greeting_type,
+                "weather_summary": weather_summary,
+                "is_ai_generated": ai_generated_message is not None,
+                "success": True,
+            })
         except Exception as e:
             logger.error(f"{context_log} {greeting_type} 인사 전송 중 오류: {e}", exc_info=True)
+            await db_utils.log_analytics(self.bot.db, "WEATHER_NOTIFICATION_FAILED", {
+                "guild_id": notification_channel.guild.id,
+                "channel_id": notification_channel.id,
+                "greeting_type": greeting_type,
+                "error": str(e),
+            })
 
     @tasks.loop(time=dt_time(hour=config.MORNING_GREETING_TIME["hour"], minute=config.MORNING_GREETING_TIME["minute"], tzinfo=KST))
     async def morning_greeting_loop(self):

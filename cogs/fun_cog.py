@@ -60,7 +60,7 @@ class FunCog(commands.Cog):
         async with channel.typing():
             try:
                 # AI 핸들러를 통해 DB에서 최근 대화 기록을 가져옴
-                history_str = await self.ai_handler.get_recent_conversation_text(channel.id, look_back=20)
+                history_str = await self.ai_handler.get_recent_conversation_text(channel.guild.id, channel.id, look_back=20)
 
                 if not history_str:
                     await channel.send("요약할 만한 대화가 충분히 쌓이지 않았어.")

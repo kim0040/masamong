@@ -159,9 +159,9 @@ class AIHandler(commands.Cog):
         except (pickle.PicklingError, aiosqlite.Error) as e:
             logger.error(f"임베딩 DB 저장/직렬화 중 오류: {e}", extra=log_extra, exc_info=True)
 
-    async def _get_rag_context(self, channel_id: int, user_id: int, query: str) -> Tuple[str, list[str]]:
+    async def _get_rag_context(self, guild_id: int, channel_id: int, user_id: int, query: str) -> Tuple[str, list[str]]:
         """RAG를 위한 컨텍스트를 DB에서 검색하고, 컨텍스트 문자열과 원본 메시지 내용 목록을 반환합니다."""
-        log_extra = {'channel_id': channel_id, 'user_id': user_id}
+        log_extra = {'guild_id': guild_id, 'channel_id': channel_id, 'user_id': user_id}
         logger.info(f"RAG 컨텍스트 검색 시작. Query: '{query}'", extra=log_extra)
 
         query_embedding_result = await self._safe_embed_content(
@@ -175,7 +175,7 @@ class AIHandler(commands.Cog):
 
         try:
             query_embedding = np.array(query_embedding_result['embedding'])
-            async with self.bot.db.execute("SELECT content, embedding FROM conversation_history WHERE channel_id = ? AND embedding IS NOT NULL ORDER BY created_at DESC LIMIT 100;", (channel_id,)) as cursor:
+            async with self.bot.db.execute("SELECT content, embedding FROM conversation_history WHERE guild_id = ? AND channel_id = ? AND embedding IS NOT NULL ORDER BY created_at DESC LIMIT 100;", (guild_id, channel_id,)) as cursor:
                 rows = await cursor.fetchall()
             if not rows:
                 logger.info("RAG: 검색할 임베딩 데이터가 없습니다.", extra=log_extra)
@@ -260,7 +260,7 @@ class AIHandler(commands.Cog):
         async with message.channel.typing():
             try:
                 # --- 1단계: Lite 모델로 작업 계획 수립 ---
-                rag_prompt, _ = await self._get_rag_context(message.channel.id, message.author.id, user_query)
+                rag_prompt, _ = await self._get_rag_context(message.guild.id, message.channel.id, message.author.id, user_query)
                 history = await self._get_recent_history(message, rag_prompt)
 
                 lite_system_prompt = config.LITE_MODEL_SYSTEM_PROMPT
@@ -289,6 +289,16 @@ class AIHandler(commands.Cog):
                     # Case 1: 간단한 대화 - Lite 모델의 답변을 그대로 사용
                     logger.info("분기: 간단한 대화로 판단, Lite 모델의 답변으로 바로 응답합니다.", extra=log_extra)
                     await message.reply(lite_response_text, mention_author=False)
+                    await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {
+                        "guild_id": message.guild.id,
+                        "user_id": message.author.id,
+                        "channel_id": message.channel.id,
+                        "trace_id": trace_id,
+                        "user_query": user_query,
+                        "tool_plan": [],
+                        "final_response": lite_response_text,
+                        "is_fallback": False,
+                    })
                     return
 
                 # Case 2: 도구 사용 계획 존재 - 계획을 순차적으로 실행
@@ -377,9 +387,28 @@ class AIHandler(commands.Cog):
                     logger.info("Main 모델이 최종 답변을 생성했습니다.", extra=log_extra)
                     final_response_text = main_response.text.strip()
                     await message.reply(final_response_text, mention_author=False)
+                    await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {
+                        "guild_id": message.guild.id,
+                        "user_id": message.author.id,
+                        "channel_id": message.channel.id,
+                        "trace_id": trace_id,
+                        "user_query": user_query,
+                        "tool_plan": tool_plan,
+                        "final_response": final_response_text,
+                        "is_fallback": use_fallback_prompt,
+                    })
                 else:
                     logger.error("Main 모델이 최종 답변을 생성하지 못했습니다.", extra=log_extra)
                     await message.reply(f"모든 도구 실행을 마쳤지만, 최종 답변을 만드는 데 실패했어요. 여기 실행 결과라도 확인해보세요.\n```json\n{tool_results_str}\n```", mention_author=False)
+                    await db_utils.log_analytics(self.bot.db, "AI_INTERACTION_FAILED", {
+                        "guild_id": message.guild.id,
+                        "user_id": message.author.id,
+                        "channel_id": message.channel.id,
+                        "trace_id": trace_id,
+                        "user_query": user_query,
+                        "tool_plan": tool_plan,
+                        "tool_results": tool_results,
+                    })
 
             except Exception as e:
                 logger.error(f"에이전트 처리 중 최상위 오류: {e}", exc_info=True, extra=log_extra)
@@ -429,11 +458,11 @@ class AIHandler(commands.Cog):
 
         return False
 
-    async def get_recent_conversation_text(self, channel_id: int, look_back: int = 20) -> str:
+    async def get_recent_conversation_text(self, guild_id: int, channel_id: int, look_back: int = 20) -> str:
         if not self.bot.db: return ""
-        query = "SELECT user_name, content FROM conversation_history WHERE channel_id = ? AND is_bot = 0 ORDER BY created_at DESC LIMIT ?"
+        query = "SELECT user_name, content FROM conversation_history WHERE guild_id = ? AND channel_id = ? AND is_bot = 0 ORDER BY created_at DESC LIMIT ?"
         try:
-            async with self.bot.db.execute(query, (channel_id, look_back)) as cursor:
+            async with self.bot.db.execute(query, (guild_id, channel_id, look_back)) as cursor:
                 rows = await cursor.fetchall()
             if not rows: return ""
             rows.reverse()

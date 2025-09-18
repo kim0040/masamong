@@ -105,11 +105,13 @@ class EventListeners(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        logger.info(f"on_message called for message: {message.id}")
         if message.author.bot or not message.guild or isinstance(message.channel, discord.DMChannel):
             return
 
         # 1. 명령어 접두사로 시작하는 메시지 우선 처리
         if message.content.startswith(config.COMMAND_PREFIX if hasattr(config, 'COMMAND_PREFIX') else self.bot.command_prefix):
+            logger.info(f"Processing command for message: {message.id}")
             await self.bot.process_commands(message)
             return
 
@@ -143,6 +145,7 @@ class EventListeners(commands.Cog):
         # (멘션 없이도) 능동적으로 응답해야 하는 경우 AI 상호작용 처리
         # _handle_ai_interaction 내부의 should_proactively_respond가 이 경우를 담당합니다.
         await self._handle_ai_interaction(message)
+        logger.info(f"on_message finished for message: {message.id}")
 
     @commands.Cog.listener()
     async def on_command_completion(self, ctx: commands.Context):
