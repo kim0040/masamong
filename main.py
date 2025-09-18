@@ -92,6 +92,53 @@ class ReMasamongBot(commands.Bot):
         else:
             logger.warning("AIHandler Cog를 찾을 수 없어 다른 Cog에 주입하지 못했습니다.")
 
+    async def on_message(self, message: discord.Message):
+        if message.author.bot or not message.guild or isinstance(message.channel, discord.DMChannel):
+            return
+
+        # 1. 명령어 접두사로 시작하는 메시지 우선 처리
+        if message.content.startswith(config.COMMAND_PREFIX):
+            await self.process_commands(message)
+            return
+
+        # 2. 봇이 직접 멘션되었는지 확인 (교통 경찰 역할)
+        is_bot_mentioned = self.user.mentioned_in(message)
+
+        # 공통 로직: 활동 기록 및 메시지 히스토리 추가
+        activity_cog = self.get_cog('ActivityCog')
+        if activity_cog:
+            await activity_cog.record_message(message)
+        ai_handler = self.get_cog('AIHandler')
+        if ai_handler:
+            await ai_handler.add_message_to_history(message)
+
+        if is_bot_mentioned:
+            # 봇이 멘션된 경우, AI 상호작용을 즉시 처리
+            if ai_handler:
+                await ai_handler._handle_ai_interaction(message)
+            return
+
+        # --- 아래는 봇이 멘션되지 않은 경우에만 실행됩니다 ---
+
+        # Fun 키워드 트리거 확인
+        fun_cog = self.get_cog('FunCog')
+        if fun_cog:
+            if await fun_cog._handle_keyword_triggers(message):
+                return
+
+        # 능동적 비서 기능 - 잠재적 의도 분석
+        proactive_assistant = self.get_cog('ProactiveAssistant')
+        if proactive_assistant:
+            proactive_suggestion = await proactive_assistant.analyze_user_intent(message)
+            if proactive_suggestion:
+                await message.reply(proactive_suggestion, mention_author=False)
+                return
+        
+        # (멘션 없이도) 능동적으로 응답해야 하는 경우 AI 상호작용 처리
+        # _handle_ai_interaction 내부의 should_proactively_respond가 이 경우를 담당합니다.
+        if ai_handler:
+            await ai_handler._handle_ai_interaction(message)
+
     async def close(self):
         """
         봇 종료 시 호출되는 메서드. 데이터베이스 연결을 안전하게 닫습니다.
