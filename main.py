@@ -92,15 +92,7 @@ class ReMasamongBot(commands.Bot):
         else:
             logger.warning("AIHandler Cog를 찾을 수 없어 다른 Cog에 주입하지 못했습니다.")
 
-    async def on_message(self, message: discord.Message):
-        # on_message 이벤트를 cogs/events.py에서 처리하도록 위임합니다.
-        # commands.Bot의 기본 on_message는 process_commands를 호출하므로,
-        # 접두사가 있는 명령어는 계속 작동합니다.
-        # 하지만 우리는 멘션, 키워드 등 더 복잡한 로직을 events.py에서 처리할 것이므로
-        # 여기서는 기본 동작만 남기거나, 아예 process_commands만 호출하도록 할 수 있습니다.
-        if message.author.bot:
-            return
-        await self.process_commands(message)
+
 
     async def close(self):
         """
