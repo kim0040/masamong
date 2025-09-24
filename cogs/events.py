@@ -74,34 +74,38 @@ class EventListeners(commands.Cog):
                     return True
         return False
 
-    async def _handle_ai_interaction(self, message: discord.Message):
-        """AI 상호작용 조건을 확인하고 처리합니다."""
-        if not self.ai_handler or not self.ai_handler.is_ready:
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """메시지를 수신했을 때 호출되는 메인 이벤트 핸들러입니다."""
+        # --- 기본 필터링: 봇, DM, 시스템 메시지 무시 ---
+        if message.author.bot or not message.guild or isinstance(message.channel, discord.DMChannel):
             return
 
-        is_guild_ai_enabled = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'ai_enabled', default=True)
-        if not is_guild_ai_enabled:
+        # --- 명령어 접두사 확인 ---
+        # 메시지가 명령어로 시작하는 경우, process_commands가 처리하도록 하고 여기서 추가 작업을 하지 않습니다.
+        # 참고: main.py의 on_message에서 process_commands를 호출하고 있습니다.
+        if message.content.startswith(config.COMMAND_PREFIX):
             return
 
-        allowed_channels = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'ai_allowed_channels')
-        is_ai_allowed_channel = False
-        if allowed_channels:
-            is_ai_allowed_channel = message.channel.id in allowed_channels
-        else:
-            channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
-            is_ai_allowed_channel = channel_config.get("allowed", False)
+        # --- 공통 로직: 활동 기록 및 메시지 히스토리 추가 ---
+        if self.activity_cog:
+            await self.activity_cog.record_message(message)
+        if self.ai_handler:
+            await self.ai_handler.add_message_to_history(message)
 
-        if not is_ai_allowed_channel:
+        # --- 키워드 기반 상호작용 처리 (FunCog) ---
+        if await self._handle_keyword_triggers(message):
             return
 
-        is_bot_mentioned = self.bot.user.mentioned_in(message)
-        should_proactively_respond = await self.ai_handler.should_proactively_respond(message)
+        # --- 능동적 비서 기능 (ProactiveAssistant) ---
+        if self.proactive_assistant:
+            suggestion = await self.proactive_assistant.analyze_user_intent(message)
+            if suggestion:
+                await message.reply(suggestion, mention_author=False)
+                return
 
-        if not is_bot_mentioned and not should_proactively_respond:
-            return
-
-        # The new agent orchestrator handles everything from planning to response.
-        await self.ai_handler.process_agent_message(message)
+        # --- AI 상호작용 처리 (멘션 또는 능동적 응답) ---
+        await self._handle_ai_interaction(message)
 
     
 
