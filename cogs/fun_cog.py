@@ -28,6 +28,34 @@ class FunCog(commands.Cog):
         self.keyword_cooldowns[channel_id] = datetime.now()
         logger.info(f"FunCog: 채널({channel_id}) 키워드 응답 쿨다운 시작.")
 
+    async def _handle_keyword_triggers(self, message: discord.Message) -> bool:
+        """
+        메시지 내용에 포함된 키워드를 감지하여 운세, 요약 등의 재미 기능을 실행합니다.
+        """
+        if not config.FUN_KEYWORD_TRIGGERS.get("enabled"):
+            return False
+
+        # 쿨다운 상태거나, 봇이 보낸 메시지거나, DM 채널이면 무시
+        if self.is_on_cooldown(message.channel.id) or message.author.bot or not isinstance(message.channel, discord.TextChannel):
+            return False
+
+        content = message.content.lower()
+        
+        # config에 정의된 트리거들을 순회
+        for command, keywords in config.FUN_KEYWORD_TRIGGERS.get("triggers", {}).items():
+            if any(keyword in content for keyword in keywords):
+                # 해당 커맨드를 실행할 메소드를 찾음 (e.g., execute_fortune)
+                target_method = getattr(self, f"execute_{command}", None)
+                
+                if target_method and callable(target_method):
+                    logger.info(f"FunCog: 키워드 '{message.content}' 감지. '{command}' 기능 실행.")
+                    self.update_cooldown(message.channel.id)
+                    # 비동기 메소드 실행
+                    await target_method(message.channel, message.author)
+                    return True # 메시지 처리 완료
+        
+        return False # 아무 키워드도 감지되지 않음
+
     async def execute_fortune(self, channel: discord.TextChannel, author: discord.User):
         """운세 기능의 실제 로직을 수행합니다."""
         if not self.ai_handler:
