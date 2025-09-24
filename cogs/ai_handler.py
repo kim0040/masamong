@@ -376,9 +376,19 @@ class AIHandler(commands.Cog):
                 main_prompt = user_query
 
                 # 페르소나 적용
-                custom_persona = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'persona_text')
-                if custom_persona:
-                    main_system_prompt = f"{custom_persona}\n\n{main_system_prompt}"
+                # 1. 채널별 페르소나 (config.py) 우선 적용
+                channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
+                persona = channel_config.get('persona')
+                rules = channel_config.get('rules')
+
+                if persona and rules:
+                    # 채널 설정이 있으면 그것을 시스템 프롬프트로 사용
+                    main_system_prompt = f"{persona}\n\n{rules}\n\n{main_system_prompt}"
+                else:
+                    # 채널 설정이 없으면 기존처럼 DB에서 길드 설정을 가져옴
+                    custom_persona = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'persona_text')
+                    if custom_persona:
+                        main_system_prompt = f"{custom_persona}\n\n{main_system_prompt}"
 
                 main_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, system_instruction=main_system_prompt)
                 main_response = await self._safe_generate_content(main_model, main_prompt, log_extra)
