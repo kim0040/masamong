@@ -94,6 +94,61 @@ class ReMasamongBot(commands.Bot):
 
 
 
+    async def on_message(self, message: discord.Message):
+        """모든 메시지 이벤트를 처리하는 중앙 핸들러입니다."""
+        if message.author.bot or not message.guild or isinstance(message.channel, discord.DMChannel):
+            return
+
+        # 1. 활동 기록 및 AI 대화 히스토리 기록 (공통)
+        # 이 작업은 명령어 여부와 상관없이 모든 사용자 메시지에 대해 수행될 수 있습니다.
+        activity_cog = self.get_cog('ActivityCog')
+        if activity_cog:
+            await activity_cog.record_message(message)
+        
+        ai_handler = self.get_cog('AIHandler')
+        if ai_handler:
+            await ai_handler.add_message_to_history(message)
+
+        # 2. 명령어를 우선 처리합니다.
+        # process_commands는 메시지가 명령어로 확인되면 관련 컨텍스트를 생성하고,
+        # 그렇지 않으면 아무것도 하지 않습니다.
+        await self.process_commands(message)
+
+        # 3. 명령어로 처리되지 않은 메시지에 대해 추가 상호작용을 확인합니다.
+        # get_context를 사용하여 메시지가 방금 명령어로 처리되었는지 확인합니다.
+        ctx = await self.get_context(message)
+        if ctx.valid: # ctx.valid가 True이면, 메시지가 유효한 명령어로 처리되었음을 의미합니다.
+            return
+
+        # --- 여기서부터는 명령어가 아닌 메시지만 처리됩니다. ---
+
+        # 4. FunCog 키워드 트리거 확인
+        fun_cog = self.get_cog('FunCog')
+        if fun_cog:
+            # EventListeners Cog에 있던 _handle_keyword_triggers를 직접 호출
+            event_cog = self.get_cog('EventListeners')
+            if event_cog and await event_cog._handle_keyword_triggers(message):
+                return
+
+        # 5. 능동적 비서 기능 확인
+        proactive_assistant = self.get_cog('ProactiveAssistant')
+        if proactive_assistant:
+            suggestion = await proactive_assistant.analyze_user_intent(message)
+            if suggestion:
+                await message.reply(suggestion, mention_author=False)
+                return
+
+        # 6. AI 상호작용 처리 (멘션 또는 능동적 응답)
+        if ai_handler:
+            is_bot_mentioned = self.user.mentioned_in(message)
+            # ai_handler의 should_proactively_respond를 직접 호출
+            should_proactively_respond = await ai_handler.should_proactively_respond(message)
+
+            if is_bot_mentioned or should_proactively_respond:
+                # ai_handler의 핵심 로직 호출
+                await ai_handler.process_agent_message(message)
+
+
     async def close(self):
         """
         봇 종료 시 호출되는 메서드. 데이터베이스 연결을 안전하게 닫습니다.
