@@ -74,38 +74,7 @@ class EventListeners(commands.Cog):
                     return True
         return False
 
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        """메시지를 수신했을 때 호출되는 메인 이벤트 핸들러입니다."""
-        # --- 기본 필터링: 봇, DM, 시스템 메시지 무시 ---
-        if message.author.bot or not message.guild or isinstance(message.channel, discord.DMChannel):
-            return
 
-        # --- 명령어 접두사 확인 ---
-        # 메시지가 명령어로 시작하는 경우, process_commands가 처리하도록 하고 여기서 추가 작업을 하지 않습니다.
-        # 참고: main.py의 on_message에서 process_commands를 호출하고 있습니다.
-        if message.content.startswith(config.COMMAND_PREFIX):
-            return
-
-        # --- 공통 로직: 활동 기록 및 메시지 히스토리 추가 ---
-        if self.activity_cog:
-            await self.activity_cog.record_message(message)
-        if self.ai_handler:
-            await self.ai_handler.add_message_to_history(message)
-
-        # --- 키워드 기반 상호작용 처리 (FunCog) ---
-        if await self._handle_keyword_triggers(message):
-            return
-
-        # --- 능동적 비서 기능 (ProactiveAssistant) ---
-        if self.proactive_assistant:
-            suggestion = await self.proactive_assistant.analyze_user_intent(message)
-            if suggestion:
-                await message.reply(suggestion, mention_author=False)
-                return
-
-        # --- AI 상호작용 처리 (멘션 또는 능동적 응답) ---
-        await self._handle_ai_interaction(message)
 
     
 
