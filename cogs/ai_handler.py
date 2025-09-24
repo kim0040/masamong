@@ -285,9 +285,45 @@ class AIHandler(commands.Cog):
                 tool_plan = self._parse_tool_calls(lite_response_text)
 
                 # --- 2단계: 분기 처리 ---
+                if "<conversation_response>" in lite_response_text:
+                    # Case 1: 간단한 대화 - Main 모델을 페르소나와 함께 호출
+                    logger.info("분기: 간단한 대화로 판단, Main 모델을 호출하여 페르소나 기반으로 응답합니다.", extra=log_extra)
+
+                    # 채널별 페르소나 및 규칙 가져오기
+                    channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
+                    persona = channel_config.get('persona')
+                    rules = channel_config.get('rules')
+
+                    if not persona or not rules:
+                        # 만약 채널 설정이 없다면, 기본 AGENT_SYSTEM_PROMPT 사용
+                        system_prompt = config.AGENT_SYSTEM_PROMPT.format(user_query=user_query, tool_result="N/A")
+                    else:
+                        system_prompt = f"{persona}\n\n{rules}"
+                    
+                    main_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, system_instruction=system_prompt)
+                    main_response = await self._safe_generate_content(main_model, user_query, log_extra)
+
+                    if main_response and main_response.text:
+                        final_response_text = main_response.text.strip()
+                        await message.reply(final_response_text, mention_author=False)
+                        await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {
+                            "guild_id": message.guild.id,
+                            "user_id": message.author.id,
+                            "channel_id": message.channel.id,
+                            "trace_id": trace_id,
+                            "user_query": user_query,
+                            "tool_plan": [],
+                            "final_response": final_response_text,
+                            "is_fallback": False,
+                        })
+                    else:
+                        logger.error("간단한 대화에 대해 Main 모델이 응답을 생성하지 못했습니다.", extra=log_extra)
+                        await message.reply(config.MSG_AI_ERROR, mention_author=False)
+                    return
+
                 if not tool_plan:
-                    # Case 1: 간단한 대화 - Lite 모델의 답변을 그대로 사용
-                    logger.info("분기: 간단한 대화로 판단, Lite 모델의 답변으로 바로 응답합니다.", extra=log_extra)
+                    # Case 2: 도구 계획 없음 (그러나 <conversation_response>도 아님) - Lite 모델의 답변을 그대로 사용
+                    logger.info("분기: 도구 계획이 없으며, Lite 모델의 답변으로 바로 응답합니다.", extra=log_extra)
                     await message.reply(lite_response_text, mention_author=False)
                     await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {
                         "guild_id": message.guild.id,
