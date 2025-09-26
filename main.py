@@ -34,6 +34,37 @@ class ReMasamongBot(commands.Bot):
         self.db = None # 데이터베이스 연결 객체를 저장할 변수
         self.db_path = os.path.join('database', 'remasamong.db')
 
+    async def _migrate_db(self):
+        """데이터베이스 스키마를 마이그레이션하고 초기 데이터를 시딩합니다."""
+        try:
+            # locations 테이블이 있는지 확인
+            async with self.db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='locations';") as cursor:
+                if await cursor.fetchone() is None:
+                    logger.info("'locations' 테이블이 존재하지 않아 새로 생성합니다.")
+                    # 스키마에 따라 테이블 생성 (schema.sql에 정의되어 있어야 함)
+                    with open('database/schema.sql') as f:
+                        schema = f.read()
+                        # locations 테이블 생성 구문만 따로 실행
+                        create_table_query = [q for q in schema.split(';') if 'locations' in q][0]
+                        await self.db.executescript(create_table_query)
+
+            # locations 테이블이 비어있는지 확인
+            async with self.db.execute("SELECT COUNT(*) FROM locations") as cursor:
+                count = (await cursor.fetchone())[0]
+            
+            if count == 0:
+                logger.info("'locations' 테이블이 비어있어 초기 데이터를 시딩합니다.")
+                locations_to_seed = config.LOCATION_COORDINATES
+                await self.db.executemany(
+                    "INSERT INTO locations (name, nx, ny) VALUES (?, ?, ?)",
+                    [(name, data['nx'], data['ny']) for name, data in locations_to_seed.items()]
+                )
+                await self.db.commit()
+                logger.info(f"{len(locations_to_seed)}개의 위치 정보 시딩 완료.")
+
+        except Exception as e:
+            logger.error(f"데이터베이스 마이그레이션 중 오류 발생: {e}", exc_info=True)
+
     async def setup_hook(self):
         """
         봇이 디스코드에 로그인하기 전에 실행되는 비동기 설정 훅입니다.
@@ -52,6 +83,9 @@ class ReMasamongBot(commands.Bot):
             logger.critical(f"데이터베이스 연결에 실패했습니다: {e}", exc_info=True)
             await self.close()
             return
+
+        # 데이터베이스 마이그레이션 실행
+        await self._migrate_db()
 
         # cogs 폴더 내의 모든 .py 파일을 동적으로 로드
         cog_list = [

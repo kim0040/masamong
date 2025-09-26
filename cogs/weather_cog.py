@@ -109,7 +109,7 @@ class WeatherCog(commands.Cog):
     @commands.command(name="날씨", aliases=["weather", "현재날씨", "오늘날씨"])
     async def weather_command(self, ctx: commands.Context, *, location_query: str = ""):
         """지정된 날짜의 날씨를 AI가 페르소나에 맞춰 알려줍니다. (예: !날씨, !날씨 내일 서울)"""
-        message = ctx if isinstance(ctx, discord.Message) else ctx.message
+        message = ctx.message
         context_log = f"[{message.guild.name}/{message.channel.name}]"
 
         user_original_query = location_query.strip() if location_query else "오늘 날씨"
@@ -117,18 +117,30 @@ class WeatherCog(commands.Cog):
         nx, ny = config.DEFAULT_NX, config.DEFAULT_NY
 
         query_for_loc_check = user_original_query.lower()
-        parsed_location_name = None
-        sorted_locations = sorted(config.LOCATION_COORDINATES.keys(), key=len, reverse=True)
-        for loc_key in sorted_locations:
-            if loc_key in query_for_loc_check:
-                parsed_location_name = loc_key
+        
+        # 데이터베이스에서 모든 지역 정보 가져오기
+        try:
+            async with self.bot.db.execute("SELECT name, nx, ny FROM locations") as cursor:
+                all_locations = await cursor.fetchall()
+        except Exception as e:
+            logger.error(f"DB에서 지역 목록을 불러오는 데 실패했습니다: {e}", exc_info=True)
+            await message.reply(config.MSG_CMD_ERROR)
+            return
+
+        # 이름 길이순으로 정렬하여 정확도 높이기
+        sorted_locations = sorted(all_locations, key=lambda r: len(r['name']), reverse=True)
+        
+        parsed_location_record = None
+        for loc_record in sorted_locations:
+            if loc_record['name'] in query_for_loc_check:
+                parsed_location_record = loc_record
                 break
 
-        if parsed_location_name:
-            location_name = parsed_location_name
-            coords = config.LOCATION_COORDINATES[location_name]
-            nx, ny = str(coords["nx"]), str(coords["ny"])
-            logger.info(f"{context_log} !날씨 명령: 지역 감지 - {location_name} (nx: {nx}, ny: {ny})")
+        if parsed_location_record:
+            location_name = parsed_location_record['name']
+            nx = str(parsed_location_record['nx'])
+            ny = str(parsed_location_record['ny'])
+            logger.info(f"{context_log} !날씨 명령: DB에서 지역 감지 - {location_name} (nx: {nx}, ny: {ny})")
 
         day_offset = 0
         if "모레" in query_for_loc_check: day_offset = 2
