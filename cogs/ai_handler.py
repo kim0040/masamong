@@ -257,7 +257,7 @@ class AIHandler(commands.Cog):
             query = parameters.get('query', user_query) # 파라미터가 없으면 원래 사용자 쿼리 사용
 
             try:
-                grounding_tool = genai.Tool(google_search=genai.GoogleSearch())
+                grounding_tool = genai.types.Tool(google_search=genai.GoogleSearch())
                 grounding_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, tools=[grounding_tool])
                 
                 # RPD 제한 확인
@@ -290,8 +290,7 @@ class AIHandler(commands.Cog):
             return {"error": f"'{tool_name}'이라는 도구는 존재하지 않습니다."}
         except Exception as e:
             logger.error(f"도구 '{tool_name}' 실행 중 예기치 않은 오류: {e}", exc_info=True, extra=log_extra)
-            return {"error": "도구 실행 중 예상치 못한 오류가 발생했습니다."}
-    async def process_agent_message(self, message: discord.Message):
+            return {"error": "도구 실행 중 예상치 못한 오류가 발생했습니다."}    async def process_agent_message(self, message: discord.Message):
         if not self.is_ready: return
         user_query = message.content.replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
         if not user_query: return
@@ -465,7 +464,7 @@ class AIHandler(commands.Cog):
                         user_query=user_query, 
                         tool_result=tool_results_str
                     )
-                main_prompt = ""
+                main_prompt = user_query
 
                 # 페르소나 적용
                 # 1. 채널별 페르소나 (config.py) 우선 적용
