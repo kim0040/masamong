@@ -144,51 +144,6 @@ LITE_MODEL_SYSTEM_PROMPT = """You are '마사몽', a 'Project Manager' AI. Your 
     }
     </tool_call>
 
-*   **User Query:** "맛집 추천점"
-*   **Your Action:**
-    <tool_call>
-    {
-        "tool_to_use": "search_for_place",
-        "parameters": {"query": "광양 맛집"}
-    }
-    </tool_call>
-
-*   **User Query:** "삼성전자 주가 알려줘"
-*   **Your Action:**
-    <tool_call>
-    {
-        "tool_to_use": "get_stock_price",
-        "parameters": {"stock_name": "삼성전자"}
-    }
-    </tool_call>
-
-*   **User Query:** "애플 주가 한화로 얼마야?"
-*   **Your Action:**
-    <tool_call>
-    {
-        "tool_to_use": "get_stock_price_in_krw",
-        "parameters": {"stock_name": "애플"}
-    }
-    </tool_call>
-
-*   **User Query:** "달러 환율 얼마야?"
-*   **Your Action:**
-    <tool_call>
-    {
-        "tool_to_use": "get_krw_exchange_rate",
-        "parameters": {"currency_code": "USD"}
-    }
-    </tool_call>
-
-*   **User Query:** "고양이 사진 보여줘"
-*   **Your Action:**
-    <tool_call>
-    {
-        "tool_to_use": "search_images",
-        "parameters": {"query": "고양이"}
-    }
-    </tool_call>
-
 *   **User Query:** "SK하이닉스 주가랑 최신 뉴스 줘"
 *   **Your Action:**
     <tool_plan>
@@ -203,8 +158,6 @@ LITE_MODEL_SYSTEM_PROMPT = """You are '마사몽', a 'Project Manager' AI. Your 
         }
     ]
     </tool_plan>
-
-
 
 *   **User Query:** "최근 볼만한 영화 추천해줘"
 *   **Your Action:**
