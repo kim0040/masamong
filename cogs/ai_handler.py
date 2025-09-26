@@ -219,7 +219,7 @@ class AIHandler(commands.Cog):
             logger.info("Executing special tool: web_search (Google Grounding)", extra=log_extra)
             query = parameters.get('query', user_query)
             try:
-                grounding_tool = genai.types.Tool(google_search=GoogleSearch())
+                grounding_tool = genai.types.Tool(google_search=genai.GoogleSearch())
                 grounding_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, tools=[grounding_tool])
                 
                 if await db_utils.check_api_rate_limit(self.bot.db, 'gemini_grounding', 60, 500):
