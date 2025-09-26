@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import config
 from logger_config import logger
 from .. import http
@@ -12,36 +12,43 @@ async def _fetch_exim_data(data_param: str) -> list | dict:
         logger.error("한국수출입은행 API 키(EXIM_API_KEY_KR)가 설정되지 않았습니다.")
         return {"error": "API 키가 설정되지 않았습니다."}
 
-    search_date = datetime.now().strftime('%Y%m%d')
-    params = {
-        "authkey": config.EXIM_API_KEY_KR,
-        "searchdate": search_date,
-        "data": data_param
-    }
+    # 오늘부터 최대 7일 전까지 조회
+    for i in range(7):
+        search_date = (datetime.now() - timedelta(days=i)).strftime('%Y%m%d')
+        params = {
+            "authkey": config.EXIM_API_KEY_KR,
+            "searchdate": search_date,
+            "data": data_param
+        }
 
-    # 보안을 위해 API 키는 로그에서 제외
-    log_params = params.copy()
-    log_params["authkey"] = "[REDACTED]"
-    logger.info(f"수출입은행 API 요청: URL='{config.EXIM_BASE_URL}', Params='{log_params}'")
+        log_params = params.copy()
+        log_params["authkey"] = "[REDACTED]"
+        logger.info(f"수출입은행 API 요청 (시도 {i+1}/7, 날짜: {search_date}): URL='{config.EXIM_BASE_URL}', Params='{log_params}'")
 
-    try:
-        # 한국수출입은행 API는 SSL 인증서 문제가 있을 수 있으므로 인증되지 않은 세션 사용
-        session = http.get_insecure_session()
-        response = await asyncio.to_thread(session.get, config.EXIM_BASE_URL, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        logger.debug(f"수출입은행 API 응답 수신 ({data_param}): {data}")
+        try:
+            session = http.get_insecure_session()
+            response = await asyncio.to_thread(session.get, config.EXIM_BASE_URL, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
 
-        if not data:
-            logger.warning(f"수출입은행 API({data_param})에서 {search_date} 날짜의 데이터를 받지 못했습니다.")
-            return {"error": "데이터를 찾을 수 없습니다."}
-        return data
-    except requests.exceptions.RequestException as e:
-        logger.error(f"수출입은행 API({data_param}) 처리 중 오류: {e}", exc_info=True)
-        return {"error": "API 요청 또는 데이터 처리 중 오류 발생"}
-    except (KeyError, TypeError, ValueError) as e:
-        logger.error(f"수출입은행 API 응답 파싱 중 오류: {e}. 응답 데이터: {response.text}", exc_info=True)
-        return {"error": "API 응답 데이터 파싱 중 오류 발생"}
+            if data:
+                logger.info(f"수출입은행 API({data_param})에서 {search_date} 날짜의 데이터를 성공적으로 받았습니다.")
+                logger.debug(f"수신 데이터: {data}")
+                return data
+
+            logger.warning(f"수출입은행 API({data_param})에서 {search_date} 날짜의 데이터를 받지 못했습니다. 이전 날짜로 재시도합니다.")
+            await asyncio.sleep(0.5) # 짧은 딜레이 추가
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"수출입은행 API({data_param}) 처리 중 오류 (날짜: {search_date}): {e}", exc_info=True)
+            # 요청 관련 에러 발생 시, 다음 날짜로 넘어가지 않고 즉시 에러 반환
+            return {"error": "API 요청 중 오류가 발생했습니다."}
+        except (KeyError, TypeError, ValueError) as e:
+            logger.error(f"수출입은행 API 응답 파싱 중 오류 (날짜: {search_date}): {e}. 응답 데이터: {response.text}", exc_info=True)
+            return {"error": "API 응답 데이터 파싱 중 오류가 발생했습니다."}
+
+    logger.error(f"지난 7일간 수출입은행 API({data_param})에서 데이터를 찾지 못했습니다.")
+    return {"error": "최근 7일간의 데이터를 찾을 수 없습니다."}
 
 
 async def get_krw_exchange_rate(target_currency: str = "USD") -> str:

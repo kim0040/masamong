@@ -6,7 +6,7 @@ import re
 
 import config
 from logger_config import logger
-from utils.api_handlers import finnhub, kakao, krx, exim, rawg, nominatim, openweathermap, foursquare, ticketmaster
+from utils.api_handlers import finnhub, kakao, krx, exim, nominatim, openweathermap
 from utils import db as db_utils
 from utils import coords as coords_utils
 from .weather_cog import WeatherCog
@@ -29,7 +29,7 @@ class ToolsCog(commands.Cog):
 
     async def get_travel_recommendation(self, location_name: str) -> dict:
         """
-        주어진 위치에 대한 날씨, 명소, 이벤트 등 여행 정보를 종합하여 사전(dict) 형태로 반환합니다.
+        주어진 위치에 대한 날씨 정보를 종합하여 사전(dict) 형태로 반환합니다.
         This is a high-level meta-tool that acts as an intelligent router.
         """
         # 1. Geocode the location name
@@ -60,12 +60,9 @@ class ToolsCog(commands.Cog):
             # Call foreign weather tool
             weather_task = self.get_foreign_weather(lat, lon)
 
-        poi_task = self.find_points_of_interest(lat, lon)
-        events_task = self.find_events(lat, lon)
+        results = await asyncio.gather(weather_task, return_exceptions=True)
 
-        results = await asyncio.gather(weather_task, poi_task, events_task, return_exceptions=True)
-
-        weather_result, poi_result, events_result = results
+        weather_result = results[0]
 
         # Handle potential errors from individual API calls
         if isinstance(weather_result, Exception):
@@ -77,20 +74,10 @@ class ToolsCog(commands.Cog):
             else:
                 weather_result = {"error": weather_result[1]}
 
-        if isinstance(poi_result, Exception):
-            logger.error("POI task failed in gather", exc_info=poi_result)
-            poi_result = {"error": "주변 장소 정보 조회 실패"}
-
-        if isinstance(events_result, Exception):
-            logger.error("Events task failed in gather", exc_info=events_result)
-            events_result = {"error": "주변 이벤트 정보 조회 실패"}
-
         # 3. Aggregate results into a dictionary
         return {
             "location_info": geo_info,
             "weather": weather_result,
-            "points_of_interest": poi_result,
-            "events": events_result,
         }
 
     async def get_current_time(self) -> str:
@@ -198,17 +185,7 @@ class ToolsCog(commands.Cog):
         """
         return await openweathermap.get_weather_by_coords(lat, lon)
 
-    async def find_points_of_interest(self, lat: float, lon: float, query: str = None, limit: int = 10) -> dict:
-        """
-        주어진 위도/경도 주변의 주요 장소(POI)를 검색합니다. (내부 사용용 - dict 반환 유지)
-        """
-        return await foursquare.get_places_by_coords(lat, lon, query, limit)
 
-    async def find_events(self, lat: float, lon: float, radius: int = 50) -> dict:
-        """
-        주어진 위도/경도 주변의 이벤트를 검색합니다. (내부 사용용 - dict 반환 유지)
-        """
-        return await ticketmaster.get_events_by_coords(lat, lon, radius)
 
     async def get_krw_exchange_rate(self, currency_code: str = "USD") -> str:
         """
@@ -231,19 +208,13 @@ class ToolsCog(commands.Cog):
         """
         return await exim.get_international_rates()
 
-    async def recommend_games(self, ordering: str = '-released', genres: str = None, page_size: int = 5) -> str:
-        """
-        다양한 조건에 따라 비디오 게임을 추천하여 LLM 친화적인 문자열로 반환합니다.
-        [수정] 반환 형식을 dict에서 str으로 변경하여 토큰 사용량을 최적화합니다.
-        """
-        return await rawg.get_games(ordering=ordering, genres=genres, page_size=page_size)
 
-    async def web_search(self, query: str) -> str:
+    async def kakao_web_search(self, query: str) -> str:
         """
-        주어진 쿼리로 웹을 검색하여 결과를 요약하고, LLM 친화적인 문자열로 반환합니다.
+        (DEPRECATED) 주어진 쿼리로 웹을 검색하여 결과를 요약하고, LLM 친화적인 문자열로 반환합니다.
         일반적인 질문이나 다른 도구로 찾을 수 없는 정보에 사용됩니다.
         """
-        logger.info(f"Executing web search for query: '{query}'")
+        logger.info(f"Executing Kakao web search for query: '{query}'")
         search_results = await kakao.search_web(query, page_size=3) # Get top 3 results
 
         if not search_results:
@@ -259,6 +230,15 @@ class ToolsCog(commands.Cog):
             formatted_results.append(f"{i}. {title}\n   - {snippet}")
 
         return f"'{query}'에 대한 웹 검색 결과 요약:\n" + "\n".join(formatted_results)
+
+    async def web_search(self, query: str) -> str:
+        """
+        주어진 쿼리에 대해 Google 웹 검색을 수행합니다. (실제 로직은 AI 핸들러에 의해 처리됩니다)
+        최신 정보, 시사, 또는 다른 도구로 답변할 수 없는 일반적인 질문에 사용하세요.
+        """
+        # 이 함수는 AI 핸들러에서 특별 처리되므로, 여기서는 아무것도 하지 않습니다.
+        # 이 placeholder는 Lite 모델이 이 도구를 발견하고 사용할 수 있도록 하기 위해 존재합니다.
+        pass
 
     async def search_images(self, query: str, count: int = 3) -> str:
         """

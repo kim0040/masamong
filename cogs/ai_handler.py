@@ -54,24 +54,37 @@ class AIHandler(commands.Cog):
         return self.gemini_configured and self.bot.db is not None and self.tools_cog is not None
 
     # --- Gemini API 안정성 강화를 위한 래퍼 함수 ---
-    async def _safe_generate_content(self, model: genai.GenerativeModel, prompt: Any, log_extra: dict) -> genai.types.GenerateContentResponse | None:
+    async def _safe_generate_content(self, model: genai.GenerativeModel, prompt: Any, log_extra: dict, generation_config: genai.types.GenerationConfig = None) -> genai.types.GenerateContentResponse | None:
         """
         generate_content_async 호출을 위한 안전한 래퍼.
         Google API 관련 특정 예외를 처리하고 로깅하며, 실패 시 None을 반환합니다.
         """
+        if generation_config is None:
+            generation_config = genai.types.GenerationConfig(temperature=0.0)
+
         try:
             # API 속도 제한 확인 (모델에 따라 다른 카운터 사용)
             limit_key = 'gemini_intent' if config.AI_INTENT_MODEL_NAME in model.model_name else 'gemini_response'
-            rpm = config.RPM_LIMIT_INTENT if limit_key == 'gemini_intent' else config.RPM_LIMIT_RESPONSE
-            rpd = config.RPD_LIMIT_INTENT if limit_key == 'gemini_intent' else config.RPD_LIMIT_RESPONSE
+            # Grounding을 사용하는 경우, 별도의 카운터 적용
+            if generation_config.tools and any(t.google_search for t in generation_config.tools):
+                limit_key = 'gemini_grounding'
+                rpm, rpd = 60, 500 # 분당 60, 하루 500
+            else:
+                rpm = config.RPM_LIMIT_INTENT if limit_key == 'gemini_intent' else config.RPM_LIMIT_RESPONSE
+                rpd = config.RPD_LIMIT_INTENT if limit_key == 'gemini_intent' else config.RPD_LIMIT_RESPONSE
 
             if await db_utils.check_api_rate_limit(self.bot.db, limit_key, rpm, rpd):
-                logger.warning(f"Gemini API 호출 속도 제한에 도달했습니다 ({limit_key}).", extra=log_extra)
+                logger.warning(f"Gemini API 호출 속도/횟수 제한에 도달했습니다 ({limit_key}).", extra=log_extra)
+                # Grounding 제한에 걸렸을 경우, 사용자에게 안내 메시지를 포함하는 응답 객체를 모방하여 반환
+                if limit_key == 'gemini_grounding':
+                    return genai.types.GenerateContentResponse.from_response(
+                        dict(candidates=[dict(content=dict(parts=[dict(text=config.MSG_AI_GOOGLE_LIMIT_REACHED)]))])
+                    )
                 return None
 
             response = await model.generate_content_async(
                 prompt,
-                generation_config=genai.types.GenerationConfig(temperature=0.0),
+                generation_config=generation_config,
                 safety_settings=config.GEMINI_SAFETY_SETTINGS,
             )
             return response
@@ -230,19 +243,55 @@ class AIHandler(commands.Cog):
 
         return []
 
-    async def _execute_tool(self, tool_call: dict, guild_id: int) -> dict:
+    async def _execute_tool(self, tool_call: dict, guild_id: int, user_query: str) -> dict:
         tool_name = tool_call.get('tool_to_use')
         parameters = tool_call.get('parameters', {})
-        if not tool_name: return {"error": "tool_to_use가 지정되지 않았습니다."}
+        log_extra = {'guild_id': guild_id, 'tool_name': tool_name, 'parameters': parameters}
 
+        if not tool_name: 
+            return {"error": "tool_to_use가 지정되지 않았습니다."}
+
+        # --- Google 검색 특별 처리 ---
+        if tool_name == 'web_search':
+            logger.info("Executing special tool: web_search (Google Grounding)", extra=log_extra)
+            query = parameters.get('query', user_query) # 파라미터가 없으면 원래 사용자 쿼리 사용
+
+            grounding_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME)
+            grounding_config = genai.types.GenerationConfig(
+                tools=[genai.types.Tool(google_search=genai.types.GoogleSearch())],
+                temperature=0.0
+            )
+            
+            # _safe_generate_content는 grounding에 대한 RPD 제한을 이미 내장하고 있음
+            grounded_response = await self._safe_generate_content(
+                grounding_model, 
+                query, 
+                log_extra,
+                generation_config=grounding_config
+            )
+
+            if grounded_response and grounded_response.text:
+                return {"result": grounded_response.text}
+            else:
+                logger.error("Google Grounding 실행에 실패했습니다.", extra=log_extra)
+                return {"error": "Google 검색을 통해 정보를 찾는 데 실패했습니다."}
+
+        # --- 일반 도구 처리 ---
         try:
             tool_method = getattr(self.tools_cog, tool_name)
-            logger.info(f"Executing tool: {tool_name} with params: {parameters}", extra={'guild_id': guild_id})
-            return await tool_method(**parameters)
+            logger.info(f"Executing tool: {tool_name} with params: {parameters}", extra=log_extra)
+            # 일반 도구는 파라미터만 전달
+            result = await tool_method(**parameters)
+            # 결과가 dict가 아닌 경우, 호환성을 위해 dict로 감싸기
+            if not isinstance(result, dict):
+                return {"result": str(result)}
+            return result
+        except AttributeError:
+            logger.error(f"도구 '{tool_name}'을(를) 찾을 수 없습니다.", extra=log_extra)
+            return {"error": f"'{tool_name}'이라는 도구는 존재하지 않습니다."}
         except Exception as e:
-            logger.error(f"도구 '{tool_name}' 실행 중 예기치 않은 오류: {e}", exc_info=True, extra={'guild_id': guild_id})
+            logger.error(f"도구 '{tool_name}' 실행 중 예기치 않은 오류: {e}", exc_info=True, extra=log_extra)
             return {"error": "도구 실행 중 예상치 못한 오류가 발생했습니다."}
-
     async def process_agent_message(self, message: discord.Message):
         if not self.is_ready: return
         user_query = message.content.replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
@@ -346,7 +395,7 @@ class AIHandler(commands.Cog):
                     logger.info(f"계획 실행 ({step_num}/{len(tool_plan)}): {tool_call.get('tool_to_use')}", extra=log_extra)
                     
                     # 현재는 이전 단계 결과를 다음 단계에 넘기지 않음. 추후 확장 가능.
-                    result = await self._execute_tool(tool_call, message.guild.id)
+                    result = await self._execute_tool(tool_call, message.guild.id, user_query)
                     
                     if result is None:
                         error_msg = f"도구 실행 결과가 None입니다: {tool_call.get('tool_to_use')}"
@@ -375,7 +424,15 @@ class AIHandler(commands.Cog):
 
                 if tool_plan and any_failed and not any(tc.get('tool_to_use') == 'web_search' for tc in tool_plan):
                     logger.info("하나 이상의 도구 실행에 실패하여 웹 검색으로 대체합니다.", extra=log_extra)
-                    web_search_result = await self.tools_cog.web_search(user_query)
+                    
+                    # web_search 도구 호출을 생성하여 _execute_tool로 실행
+                    web_search_tool_call = {
+                        "tool_to_use": "web_search",
+                        "parameters": {"query": user_query}
+                    }
+                    web_search_result_dict = await self._execute_tool(web_search_tool_call, message.guild.id, user_query)
+                    web_search_result = web_search_result_dict.get("result", "웹 검색에 실패했습니다.")
+
                     # 기존의 실패한 결과 대신 웹 검색 결과를 사용
                     tool_results = [{
                         "step": 1,
@@ -462,18 +519,24 @@ class AIHandler(commands.Cog):
 
     async def _get_recent_history(self, message: discord.Message, rag_prompt: str) -> list:
         """최근 대화 기록을 가져옵니다. RAG 사용 여부에 따라 기록 길이를 조절합니다."""
-        history_limit = 3 if rag_prompt else 8
+        # RAG 컨텍스트가 있을 때도 충분한 단기 기억을 유지하도록 history_limit 증가
+        history_limit = 6 if rag_prompt else 12
         history = []
-        # RAG에서 사용된 내용은 제외하기 위해 history_limit * 2 만큼 가져와 필터링
-        async for msg in message.channel.history(limit=history_limit * 2):
-            if msg.id == message.id: continue
-            if rag_prompt and msg.content in rag_prompt: continue
+        
+        # 지정된 수만큼 메시지를 가져옴
+        async for msg in message.channel.history(limit=history_limit + 1): # +1 to exclude the current message
+            if msg.id == message.id:
+                continue
+
+            # RAG 컨텍스트에 포함된 내용을 제외하는 로직은 때로 중요한 단기 기억을 제거할 수 있으므로 제거함.
+            # 약간의 중복은 손실보다 낫다.
 
             role = 'model' if msg.author.id == self.bot.user.id else 'user'
-            history.append({'role': role, 'parts': [msg.content]})
-            if len(history) >= history_limit:
-                break
-        history.reverse()
+            # 메시지가 너무 길 경우 잘라내어 토큰 사용량 관리 (필요 시)
+            content = msg.content[:2000] if len(msg.content) > 2000 else msg.content
+            history.append({'role': role, 'parts': [content]})
+
+        history.reverse() # 시간 순서대로 (오래된 것 -> 최신 것)
         return history
 
     async def should_proactively_respond(self, message: discord.Message) -> bool:
