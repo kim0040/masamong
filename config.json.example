@@ -7,15 +7,13 @@
   "FINNHUB_BASE_URL": "https://finnhub.io/api/v1",
   "KAKAO_BASE_URL": "https://dapi.kakao.com/v2/local/search/keyword.json",
   "KRX_BASE_URL": "https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo",
-  "RAWG_BASE_URL": "https://api.rawg.io/api",
+
   "KMA_BASE_URL": "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0",
   "NOMINATIM_BASE_URL": "https://nominatim.openstreetmap.org",
 
   "OPENWEATHERMAP_API_KEY": "YOUR_OPENWEATHERMAP_API_KEY",
-  "FOURSQUARE_API_KEY": "YOUR_FOURSQUARE_API_KEY",
-  "TICKETMASTER_API_KEY": "YOUR_TICKETMASTER_API_KEY",
+
 
   "OPENWEATHERMAP_BASE_URL": "https://api.openweathermap.org/data/2.5",
-  "FOURSQUARE_BASE_URL": "https://api.foursquare.com/v3/places",
-  "TICKETMASTER_BASE_URL": "https://app.ticketmaster.com/discovery/v2"
+
 }
