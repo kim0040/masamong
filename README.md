@@ -18,8 +18,7 @@
 - **지리 정보**: Nominatim (OpenStreetMap)
 - **날씨**: 기상청(KMA) + OpenWeatherMap
 - **금융**: 한국수출입은행 + Finnhub + KRX
-- **여행**: Foursquare + Ticketmaster
-- **게임**: RAWG
+
 
 ### 🎯 능동적 비서 기능
 - **잠재적 의도 파악**: "다음 달에 일본 여행 가려고" → "엔화 환율 정보를 알려드릴까요?"
@@ -144,8 +143,7 @@ KMA_API_KEY=your_kma_api_key                   # 기상청 API 허브
 
 # 여행 어시스턴트
 OPENWEATHERMAP_API_KEY=your_openweathermap_api_key  # OpenWeatherMap
-FOURSQUARE_API_KEY=your_foursquare_api_key      # Foursquare Developers
-TICKETMASTER_API_KEY=your_ticketmaster_api_key  # Ticketmaster Developer
+
 
 # 금융
 FINNHUB_API_KEY=your_finnhub_api_key           # Finnhub Stock API
@@ -153,7 +151,7 @@ GO_DATA_API_KEY_KR=your_go_data_api_key        # 공공데이터포털
 EXIM_API_KEY_KR=your_exim_api_key              # 한국수출입은행
 
 # 기타
-RAWG_API_KEY=your_rawg_api_key                 # RAWG Video Games Database
+
 KAKAO_API_KEY=your_kakao_api_key               # Kakao Developers
 ```
 
@@ -165,12 +163,11 @@ KAKAO_API_KEY=your_kakao_api_key               # Kakao Developers
 | **Google Gemini** | [Google AI Studio](https://aistudio.google.com/app/apikey) | 15 RPM, 1M RPD | 필수 |
 | **기상청 API** | [API 허브](https://apihub.kma.go.kr/) | 10,000/일 | 권장 |
 | **OpenWeatherMap** | [OpenWeatherMap](https://openweathermap.org/api) | 1,000/일 | 권장 |
-| **Foursquare** | [Developers](https://developer.foursquare.com/) | 950/일 | 선택 |
-| **Ticketmaster** | [Developer](https://developer.ticketmaster.com/) | 5,000/일 | 선택 |
+
 | **Finnhub** | [Stock API](https://finnhub.io/) | 60/분 | 선택 |
 | **공공데이터** | [공공데이터포털](https://data.go.kr/) | 다양 | 선택 |
 | **수출입은행** | [환율 API](https://www.koreaexim.go.kr/ir/HPHKIR020M01) | 무제한 | 선택 |
-| **RAWG** | [RAWG](https://rawg.io/apidocs) | 20,000/월 | 선택 |
+
 | **Kakao** | [Kakao Developers](https://developers.kakao.com/) | 100,000/일 | 선택 |
 
 ## 📖 사용법

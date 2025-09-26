@@ -46,29 +46,33 @@ class WeatherCog(commands.Cog):
 
     async def get_formatted_weather_string(self, day_offset: int, location_name: str, nx: str, ny: str) -> tuple[str | None, str | None]:
         """날씨 정보를 조회하고 사람이 읽기 좋은 문자열로 포맷팅합니다. 성공 시 (날씨 정보 문자열, None)을, 실패 시 (None, 오류 메시지)를 반환합니다."""
-        day_names = ["오늘", "내일", "모레"]
-        day_name = day_names[day_offset] if 0 <= day_offset < len(day_names) else f"{day_offset}일 후"
+        try:
+            day_names = ["오늘", "내일", "모레"]
+            day_name = day_names[day_offset] if 0 <= day_offset < len(day_names) else f"{day_offset}일 후"
 
-        if day_offset == 0:
-            current_weather_data = await weather_utils.get_current_weather_from_kma(self.bot.db, nx, ny)
-            if isinstance(current_weather_data, dict) and current_weather_data.get("error"):
-                return None, current_weather_data.get("message", config.MSG_WEATHER_FETCH_ERROR)
-            if current_weather_data is None:
-                return None, config.MSG_WEATHER_FETCH_ERROR
+            if day_offset == 0:
+                current_weather_data = await weather_utils.get_current_weather_from_kma(self.bot.db, nx, ny)
+                if isinstance(current_weather_data, dict) and current_weather_data.get("error"):
+                    return None, current_weather_data.get("message", config.MSG_WEATHER_FETCH_ERROR)
+                if current_weather_data is None:
+                    return None, config.MSG_WEATHER_FETCH_ERROR
 
-            current_weather_str = weather_utils.format_current_weather(current_weather_data)
-            short_term_data = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
-            formatted_forecast = weather_utils.format_short_term_forecast(short_term_data, day_name, target_day_offset=0)
-            return f"현재 {current_weather_str}\n{formatted_forecast}".strip(), None
-        else:
-            forecast_data = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
-            if isinstance(forecast_data, dict) and forecast_data.get("error"):
-                return None, forecast_data.get("message", config.MSG_WEATHER_FETCH_ERROR)
-            if forecast_data is None:
-                return None, config.MSG_WEATHER_FETCH_ERROR
+                current_weather_str = weather_utils.format_current_weather(current_weather_data)
+                short_term_data = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
+                formatted_forecast = weather_utils.format_short_term_forecast(short_term_data, day_name, target_day_offset=0)
+                return f"현재 {current_weather_str}\n{formatted_forecast}".strip(), None
+            else:
+                forecast_data = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
+                if isinstance(forecast_data, dict) and forecast_data.get("error"):
+                    return None, forecast_data.get("message", config.MSG_WEATHER_FETCH_ERROR)
+                if forecast_data is None:
+                    return None, config.MSG_WEATHER_FETCH_ERROR
 
-            formatted_forecast = weather_utils.format_short_term_forecast(forecast_data, day_name, target_day_offset=day_offset)
-            return f"{location_name} {formatted_forecast}", None
+                formatted_forecast = weather_utils.format_short_term_forecast(forecast_data, day_name, target_day_offset=day_offset)
+                return f"{location_name} {formatted_forecast}", None
+        except Exception as e:
+            logger.error(f"get_formatted_weather_string 처리 중 예기치 않은 오류 발생: {e}", exc_info=True)
+            return None, config.MSG_WEATHER_FETCH_ERROR
 
     async def prepare_weather_response_for_ai(self, original_message: discord.Message, day_offset: int, location_name: str, nx: str, ny: str, user_original_query: str):
         """날씨 정보를 가져와 AI에게 전달할 문자열을 준비하고, AI 응답을 요청하거나 직접 응답합니다."""

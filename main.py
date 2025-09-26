@@ -115,37 +115,35 @@ class ReMasamongBot(commands.Bot):
         await self.process_commands(message)
 
         # 3. 명령어로 처리되지 않은 메시지에 대해 추가 상호작용을 확인합니다.
-        # get_context를 사용하여 메시지가 방금 명령어로 처리되었는지 확인합니다.
         ctx = await self.get_context(message)
-        if ctx.valid: # ctx.valid가 True이면, 메시지가 유효한 명령어로 처리되었음을 의미합니다.
+        if ctx.valid:  # 메시지가 유효한 명령어로 처리되었으면, 여기서 처리를 중단합니다.
             return
 
         # --- 여기서부터는 명령어가 아닌 메시지만 처리됩니다. ---
 
-        # 4. FunCog 키워드 트리거 확인
-        fun_cog = self.get_cog('FunCog')
-        if fun_cog:
-            # EventListeners Cog에 있던 _handle_keyword_triggers를 직접 호출
-            event_cog = self.get_cog('EventListeners')
-            if event_cog and await event_cog._handle_keyword_triggers(message):
-                return
+        # 4. 봇이 멘션되었는지 확인합니다.
+        is_bot_mentioned = self.user.mentioned_in(message)
 
-        # 5. 능동적 비서 기능 확인
-        proactive_assistant = self.get_cog('ProactiveAssistant')
-        if proactive_assistant:
-            suggestion = await proactive_assistant.analyze_user_intent(message)
-            if suggestion:
-                await message.reply(suggestion, mention_author=False)
-                return
+        if is_bot_mentioned:
+            # 멘션되었을 때만 AI 상호작용 및 기타 능동적 기능을 처리합니다.
+            
+            # FunCog 키워드 트리거 확인 (멘션된 경우에만)
+            fun_cog = self.get_cog('FunCog')
+            if fun_cog:
+                event_cog = self.get_cog('EventListeners')
+                if event_cog and await event_cog._handle_keyword_triggers(message):
+                    return
 
-        # 6. AI 상호작용 처리 (멘션 또는 능동적 응답)
-        if ai_handler:
-            is_bot_mentioned = self.user.mentioned_in(message)
-            # ai_handler의 should_proactively_respond를 직접 호출
-            should_proactively_respond = await ai_handler.should_proactively_respond(message)
-
-            if is_bot_mentioned or should_proactively_respond:
-                # ai_handler의 핵심 로직 호출
+            # 능동적 비서 기능 확인 (멘션된 경우에만)
+            proactive_assistant = self.get_cog('ProactiveAssistant')
+            if proactive_assistant:
+                suggestion = await proactive_assistant.analyze_user_intent(message)
+                if suggestion:
+                    await message.reply(suggestion, mention_author=False)
+                    return
+            
+            # AI 상호작용 처리 (멘션된 경우)
+            if ai_handler:
                 await ai_handler.process_agent_message(message)
 
 
