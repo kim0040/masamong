@@ -9,7 +9,6 @@ import pytz
 from collections import deque
 import re
 from typing import Dict, Any, Tuple
-from google.generativeai.types import GoogleSearch
 import aiosqlite
 import numpy as np
 import pickle
