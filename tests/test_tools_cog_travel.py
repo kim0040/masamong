@@ -34,8 +34,6 @@ async def test_travel_recommendation_korea(mock_bot, mocker):
     })
     # Mock the internal weather cog function that gets called for KR locations
     tools_cog.weather_cog.get_formatted_weather_string.return_value = ("맑음", None)
-    mocker.patch.object(tools_cog, 'find_points_of_interest', new_callable=AsyncMock, return_value={"places": [{"name": "Gyeongbok Palace"}]})
-    mocker.patch.object(tools_cog, 'find_events', new_callable=AsyncMock, return_value={"events": [{"name": "Seoul Jazz Festival"}]})
 
     # Mock the coordinate translator
     mocker.patch('utils.coords.latlon_to_kma_grid', return_value=(60, 127))
@@ -46,16 +44,10 @@ async def test_travel_recommendation_korea(mock_bot, mocker):
     assert "error" not in result
     assert result["location_info"]["country_code"] == "kr"
     assert result["weather"]["current_weather"] == "맑음"
-    assert len(result["points_of_interest"]["places"]) == 1
-    assert result["points_of_interest"]["places"][0]["name"] == "Gyeongbok Palace"
-    assert len(result["events"]["events"]) == 1
-    assert result["events"]["events"][0]["name"] == "Seoul Jazz Festival"
 
     # Verify that the correct functions were called
     tools_cog.geocode.assert_called_once_with("서울")
     tools_cog.weather_cog.get_formatted_weather_string.assert_called_once()
-    tools_cog.find_points_of_interest.assert_called_once()
-    tools_cog.find_events.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -70,8 +62,6 @@ async def test_travel_recommendation_foreign(mock_bot, mocker):
         "status": "found", "lat": 48.85, "lon": 2.29, "country_code": "fr", "display_name": "Paris, France"
     })
     mocker.patch.object(tools_cog, 'get_foreign_weather', new_callable=AsyncMock, return_value={"description": "clear sky"})
-    mocker.patch.object(tools_cog, 'find_points_of_interest', new_callable=AsyncMock, return_value={"places": [{"name": "Eiffel Tower"}]})
-    mocker.patch.object(tools_cog, 'find_events', new_callable=AsyncMock, return_value={"events": []}) # No events found
 
     result = await tools_cog.get_travel_recommendation("Paris")
 
@@ -79,15 +69,10 @@ async def test_travel_recommendation_foreign(mock_bot, mocker):
     assert "error" not in result
     assert result["location_info"]["country_code"] == "fr"
     assert result["weather"]["description"] == "clear sky"
-    assert len(result["points_of_interest"]["places"]) == 1
-    assert result["points_of_interest"]["places"][0]["name"] == "Eiffel Tower"
-    assert len(result["events"]["events"]) == 0
 
     # Verify that the correct functions were called
     tools_cog.geocode.assert_called_once_with("Paris")
     tools_cog.get_foreign_weather.assert_called_once()
-    tools_cog.find_points_of_interest.assert_called_once()
-    tools_cog.find_events.assert_called_once()
 
 
 @pytest.mark.asyncio

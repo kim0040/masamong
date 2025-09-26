@@ -66,7 +66,7 @@ class AIHandler(commands.Cog):
             # API 속도 제한 확인 (모델에 따라 다른 카운터 사용)
             limit_key = 'gemini_intent' if config.AI_INTENT_MODEL_NAME in model.model_name else 'gemini_response'
             # Grounding을 사용하는 경우, 별도의 카운터 적용
-            if generation_config.tools and any(t.google_search for t in generation_config.tools):
+            if getattr(generation_config, 'tools', None) and any(t.google_search for t in generation_config.tools):
                 limit_key = 'gemini_grounding'
                 rpm, rpd = 60, 500 # 분당 60, 하루 500
             else:
@@ -466,7 +466,7 @@ class AIHandler(commands.Cog):
                         user_query=user_query, 
                         tool_result=tool_results_str
                     )
-                main_prompt = user_query
+                main_prompt = ""
 
                 # 페르소나 적용
                 # 1. 채널별 페르소나 (config.py) 우선 적용
