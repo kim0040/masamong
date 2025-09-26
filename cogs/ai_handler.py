@@ -394,7 +394,7 @@ class AIHandler(commands.Cog):
                     logger.info(f"계획 실행 ({step_num}/{len(tool_plan)}): {tool_call.get('tool_to_use')}", extra=log_extra)
                     
                     # 현재는 이전 단계 결과를 다음 단계에 넘기지 않음. 추후 확장 가능.
-                    result = await self._execute_tool(tool_call, message.guild.id)
+                    result = await self._execute_tool(tool_call, message.guild.id, user_query)
                     
                     if result is None:
                         error_msg = f"도구 실행 결과가 None입니다: {tool_call.get('tool_to_use')}"
