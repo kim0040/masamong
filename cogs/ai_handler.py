@@ -9,7 +9,6 @@ import pytz
 from collections import deque
 import re
 from typing import Dict, Any, Tuple
-from google.generativeai.types import GoogleSearch
 import aiosqlite
 import numpy as np
 import pickle
@@ -196,7 +195,7 @@ class AIHandler(commands.Cog):
                 logger.warning(f"tool_plan JSON 디코딩 실패: {e}. 원본: {plan_match.group(1)}")
                 return []
 
-        call_match = re.search(r'<tool_call>\s*({.*?})\s*</tool_call>', text, re.DOTALL)
+        call_match = re.search(r'<tool_call>\s*(\{.*?\})\s*</tool_call>', text, re.DOTALL)
         if call_match:
             try:
                 call = json.loads(call_match.group(1))
@@ -221,7 +220,7 @@ class AIHandler(commands.Cog):
             query = parameters.get('query', user_query)
 
             try:
-                grounding_tool = genai.types.Tool(google_search=GoogleSearch())
+                grounding_tool = genai.types.Tool(google_search=genai.types.GoogleSearch())
                 model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, tools=[grounding_tool])
                 
                 # RPD/RPM check is handled by the safe_generate_content wrapper
@@ -235,6 +234,7 @@ class AIHandler(commands.Cog):
             except Exception as e:
                 logger.error(f"Google Grounding 실행 중 예기치 않은 오류: {e}", exc_info=True, extra=log_extra)
                 return {"error": f"Google 검색 중 오류가 발생했습니다: {e}"}
+
         try:
             tool_method = getattr(self.tools_cog, tool_name)
             logger.info(f"Executing tool: {tool_name} with params: {parameters}", extra=log_extra)
