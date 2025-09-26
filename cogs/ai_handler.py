@@ -9,6 +9,7 @@ import pytz
 from collections import deque
 import re
 from typing import Dict, Any, Tuple
+from google.generativeai.types import GoogleSearch
 import aiosqlite
 import numpy as np
 import pickle
@@ -216,36 +217,24 @@ class AIHandler(commands.Cog):
             return {"error": "tool_to_use가 지정되지 않았습니다."}
 
         if tool_name == 'web_search':
-            logger.info("Executing special tool: web_search (Legacy Google Grounding)", extra=log_extra)
+            logger.info("Executing special tool: web_search (Google Grounding)", extra=log_extra)
             query = parameters.get('query', user_query)
 
             try:
-                # Legacy approach for older google-generativeai versions
-                retrieval_tool = genai.types.Tool(
-                    google_search_retrieval=genai.types.GoogleSearchRetrieval(
-                        dynamic_retrieval_config=genai.types.DynamicRetrievalConfig(
-                            mode=genai.types.DynamicRetrievalConfigMode.MODE_DYNAMIC,
-                            dynamic_threshold=0.7
-                        )
-                    )
-                )
-                config = genai.types.GenerateContentConfig(tools=[retrieval_tool])
-
-                # Use the base model, as the tool is in the config
-                model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME)
+                grounding_tool = genai.types.Tool(google_search=GoogleSearch())
+                model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, tools=[grounding_tool])
                 
                 # RPD/RPM check is handled by the safe_generate_content wrapper
-                grounded_response = await self._safe_generate_content(model, query, log_extra, generation_config=config)
+                grounded_response = await self._safe_generate_content(model, query, log_extra)
 
                 if grounded_response and grounded_response.text:
                     return {"result": grounded_response.text}
                 else:
-                    logger.error("Google Grounding (Legacy) 실행에 실패했으나 오류가 없습니다.", extra=log_extra)
+                    logger.error("Google Grounding 실행에 실패했으나 오류가 없습니다.", extra=log_extra)
                     return {"error": "Google 검색을 통해 정보를 찾는 데 실패했습니다."}
             except Exception as e:
-                logger.error(f"Google Grounding (Legacy) 실행 중 예기치 않은 오류: {e}", exc_info=True, extra=log_extra)
+                logger.error(f"Google Grounding 실행 중 예기치 않은 오류: {e}", exc_info=True, extra=log_extra)
                 return {"error": f"Google 검색 중 오류가 발생했습니다: {e}"}
-
         try:
             tool_method = getattr(self.tools_cog, tool_name)
             logger.info(f"Executing tool: {tool_name} with params: {parameters}", extra=log_extra)
