@@ -9,6 +9,7 @@ import pytz
 from collections import deque
 import re
 from typing import Dict, Any, Tuple
+from google.generativeai.types import GoogleSearch
 import aiosqlite
 import numpy as np
 import pickle
@@ -40,8 +41,6 @@ class AIHandler(commands.Cog):
         if config.GEMINI_API_KEY:
             try:
                 genai.configure(api_key=config.GEMINI_API_KEY)
-                # We create model instances dynamically now, so we don't need a default one here.
-                # self.model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME)
                 self.embedding_model_name = config.AI_EMBEDDING_MODEL_NAME
                 logger.info("Gemini API 설정 완료.")
                 self.gemini_configured = True
@@ -53,7 +52,6 @@ class AIHandler(commands.Cog):
         """AI 핸들러가 모든 기능을 수행할 준비가 되었는지 확인합니다."""
         return self.gemini_configured and self.bot.db is not None and self.tools_cog is not None
 
-    # --- Gemini API 안정성 강화를 위한 래퍼 함수 ---
     async def _safe_generate_content(self, model: genai.GenerativeModel, prompt: Any, log_extra: dict, generation_config: genai.types.GenerationConfig = None) -> genai.types.GenerateContentResponse | None:
         """
         generate_content_async 호출을 위한 안전한 래퍼.
@@ -63,19 +61,16 @@ class AIHandler(commands.Cog):
             generation_config = genai.types.GenerationConfig(temperature=0.0)
 
         try:
-            # API 속도 제한 확인 (모델에 따라 다른 카운터 사용)
             limit_key = 'gemini_intent' if config.AI_INTENT_MODEL_NAME in model.model_name else 'gemini_response'
-            # Grounding을 사용하는 경우, 별도의 카운터 적용
             if getattr(generation_config, 'tools', None) and any(t.google_search for t in generation_config.tools):
                 limit_key = 'gemini_grounding'
-                rpm, rpd = 60, 500 # 분당 60, 하루 500
+                rpm, rpd = 60, 500
             else:
                 rpm = config.RPM_LIMIT_INTENT if limit_key == 'gemini_intent' else config.RPM_LIMIT_RESPONSE
                 rpd = config.RPD_LIMIT_INTENT if limit_key == 'gemini_intent' else config.RPD_LIMIT_RESPONSE
 
             if await db_utils.check_api_rate_limit(self.bot.db, limit_key, rpm, rpd):
                 logger.warning(f"Gemini API 호출 속도/횟수 제한에 도달했습니다 ({limit_key}).", extra=log_extra)
-                # Grounding 제한에 걸렸을 경우, 사용자에게 안내 메시지를 포함하는 응답 객체를 모방하여 반환
                 if limit_key == 'gemini_grounding':
                     return genai.types.GenerateContentResponse.from_response(
                         dict(candidates=[dict(content=dict(parts=[dict(text=config.MSG_AI_GOOGLE_LIMIT_REACHED)]))])
@@ -88,24 +83,6 @@ class AIHandler(commands.Cog):
                 safety_settings=config.GEMINI_SAFETY_SETTINGS,
             )
             return response
-        except google.api_core.exceptions.ResourceExhausted as e:
-            logger.error(f"Gemini API 할당량 초과: {e}", extra=log_extra, exc_info=True)
-            return None
-        except google.api_core.exceptions.GoogleAPICallError as e:
-            logger.error(f"Gemini API 호출 오류: {e}", extra=log_extra, exc_info=True)
-            return None
-        except google.api_core.exceptions.InvalidArgument as e:
-            logger.error(f"Gemini API 잘못된 인수: {e}", extra=log_extra, exc_info=True)
-            return None
-        except google.api_core.exceptions.PermissionDenied as e:
-            logger.error(f"Gemini API 권한 거부: {e}", extra=log_extra, exc_info=True)
-            return None
-        except google.api_core.exceptions.DeadlineExceeded as e:
-            logger.error(f"Gemini API 타임아웃: {e}", extra=log_extra, exc_info=True)
-            return None
-        except google.api_core.exceptions.ServiceUnavailable as e:
-            logger.error(f"Gemini API 서비스 불가: {e}", extra=log_extra, exc_info=True)
-            return None
         except Exception as e:
             logger.error(f"Gemini 응답 생성 중 예기치 않은 오류: {e}", extra=log_extra, exc_info=True)
             return None
@@ -124,13 +101,9 @@ class AIHandler(commands.Cog):
             logger.error(f"Gemini 임베딩 생성 중 오류: {e}", extra=log_extra, exc_info=True)
             return None
 
-    # --- 대화 기록 및 RAG 관련 함수 ---
     async def add_message_to_history(self, message: discord.Message):
         if not self.is_ready or not config.AI_MEMORY_ENABLED or not message.guild: return
         try:
-            # This logic seems duplicated with `_handle_ai_interaction`.
-            # However, we need to save history regardless of whether the bot responds.
-            # We'll keep it for now but it could be refactored.
             is_guild_ai_enabled = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'ai_enabled', default=True)
             if not is_guild_ai_enabled: return
 
@@ -173,7 +146,6 @@ class AIHandler(commands.Cog):
             logger.error(f"임베딩 DB 저장/직렬화 중 오류: {e}", extra=log_extra, exc_info=True)
 
     async def _get_rag_context(self, guild_id: int, channel_id: int, user_id: int, query: str) -> Tuple[str, list[str]]:
-        """RAG를 위한 컨텍스트를 DB에서 검색하고, 컨텍스트 문자열과 원본 메시지 내용 목록을 반환합니다."""
         log_extra = {'guild_id': guild_id, 'channel_id': channel_id, 'user_id': user_id}
         logger.info(f"RAG 컨텍스트 검색 시작. Query: '{query}'", extra=log_extra)
 
@@ -212,13 +184,7 @@ class AIHandler(commands.Cog):
             logger.error(f"RAG 컨텍스트 처리(DB, 유사도 계산) 중 오류: {e}", exc_info=True, extra=log_extra)
             return "", []
 
-    # --- 에이전트 핵심 로직 ---
     def _parse_tool_calls(self, text: str) -> list[dict]:
-        """
-        <tool_call> 또는 <tool_plan> 태그에서 도구 호출 목록을 추출합니다.
-        단일 도구 호출(dict)과 도구 계획(list of dicts)을 모두 처리하여 항상 list[dict]를 반환합니다.
-        """
-        # 1. <tool_plan> (JSON 배열) 우선 검색
         plan_match = re.search(r'<tool_plan>\s*(\[.*?\])\s*</tool_plan>', text, re.DOTALL)
         if plan_match:
             try:
@@ -230,14 +196,13 @@ class AIHandler(commands.Cog):
                 logger.warning(f"tool_plan JSON 디코딩 실패: {e}. 원본: {plan_match.group(1)}")
                 return []
 
-        # 2. <tool_call> (단일 JSON 객체) 검색
         call_match = re.search(r'<tool_call>\s*({.*?})\s*</tool_call>', text, re.DOTALL)
         if call_match:
             try:
                 call = json.loads(call_match.group(1))
                 if isinstance(call, dict):
                     logger.info("단일 도구 호출(call)을 파싱했습니다.")
-                    return [call] # 단일 호출도 리스트에 담아 반환
+                    return [call]
             except json.JSONDecodeError as e:
                 logger.warning(f"tool_call JSON 디코딩 실패: {e}. 원본: {call_match.group(1)}")
 
@@ -251,21 +216,17 @@ class AIHandler(commands.Cog):
         if not tool_name: 
             return {"error": "tool_to_use가 지정되지 않았습니다."}
 
-        # --- Google 검색 특별 처리 ---
         if tool_name == 'web_search':
             logger.info("Executing special tool: web_search (Google Grounding)", extra=log_extra)
-            query = parameters.get('query', user_query) # 파라미터가 없으면 원래 사용자 쿼리 사용
-
+            query = parameters.get('query', user_query)
             try:
-                grounding_tool = genai.types.Tool(google_search=genai.GoogleSearch())
+                grounding_tool = genai.types.Tool(google_search=GoogleSearch())
                 grounding_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, tools=[grounding_tool])
                 
-                # RPD 제한 확인
                 if await db_utils.check_api_rate_limit(self.bot.db, 'gemini_grounding', 60, 500):
                     logger.warning("Google Search API 호출 속도/횟수 제한에 도달했습니다.", extra=log_extra)
                     return {"error": config.MSG_AI_GOOGLE_LIMIT_REACHED}
 
-                # 모델 호출
                 grounded_response = await grounding_model.generate_content_async(query)
 
                 if grounded_response and grounded_response.text:
@@ -277,7 +238,6 @@ class AIHandler(commands.Cog):
                 logger.error(f"Google Grounding 실행 중 예기치 않은 오류: {e}", exc_info=True, extra=log_extra)
                 return {"error": f"Google 검색 중 오류가 발생했습니다: {e}"}
 
-        # --- 일반 도구 처리 ---
         try:
             tool_method = getattr(self.tools_cog, tool_name)
             logger.info(f"Executing tool: {tool_name} with params: {parameters}", extra=log_extra)
@@ -290,7 +250,9 @@ class AIHandler(commands.Cog):
             return {"error": f"'{tool_name}'이라는 도구는 존재하지 않습니다."}
         except Exception as e:
             logger.error(f"도구 '{tool_name}' 실행 중 예기치 않은 오류: {e}", exc_info=True, extra=log_extra)
-            return {"error": "도구 실행 중 예상치 못한 오류가 발생했습니다."}    async def process_agent_message(self, message: discord.Message):
+            return {"error": "도구 실행 중 예상치 못한 오류가 발생했습니다."}
+
+    async def process_agent_message(self, message: discord.Message):
         if not self.is_ready: return
         user_query = message.content.replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
         if not user_query: return
@@ -306,7 +268,6 @@ class AIHandler(commands.Cog):
 
         async with message.channel.typing():
             try:
-                # --- 1단계: Lite 모델로 작업 계획 수립 ---
                 rag_prompt, _ = await self._get_rag_context(message.guild.id, message.channel.id, message.author.id, user_query)
                 history = await self._get_recent_history(message, rag_prompt)
 
@@ -328,21 +289,16 @@ class AIHandler(commands.Cog):
                 lite_response_text = lite_response.text.strip()
                 logger.info(f"Lite 모델(PM) 응답: '{lite_response_text[:150]}...'", extra=log_extra)
                 
-                # PM v5.2: 단일 호출이 아닌 '계획'을 파싱
                 tool_plan = self._parse_tool_calls(lite_response_text)
 
-                # --- 2단계: 분기 처리 ---
                 if "<conversation_response>" in lite_response_text:
-                    # Case 1: 간단한 대화 - Main 모델을 페르소나와 함께 호출
                     logger.info("분기: 간단한 대화로 판단, Main 모델을 호출하여 페르소나 기반으로 응답합니다.", extra=log_extra)
 
-                    # 채널별 페르소나 및 규칙 가져오기
                     channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
                     persona = channel_config.get('persona')
                     rules = channel_config.get('rules')
 
                     if not persona or not rules:
-                        # 만약 채널 설정이 없다면, 기본 AGENT_SYSTEM_PROMPT 사용
                         system_prompt = config.AGENT_SYSTEM_PROMPT.format(user_query=user_query, tool_result="N/A")
                     else:
                         system_prompt = f"{persona}\n\n{rules}"
@@ -369,7 +325,6 @@ class AIHandler(commands.Cog):
                     return
 
                 if not tool_plan:
-                    # Case 2: 도구 계획 없음 (그러나 <conversation_response>도 아님) - Lite 모델의 답변을 그대로 사용
                     logger.info("분기: 도구 계획이 없으며, Lite 모델의 답변으로 바로 응답합니다.", extra=log_extra)
                     await message.reply(lite_response_text, mention_author=False)
                     await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {
@@ -384,7 +339,6 @@ class AIHandler(commands.Cog):
                     })
                     return
 
-                # Case 2: 도구 사용 계획 존재 - 계획을 순차적으로 실행
                 logger.info(f"분기: 도구 사용 계획 발견. 총 {len(tool_plan)}단계.", extra=log_extra)
                 
                 tool_results = []
@@ -392,7 +346,6 @@ class AIHandler(commands.Cog):
                     step_num = i + 1
                     logger.info(f"계획 실행 ({step_num}/{len(tool_plan)}): {tool_call.get('tool_to_use')}", extra=log_extra)
                     
-                    # 현재는 이전 단계 결과를 다음 단계에 넘기지 않음. 추후 확장 가능.
                     result = await self._execute_tool(tool_call, message.guild.id, user_query)
                     
                     if result is None:
@@ -408,12 +361,9 @@ class AIHandler(commands.Cog):
                         "result": result
                     })
 
-                # --- 2.5단계: 도구 실패 시 웹 검색으로 대체 (Fallback) ---
                 def is_tool_failed(result):
-                    """도구 결과가 실패했는지 여부를 간단히 확인합니다."""
                     if result is None: return True
                     res_str = str(result).lower()
-                    # 실패를 나타내는 키워드 목록
                     fail_keywords = ["error", "오류", "실패", "없습니다", "알 수 없는", "찾을 수"]
                     return any(keyword in res_str for keyword in fail_keywords)
 
@@ -423,7 +373,6 @@ class AIHandler(commands.Cog):
                 if tool_plan and any_failed and not any(tc.get('tool_to_use') == 'web_search' for tc in tool_plan):
                     logger.info("하나 이상의 도구 실행에 실패하여 웹 검색으로 대체합니다.", extra=log_extra)
                     
-                    # web_search 도구 호출을 생성하여 _execute_tool로 실행
                     web_search_tool_call = {
                         "tool_to_use": "web_search",
                         "parameters": {"query": user_query}
@@ -431,7 +380,6 @@ class AIHandler(commands.Cog):
                     web_search_result_dict = await self._execute_tool(web_search_tool_call, message.guild.id, user_query)
                     web_search_result = web_search_result_dict.get("result", "웹 검색에 실패했습니다.")
 
-                    # 기존의 실패한 결과 대신 웹 검색 결과를 사용
                     tool_results = [{
                         "step": 1,
                         "tool_name": "web_search",
@@ -440,13 +388,10 @@ class AIHandler(commands.Cog):
                     }]
                     use_fallback_prompt = True
 
-                # 모든 도구의 실행 결과를 하나의 문자열로 통합
                 tool_results_str = json.dumps(tool_results, ensure_ascii=False, indent=2)
 
-                # --- 3단계: Main 모델로 최종 답변 생성 ---
                 logger.info("3단계: Main 모델 호출 시작...", extra=log_extra)
 
-                # 도구 사용 여부에 따라 적절한 시스템 프롬프트 선택
                 is_travel_tool_used = any(tc.get('tool_to_use') == 'get_travel_recommendation' for tc in tool_plan)
 
                 if use_fallback_prompt:
@@ -466,17 +411,13 @@ class AIHandler(commands.Cog):
                     )
                 main_prompt = user_query
 
-                # 페르소나 적용
-                # 1. 채널별 페르소나 (config.py) 우선 적용
                 channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
                 persona = channel_config.get('persona')
                 rules = channel_config.get('rules')
 
                 if persona and rules:
-                    # 채널 설정이 있으면 그것을 시스템 프롬프트로 사용
                     main_system_prompt = f"{persona}\n\n{rules}\n\n{main_system_prompt}"
                 else:
-                    # 채널 설정이 없으면 기존처럼 DB에서 길드 설정을 가져옴
                     custom_persona = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'persona_text')
                     if custom_persona:
                         main_system_prompt = f"{custom_persona}\n\n{main_system_prompt}"
@@ -516,25 +457,18 @@ class AIHandler(commands.Cog):
                 await message.reply(config.MSG_AI_ERROR, mention_author=False)
 
     async def _get_recent_history(self, message: discord.Message, rag_prompt: str) -> list:
-        """최근 대화 기록을 가져옵니다. RAG 사용 여부에 따라 기록 길이를 조절합니다."""
-        # RAG 컨텍스트가 있을 때도 충분한 단기 기억을 유지하도록 history_limit 증가
         history_limit = 6 if rag_prompt else 12
         history = []
         
-        # 지정된 수만큼 메시지를 가져옴
-        async for msg in message.channel.history(limit=history_limit + 1): # +1 to exclude the current message
+        async for msg in message.channel.history(limit=history_limit + 1):
             if msg.id == message.id:
                 continue
 
-            # RAG 컨텍스트에 포함된 내용을 제외하는 로직은 때로 중요한 단기 기억을 제거할 수 있으므로 제거함.
-            # 약간의 중복은 손실보다 낫다.
-
             role = 'model' if msg.author.id == self.bot.user.id else 'user'
-            # 메시지가 너무 길 경우 잘라내어 토큰 사용량 관리 (필요 시)
             content = msg.content[:2000] if len(msg.content) > 2000 else msg.content
             history.append({'role': role, 'parts': [content]})
 
-        history.reverse() # 시간 순서대로 (오래된 것 -> 최신 것)
+        history.reverse()
         return history
 
     async def should_proactively_respond(self, message: discord.Message) -> bool:
