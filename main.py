@@ -10,6 +10,7 @@ import sys
 import aiosqlite
 import config
 from logger_config import logger
+import csv
 
 # --- 초기 설정 확인 ---
 if not config.TOKEN:
@@ -41,26 +42,51 @@ class ReMasamongBot(commands.Bot):
             async with self.db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='locations';") as cursor:
                 if await cursor.fetchone() is None:
                     logger.info("'locations' 테이블이 존재하지 않아 새로 생성합니다.")
-                    # 스키마에 따라 테이블 생성 (schema.sql에 정의되어 있어야 함)
-                    with open('database/schema.sql') as f:
-                        schema = f.read()
-                        # locations 테이블 생성 구문만 따로 실행
-                        create_table_query = [q for q in schema.split(';') if 'locations' in q][0]
-                        await self.db.executescript(create_table_query)
+                    await self.db.execute("CREATE TABLE locations (name TEXT PRIMARY KEY, nx INTEGER NOT NULL, ny INTEGER NOT NULL)")
 
             # locations 테이블이 비어있는지 확인
             async with self.db.execute("SELECT COUNT(*) FROM locations") as cursor:
                 count = (await cursor.fetchone())[0]
             
             if count == 0:
-                logger.info("'locations' 테이블이 비어있어 초기 데이터를 시딩합니다.")
-                locations_to_seed = config.LOCATION_COORDINATES
-                await self.db.executemany(
-                    "INSERT INTO locations (name, nx, ny) VALUES (?, ?, ?)",
-                    [(name, data['nx'], data['ny']) for name, data in locations_to_seed.items()]
-                )
-                await self.db.commit()
-                logger.info(f"{len(locations_to_seed)}개의 위치 정보 시딩 완료.")
+                logger.info("'locations' 테이블이 비어있어 KMA 좌표 CSV 파일로부터 초기 데이터를 시딩합니다.")
+                locations_to_seed = {}
+                csv_path = './동네예보지점좌표(위경도)_202507.csv'
+                if not os.path.exists(csv_path):
+                    logger.error(f"좌표 CSV 파일을 찾을 수 없습니다: {csv_path}")
+                    return
+
+                with open(csv_path, 'r', encoding='utf-8') as f:
+                    reader = csv.reader(f)
+                    next(reader)  # Skip header
+                    for row in reader:
+                        try:
+                            # 3단계가 비어있는 시/군/구 레벨의 데이터만 사용
+                            if not row[4]:
+                                province = row[2]
+                                city = row[3]
+                                nx, ny = int(row[5]), int(row[6])
+
+                                # 대표 지명 생성
+                                if city:
+                                    name = city.split()[0] # e.g., '수원시 장안구' -> '수원'
+                                else:
+                                    name = province.replace('서울특별시', '서울').replace('광역시', '')
+                                
+                                # 중복된 이름이 있으면 덮어쓰지 않음 (주요 도시 우선)
+                                if name not in locations_to_seed:
+                                    locations_to_seed[name] = {'nx': nx, 'ny': ny}
+
+                        except (ValueError, IndexError):
+                            continue # 잘못된 데이터가 있는 행은 건너뜀
+                
+                if locations_to_seed:
+                    await self.db.executemany(
+                        "INSERT INTO locations (name, nx, ny) VALUES (?, ?, ?)",
+                        [(name, data['nx'], data['ny']) for name, data in locations_to_seed.items()]
+                    )
+                    await self.db.commit()
+                    logger.info(f"{len(locations_to_seed)}개의 위치 정보 시딩 완료.")
 
         except Exception as e:
             logger.error(f"데이터베이스 마이그레이션 중 오류 발생: {e}", exc_info=True)
