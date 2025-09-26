@@ -9,6 +9,7 @@ import pytz
 from collections import deque
 import re
 from typing import Dict, Any, Tuple
+from google.generativeai.types import GoogleSearch
 import aiosqlite
 import numpy as np
 import pickle
@@ -258,7 +259,7 @@ class AIHandler(commands.Cog):
 
             grounding_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME)
             grounding_config = genai.types.GenerationConfig(
-                tools=[genai.types.Tool(google_search=genai.types.GoogleSearch())],
+                tools=[genai.types.Tool(google_search=GoogleSearch())],
                 temperature=0.0
             )
             
