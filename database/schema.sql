@@ -81,3 +81,10 @@ CREATE TABLE IF NOT EXISTS user_preferences (
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc')),
     PRIMARY KEY(user_id, preference_type)
 );
+
+-- 날씨 기능에서 사용할 지역별 격자 좌표 정보
+CREATE TABLE IF NOT EXISTS locations (
+    name TEXT PRIMARY KEY,
+    nx INTEGER NOT NULL,
+    ny INTEGER NOT NULL
+);
