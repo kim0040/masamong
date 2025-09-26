@@ -9,7 +9,6 @@ import pytz
 from collections import deque
 import re
 from typing import Dict, Any, Tuple
-from google.generativeai.types import GoogleSearch
 import aiosqlite
 import numpy as np
 import pickle
@@ -257,33 +256,32 @@ class AIHandler(commands.Cog):
             logger.info("Executing special tool: web_search (Google Grounding)", extra=log_extra)
             query = parameters.get('query', user_query) # 파라미터가 없으면 원래 사용자 쿼리 사용
 
-            grounding_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME)
-            grounding_config = genai.types.GenerationConfig(
-                tools=[genai.types.Tool(google_search=GoogleSearch())],
-                temperature=0.0
-            )
-            
-            # _safe_generate_content는 grounding에 대한 RPD 제한을 이미 내장하고 있음
-            grounded_response = await self._safe_generate_content(
-                grounding_model, 
-                query, 
-                log_extra,
-                generation_config=grounding_config
-            )
+            try:
+                grounding_tool = genai.Tool(google_search=genai.GoogleSearch())
+                grounding_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, tools=[grounding_tool])
+                
+                # RPD 제한 확인
+                if await db_utils.check_api_rate_limit(self.bot.db, 'gemini_grounding', 60, 500):
+                    logger.warning("Google Search API 호출 속도/횟수 제한에 도달했습니다.", extra=log_extra)
+                    return {"error": config.MSG_AI_GOOGLE_LIMIT_REACHED}
 
-            if grounded_response and grounded_response.text:
-                return {"result": grounded_response.text}
-            else:
-                logger.error("Google Grounding 실행에 실패했습니다.", extra=log_extra)
-                return {"error": "Google 검색을 통해 정보를 찾는 데 실패했습니다."}
+                # 모델 호출
+                grounded_response = await grounding_model.generate_content_async(query)
+
+                if grounded_response and grounded_response.text:
+                    return {"result": grounded_response.text}
+                else:
+                    logger.error("Google Grounding 실행에 실패했으나 오류가 없습니다.", extra=log_extra)
+                    return {"error": "Google 검색을 통해 정보를 찾는 데 실패했습니다."}
+            except Exception as e:
+                logger.error(f"Google Grounding 실행 중 예기치 않은 오류: {e}", exc_info=True, extra=log_extra)
+                return {"error": f"Google 검색 중 오류가 발생했습니다: {e}"}
 
         # --- 일반 도구 처리 ---
         try:
             tool_method = getattr(self.tools_cog, tool_name)
             logger.info(f"Executing tool: {tool_name} with params: {parameters}", extra=log_extra)
-            # 일반 도구는 파라미터만 전달
             result = await tool_method(**parameters)
-            # 결과가 dict가 아닌 경우, 호환성을 위해 dict로 감싸기
             if not isinstance(result, dict):
                 return {"result": str(result)}
             return result
@@ -396,7 +394,7 @@ class AIHandler(commands.Cog):
                     logger.info(f"계획 실행 ({step_num}/{len(tool_plan)}): {tool_call.get('tool_to_use')}", extra=log_extra)
                     
                     # 현재는 이전 단계 결과를 다음 단계에 넘기지 않음. 추후 확장 가능.
-                    result = await self._execute_tool(tool_call, message.guild.id, user_query)
+                    result = await self._execute_tool(tool_call, message.guild.id)
                     
                     if result is None:
                         error_msg = f"도구 실행 결과가 None입니다: {tool_call.get('tool_to_use')}"
