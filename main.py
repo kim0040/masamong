@@ -51,7 +51,8 @@ class ReMasamongBot(commands.Bot):
             if count == 0:
                 logger.info("'locations' 테이블이 비어있어 KMA 좌표 CSV 파일로부터 초기 데이터를 시딩합니다.")
                 locations_to_seed = {}
-                csv_path = './동네예보지점좌표(위경도)_202507.csv'
+                # 절대 경로로 수정하여 파일 찾기 오류 방지
+                csv_path = '/Users/gimhyeonmin/masamong/동네예보지점좌표(위경도)_202507.csv'
                 if not os.path.exists(csv_path):
                     logger.error(f"좌표 CSV 파일을 찾을 수 없습니다: {csv_path}")
                     return
@@ -69,12 +70,11 @@ class ReMasamongBot(commands.Bot):
 
                                 # 대표 지명 생성
                                 if city:
-                                    name = city.split()[0] # e.g., '수원시 장안구' -> '수원'
+                                    name = city.split()[0].replace('시', '').replace('군', '').replace('구', '')
                                 else:
                                     name = province.replace('서울특별시', '서울').replace('광역시', '')
                                 
-                                # 중복된 이름이 있으면 덮어쓰지 않음 (주요 도시 우선)
-                                if name not in locations_to_seed:
+                                if name and name not in locations_to_seed:
                                     locations_to_seed[name] = {'nx': nx, 'ny': ny}
 
                         except (ValueError, IndexError):
