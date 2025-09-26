@@ -88,18 +88,14 @@ class ToolsCog(commands.Cog):
     async def get_current_weather(self, location: str = None, day_offset: int = 0) -> str:
         """
         주어진 위치의 날씨 정보를 조회하여 LLM이 이해하기 쉬운 문자열로 반환합니다.
-        [수정] 반환 형식을 dict에서 str으로 변경하여 토큰 사용량을 최적화합니다.
         """
         if not self.weather_cog:
             return "날씨 정보 모듈이 준비되지 않아 조회할 수 없습니다."
 
         location_name = location or config.DEFAULT_LOCATION_NAME
-        coords = config.LOCATION_COORDINATES.get(location_name)
-        if not coords:
-            for key, value in config.LOCATION_COORDINATES.items():
-                if location_name in key:
-                    coords, location_name = value, key
-                    break
+        
+        # 데이터베이스에서 좌표 조회
+        coords = await coords_utils.get_coords_from_db(self.bot.db, location_name)
 
         if not coords:
             return f"'{location_name}' 지역의 날씨 정보는 아직 알 수 없습니다."
