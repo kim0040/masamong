@@ -134,14 +134,6 @@ class ReMasamongBot(commands.Bot):
                 if event_cog and await event_cog._handle_keyword_triggers(message):
                     return
 
-            # 능동적 비서 기능 확인 (멘션된 경우에만)
-            proactive_assistant = self.get_cog('ProactiveAssistant')
-            if proactive_assistant:
-                suggestion = await proactive_assistant.analyze_user_intent(message)
-                if suggestion:
-                    await message.reply(suggestion, mention_author=False)
-                    return
-            
             # AI 상호작용 처리 (멘션된 경우)
             if ai_handler:
                 await ai_handler.process_agent_message(message)
