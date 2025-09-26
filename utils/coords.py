@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import math
+import aiosqlite
+from typing import Dict, Optional
 
 # This code is adapted from the Gist found at:
 # https://gist.github.com/fronteer-kr/14d7f779d52a21ac2f16
@@ -34,6 +36,28 @@ sf = math.tan(PI * 0.25 + slat1 * 0.5)
 sf = math.pow(sf, sn) * math.cos(slat1) / sn
 ro = math.tan(PI * 0.25 + olat * 0.5)
 ro = re * sf / math.pow(ro, sn)
+
+async def get_coords_from_db(db: aiosqlite.Connection, location_name: str) -> Optional[Dict[str, int]]:
+    """
+    데이터베이스의 locations 테이블에서 지역 이름으로 좌표(nx, ny)를 조회합니다.
+    정확히 일치하는 이름이 없으면, 이름의 일부가 일치하는 첫 번째 지역을 반환합니다.
+    """
+    if not db:
+        return None
+    
+    # 1. 정확한 이름으로 검색
+    async with db.execute("SELECT nx, ny FROM locations WHERE name = ?", (location_name,)) as cursor:
+        result = await cursor.fetchone()
+        if result:
+            return {'nx': result['nx'], 'ny': result['ny']}
+
+    # 2. 부분 일치로 검색 (LIKE)
+    async with db.execute("SELECT nx, ny FROM locations WHERE name LIKE ?", (f'%{location_name}%',)) as cursor:
+        result = await cursor.fetchone()
+        if result:
+            return {'nx': result['nx'], 'ny': result['ny']}
+            
+    return None
 
 def latlon_to_kma_grid(lat: float, lon: float) -> tuple[int, int]:
     """
