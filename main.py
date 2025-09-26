@@ -11,6 +11,7 @@ import aiosqlite
 import config
 from logger_config import logger
 import csv
+from utils import initial_data
 
 # --- 초기 설정 확인 ---
 if not config.TOKEN:
@@ -49,41 +50,13 @@ class ReMasamongBot(commands.Bot):
                 count = (await cursor.fetchone())[0]
             
             if count == 0:
-                logger.info("'locations' 테이블이 비어있어 KMA 좌표 CSV 파일로부터 초기 데이터를 시딩합니다.")
-                locations_to_seed = {}
-                # 절대 경로로 수정하여 파일 찾기 오류 방지
-                csv_path = '/home/masamong/masamong/동네예보지점좌표(위경도)_202507.csv'
-                if not os.path.exists(csv_path):
-                    logger.error(f"좌표 CSV 파일을 찾을 수 없습니다: {csv_path}")
-                    return
-
-                with open(csv_path, 'r', encoding='utf-8') as f:
-                    reader = csv.reader(f)
-                    next(reader)  # Skip header
-                    for row in reader:
-                        try:
-                            # 3단계가 비어있는 시/군/구 레벨의 데이터만 사용
-                            if not row[4]:
-                                province = row[2]
-                                city = row[3]
-                                nx, ny = int(row[5]), int(row[6])
-
-                                # 대표 지명 생성
-                                if city:
-                                    name = city.split()[0].replace('시', '').replace('군', '').replace('구', '')
-                                else:
-                                    name = province.replace('서울특별시', '서울').replace('광역시', '')
-                                
-                                if name and name not in locations_to_seed:
-                                    locations_to_seed[name] = {'nx': nx, 'ny': ny}
-
-                        except (ValueError, IndexError):
-                            continue # 잘못된 데이터가 있는 행은 건너뜀
+                logger.info("'locations' 테이블이 비어있어 초기 데이터를 시딩합니다.")
+                locations_to_seed = initial_data.LOCATION_DATA
                 
                 if locations_to_seed:
                     await self.db.executemany(
                         "INSERT INTO locations (name, nx, ny) VALUES (?, ?, ?)",
-                        [(name, data['nx'], data['ny']) for name, data in locations_to_seed.items()]
+                        [(loc['name'], loc['nx'], loc['ny']) for loc in locations_to_seed]
                     )
                     await self.db.commit()
                     logger.info(f"{len(locations_to_seed)}개의 위치 정보 시딩 완료.")
