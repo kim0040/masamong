@@ -276,8 +276,24 @@ class AIHandler(commands.Cog):
         session = http.get_modern_tls_session()
         try:
             logger.info("Google Grounding REST 호출을 실행합니다.", extra=log_extra)
-            response = await asyncio.to_thread(session.post, endpoint, params=params, json=payload, timeout=20)
-            response.raise_for_status()
+            
+            # 재시도 로직 추가
+            for attempt in range(3):
+                try:
+                    response = await asyncio.to_thread(
+                        session.post, endpoint, params=params, json=payload, timeout=30  # 타임아웃 30초로 증가
+                    )
+                    response.raise_for_status()
+                    break  # 성공 시 루프 탈출
+                except requests.exceptions.ReadTimeout as exc:
+                    if attempt >= 2:
+                        logger.error("Google Grounding REST 호출이 재시도 후에도 시간 초과되었습니다.", extra=log_extra, exc_info=True)
+                        raise exc  # 마지막 시도 실패 시 예외 다시 발생
+                    logger.warning(f"Google Grounding REST 호출 시간 초과 (시도 {attempt + 1}/3). {5 * (attempt + 1)}초 후 재시도합니다.", extra=log_extra)
+                    await asyncio.sleep(5 * (attempt + 1))
+            else: # for-else: break로 탈출하지 못한 경우 (모든 재시도 실패)
+                return None
+
             try:
                 data = response.json()
             except ValueError as exc:
@@ -315,28 +331,9 @@ class AIHandler(commands.Cog):
             session.close()
 
     async def _run_web_search_fallback(self, query: str, log_extra: dict) -> str | None:
-        if not self.tools_cog:
-            self.tools_cog = self.bot.get_cog('ToolsCog')
-        if not self.tools_cog:
-            logger.error("ToolsCog 미초기화로 웹 검색 폴백을 실행할 수 없습니다.", extra=log_extra)
-            return None
-
-        try:
-            result = await self.tools_cog.web_search(query)
-            if isinstance(result, dict):
-                payload = result.get("result")
-                if payload is None:
-                    return None
-                payload_str = str(payload).strip()
-                return payload_str or None
-            result_str = str(result).strip()
-            if not result_str:
-                logger.warning("웹 검색 폴백 결과가 비어 있습니다.", extra=log_extra)
-                return None
-            return result_str
-        except Exception as exc:
-            logger.error("웹 검색 폴백 실행 중 오류: %s", exc, extra=log_extra, exc_info=True)
-            return None
+        """Gemini Grounding 검색 실패 시 호출되는 함수. 이제는 폴백을 실행하지 않고 오류를 기록합니다."""
+        logger.warning("기본 Gemini Grounding 검색에 실패하여 폴백 로직이 호출되었으나, 추가 폴백은 실행하지 않습니다.", extra=log_extra)
+        return None
 
     async def _get_rag_context(self, guild_id: int, channel_id: int, user_id: int, query: str) -> Tuple[str, list[str]]:
         """RAG: 사용자의 질문과 유사한 과거 대화 내용을 DB에서 검색하여 컨텍스트로 반환합니다."""
