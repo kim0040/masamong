@@ -9,10 +9,14 @@
 4.  **대화 기록 관리**: RAG(Retrieval-Augmented Generation)를 위해 대화 내용을 데이터베이스에 저장하고 임베딩을 생성합니다.
 """
 
+from __future__ import annotations
+
 import discord
 from discord.ext import commands
-import google.generativeai as genai
-import google.api_core.exceptions
+try:
+    import google.generativeai as genai
+except ModuleNotFoundError:  # pragma: no cover - 환경에 따라 설치되지 않을 수 있음
+    genai = None
 from datetime import datetime, timedelta
 import asyncio
 import pytz
@@ -45,8 +49,10 @@ class AIHandler(commands.Cog):
         self.proactive_cooldowns: Dict[int, float] = {}
         self.gemini_configured = False
         self.api_call_lock = asyncio.Lock()
+        self._google_grounding_checked = False
+        self._google_grounding_descriptor: dict[str, object] | None = None
 
-        if config.GEMINI_API_KEY:
+        if config.GEMINI_API_KEY and genai:
             try:
                 genai.configure(api_key=config.GEMINI_API_KEY)
                 self.embedding_model_name = config.AI_EMBEDDING_MODEL_NAME
@@ -54,6 +60,8 @@ class AIHandler(commands.Cog):
                 self.gemini_configured = True
             except Exception as e:
                 logger.critical(f"Gemini API 설정 실패: {e}. AI 관련 기능이 비활성화됩니다.", exc_info=True)
+        elif config.GEMINI_API_KEY and not genai:
+            logger.critical("google-generativeai 패키지를 찾을 수 없어 Gemini 기능을 초기화하지 못했습니다.")
 
     @property
     def is_ready(self) -> bool:
@@ -140,6 +148,93 @@ class AIHandler(commands.Cog):
         except (pickle.PicklingError, aiosqlite.Error) as e:
             logger.error(f"임베딩 DB 저장/직렬화 중 오류: {e}", extra=log_extra, exc_info=True)
 
+    def _discover_google_grounding_tool(self) -> dict[str, object] | None:
+        """설치된 google-generativeai 버전에 맞춰 Google Search 도구 구성을 감지합니다."""
+        if not self.gemini_configured:
+            return None
+
+        candidate_fields = (
+            ("google_search", ("GoogleSearch", "GoogleSearchRetrieval")),
+            ("google_search_retrieval", ("GoogleSearchRetrieval", "GoogleSearch")),
+        )
+
+        grounding_module = getattr(genai.types, "grounding", None)
+
+        for field_name, type_names in candidate_fields:
+            for type_name in type_names:
+                google_cls = getattr(genai.types, type_name, None)
+                if not google_cls and grounding_module:
+                    google_cls = getattr(grounding_module, type_name, None)
+                if not google_cls:
+                    continue
+                try:
+                    genai.types.Tool(**{field_name: google_cls()})
+                    logger.info(
+                        "Google Grounding 도구를 '%s' 필드와 '%s' 타입으로 설정했습니다.",
+                        field_name,
+                        type_name,
+                    )
+                    return {"field": field_name, "cls": google_cls}
+                except TypeError:
+                    continue
+                except Exception as exc:
+                    logger.debug(
+                        "Google Grounding 도구 초기화 검사 실패 (%s.%s): %s",
+                        field_name,
+                        type_name,
+                        exc,
+                    )
+                    continue
+
+        logger.warning("설치된 google-generativeai 버전에서 Google Grounding 도구를 사용할 수 없습니다.")
+        return None
+
+    def _get_google_grounding_tool(self):
+        if not self.gemini_configured:
+            return None
+
+        if not self._google_grounding_checked:
+            self._google_grounding_descriptor = self._discover_google_grounding_tool()
+            self._google_grounding_checked = True
+
+        if not self._google_grounding_descriptor:
+            return None
+
+        field_name = self._google_grounding_descriptor.get("field")
+        google_cls = self._google_grounding_descriptor.get("cls")
+        if not field_name or not google_cls:
+            return None
+
+        try:
+            return genai.types.Tool(**{field_name: google_cls()})
+        except Exception as exc:
+            logger.error("Google Grounding 도구 인스턴스화 실패: %s", exc)
+            return None
+
+    async def _run_web_search_fallback(self, query: str, log_extra: dict) -> str | None:
+        if not self.tools_cog:
+            self.tools_cog = self.bot.get_cog('ToolsCog')
+        if not self.tools_cog:
+            logger.error("ToolsCog 미초기화로 웹 검색 폴백을 실행할 수 없습니다.", extra=log_extra)
+            return None
+
+        try:
+            result = await self.tools_cog.web_search(query)
+            if isinstance(result, dict):
+                payload = result.get("result")
+                if payload is None:
+                    return None
+                payload_str = str(payload).strip()
+                return payload_str or None
+            result_str = str(result).strip()
+            if not result_str:
+                logger.warning("웹 검색 폴백 결과가 비어 있습니다.", extra=log_extra)
+                return None
+            return result_str
+        except Exception as exc:
+            logger.error("웹 검색 폴백 실행 중 오류: %s", exc, extra=log_extra, exc_info=True)
+            return None
+
     async def _get_rag_context(self, guild_id: int, channel_id: int, user_id: int, query: str) -> Tuple[str, list[str]]:
         """RAG: 사용자의 질문과 유사한 과거 대화 내용을 DB에서 검색하여 컨텍스트로 반환합니다."""
         log_extra = {'guild_id': guild_id, 'channel_id': channel_id, 'user_id': user_id}
@@ -218,20 +313,22 @@ class AIHandler(commands.Cog):
         if tool_name == 'web_search':
             logger.info("특별 도구 실행: web_search (Google Grounding)", extra=log_extra)
             query = parameters.get('query', user_query)
+            google_tool = self._get_google_grounding_tool()
             try:
-                grounding_tool = genai.types.Tool(google_search=genai.types.GoogleSearch())
-                model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, tools=[grounding_tool])
-                
-                grounded_response = await self._safe_generate_content(model, query, log_extra)
-
-                if grounded_response and grounded_response.text:
-                    return {"result": grounded_response.text}
+                if google_tool:
+                    model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, tools=[google_tool])
+                    grounded_response = await self._safe_generate_content(model, query, log_extra)
+                    if grounded_response and grounded_response.text:
+                        return {"result": grounded_response.text}
+                    logger.warning("Google Grounding에서 유효한 텍스트 응답을 받지 못했습니다. 폴백을 시도합니다.", extra=log_extra)
                 else:
-                    logger.error("Google Grounding 실행에 실패했으나 오류가 없습니다.", extra=log_extra)
-                    return {"error": "Google 검색을 통해 정보를 찾는 데 실패했습니다."}
+                    logger.info("Google Grounding 도구를 사용할 수 없어 폴백 검색을 바로 실행합니다.", extra=log_extra)
             except Exception as e:
                 logger.error(f"Google Grounding 실행 중 예기치 않은 오류: {e}", exc_info=True, extra=log_extra)
-                return {"error": f"Google 검색 중 오류가 발생했습니다: {e}"}
+            fallback_result = await self._run_web_search_fallback(query, log_extra)
+            if fallback_result:
+                return {"result": fallback_result}
+            return {"error": "Google 검색을 통해 정보를 찾는 데 실패했습니다."}
 
         # 그 외 일반 도구들은 ToolsCog에서 찾아 실행합니다.
         try:
