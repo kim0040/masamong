@@ -50,7 +50,7 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict) 
     base_url = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0"
     full_url = f"{base_url}/{endpoint}?serviceKey={api_key}"
 
-    session = http.get_tlsv12_session()
+    session = http.get_insecure_session()
     max_retries = max(1, getattr(config, 'KMA_API_MAX_RETRIES', 3))
     retry_delay = max(0, getattr(config, 'KMA_API_RETRY_DELAY_SECONDS', 2))
 
