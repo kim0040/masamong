@@ -428,7 +428,7 @@ class AIHandler(commands.Cog):
 
                 # --- [3단계] Main 모델 호출: 최종 답변 생성 ---
                 logger.info("3단계: Main 모델(답변 생성) 호출...", extra=log_extra)
-                tool_results_str = json.dumps(tool_results, ensure_ascii=False, indent=2)
+                tool_results_str = json.dumps(tool_results, ensure_ascii=False)
                 
                 # 프롬프트 선택: 일반, 여행용, 웹 폴백용
                 if use_fallback_prompt:
@@ -445,7 +445,11 @@ class AIHandler(commands.Cog):
                 main_system_prompt = f"{persona}\n\n{rules}\n\n{main_system_prompt}"
 
                 main_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, system_instruction=main_system_prompt)
-                main_response = await self._safe_generate_content(main_model, "", log_extra)
+                main_prompt = (
+                    f"사용자 질문: {user_query}\n\n"
+                    "위 시스템 지시와 도구 결과를 참고해서 자연스럽게 답변을 만들어줘."
+                )
+                main_response = await self._safe_generate_content(main_model, main_prompt, log_extra)
 
                 if main_response and main_response.text:
                     final_response_text = main_response.text.strip()

@@ -52,11 +52,27 @@ class ReMasamongBot(commands.Bot):
     async def _migrate_db(self):
         """데이터베이스 스키마를 확인하고, 필요한 경우 초기 데이터를 시딩(seeding)합니다."""
         try:
+            await self.db.execute("""
+                CREATE TABLE IF NOT EXISTS locations (
+                    name TEXT PRIMARY KEY,
+                    nx INTEGER NOT NULL,
+                    ny INTEGER NOT NULL
+                )
+            """)
+            await self.db.commit()
             # locations 테이블이 비어있을 경우, 초기 좌표 데이터를 삽입합니다.
             async with self.db.execute("SELECT COUNT(*) FROM locations") as cursor:
-                if (await cursor.fetchone())[0] == 0:
-                    logger.info("'locations' 테이블이 비어있어 초기 데이터를 시딩합니다.")
-                    locations_to_seed = initial_data.LOCATION_DATA
+                existing_count = (await cursor.fetchone())[0]
+                if existing_count < 100:
+                    if existing_count:
+                        logger.info("'locations' 테이블에 기존 데이터(%d개)가 부족하여 재시딩합니다.", existing_count)
+                        await self.db.execute("DELETE FROM locations")
+                        await self.db.commit()
+                    else:
+                        logger.info("'locations' 테이블이 비어있어 초기 데이터를 시딩합니다.")
+                    locations_to_seed = initial_data.load_locations_from_csv()
+                    if not locations_to_seed:
+                        locations_to_seed = initial_data.LOCATION_DATA
                     if locations_to_seed:
                         await self.db.executemany(
                             "INSERT OR IGNORE INTO locations (name, nx, ny) VALUES (?, ?, ?)",

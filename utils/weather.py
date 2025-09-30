@@ -41,26 +41,43 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict) 
     base_params = {"authKey": api_key, "pageNo": "1", "numOfRows": "1000", "dataType": "JSON"}
     base_params.update(params)
 
+    session = http.get_modern_tls_session()
+    max_retries = max(1, getattr(config, 'KMA_API_MAX_RETRIES', 3))
+    retry_delay = max(0, getattr(config, 'KMA_API_RETRY_DELAY_SECONDS', 2))
+
     try:
-        session = http.get_modern_tls_session()
-        response = await asyncio.to_thread(session.get, full_url, params=base_params, timeout=15)
-        response.raise_for_status()
-        data = response.json()
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = await asyncio.to_thread(session.get, full_url, params=base_params, timeout=15)
+                response.raise_for_status()
+                data = response.json()
 
-        if data.get('response', {}).get('header', {}).get('resultCode') != '00':
-            error_msg = data.get('response', {}).get('header', {}).get('resultMsg', 'Unknown API Error')
-            logger.error(f"기상청 API 오류: {error_msg}")
-            return {"error": True, "message": error_msg}
+                if data.get('response', {}).get('header', {}).get('resultCode') != '00':
+                    error_msg = data.get('response', {}).get('header', {}).get('resultMsg', 'Unknown API Error')
+                    logger.error(f"기상청 API 오류: {error_msg}")
+                    return {"error": True, "message": error_msg}
 
-        await db_utils.log_api_call(db, 'kma_daily')
-        return data.get('response', {}).get('body', {}).get('items')
+                await db_utils.log_api_call(db, 'kma_daily')
+                return data.get('response', {}).get('body', {}).get('items')
 
-    except requests.exceptions.RequestException as e:
-        logger.error(f"기상청 API 요청 오류: {e}", exc_info=True)
-        return {"error": True, "message": config.MSG_WEATHER_FETCH_ERROR}
+            except requests.exceptions.Timeout:
+                if attempt >= max_retries:
+                    logger.error("기상청 API 요청이 재시도 후에도 시간 초과되었습니다.", exc_info=True)
+                    return {"error": True, "message": config.MSG_WEATHER_TIMEOUT}
+
+                logger.warning(f"기상청 API 요청이 시간 초과되었습니다. 재시도합니다... (시도 {attempt}/{max_retries})")
+                if retry_delay:
+                    await asyncio.sleep(retry_delay * attempt)
+                continue
+            except requests.exceptions.RequestException as e:
+                logger.error(f"기상청 API 요청 오류: {e}", exc_info=True)
+                return {"error": True, "message": config.MSG_WEATHER_FETCH_ERROR}
+
     except Exception as e:
         logger.error(f"기상청 API 처리 중 예기치 않은 오류: {e}", exc_info=True)
         return {"error": True, "message": config.MSG_WEATHER_FETCH_ERROR}
+    finally:
+        session.close()
 
 async def get_current_weather_from_kma(db: aiosqlite.Connection, nx: str, ny: str) -> dict | None:
     """초단기실황(현재 날씨) 정보를 기상청 API로부터 가져옵니다."""
