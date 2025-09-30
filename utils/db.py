@@ -9,7 +9,7 @@
 - 오래된 대화 기록 아카이빙
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pytz
 import json
 import aiosqlite
@@ -76,7 +76,7 @@ async def check_api_rate_limit(db: aiosqlite.Connection, api_type: str, rpm_limi
     제한에 도달하면 True를, 그렇지 않으면 호출을 기록하고 False를 반환합니다.
     """
     try:
-        now_utc = datetime.utcnow()
+        now_utc = datetime.now(timezone.utc)
         one_minute_ago = (now_utc - timedelta(minutes=1)).isoformat()
         one_day_ago = (now_utc - timedelta(days=1)).isoformat()
 
@@ -104,7 +104,7 @@ async def check_api_rate_limit(db: aiosqlite.Connection, api_type: str, rpm_limi
 async def log_api_call(db: aiosqlite.Connection, api_type: str):
     """API 호출을 `api_call_log` 테이블에 기록합니다."""
     try:
-        await db.execute("INSERT INTO api_call_log (api_type, called_at) VALUES (?, ?)", (api_type, datetime.utcnow().isoformat()))
+        await db.execute("INSERT INTO api_call_log (api_type, called_at) VALUES (?, ?)", (api_type, datetime.now(timezone.utc).isoformat()))
         await db.commit()
     except Exception as e:
         logger.error(f"API 호출 기록 중 DB 오류 ({api_type}): {e}", exc_info=True)

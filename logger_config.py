@@ -47,7 +47,7 @@ class ColoredFormatter(logging.Formatter):
     RESET = "\x1b[0m"
     BLUE = "\x1b[34;20m"
 
-    FORMAT = "% (asctime)s [%(levelname)s] [%(name)s:%(funcName)s:%(lineno)d] - %(message)s"
+    FORMAT = "%(asctime)s [%(levelname)s] [%(name)s:%(funcName)s:%(lineno)d] - %(message)s"
 
     FORMATS = {
         logging.DEBUG: GREY + FORMAT + RESET,
