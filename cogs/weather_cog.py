@@ -98,28 +98,64 @@ class WeatherCog(commands.Cog):
         await self.prepare_weather_response_for_ai(ctx.message, day_offset, location_name, nx, ny, user_original_query)
 
     def _parse_rain_periods(self, forecast_data: dict) -> list:
-        """단기예보 원본 데이터에서 '비' 또는 '눈'이 오는 시간대를 파싱하여 리스트로 반환합니다."""
-        try: items = forecast_data['item']
-        except (KeyError, TypeError): return []
-        hourly_data = {}
-        for item in items: hourly_data.setdefault((item.get("fcstDate"), item.get("fcstTime")))
+        """단기예보에서 강수 관련 값을 시간대별로 묶어 비/눈 구간을 도출합니다."""
+        try:
+            items = forecast_data["item"]
+        except (KeyError, TypeError):
+            return []
+
+        hourly_data: dict[tuple[str, str], dict[str, str]] = {}
+        for item in items:
+            fcst_date, fcst_time = item.get("fcstDate"), item.get("fcstTime")
+            category, value = item.get("category"), item.get("fcstValue")
+            if not fcst_date or not fcst_time or not category:
+                continue
+            if category not in {"PTY", "POP"}:
+                continue
+            entry = hourly_data.setdefault((fcst_date, fcst_time), {})
+            entry[category] = value
+
         precipitation_periods, current_period = [], None
         for key_time in sorted(hourly_data.keys()):
-            data = hourly_data[key_time]
-            is_raining = data.get("PTY", "0") != "0" and int(data.get("POP", 0)) >= config.RAIN_NOTIFICATION_THRESHOLD_POP
-            try: current_dt = KST.localize(datetime.strptime(f"{key_time[0]}{key_time[1]}%H%M", "%Y%m%d%H%M"))
-            except (ValueError, TypeError): continue
+            data = hourly_data.get(key_time)
+            if not data:
+                continue
+
+            pty_code = str(data.get("PTY", "0"))
+            try:
+                pop_value = int(data.get("POP") or 0)
+            except (TypeError, ValueError):
+                pop_value = 0
+
+            is_raining = pty_code != "0" and pop_value >= config.RAIN_NOTIFICATION_THRESHOLD_POP
+
+            try:
+                current_dt = KST.localize(datetime.strptime(f"{key_time[0]}{key_time[1].zfill(4)}", "%Y%m%d%H%M"))
+            except (ValueError, TypeError):
+                continue
+
             if is_raining:
-                precip_type = "눈" if data.get("PTY") == "3" else "비"
+                precip_type = "눈" if pty_code in {"3", "7"} else "비"
                 if current_period is None or current_period["type"] != precip_type:
-                    if current_period: precipitation_periods.append(current_period)
-                    current_period = {"type": precip_type, "start_dt": current_dt, "end_dt": current_dt, "max_pop": int(data.get("POP",0)), "key": key_time}
+                    if current_period:
+                        precipitation_periods.append(current_period)
+                    current_period = {
+                        "type": precip_type,
+                        "start_dt": current_dt,
+                        "end_dt": current_dt,
+                        "max_pop": pop_value,
+                        "key": key_time,
+                    }
                 else:
                     current_period["end_dt"] = current_dt
-                    current_period["max_pop"] = max(current_period["max_pop"], int(data.get("POP",0)))
-            else:
-                if current_period: precipitation_periods.append(current_period); current_period = None
-        if current_period: precipitation_periods.append(current_period)
+                    current_period["max_pop"] = max(current_period["max_pop"], pop_value)
+            elif current_period:
+                precipitation_periods.append(current_period)
+                current_period = None
+
+        if current_period:
+            precipitation_periods.append(current_period)
+
         return precipitation_periods
 
     @tasks.loop(minutes=config.WEATHER_CHECK_INTERVAL_MINUTES)
