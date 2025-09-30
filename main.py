@@ -134,18 +134,91 @@ class ReMasamongBot(commands.Bot):
         if message.author.bot or not message.guild:
             return
 
-        # 1. 모든 메시지에 대해 공통적으로 수행할 작업
         activity_cog = self.get_cog('ActivityCog')
         if activity_cog:
-            await activity_cog.record_message(message) # 사용자 활동 기록
-        
+            try:
+                await activity_cog.record_message(message)  # 사용자 활동 기록
+            except Exception as exc:  # pragma: no cover - 방어적 로깅
+                logger.error(
+                    "활동 기록 처리 중 오류: %s",
+                    exc,
+                    exc_info=True,
+                    extra={'guild_id': message.guild.id, 'channel_id': message.channel.id}
+                )
+
+        message_content = message.content or ""
+        prefixes_raw = await self.get_prefix(message)
+        if isinstance(prefixes_raw, str):
+            prefixes = [prefixes_raw]
+        else:
+            prefixes = list(prefixes_raw)
+        is_command = any(message_content.startswith(prefix) for prefix in prefixes if prefix)
+
+        if is_command:
+            await self.process_commands(message)
+            return
+
         ai_handler = self.get_cog('AIHandler')
         if ai_handler:
-            await ai_handler.add_message_to_history(message) # 대화 기록에 추가
+            try:
+                await ai_handler.add_message_to_history(message)  # 대화 기록에 추가
+            except Exception as exc:  # pragma: no cover - 방어적 로깅
+                logger.error(
+                    "대화 기록 저장 중 오류: %s",
+                    exc,
+                    exc_info=True,
+                    extra={'guild_id': message.guild.id, 'channel_id': message.channel.id}
+                )
 
-        # 2. 메시지가 명령인지 확인하고 처리합니다.
-        # process_commands는 내부적으로 명령어를 찾아 실행합니다.
-        await self.process_commands(message)
+        events_cog = self.get_cog('EventListeners')
+        if events_cog:
+            try:
+                if await events_cog._handle_keyword_triggers(message):
+                    return
+            except Exception as exc:  # pragma: no cover - 방어적 로깅
+                logger.error(
+                    "키워드 트리거 처리 중 오류: %s",
+                    exc,
+                    exc_info=True,
+                    extra={'guild_id': message.guild.id, 'channel_id': message.channel.id}
+                )
+
+        ai_ready = ai_handler and ai_handler.is_ready
+        if not ai_ready:
+            return
+
+        channel_conf = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
+        ai_enabled_channel = channel_conf.get('allowed', False)
+        if not ai_enabled_channel:
+            return
+
+        is_bot_mentioned = any(mention.id == self.user.id for mention in message.mentions)
+
+        proactive_cog = self.get_cog('ProactiveAssistant')
+        if proactive_cog and not is_bot_mentioned:
+            try:
+                suggestion = await proactive_cog.analyze_user_intent(message)
+                if suggestion:
+                    await message.channel.send(suggestion)
+                    return
+            except Exception as exc:  # pragma: no cover - 방어적 로깅
+                logger.error(
+                    "능동형 제안 생성 중 오류: %s",
+                    exc,
+                    exc_info=True,
+                    extra={'guild_id': message.guild.id, 'channel_id': message.channel.id}
+                )
+
+        try:
+            if is_bot_mentioned or await ai_handler.should_proactively_respond(message):
+                await ai_handler.process_agent_message(message)
+        except Exception as exc:  # pragma: no cover - 방어적 로깅
+            logger.error(
+                "AI 메시지 처리 중 오류: %s",
+                exc,
+                exc_info=True,
+                extra={'guild_id': message.guild.id, 'channel_id': message.channel.id}
+            )
 
     async def close(self):
         """
