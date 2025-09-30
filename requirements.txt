@@ -1,1 +1,10 @@
 aiohttp
+aiosqlite
+discord.py
+google-generativeai
+numpy
+python-dotenv
+pytz
+requests
+pytest
+pytest-asyncio

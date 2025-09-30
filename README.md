@@ -1,157 +1,208 @@
 # 🤖 마사몽 AI 에이전트 v5.2: 지능형 실시간 어시스턴트
 
-[![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://python.org)
-[![Discord.py](https://img.shields.io/badge/Discord.py-2.3+-green.svg)](https://discordpy.readthedocs.io)
+[![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://python.org)
+[![Discord.py](https://img.shields.io/badge/Discord.py-2.3%2B-green.svg)](https://discordpy.readthedocs.io)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Production%20Ready-brightgreen.svg)]()
 
-마사몽 5.2는 단순한 정보 검색 봇을 넘어, 사용자의 질문에 가장 정확한 최신 정보를 제공하는 **'지능형 웹 검색 에이전트'**로 한 단계 더 발전했습니다. "대한민국 최신 경제 동향 알려줘" 와 같은 실시간 정보가 필요한 질문에, Google 검색 결과를 분석하고 요약하여 신뢰도 높은 답변을 제공합니다.
+마사몽 5.2는 단순한 Q&A 봇을 넘어 실시간으로 데이터를 수집·분석하는 **지능형 웹 검색 에이전트**입니다. 2025년 버전에서는 Google Search Grounding를 자동으로 감지하고, Google/SerpAPI/Kakao 검색 스택과 긴밀하게 연동되도록 개선했습니다.
+
+## 🔄 최신 변경 사항 (2025)
+- Google Search Grounding 도구 버전에 따라 자동으로 초기화하며, 실패 시 내부 웹 검색 스택으로 즉시 폴백합니다.
+- `requirements.txt`를 최신 코드에서 사용하는 패키지 목록으로 갱신했습니다.
+- README 전면 개편: 로컬/서버 배포 절차, 환경 변수, 트러블슈팅 및 운영 팁 추가.
 
 ## 🌟 주요 특징
+- **🧠 2-Step Agent 아키텍처**: `gemini-2.5-flash-lite`로 의도를 판단하고, `gemini-2.5-flash`가 도구 결과를 종합해 답변합니다.
+- **🛠️ 하이브리드 API Mashup**: Google Custom Search → SerpAPI → Kakao의 다중 검색망, 기상청+OpenWeatherMap, 한국수출입은행+Finnhub+KRX 등 분야별 최고 API를 결합합니다.
+- **🧠 메모리 & RAG**: 최근 대화를 벡터로 저장하여 맥락을 유지하고, 최대 3개의 관련 히스토리를 재활용합니다.
+- **🛡️ 안정성**: 구조화된 JSON 로그, API 속도 제한 모니터링, 예외 발생 시 자동 폴백.
 
-### 🧠 2-Step Agent 아키텍처
-- **1단계 (Triage & Intent)**: 경량 LLM(`gemini-2.5-flash-lite`)이 사용자 의도를 분석하고 간단한 대화는 직접 처리합니다.
-- **2단계 (Execution & Synthesis)**: 복잡한 요청은 도구를 사용하여 데이터를 수집한 후, 강력한 LLM(`gemini-2.5-flash`)이 최종 답변을 생성합니다.
+## 📦 필수 파이썬 패키지
+`pip install -r requirements.txt` 명령으로 아래 라이브러리가 설치됩니다.
 
-### 🛠️ 하이브리드 API Mashup 시스템
-고비용의 단일 API 대신, 각 분야 최고의 무료/유료 API를 지능적으로 조합하고 우선순위에 따라 폴백(fallback)합니다.
-- **웹 검색**: **Google Custom Search** → **SerpAPI** → Kakao Web Search
-- **지리 정보**: Nominatim (OpenStreetMap)
-- **날씨**: 기상청(KMA) + OpenWeatherMap
-- **금융**: 한국수출입은행 + Finnhub + KRX
+```
+aiohttp
+aiosqlite
+discord.py
+google-generativeai
+numpy
+python-dotenv
+pytz
+requests
+```
 
-### 🎯 능동적 비서 기능
-- **잠재적 의도 파악**: "다음 달에 일본 여행 가려고" → "엔화 환율 정보를 알려드릴까요?"
-- **개인화된 알림**: 환율, 날씨, 주식 등 사용자 설정 기반 알림
-- **맥락 기억**: 대화 내용을 기억하여 "아까 말했던 그 게임" 같은 모호한 질문에도 답변합니다.
-
-### 🛡️ 엔터프라이즈급 안정성
-- **완전한 예외 처리**: 모든 API 호출에 대한 방어벽을 구축합니다.
-- **자동 복구**: API 장애 시에도 봇이 중단되지 않습니다.
-- **상세한 로깅**: JSON 형식의 구조화된 로그로 문제 추적을 용이하게 합니다.
-
-## 🚀 빠른 시작
+## 🚀 설치 가이드
 
 ### 1. 필수 요구사항
-- Python 3.9 이상
-- Discord 봇 토큰
-- Google Gemini API 키
+- Python 3.9 이상 (3.11 권장)
+- SQLite 3 (Ubuntu 기본 포함)
+- Discord 봇 토큰, Google Gemini API 키 (필수)
+- Google Custom Search API 키 / SerpAPI 키 / Kakao REST API 키 (선택이지만 권장)
 
-### 2. 설치 (Ubuntu 20.04+ 기준)
-
-**1. 시스템 준비**
-
+### 2. 로컬 개발 환경 (macOS · Windows)
 ```bash
-# 시스템 패키지 목록을 최신 상태로 업데이트합니다.
-sudo apt update && sudo apt upgrade -y
-
-# Python 3.11, 가상 환경 도구, pip, git을 설치합니다.
-# (Python 3.9 이상이면 되지만, 3.11을 권장합니다.)
-sudo apt install python3.11 python3.11-venv python3-pip git -y
-```
-
-**2. 프로젝트 클론 및 설정**
-
-```bash
-# 원하는 위치에 프로젝트 소스 코드를 클론합니다.
+# 소스 클론 및 가상환경 생성
 git clone https://github.com/kim0040/masamong.git
 cd masamong
+python3 -m venv venv
+source venv/bin/activate  # Windows는 venv\Scripts\activate
 
-# 'venv'라는 이름의 가상 환경을 생성합니다.
-python3.11 -m venv venv
-
-# 가상 환경을 활성화합니다. (터미널 프롬프트 앞에 (venv)가 표시됩니다.)
-source venv/bin/activate
-
-# pip를 최신 버전으로 업그레이드합니다.
+# 패키지 설치 및 데이터베이스 초기화
 pip install --upgrade pip
-
-# requirements.txt 파일에 명시된 모든 파이썬 라이브러리를 설치합니다.
 pip install -r requirements.txt
-```
-
-**3. 환경 변수 및 API 키 설정**
-
-`config.json.example` 파일을 `config.json`으로 복사하고, 텍스트 편집기로 열어 각 API 서비스에서 발급받은 키를 입력하고 저장합니다. `DISCORD_BOT_TOKEN`과 `GEMINI_API_KEY`는 봇의 핵심 기능을 위해 **반드시** 필요합니다.
-
-**4. 데이터베이스 초기화**
-
-```bash
-# database/schema.sql 파일의 내용에 따라 SQLite 데이터베이스 파일을 생성합니다.
-# 이 명령어는 봇을 처음 설정할 때 한 번만 실행하면 됩니다.
 python database/init_db.py
 ```
+환경 변수 및 API 키 설정은 아래 "⚙️ 환경 설정" 섹션을 참고하세요. 준비가 끝났다면 `python main.py`로 봇을 실행합니다.
 
-**5. 봇 실행**
+### 3. 그릭(Greek) Ubuntu 서버 배포 (Ubuntu 22.04 LTS 기준)
+> 운영 중인 "그릭" 서버에서 사용 중인 환경을 기준으로 서술했습니다.
 
+1. **시스템 준비**
+   ```bash
+   sudo apt update && sudo apt upgrade -y
+   sudo apt install python3.11 python3.11-venv python3-pip git build-essential -y
+   ```
+2. **서비스 전용 계정 생성 (선택)**
+   ```bash
+   sudo adduser --disabled-password --gecos "" masamong
+   sudo usermod -aG sudo masamong
+   sudo su - masamong
+   ```
+3. **소스 배포 및 가상환경 구성**
+   ```bash
+   git clone https://github.com/kim0040/masamong.git
+   cd masamong
+   python3.11 -m venv venv
+   source venv/bin/activate
+   pip install --upgrade pip
+   pip install -r requirements.txt
+   ```
+4. **환경 파일 & 설정 복사**
+   ```bash
+   cp .env.example .env            # 필요 시 sed/vi로 API 키 입력
+   cp config.json.example config.json
+   ```
+5. **데이터베이스 초기화 및 사전 점검**
+   ```bash
+   python database/init_db.py
+   python -m compileall cogs utils  # 문법 오류 빠르게 확인
+   ```
+6. **(선택) systemd 서비스 등록**
+   `/etc/systemd/system/masamong.service` 예시:
+   ```ini
+   [Unit]
+   Description=Masamong Discord Agent
+   After=network.target
+
+   [Service]
+   Type=simple
+   User=masamong
+   WorkingDirectory=/home/masamong/masamong
+   ExecStart=/home/masamong/masamong/venv/bin/python main.py
+   Restart=on-failure
+   Environment="PYTHONUNBUFFERED=1"
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+   적용:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now masamong.service
+   journalctl -u masamong.service -f
+   ```
+7. **로그 위치**
+   - 일반 로그: `discord_logs.txt`
+   - 에러 로그 (JSON): `error_logs.txt`
+   - 시스템 로그: `journalctl -u masamong.service`
+
+## ⚙️ 환경 설정
+
+### 1. `.env` / 환경 변수
+`.env.example`를 복사해 다음 값을 채웁니다.
+
+```
+DISCORD_BOT_TOKEN=YOUR_DISCORD_TOKEN
+GEMINI_API_KEY=YOUR_GEMINI_API_KEY
+GOOGLE_API_KEY=...
+GOOGLE_CX=...
+SERPAPI_KEY=...
+KAKAO_API_KEY=...
+FINNHUB_API_KEY=...
+OPENWEATHERMAP_API_KEY=...
+```
+
+환경 변수는 `.env`, `config.json`, 실제 OS 환경변수 순서로 읽습니다. 민감한 키는 `.env`에 보관하고 Git에 커밋하지 마세요.
+
+### 2. `config.json`
+`config.json.example`을 복사해 편집합니다. 주요 항목은 아래와 같습니다.
+
+| 서비스 | 키 | 비고 |
+| --- | --- | --- |
+| Discord | `DISCORD_BOT_TOKEN` | 봇 실행 필수 |
+| Google Gemini | `GEMINI_API_KEY` | LLM 호출 필수 |
+| Google Custom Search | `GOOGLE_API_KEY`, `GOOGLE_CX` | Grounding 실패 시 1순위 폴백 |
+| SerpAPI | `SERPAPI_KEY` | Google CSE 없이도 검색 가능 |
+| Kakao Search | `KAKAO_API_KEY` | 마지막 폴백 |
+| 기상청(KMA) | `KMA_API_KEY` | 국내 상세 날씨 |
+| OpenWeatherMap | `OPENWEATHERMAP_API_KEY` | 해외 날씨 |
+| Finnhub | `FINNHUB_API_KEY` | 해외 주식/뉴스 |
+
+## ▶️ 실행 및 모니터링
 ```bash
-# 모든 설정이 완료되었습니다! 봇을 실행합니다.
+source venv/bin/activate
 python main.py
 ```
+- 봇이 정상 가동되면 콘솔과 `discord_logs.txt`에 구조화된 로그가 남습니다.
+- 테스트 메시지는 Discord에서 `@마사몽 상태 어때?` 같이 간단한 질문으로 확인하세요.
 
-### 3. API 키 설정 가이드
+## 🛠️ 트러블슈팅
+- **Google Search Grounding이 동작하지 않을 때**
+  - `pip install --upgrade google-generativeai` (권장 버전 ≥ 0.7).
+  - `error_logs.txt`에서 `Google Grounding 도구` 관련 경고를 확인하세요. 감지 실패 시 자동으로 SerpAPI/Kakao 검색을 사용합니다.
+  - `config.py`에서 `GEMINI_API_KEY`가 비어 있으면 Grounding이 비활성화됩니다.
+- **웹 검색 결과가 비어 있을 때**
+  - `config.json`에 `GOOGLE_API_KEY`와 `GOOGLE_CX`가 설정되어 있는지 확인.
+  - SerpAPI 잔량이 남아 있는지 확인 (무료 플랜은 월 100회).
+  - Kakao API는 한국어 쿼리에 적합합니다. 영어 쿼리 실패 시 Google CSE 설정을 권장합니다.
+- **데이터베이스 오류**
+  - `database/init_db.py`를 다시 실행해 스키마를 재생성.
+  - SQLite 파일 권한(`database/remasamong.db`)을 확인합니다.
 
-`config.json` 파일에 다음 API 키들을 설정하세요.
-
-| 서비스 | `config.json` 키 | 발급처 | 무료 할당량 | 필수도 |
-|---|---|---|---|---|
-| **Discord Bot** | `DISCORD_BOT_TOKEN` | [Discord Developer Portal](https://discord.com/developers/applications) | 무제한 | **필수** |
-| **Google Gemini** | `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/app/apikey) | 15 RPM | **필수** |
-| **Google Search**| `GOOGLE_API_KEY`, `GOOGLE_CX` | [Google Custom Search](https://developers.google.com/custom-search/v1/overview) | 100/일 | **권장** |
-| **SerpAPI** | `SERPAPI_KEY` | [SerpAPI](https://serpapi.com/) | 100/월 | 선택 |
-| **기상청 API** | `KMA_API_KEY` | [API 허브](https://apihub.kma.go.kr/) | 10,000/일 | 권장 |
-| **OpenWeatherMap**| `OPENWEATHERMAP_API_KEY` | [OpenWeatherMap](https://openweathermap.org/api) | 1,000/일 | 권장 |
-| **Finnhub** | `FINNHUB_API_KEY` | [Stock API](https://finnhub.io/) | 60/분 | 선택 |
-| **Kakao** | `KAKAO_API_KEY` | [Kakao Developers](https://developers.kakao.com/) | 다양 | 선택 |
-
-> **웹 검색 우선순위**: `Google Custom Search` -> `SerpAPI` -> `Kakao Web Search` 순으로 자동 폴백됩니다. 안정적인 서비스를 위해 **Google Custom Search API 키 설정**을 권장합니다.
-
-## 📖 사용법
-
-### 일반 대화 및 웹 검색
+## 💬 사용 예시
 ```
-@마사몽 안녕!
-→ 안녕! 오늘 날씨가 좋은데 나가서 산책이라도 할까? 🌤️
+@마사몽 안녕?
+→ 안녕! 오늘은 뭐 하고 지낼 거야? 🌤️
 
 @마사몽 아이폰 17 출시일 루머 정리해줘
-→ (Google/SerpAPI 검색 결과를 바탕으로 최신 루머를 요약하여 답변)
-```
+→ (Google Grounding 또는 폴백 검색 결과를 요약)
 
-### 여행 정보 조회
-```
-@마사몽 다음 주 파리 날씨랑 가볼만한 곳 알려줘
-→ 파리 여행 정보를 종합적으로 제공 (날씨 + 명소 + 이벤트)
-```
+@마사몽 다음 주 파리 날씨 알려줘
+→ 파리 좌표 조회 → OpenWeatherMap 조회 → 깔끔한 리포트
 
-### 금융 정보
-```
 @마사몽 애플 주가를 원화로 알려줘
-→ 현재 주가 + 환율 변환 + 뉴스 정보
+→ Finnhub 주가 + 환율 + 요약
 ```
 
-### 명령어 목록
-`!` 접두사를 사용하여 다음 명령어들을 사용할 수 있습니다. (자세한 내용은 `!help` 명령어로 확인)
-
-## 🏗️ 아키텍처
-
-### 핵심 컴포넌트
-
+## 🏗️ 아키텍처 개요
 ```
 masamong/
-├── main.py                 # 봇 진입점
-├── config.py              # 설정 관리
-├── cogs/                  # Discord Cog 모듈들
-│   ├── ai_handler.py      # AI 대화 처리
-│   ├── tools_cog.py       # API 도구 모음 (Google/SerpAPI/Kakao 웹 검색 포함)
-│   └── ...
-├── utils/                 # 유틸리티 모듈들
-│   ├── api_handlers/      # 개별 API 핸들러
-│   └── ...
-└── database/              # 데이터베이스
-    ├── schema.sql         # 스키마 정의
-    └── init_db.py         # 초기화 스크립트
+├── main.py                 # Discord 봇 진입점
+├── config.py               # 환경 변수 및 설정 로딩
+├── cogs/
+│   ├── ai_handler.py       # 2-Step Agent, 도구 실행, Grounding 폴백
+│   ├── tools_cog.py        # Google/SerpAPI/Kakao 등 외부 도구 모음
+│   └── weather_cog.py      # 국내/해외 날씨 처리
+├── utils/
+│   ├── api_handlers/       # API 래퍼 (Finnhub, Kakao, EXIM, KMA 등)
+│   ├── db.py               # SQLite + 레이트 리밋 관리
+│   └── http.py             # TLS/세션 유틸리티
+└── database/
+    ├── schema.sql          # DB 스키마
+    └── init_db.py          # 초기화 스크립트
 ```
 
 ---
 
-**마사몽과 함께 더 스마트한 디스코드 서버를 만들어보세요!** 🚀
+**마사몽과 함께 더 스마트한 Discord 서버를 운영해보세요!** 🚀
