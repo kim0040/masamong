@@ -43,9 +43,11 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict) 
     if await db_utils.check_api_rate_limit(db, 'kma_daily', config.KMA_API_DAILY_CALL_LIMIT, 99999):
         return {"error": True, "message": config.MSG_KMA_API_DAILY_LIMIT_REACHED}
 
-    full_url = f"{config.KMA_BASE_URL}/{endpoint}"
-    base_params = {"serviceKey": api_key, "pageNo": "1", "numOfRows": "1000", "dataType": "JSON"}
+    base_params = {"pageNo": "1", "numOfRows": "1000", "dataType": "JSON"}
     base_params.update(params)
+    
+    # 서비스 키가 URL 인코딩되는 것을 방지하기 위해 URL에 직접 추가합니다.
+    full_url = f"{config.KMA_BASE_URL}/{endpoint}?serviceKey={api_key}"
 
     session = http.get_tlsv12_session()
     max_retries = max(1, getattr(config, 'KMA_API_MAX_RETRIES', 3))
@@ -54,6 +56,7 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict) 
     try:
         for attempt in range(1, max_retries + 1):
             try:
+                # 이제 params에는 serviceKey가 없습니다.
                 response = await asyncio.to_thread(session.get, full_url, params=base_params, timeout=15)
                 response.raise_for_status()
                 try:
