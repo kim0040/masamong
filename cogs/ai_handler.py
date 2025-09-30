@@ -331,8 +331,11 @@ class AIHandler(commands.Cog):
             session.close()
 
     async def _run_web_search_fallback(self, query: str, log_extra: dict) -> str | None:
-        """Gemini Grounding 검색 실패 시 호출되는 함수. 이제는 폴백을 실행하지 않고 오류를 기록합니다."""
-        logger.warning("기본 Gemini Grounding 검색에 실패하여 폴백 로직이 호출되었으나, 추가 폴백은 실행하지 않습니다.", extra=log_extra)
+        """Gemini Grounding 검색 실패 시 호출되는 폴백 함수. REST API를 직접 호출하여 재시도합니다."""
+        logger.info("기본 Gemini Grounding 검색에 실패하여 폴백으로 REST API 검색을 재시도합니다.", extra=log_extra)
+        fallback_result = await self._google_grounded_search_rest(query, log_extra)
+        if fallback_result and fallback_result.get("result"):
+            return fallback_result.get("result")
         return None
 
     async def _get_rag_context(self, guild_id: int, channel_id: int, user_id: int, query: str) -> Tuple[str, list[str]]:
