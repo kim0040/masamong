@@ -539,7 +539,7 @@ class AIHandler(commands.Cog):
                 main_system_prompt = f"{persona}\n\n{rules}\n\n{main_system_prompt}"
 
                 main_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, system_instruction=main_system_prompt)
-                main_prompt = ""
+                main_prompt = "이제 모든 도구 실행 결과를 바탕으로, 사용자의 원래 질문에 대해 페르소나를 완벽하게 적용해서 최종 답변을 생성해줘."
                 main_response = await self._safe_generate_content(main_model, main_prompt, log_extra)
 
                 if main_response and main_response.text:
@@ -548,7 +548,9 @@ class AIHandler(commands.Cog):
                     await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {"guild_id": message.guild.id, "user_id": message.author.id, "channel_id": message.channel.id, "trace_id": trace_id, "user_query": user_query, "tool_plan": tool_plan, "final_response": final_response_text, "is_fallback": use_fallback_prompt})
                 else:
                     logger.error("Main 모델이 최종 답변을 생성하지 못했습니다.", extra=log_extra)
-                    await message.reply(f"모든 도구를 실행했지만, 최종 답변을 만드는 데 실패했어요. 여기 결과라도 확인해보세요.\n```json\n{tool_results_str}\n```", mention_author=False)
+                    # 메시지 길이 제한 오류 방지를 위해 tool_results_str를 3800자로 자릅니다.
+                    truncated_results = tool_results_str[:3800]
+                    await message.reply(f"모든 도구를 실행했지만, 최종 답변을 만드는 데 실패했어요. 여기 결과라도 확인해보세요.\n```json\n{truncated_results}\n```", mention_author=False)
 
             except Exception as e:
                 logger.error(f"에이전트 처리 중 최상위 오류: {e}", exc_info=True, extra=log_extra)
