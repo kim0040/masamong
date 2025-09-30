@@ -89,7 +89,7 @@ class WeatherCog(commands.Cog):
 
     @commands.command(name="날씨", aliases=["weather", "현재날씨", "오늘날씨"])
     async def weather_command(self, ctx: commands.Context, *, location_query: str = ""):
-        ""`!날씨 [날짜] [지역]` 형식으로 날씨를 조회합니다."""
+        """`!날씨 [날짜] [지역]` 형식으로 날씨를 조회합니다."""
         user_original_query = location_query.strip() if location_query else "오늘 날씨"
         location_name, nx, ny = config.DEFAULT_LOCATION_NAME, config.DEFAULT_NX, config.DEFAULT_NY
         coords = await coords_utils.get_coords_from_db(self.bot.db, user_original_query.lower())

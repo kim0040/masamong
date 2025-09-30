@@ -348,7 +348,7 @@ class AIHandler(commands.Cog):
                 main_system_prompt = f"{persona}\n\n{rules}\n\n{main_system_prompt}"
 
                 main_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, system_instruction=main_system_prompt)
-                main_response = await self._safe_generate_content(main_model, user_query, log_extra)
+                main_response = await self._safe_generate_content(main_model, "", log_extra)
 
                 if main_response and main_response.text:
                     final_response_text = main_response.text.strip()
@@ -392,11 +392,7 @@ class AIHandler(commands.Cog):
             history_msgs = [f"User({msg.author.display_name}): {msg.content}" async for msg in message.channel.history(limit=conf.get("look_back_count", 5))]
             history_msgs.reverse()
             conversation_context = "\n".join(history_msgs)
-            gatekeeper_prompt = f"{conf['gatekeeper_persona']}\n\n---
-최근 대화 내용 ---
-{conversation_context}\n---
-\n사용자의 마지막 메시지: \"{message.content}\"\n---
-\n\n자, 판단해. Yes or No?"
+            gatekeeper_prompt = f"""{conf['gatekeeper_persona']}\n\n--- 최근 대화 내용 ---\n{conversation_context}\n---\n사용자의 마지막 메시지: \"{message.content}\"\n---\n\n자, 판단해. Yes or No?"""
 
             lite_model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME)
             response = await self._safe_generate_content(lite_model, gatekeeper_prompt, log_extra)
@@ -424,7 +420,7 @@ class AIHandler(commands.Cog):
             return ""
 
     async def generate_creative_text(self, channel: discord.TextChannel, author: discord.User, prompt_key: str, context: dict) -> str:
-        ""`!운세`, `!랭킹` 등 특정 명령어에 대한 창의적인 AI 답변을 생성합니다."""
+        """`!운세`, `!랭킹` 등 특정 명령어에 대한 창의적인 AI 답변을 생성합니다."""
         if not self.is_ready: return config.MSG_AI_ERROR
         log_extra = {'guild_id': channel.guild.id, 'user_id': author.id, 'prompt_key': prompt_key}
 
