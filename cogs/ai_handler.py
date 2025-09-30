@@ -151,26 +151,44 @@ class AIHandler(commands.Cog):
             logger.error(f"임베딩 DB 저장/직렬화 중 오류: {e}", extra=log_extra, exc_info=True)
 
     def _discover_google_grounding_tool(self) -> dict[str, object] | None:
-        """Google Search 도구 구성을 직접 설정합니다. (하드코딩)"""
+        """모델 버전에 맞춰 Google Search 도구 구성을 동적으로 감지합니다."""
         if not self.gemini_configured:
             return None
 
-        try:
-            # 공식 문서 예제 기반으로 직접 설정
+        model_name = config.AI_RESPONSE_MODEL_NAME
+        
+        # 모델 이름에 '1.5'가 포함되어 있는지 여부에 따라 사용할 도구 설정 결정
+        if "1.5" in model_name:
+            logger.info("Gemini 1.5 모델 감지, 'google_search_retrieval' 도구를 시도합니다.")
+            field_name = "google_search_retrieval"
+            class_name = "GoogleSearchRetrieval"
+        else:
+            logger.info("Gemini 2.0+ 모델 감지, 'google_search' 도구를 시도합니다.")
             field_name = "google_search"
-            google_cls = genai.types.GoogleSearch
-            
-            # 작동하는지 간단히 테스트
-            genai.types.Tool(**{field_name: google_cls()})
+            class_name = "GoogleSearch"
 
-            logger.info(
-                "Google Grounding 도구를 '%s' 필드와 '%s' 타입으로 직접 설정했습니다.",
-                field_name,
-                google_cls.__name__,
-            )
+        try:
+            # getattr을 사용하여 해당 클래스가 존재하는지 확인
+            google_cls = getattr(genai.types, class_name, None)
+            
+            if not google_cls:
+                # grounding 서브모듈에서도 찾아보기 (구버전 호환성)
+                grounding_module = getattr(genai.types, "grounding", None)
+                if grounding_module:
+                    google_cls = getattr(grounding_module, class_name, None)
+
+            if not google_cls:
+                logger.warning(f"현재 라이브러리에서 '{class_name}' 클래스를 찾을 수 없습니다.")
+                return None
+
+            # 도구 생성 테스트
+            genai.types.Tool(**{field_name: google_cls()})
+            
+            logger.info(f"Google Grounding 도구를 '{field_name}' 필드와 '{class_name}' 타입으로 설정했습니다.")
             return {"field": field_name, "cls": google_cls}
-        except (AttributeError, TypeError) as exc:
-            logger.warning(f"설치된 google-generativeai 버전에서 Google Grounding 도구를 직접 설정하는 데 실패했습니다: {exc}")
+
+        except Exception as exc:
+            logger.error(f"Google Grounding 도구 ('{field_name}', '{class_name}') 초기화 검사 실패: {exc}")
             return None
 
     def _get_google_grounding_tool(self):
