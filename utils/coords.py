@@ -1,25 +1,30 @@
 # -*- coding: utf-8 -*-
+"""
+좌표 변환 관련 유틸리티 함수를 제공하는 모듈입니다.
+
+- 위경도(WGS84) <-> 기상청 격자(X, Y) 좌표 상호 변환
+- 데이터베이스에서 지역명으로 격자 좌표 조회
+
+좌표 변환 코드는 아래 Gist를 원본으로 하되, 원본 Javascript 소스와의
+차이점을 교정하여 정확도를 높였습니다.
+참고: https://gist.github.com/fronteer-kr/14d7f779d52a21ac2f16
+"""
+
 import math
 import aiosqlite
 from typing import Dict, Optional
 
-# This code is adapted from the Gist found at:
-# https://gist.github.com/fronteer-kr/14d7f779d52a21ac2f16
-# The Python version in the Gist had some discrepancies with the original
-# Javascript version. This implementation uses the constants and logic from
-# the more reliable Javascript source.
+# --- 기상청 격자 변환을 위한 상수 --- #
+RE = 6371.00877  # 지구 반경 (km)
+GRID = 5.0       # 격자 간격 (km)
+SLAT1 = 30.0     # 표준 위도 1 (deg)
+SLAT2 = 60.0     # 표준 위도 2 (deg)
+OLON = 126.0     # 기준 경도 (deg)
+OLAT = 38.0      # 기준 위도 (deg)
+XO = 43.0        # 기준점 X좌표 (격자)
+YO = 136.0       # 기준점 Y좌표 (격자)
 
-# --- Constants for KMA Grid Conversion ---
-RE = 6371.00877  # Earth radius (km)
-GRID = 5.0       # Grid interval (km)
-SLAT1 = 30.0     # Standard latitude 1 (deg)
-SLAT2 = 60.0     # Standard latitude 2 (deg)
-OLON = 126.0     # Reference longitude (deg)
-OLAT = 38.0      # Reference latitude (deg)
-XO = 43.0        # Reference X coordinate (GRID) - From JS version
-YO = 136.0       # Reference Y coordinate (GRID) - From JS version
-
-# --- Pre-calculated values for performance ---
+# --- 성능 최적화를 위한 사전 계산값 --- #
 PI = math.pi
 DEGRAD = PI / 180.0
 RADDEG = 180.0 / PI
@@ -39,30 +44,30 @@ ro = re * sf / math.pow(ro, sn)
 
 async def get_coords_from_db(db: aiosqlite.Connection, location_name: str) -> Optional[Dict[str, int]]:
     """
-    데이터베이스의 locations 테이블에서 지역 이름으로 좌표(nx, ny)를 조회합니다.
-    정확히 일치하는 이름이 없으면, 이름의 일부가 일치하는 첫 번째 지역을 반환합니다.
+    데이터베이스의 `locations` 테이블에서 지역 이름으로 기상청 격자 좌표(nx, ny)를 조회합니다.
+    
+    1.  먼저 지역명과 정확히 일치하는 데이터를 찾습니다.
+    2.  정확히 일치하는 데이터가 없으면, 부분 일치(LIKE) 검색을 시도하여 첫 번째 결과를 반환합니다.
     """
     if not db:
         return None
     
     # 1. 정확한 이름으로 검색
-    async with db.execute("SELECT nx, ny FROM locations WHERE name = ?", (location_name,)) as cursor:
+    async with db.execute("SELECT name, nx, ny FROM locations WHERE name = ?", (location_name,)) as cursor:
         result = await cursor.fetchone()
         if result:
-            return {'nx': result['nx'], 'ny': result['ny']}
+            return {'name': result['name'], 'nx': result['nx'], 'ny': result['ny']}
 
     # 2. 부분 일치로 검색 (LIKE)
-    async with db.execute("SELECT nx, ny FROM locations WHERE name LIKE ?", (f'%{location_name}%',)) as cursor:
+    async with db.execute("SELECT name, nx, ny FROM locations WHERE ? LIKE '%' || name || '%'", (location_name,)) as cursor:
         result = await cursor.fetchone()
         if result:
-            return {'nx': result['nx'], 'ny': result['ny']}
+            return {'name': result['name'], 'nx': result['nx'], 'ny': result['ny']}
             
     return None
 
 def latlon_to_kma_grid(lat: float, lon: float) -> tuple[int, int]:
-    """
-    Converts latitude and longitude (WGS84) to KMA grid coordinates (X, Y).
-    """
+    """위경도(WGS84) 좌표를 기상청 격자 좌표(X, Y)로 변환합니다."""
     ra = math.tan(PI * 0.25 + lat * DEGRAD * 0.5)
     ra = re * sf / math.pow(ra, sn)
     theta = lon * DEGRAD - olon
@@ -76,9 +81,7 @@ def latlon_to_kma_grid(lat: float, lon: float) -> tuple[int, int]:
     return x, y
 
 def kma_grid_to_latlon(x: int, y: int) -> tuple[float, float]:
-    """
-    Converts KMA grid coordinates (X, Y) to latitude and longitude (WGS84).
-    """
+    """기상청 격자 좌표(X, Y)를 위경도(WGS84) 좌표로 변환합니다."""
     xn = x - XO
     yn = ro - y + YO
     ra = math.sqrt(xn * xn + yn * yn)

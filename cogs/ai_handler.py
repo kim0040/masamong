@@ -1,4 +1,14 @@
 # -*- coding: utf-8 -*-
+"""
+마사몽 봇의 AI 상호작용을 총괄하는 핵심 Cog입니다.
+
+2-Step Agent 아키텍처에 따라 다음의 역할을 수행합니다:
+1.  **의도 분석 (Lite Model)**: 사용자의 메시지를 분석하여 간단한 대화인지, 도구 사용이 필요한지 판단합니다.
+2.  **도구 실행**: 분석된 계획에 따라 `ToolsCog`의 도구들을 실행하고 결과를 수집합니다.
+3.  **답변 생성 (Main Model)**: 도구 실행 결과를 바탕으로 사용자에게 제공할 최종 답변을 생성합니다.
+4.  **대화 기록 관리**: RAG(Retrieval-Augmented Generation)를 위해 대화 내용을 데이터베이스에 저장하고 임베딩을 생성합니다.
+"""
+
 import discord
 from discord.ext import commands
 import google.generativeai as genai
@@ -25,8 +35,7 @@ KST = pytz.timezone('Asia/Seoul')
 
 class AIHandler(commands.Cog):
     """
-    Tool-Using Agent의 핵심 로직을 담당합니다.
-    (대화 관리, 도구 호출, 응답 생성)
+    AI 에이전트의 핵심 로직을 담당하며, 대화 관리, 도구 호출, 응답 생성을 처리합니다.
     """
 
     def __init__(self, bot: commands.Bot):
@@ -41,39 +50,31 @@ class AIHandler(commands.Cog):
             try:
                 genai.configure(api_key=config.GEMINI_API_KEY)
                 self.embedding_model_name = config.AI_EMBEDDING_MODEL_NAME
-                logger.info("Gemini API 설정 완료.")
+                logger.info("Gemini API가 성공적으로 설정되었습니다.")
                 self.gemini_configured = True
             except Exception as e:
-                logger.critical(f"Gemini API 설정 실패: {e}. AI 기능 비활성화됨.", exc_info=True)
+                logger.critical(f"Gemini API 설정 실패: {e}. AI 관련 기능이 비활성화됩니다.", exc_info=True)
 
     @property
     def is_ready(self) -> bool:
-        """AI 핸들러가 모든 기능을 수행할 준비가 되었는지 확인합니다."""
+        """AI 핸들러가 모든 의존성(Gemini, DB, ToolsCog)을 포함하여 준비되었는지 확인합니다."""
         return self.gemini_configured and self.bot.db is not None and self.tools_cog is not None
 
     async def _safe_generate_content(self, model: genai.GenerativeModel, prompt: Any, log_extra: dict, generation_config: genai.types.GenerationConfig = None) -> genai.types.GenerateContentResponse | None:
         """
-        generate_content_async 호출을 위한 안전한 래퍼.
-        Google API 관련 특정 예외를 처리하고 로깅하며, 실패 시 None을 반환합니다.
+        `generate_content_async`를 안전하게 호출하는 래퍼 함수입니다.
+        API 호출 제한을 확인하고, Google API 관련 예외를 처리하여 안정성을 높입니다.
         """
         if generation_config is None:
             generation_config = genai.types.GenerationConfig(temperature=0.0)
 
         try:
             limit_key = 'gemini_intent' if config.AI_INTENT_MODEL_NAME in model.model_name else 'gemini_response'
-            if getattr(generation_config, 'tools', None) and any(t.google_search for t in generation_config.tools):
-                limit_key = 'gemini_grounding'
-                rpm, rpd = 60, 500
-            else:
-                rpm = config.RPM_LIMIT_INTENT if limit_key == 'gemini_intent' else config.RPM_LIMIT_RESPONSE
-                rpd = config.RPD_LIMIT_INTENT if limit_key == 'gemini_intent' else config.RPD_LIMIT_RESPONSE
+            rpm = config.RPM_LIMIT_INTENT if limit_key == 'gemini_intent' else config.RPM_LIMIT_RESPONSE
+            rpd = config.RPD_LIMIT_INTENT if limit_key == 'gemini_intent' else config.RPD_LIMIT_RESPONSE
 
             if await db_utils.check_api_rate_limit(self.bot.db, limit_key, rpm, rpd):
-                logger.warning(f"Gemini API 호출 속도/횟수 제한에 도달했습니다 ({limit_key}).", extra=log_extra)
-                if limit_key == 'gemini_grounding':
-                    return genai.types.GenerateContentResponse.from_response(
-                        dict(candidates=[dict(content=dict(parts=[dict(text=config.MSG_AI_GOOGLE_LIMIT_REACHED)]))])
-                    )
+                logger.warning(f"Gemini API 호출 제한({limit_key})에 도달했습니다.", extra=log_extra)
                 return None
 
             response = await model.generate_content_async(
@@ -81,6 +82,7 @@ class AIHandler(commands.Cog):
                 generation_config=generation_config,
                 safety_settings=config.GEMINI_SAFETY_SETTINGS,
             )
+            await db_utils.log_api_call(self.bot.db, limit_key)
             return response
         except Exception as e:
             logger.error(f"Gemini 응답 생성 중 예기치 않은 오류: {e}", extra=log_extra, exc_info=True)
@@ -88,33 +90,26 @@ class AIHandler(commands.Cog):
 
     async def _safe_embed_content(self, model_name: str, content: str, task_type: str, log_extra: dict) -> dict | None:
         """
-        embed_content_async 호출을 위한 안전한 래퍼.
-        실패 시 None을 반환합니다.
+        `embed_content_async`를 안전하게 호출하는 래퍼 함수입니다.
+        API 호출 제한 확인 및 예외 처리를 포함합니다.
         """
         try:
             if await db_utils.check_api_rate_limit(self.bot.db, 'gemini_embedding', config.RPM_LIMIT_EMBEDDING, config.RPD_LIMIT_EMBEDDING):
-                logger.warning("Gemini Embedding API 호출 속도 제한에 도달했습니다.", extra=log_extra)
+                logger.warning("Gemini Embedding API 호출 제한에 도달했습니다.", extra=log_extra)
                 return None
-            return await genai.embed_content_async(model=model_name, content=content, task_type=task_type)
+            result = await genai.embed_content_async(model=model_name, content=content, task_type=task_type)
+            await db_utils.log_api_call(self.bot.db, 'gemini_embedding')
+            return result
         except Exception as e:
             logger.error(f"Gemini 임베딩 생성 중 오류: {e}", extra=log_extra, exc_info=True)
             return None
 
     async def add_message_to_history(self, message: discord.Message):
+        """AI가 허용된 채널의 메시지를 대화 기록 DB에 저장합니다."""
         if not self.is_ready or not config.AI_MEMORY_ENABLED or not message.guild: return
         try:
-            is_guild_ai_enabled = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'ai_enabled', default=True)
-            if not is_guild_ai_enabled: return
-
-            allowed_channels = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'ai_allowed_channels')
-            is_ai_allowed_channel = False
-            if allowed_channels:
-                 is_ai_allowed_channel = message.channel.id in allowed_channels
-            else:
-                 channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
-                 is_ai_allowed_channel = channel_config.get("allowed", False)
-
-            if not is_ai_allowed_channel: return
+            channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
+            if not channel_config.get("allowed", False): return
 
             await self.bot.db.execute(
                 "INSERT INTO conversation_history (message_id, guild_id, channel_id, user_id, user_name, content, is_bot, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -127,6 +122,7 @@ class AIHandler(commands.Cog):
             logger.error(f"대화 기록 저장 중 DB 오류: {e}", exc_info=True, extra={'guild_id': message.guild.id})
 
     async def _create_and_save_embedding(self, message_id: int, content: str, guild_id: int):
+        """메시지 내용에 대한 벡터 임베딩을 생성하고 데이터베이스에 저장합니다."""
         log_extra = {'guild_id': guild_id, 'message_id': message_id}
         embedding_result = await self._safe_embed_content(
             model_name=self.embedding_model_name,
@@ -145,6 +141,7 @@ class AIHandler(commands.Cog):
             logger.error(f"임베딩 DB 저장/직렬화 중 오류: {e}", extra=log_extra, exc_info=True)
 
     async def _get_rag_context(self, guild_id: int, channel_id: int, user_id: int, query: str) -> Tuple[str, list[str]]:
+        """RAG: 사용자의 질문과 유사한 과거 대화 내용을 DB에서 검색하여 컨텍스트로 반환합니다."""
         log_extra = {'guild_id': guild_id, 'channel_id': channel_id, 'user_id': user_id}
         logger.info(f"RAG 컨텍스트 검색 시작. Query: '{query}'", extra=log_extra)
 
@@ -184,6 +181,7 @@ class AIHandler(commands.Cog):
             return "", []
 
     def _parse_tool_calls(self, text: str) -> list[dict]:
+        """Lite 모델의 응답에서 <tool_plan> 또는 <tool_call> XML 태그를 파싱하여 JSON으로 변환합니다."""
         plan_match = re.search(r'<tool_plan>\s*(\[.*?\])\s*</tool_plan>', text, re.DOTALL)
         if plan_match:
             try:
@@ -208,6 +206,7 @@ class AIHandler(commands.Cog):
         return []
 
     async def _execute_tool(self, tool_call: dict, guild_id: int, user_query: str) -> dict:
+        """파싱된 단일 도구 호출 계획을 실제로 실행하고 결과를 반환합니다."""
         tool_name = tool_call.get('tool_to_use')
         parameters = tool_call.get('parameters', {})
         log_extra = {'guild_id': guild_id, 'tool_name': tool_name, 'parameters': parameters}
@@ -215,15 +214,14 @@ class AIHandler(commands.Cog):
         if not tool_name: 
             return {"error": "tool_to_use가 지정되지 않았습니다."}
 
+        # web_search는 ToolsCog에 구현된 다른 도구들과 달리, Gemini의 Grounding 기능을 직접 사용합니다.
         if tool_name == 'web_search':
-            logger.info("Executing special tool: web_search (Google Grounding)", extra=log_extra)
+            logger.info("특별 도구 실행: web_search (Google Grounding)", extra=log_extra)
             query = parameters.get('query', user_query)
-
             try:
                 grounding_tool = genai.types.Tool(google_search=genai.types.GoogleSearch())
                 model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, tools=[grounding_tool])
                 
-                # RPD/RPM check is handled by the safe_generate_content wrapper
                 grounded_response = await self._safe_generate_content(model, query, log_extra)
 
                 if grounded_response and grounded_response.text:
@@ -235,9 +233,10 @@ class AIHandler(commands.Cog):
                 logger.error(f"Google Grounding 실행 중 예기치 않은 오류: {e}", exc_info=True, extra=log_extra)
                 return {"error": f"Google 검색 중 오류가 발생했습니다: {e}"}
 
+        # 그 외 일반 도구들은 ToolsCog에서 찾아 실행합니다.
         try:
             tool_method = getattr(self.tools_cog, tool_name)
-            logger.info(f"Executing tool: {tool_name} with params: {parameters}", extra=log_extra)
+            logger.info(f"일반 도구 실행: {tool_name} with params: {parameters}", extra=log_extra)
             result = await tool_method(**parameters)
             if not isinstance(result, dict):
                 return {"result": str(result)}
@@ -250,55 +249,46 @@ class AIHandler(commands.Cog):
             return {"error": "도구 실행 중 예상치 못한 오류가 발생했습니다."}
 
     async def process_agent_message(self, message: discord.Message):
+        """2-Step Agent의 전체 흐름을 관리합니다."""
         if not self.is_ready: return
-        user_query = message.content.replace(f'<@!{self.bot.user.id}>', '').replace(f'<@{self.bot.user.id}>', '').strip()
+        user_query = re.sub(f'<@!?{self.bot.user.id}>', '', message.content).strip()
         if not user_query: return
 
         trace_id = uuid.uuid4().hex[:8]
-        log_extra = {
-            'guild_id': message.guild.id,
-            'channel_id': message.channel.id,
-            'user_id': message.author.id,
-            'trace_id': trace_id
-        }
-        logger.info(f"에이전트 처리 시작 (PM v5.2). Query: '{user_query}'", extra=log_extra)
+        log_extra = {'guild_id': message.guild.id, 'channel_id': message.channel.id, 'user_id': message.author.id, 'trace_id': trace_id}
+        logger.info(f"에이전트 처리 시작. Query: '{user_query}'", extra=log_extra)
 
         async with message.channel.typing():
             try:
                 rag_prompt, _ = await self._get_rag_context(message.guild.id, message.channel.id, message.author.id, user_query)
                 history = await self._get_recent_history(message, rag_prompt)
 
-                lite_system_prompt = config.LITE_MODEL_SYSTEM_PROMPT
-                if rag_prompt:
-                    lite_system_prompt = f"{rag_prompt}\n\n{lite_system_prompt}"
-
+                # --- [1단계] Lite 모델(PM) 호출: 의도 분석 및 계획 수립 --- 
+                lite_system_prompt = f"{rag_prompt}\n\n{config.LITE_MODEL_SYSTEM_PROMPT}" if rag_prompt else config.LITE_MODEL_SYSTEM_PROMPT
                 lite_model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME, system_instruction=lite_system_prompt)
                 lite_conversation = history + [{'role': 'user', 'parts': [user_query]}]
 
-                logger.info("1단계: Lite 모델 (PM) 호출 시작...", extra=log_extra)
+                logger.info("1단계: Lite 모델(의도 분석) 호출...", extra=log_extra)
                 lite_response = await self._safe_generate_content(lite_model, lite_conversation, log_extra)
 
                 if not lite_response or not lite_response.text:
-                    logger.error("Lite 모델(PM)이 응답을 생성하지 못했습니다.", extra=log_extra)
+                    logger.error("Lite 모델이 응답을 생성하지 못했습니다.", extra=log_extra)
                     await message.reply(config.MSG_AI_ERROR, mention_author=False)
                     return
 
                 lite_response_text = lite_response.text.strip()
-                logger.info(f"Lite 모델(PM) 응답: '{lite_response_text[:150]}...'", extra=log_extra)
+                logger.info(f"Lite 모델 응답: '{lite_response_text[:150]}...'", extra=log_extra)
                 
                 tool_plan = self._parse_tool_calls(lite_response_text)
 
+                # --- [분기 처리] ---
+                # Case 1: 간단한 대화로 판단된 경우 (<conversation_response> 태그 포함)
                 if "<conversation_response>" in lite_response_text:
                     logger.info("분기: 간단한 대화로 판단, Main 모델을 호출하여 페르소나 기반으로 응답합니다.", extra=log_extra)
-
                     channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
-                    persona = channel_config.get('persona')
-                    rules = channel_config.get('rules')
-
-                    if not persona or not rules:
-                        system_prompt = config.AGENT_SYSTEM_PROMPT.format(user_query=user_query, tool_result="N/A")
-                    else:
-                        system_prompt = f"{persona}\n\n{rules}"
+                    persona = channel_config.get('persona', config.DEFAULT_TSUNDERE_PERSONA)
+                    rules = channel_config.get('rules', config.DEFAULT_TSUNDERE_RULES)
+                    system_prompt = f"{persona}\n\n{rules}"
                     
                     main_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, system_instruction=system_prompt)
                     main_response = await self._safe_generate_content(main_model, user_query, log_extra)
@@ -306,169 +296,88 @@ class AIHandler(commands.Cog):
                     if main_response and main_response.text:
                         final_response_text = main_response.text.strip()
                         await message.reply(final_response_text, mention_author=False)
-                        await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {
-                            "guild_id": message.guild.id,
-                            "user_id": message.author.id,
-                            "channel_id": message.channel.id,
-                            "trace_id": trace_id,
-                            "user_query": user_query,
-                            "tool_plan": [],
-                            "final_response": final_response_text,
-                            "is_fallback": False,
-                        })
+                        await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {"guild_id": message.guild.id, "user_id": message.author.id, "channel_id": message.channel.id, "trace_id": trace_id, "user_query": user_query, "tool_plan": [], "final_response": final_response_text, "is_fallback": False})
                     else:
                         logger.error("간단한 대화에 대해 Main 모델이 응답을 생성하지 못했습니다.", extra=log_extra)
                         await message.reply(config.MSG_AI_ERROR, mention_author=False)
                     return
 
+                # Case 2: 도구 계획이 없는 경우 (Lite 모델이 직접 답변)
                 if not tool_plan:
                     logger.info("분기: 도구 계획이 없으며, Lite 모델의 답변으로 바로 응답합니다.", extra=log_extra)
                     await message.reply(lite_response_text, mention_author=False)
-                    await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {
-                        "guild_id": message.guild.id,
-                        "user_id": message.author.id,
-                        "channel_id": message.channel.id,
-                        "trace_id": trace_id,
-                        "user_query": user_query,
-                        "tool_plan": [],
-                        "final_response": lite_response_text,
-                        "is_fallback": False,
-                    })
+                    await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {"guild_id": message.guild.id, "user_id": message.author.id, "channel_id": message.channel.id, "trace_id": trace_id, "user_query": user_query, "tool_plan": [], "final_response": lite_response_text, "is_fallback": False})
                     return
 
-                logger.info(f"분기: 도구 사용 계획 발견. 총 {len(tool_plan)}단계.", extra=log_extra)
-                
+                # --- [2단계] 도구 실행 ---
+                logger.info(f"2단계: 도구 실행 시작. 총 {len(tool_plan)}단계.", extra=log_extra)
                 tool_results = []
                 for i, tool_call in enumerate(tool_plan):
                     step_num = i + 1
                     logger.info(f"계획 실행 ({step_num}/{len(tool_plan)}): {tool_call.get('tool_to_use')}", extra=log_extra)
-                    
                     result = await self._execute_tool(tool_call, message.guild.id, user_query)
-                    
-                    if result is None:
-                        error_msg = f"도구 실행 결과가 None입니다: {tool_call.get('tool_to_use')}"
-                        logger.error(error_msg, extra=log_extra)
-                        tool_results.append({f"error_step_{step_num}": error_msg})
-                        continue
+                    tool_results.append({"step": step_num, "tool_name": tool_call.get('tool_to_use'), "parameters": tool_call.get('parameters'), "result": result})
 
-                    tool_results.append({
-                        "step": step_num,
-                        "tool_name": tool_call.get('tool_to_use'),
-                        "parameters": tool_call.get('parameters'),
-                        "result": result
-                    })
-
-                def is_tool_failed(result):
-                    if result is None: return True
-                    res_str = str(result).lower()
-                    fail_keywords = ["error", "오류", "실패", "없습니다", "알 수 없는", "찾을 수"]
-                    return any(keyword in res_str for keyword in fail_keywords)
-
+                # --- [폴백 로직] 도구 실패 시 웹 검색으로 대체 ---
+                def is_tool_failed(result): return result is None or any(keyword in str(result).lower() for keyword in ["error", "오류", "실패", "없습니다", "알 수 없는", "찾을 수"])
                 any_failed = any(is_tool_failed(res.get("result")) for res in tool_results)
                 use_fallback_prompt = False
 
                 if tool_plan and any_failed and not any(tc.get('tool_to_use') == 'web_search' for tc in tool_plan):
                     logger.info("하나 이상의 도구 실행에 실패하여 웹 검색으로 대체합니다.", extra=log_extra)
-                    
-                    web_search_tool_call = {
-                        "tool_to_use": "web_search",
-                        "parameters": {"query": user_query}
-                    }
-                    web_search_result_dict = await self._execute_tool(web_search_tool_call, message.guild.id, user_query)
-                    web_search_result = web_search_result_dict.get("result", "웹 검색에 실패했습니다.")
-
-                    tool_results = [{
-                        "step": 1,
-                        "tool_name": "web_search",
-                        "parameters": {"query": user_query},
-                        "result": web_search_result
-                    }]
+                    web_search_result = await self._execute_tool({"tool_to_use": "web_search", "parameters": {"query": user_query}}, message.guild.id, user_query)
+                    tool_results = [{"step": 1, "tool_name": "web_search", "parameters": {"query": user_query}, "result": web_search_result}]
                     use_fallback_prompt = True
 
+                # --- [3단계] Main 모델 호출: 최종 답변 생성 ---
+                logger.info("3단계: Main 모델(답변 생성) 호출...", extra=log_extra)
                 tool_results_str = json.dumps(tool_results, ensure_ascii=False, indent=2)
-
-                logger.info("3단계: Main 모델 호출 시작...", extra=log_extra)
-
-                is_travel_tool_used = any(tc.get('tool_to_use') == 'get_travel_recommendation' for tc in tool_plan)
-
+                
+                # 프롬프트 선택: 일반, 여행용, 웹 폴백용
                 if use_fallback_prompt:
-                    main_system_prompt = config.WEB_FALLBACK_PROMPT.format(
-                        user_query=user_query,
-                        tool_result=tool_results_str
-                    )
-                elif is_travel_tool_used:
-                    main_system_prompt = config.SPECIALIZED_PROMPTS["travel_assistant"].format(
-                        user_query=user_query,
-                        tool_result=tool_results_str
-                    )
+                    main_system_prompt = config.WEB_FALLBACK_PROMPT.format(user_query=user_query, tool_result=tool_results_str)
+                elif any(tc.get('tool_to_use') == 'get_travel_recommendation' for tc in tool_plan):
+                    main_system_prompt = config.SPECIALIZED_PROMPTS["travel_assistant"].format(user_query=user_query, tool_result=tool_results_str)
                 else:
-                    main_system_prompt = config.AGENT_SYSTEM_PROMPT.format(
-                        user_query=user_query, 
-                        tool_result=tool_results_str
-                    )
-                main_prompt = user_query
-
+                    main_system_prompt = config.AGENT_SYSTEM_PROMPT.format(user_query=user_query, tool_result=tool_results_str)
+                
+                # 페르소나 적용
                 channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
-                persona = channel_config.get('persona')
-                rules = channel_config.get('rules')
-
-                if persona and rules:
-                    main_system_prompt = f"{persona}\n\n{rules}\n\n{main_system_prompt}"
-                else:
-                    custom_persona = await db_utils.get_guild_setting(self.bot.db, message.guild.id, 'persona_text')
-                    if custom_persona:
-                        main_system_prompt = f"{custom_persona}\n\n{main_system_prompt}"
+                persona = channel_config.get('persona', config.DEFAULT_TSUNDERE_PERSONA)
+                rules = channel_config.get('rules', config.DEFAULT_TSUNDERE_RULES)
+                main_system_prompt = f"{persona}\n\n{rules}\n\n{main_system_prompt}"
 
                 main_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, system_instruction=main_system_prompt)
-                main_response = await self._safe_generate_content(main_model, main_prompt, log_extra)
+                main_response = await self._safe_generate_content(main_model, user_query, log_extra)
 
                 if main_response and main_response.text:
-                    logger.info("Main 모델이 최종 답변을 생성했습니다.", extra=log_extra)
                     final_response_text = main_response.text.strip()
                     await message.reply(final_response_text, mention_author=False)
-                    await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {
-                        "guild_id": message.guild.id,
-                        "user_id": message.author.id,
-                        "channel_id": message.channel.id,
-                        "trace_id": trace_id,
-                        "user_query": user_query,
-                        "tool_plan": tool_plan,
-                        "final_response": final_response_text,
-                        "is_fallback": use_fallback_prompt,
-                    })
+                    await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {"guild_id": message.guild.id, "user_id": message.author.id, "channel_id": message.channel.id, "trace_id": trace_id, "user_query": user_query, "tool_plan": tool_plan, "final_response": final_response_text, "is_fallback": use_fallback_prompt})
                 else:
                     logger.error("Main 모델이 최종 답변을 생성하지 못했습니다.", extra=log_extra)
-                    await message.reply(f"모든 도구 실행을 마쳤지만, 최종 답변을 만드는 데 실패했어요. 여기 실행 결과라도 확인해보세요.\n```json\n{tool_results_str}\n```", mention_author=False)
-                    await db_utils.log_analytics(self.bot.db, "AI_INTERACTION_FAILED", {
-                        "guild_id": message.guild.id,
-                        "user_id": message.author.id,
-                        "channel_id": message.channel.id,
-                        "trace_id": trace_id,
-                        "user_query": user_query,
-                        "tool_plan": tool_plan,
-                        "tool_results": tool_results,
-                    })
+                    await message.reply(f"모든 도구를 실행했지만, 최종 답변을 만드는 데 실패했어요. 여기 결과라도 확인해보세요.\n```json\n{tool_results_str}\n```", mention_author=False)
 
             except Exception as e:
                 logger.error(f"에이전트 처리 중 최상위 오류: {e}", exc_info=True, extra=log_extra)
                 await message.reply(config.MSG_AI_ERROR, mention_author=False)
 
     async def _get_recent_history(self, message: discord.Message, rag_prompt: str) -> list:
+        """모델에 전달할 최근 대화 기록을 채널에서 가져옵니다."""
         history_limit = 6 if rag_prompt else 12
         history = []
         
         async for msg in message.channel.history(limit=history_limit + 1):
-            if msg.id == message.id:
-                continue
-
+            if msg.id == message.id: continue
             role = 'model' if msg.author.id == self.bot.user.id else 'user'
-            content = msg.content[:2000] if len(msg.content) > 2000 else msg.content
+            content = msg.content[:2000]
             history.append({'role': role, 'parts': [content]})
 
         history.reverse()
         return history
 
     async def should_proactively_respond(self, message: discord.Message) -> bool:
+        """봇이 대화에 능동적으로 참여할지 여부를 결정하는 게이트키퍼 로직입니다."""
         conf = config.AI_PROACTIVE_RESPONSE_CONFIG
         if not conf.get("enabled"): return False
 
@@ -483,7 +392,11 @@ class AIHandler(commands.Cog):
             history_msgs = [f"User({msg.author.display_name}): {msg.content}" async for msg in message.channel.history(limit=conf.get("look_back_count", 5))]
             history_msgs.reverse()
             conversation_context = "\n".join(history_msgs)
-            gatekeeper_prompt = f"{conf['gatekeeper_persona']}\n\n--- 최근 대화 내용 ---\n{conversation_context}\n---\n사용자의 마지막 메시지: \"{message.content}\"\n---\n\n자, 판단해. Yes or No?"
+            gatekeeper_prompt = f"{conf['gatekeeper_persona']}\n\n---
+최근 대화 내용 ---
+{conversation_context}\n---
+\n사용자의 마지막 메시지: \"{message.content}\"\n---
+\n\n자, 판단해. Yes or No?"
 
             lite_model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME)
             response = await self._safe_generate_content(lite_model, gatekeeper_prompt, log_extra)
@@ -497,6 +410,7 @@ class AIHandler(commands.Cog):
         return False
 
     async def get_recent_conversation_text(self, guild_id: int, channel_id: int, look_back: int = 20) -> str:
+        """DB에서 최근 대화 기록을 텍스트로 가져옵니다 (요약 기능용)."""
         if not self.bot.db: return ""
         query = "SELECT user_name, content FROM conversation_history WHERE guild_id = ? AND channel_id = ? AND is_bot = 0 ORDER BY created_at DESC LIMIT ?"
         try:
@@ -510,14 +424,13 @@ class AIHandler(commands.Cog):
             return ""
 
     async def generate_creative_text(self, channel: discord.TextChannel, author: discord.User, prompt_key: str, context: dict) -> str:
+        ""`!운세`, `!랭킹` 등 특정 명령어에 대한 창의적인 AI 답변을 생성합니다."""
         if not self.is_ready: return config.MSG_AI_ERROR
         log_extra = {'guild_id': channel.guild.id, 'user_id': author.id, 'prompt_key': prompt_key}
 
         try:
             prompt_template = config.AI_CREATIVE_PROMPTS.get(prompt_key)
-            if not prompt_template:
-                logger.error(f"'{prompt_key}'에 해당하는 크리에이티브 프롬프트를 찾을 수 없습니다.", extra=log_extra)
-                return config.MSG_CMD_ERROR
+            if not prompt_template: return config.MSG_CMD_ERROR
 
             user_prompt = prompt_template.format(**context)
             system_prompt = f"{config.CHANNEL_AI_CONFIG.get(channel.id, {}).get('persona', '')}\n\n{config.CHANNEL_AI_CONFIG.get(channel.id, {}).get('rules', '')}"
@@ -534,4 +447,5 @@ class AIHandler(commands.Cog):
             return config.MSG_AI_ERROR
 
 async def setup(bot: commands.Bot):
+    """Cog를 봇에 등록하는 함수"""
     await bot.add_cog(AIHandler(bot))

@@ -1,56 +1,58 @@
 # -*- coding: utf-8 -*-
+"""
+사용자가 직접 호출할 수 있는 일반 명령어들을 관리하는 Cog입니다.
+주로 관리 및 정보 조회용 명령어가 포함됩니다.
+"""
+
 import discord
 from discord.ext import commands
 import os
-from datetime import datetime
-import pytz
 
-# 설정, 로거, 유틸리티 가져오기
 import config
 from logger_config import logger
-# from utils import db # db 관련 유틸리티가 필요할 경우 활성화
 
 class UserCommands(commands.Cog):
-    """사용자가 호출할 수 있는 명령어를 포함하는 Cog"""
+    """사용자 명령어들을 그룹화하는 클래스입니다."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        logger.info("UserCommands Cog가 성공적으로 초기화되었습니다.")
 
     @commands.command(name='delete_log', aliases=['로그삭제'])
-    @commands.has_permissions(administrator=True) # 관리자 권한 확인
-    @commands.guild_only() # 서버에서만 사용 가능
+    @commands.has_permissions(administrator=True) # 관리자 권한이 있는 사용자만 실행 가능
+    @commands.guild_only() # 서버 채널에서만 사용 가능
     async def delete_log(self, ctx: commands.Context):
-        """로그 파일(`discord_logs.txt`)을 삭제합니다. (관리자 전용)"""
+        """
+        봇의 로그 파일을 삭제합니다. (관리자 전용)
+        `config.LOG_FILE_NAME`에 정의된 로그 파일을 대상으로 합니다.
+        """
         log_filename = config.LOG_FILE_NAME
+        log_extra = {'guild_id': ctx.guild.id, 'author_id': ctx.author.id}
         try:
             if os.path.exists(log_filename):
                 os.remove(log_filename)
                 await ctx.send(config.MSG_DELETE_LOG_SUCCESS.format(filename=log_filename))
-                logger.info(f"[{ctx.guild.name}/{ctx.channel.name}] 로그 파일 삭제됨 | 요청자:{ctx.author}")
+                logger.info(f"로그 파일 '{log_filename}'이(가) 삭제되었습니다.", extra=log_extra)
             else:
                 await ctx.send(config.MSG_DELETE_LOG_NOT_FOUND.format(filename=log_filename))
-                logger.warning(f"[{ctx.guild.name}/{ctx.channel.name}] 로그 파일 삭제 시도 - 파일 없음 | 요청자:{ctx.author}")
+                logger.warning(f"삭제할 로그 파일 '{log_filename}'을(를) 찾을 수 없습니다.", extra=log_extra)
         except Exception as e:
             await ctx.send(config.MSG_DELETE_LOG_ERROR)
-            logger.error(f"[{ctx.guild.name}/{ctx.channel.name}] 로그 파일 삭제 중 오류 발생 | 요청자:{ctx.author} | 오류: {e}", exc_info=True)
+            logger.error(f"로그 파일 삭제 중 오류 발생: {e}", exc_info=True, extra=log_extra)
 
-    # delete_log 명령어의 에러 핸들러
     @delete_log.error
     async def delete_log_error(self, ctx: commands.Context, error):
-        """delete_log 명령어 처리 중 발생하는 오류를 핸들링합니다."""
+        """`delete_log` 명령어에서 발생하는 특정 오류를 처리합니다."""
+        log_extra = {'guild_id': ctx.guild.id, 'author_id': ctx.author.id}
         if isinstance(error, commands.MissingPermissions):
             await ctx.send(config.MSG_CMD_NO_PERM)
-            logger.warning(f"[{ctx.guild.name}/{ctx.channel.name}] 권한 없는 로그 삭제 시도 | 요청자:{ctx.author}")
+            logger.warning(f"사용자가 권한 없이 `delete_log` 명령어를 시도했습니다.", extra=log_extra)
         elif isinstance(error, commands.NoPrivateMessage):
             await ctx.send(config.MSG_CMD_GUILD_ONLY)
-        elif isinstance(error, commands.CheckFailure): # has_permissions 외 다른 Check 실패 시
-             await ctx.send(config.MSG_CMD_NO_PERM) # 일단 동일 메시지 사용
-             logger.warning(f"[{ctx.guild.name}/{ctx.channel.name}] 로그 삭제 권한 확인 실패 (CheckFailure) | 요청자:{ctx.author}")
         else:
-            logger.error(f"[{ctx.guild.name}/{ctx.channel.name}] delete_log 명령어 처리 중 예기치 않은 오류 발생: {error}", exc_info=True)
+            logger.error(f"`delete_log` 명령어 처리 중 예기치 않은 오류 발생: {error}", exc_info=True, extra=log_extra)
             await ctx.send(config.MSG_CMD_ERROR)
 
-# Cog를 로드하기 위한 setup 함수 (main.py에서 호출)
 async def setup(bot: commands.Bot):
+    """Cog를 봇에 등록하는 함수입니다."""
     await bot.add_cog(UserCommands(bot))
-    logger.info("UserCommands Cog 로드 완료.")
