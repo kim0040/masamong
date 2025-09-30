@@ -30,10 +30,12 @@ import random
 import time
 import json
 import uuid
+import requests
 
 import config
 from logger_config import logger
 from utils import db as db_utils
+from utils import http
 
 KST = pytz.timezone('Asia/Seoul')
 
@@ -211,6 +213,107 @@ class AIHandler(commands.Cog):
             logger.error("Google Grounding 도구 인스턴스화 실패: %s", exc)
             return None
 
+    async def _google_grounded_search(self, query: str, log_extra: dict) -> dict | None:
+        """Google Search Grounding을 사용해 웹 검색 결과를 생성합니다."""
+        if not self.gemini_configured:
+            return None
+
+        google_tool = self._get_google_grounding_tool()
+        if google_tool:
+            try:
+                model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, tools=[google_tool])
+                grounded_response = await self._safe_generate_content(model, query, log_extra)
+                if grounded_response and grounded_response.text:
+                    candidate = grounded_response.candidates[0] if getattr(grounded_response, "candidates", None) else None
+                    metadata = None
+                    if candidate is not None:
+                        metadata = getattr(candidate, "grounding_metadata", None) or getattr(candidate, "groundingMetadata", None)
+                        if metadata is not None:
+                            if hasattr(metadata, "to_dict"):
+                                try:
+                                    metadata = metadata.to_dict()
+                                except Exception:
+                                    metadata = json.loads(metadata.to_json()) if hasattr(metadata, "to_json") else str(metadata)
+                            elif hasattr(metadata, "to_json"):
+                                try:
+                                    metadata = json.loads(metadata.to_json())
+                                except Exception:
+                                    metadata = str(metadata)
+                    return {
+                        "result": grounded_response.text,
+                        "grounding_metadata": metadata,
+                    }
+                logger.warning("Google Grounding 응답에 유효한 텍스트가 없습니다. REST 호출로 폴백합니다.", extra=log_extra)
+            except Exception as exc:
+                logger.error("Google Grounding 도구 실행 실패: %s", exc, extra=log_extra, exc_info=True)
+
+        return await self._google_grounded_search_rest(query, log_extra)
+
+    async def _google_grounded_search_rest(self, query: str, log_extra: dict) -> dict | None:
+        """google-generativeai SDK에서 Grounding 도구를 제공하지 않을 때 REST API로 호출합니다."""
+        if not config.GEMINI_API_KEY:
+            logger.warning("Gemini API 키가 없어 Google Grounding REST 호출을 건너뜁니다.", extra=log_extra)
+            return None
+
+        if await db_utils.check_api_rate_limit(self.bot.db, 'gemini_response', config.RPM_LIMIT_RESPONSE, config.RPD_LIMIT_RESPONSE):
+            logger.warning("Gemini Grounding REST 호출이 Rate Limit에 막혔습니다.", extra=log_extra)
+            return None
+
+        endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{config.AI_RESPONSE_MODEL_NAME}:generateContent"
+        params = {"key": config.GEMINI_API_KEY}
+        payload = {
+            "contents": [{"role": "user", "parts": [{"text": query}]}],
+            "tools": [{"googleSearch": {}}],
+            "generationConfig": {"temperature": 0.0},
+        }
+
+        if config.GEMINI_SAFETY_SETTINGS:
+            payload["safetySettings"] = [
+                {"category": category, "threshold": threshold}
+                for category, threshold in config.GEMINI_SAFETY_SETTINGS.items()
+            ]
+
+        session = http.get_modern_tls_session()
+        try:
+            logger.info("Google Grounding REST 호출을 실행합니다.", extra=log_extra)
+            response = await asyncio.to_thread(session.post, endpoint, params=params, json=payload, timeout=20)
+            response.raise_for_status()
+            try:
+                data = response.json()
+            except ValueError as exc:
+                logger.error(f"Google Grounding REST 응답 JSON 파싱 실패: {exc} | 응답: {response.text}", extra=log_extra)
+                return None
+
+            await db_utils.log_api_call(self.bot.db, 'gemini_response')
+
+            candidates = data.get("candidates", [])
+            candidate = candidates[0] if candidates else {}
+            content = candidate.get("content", {})
+            parts = content.get("parts", []) if isinstance(content, dict) else []
+            texts = [part.get("text", "") for part in parts if isinstance(part, dict) and part.get("text")]
+            answer_text = "\n".join(filter(None, (text.strip() for text in texts))).strip()
+            metadata = candidate.get("groundingMetadata") or candidate.get("grounding_metadata") or data.get("groundingMetadata")
+
+            if not answer_text:
+                logger.warning("Google Grounding REST 호출이 비어있는 응답을 반환했습니다.", extra=log_extra)
+                return None
+
+            web_queries = None
+            if isinstance(metadata, dict):
+                web_queries = metadata.get("webSearchQueries") or metadata.get("web_search_queries")
+
+            return {
+                "result": answer_text,
+                "grounding_metadata": metadata,
+                "web_search_queries": web_queries,
+            }
+
+        except requests.exceptions.RequestException as exc:
+            logger.error("Google Grounding REST 호출 중 네트워크 오류: %s", exc, extra=log_extra, exc_info=True)
+            return None
+        finally:
+            session.close()
+
     async def _run_web_search_fallback(self, query: str, log_extra: dict) -> str | None:
         if not self.tools_cog:
             self.tools_cog = self.bot.get_cog('ToolsCog')
@@ -313,18 +416,9 @@ class AIHandler(commands.Cog):
         if tool_name == 'web_search':
             logger.info("특별 도구 실행: web_search (Google Grounding)", extra=log_extra)
             query = parameters.get('query', user_query)
-            google_tool = self._get_google_grounding_tool()
-            try:
-                if google_tool:
-                    model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, tools=[google_tool])
-                    grounded_response = await self._safe_generate_content(model, query, log_extra)
-                    if grounded_response and grounded_response.text:
-                        return {"result": grounded_response.text}
-                    logger.warning("Google Grounding에서 유효한 텍스트 응답을 받지 못했습니다. 폴백을 시도합니다.", extra=log_extra)
-                else:
-                    logger.info("Google Grounding 도구를 사용할 수 없어 폴백 검색을 바로 실행합니다.", extra=log_extra)
-            except Exception as e:
-                logger.error(f"Google Grounding 실행 중 예기치 않은 오류: {e}", exc_info=True, extra=log_extra)
+            grounded_payload = await self._google_grounded_search(query, log_extra)
+            if grounded_payload and grounded_payload.get("result"):
+                return grounded_payload
             fallback_result = await self._run_web_search_fallback(query, log_extra)
             if fallback_result:
                 return {"result": fallback_result}
@@ -445,10 +539,7 @@ class AIHandler(commands.Cog):
                 main_system_prompt = f"{persona}\n\n{rules}\n\n{main_system_prompt}"
 
                 main_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, system_instruction=main_system_prompt)
-                main_prompt = (
-                    f"사용자 질문: {user_query}\n\n"
-                    "위 시스템 지시와 도구 결과를 참고해서 자연스럽게 답변을 만들어줘."
-                )
+                main_prompt = ""
                 main_response = await self._safe_generate_content(main_model, main_prompt, log_extra)
 
                 if main_response and main_response.text:

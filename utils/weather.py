@@ -21,10 +21,16 @@ KST = pytz.timezone('Asia/Seoul')
 def get_kma_api_key() -> str | None:
     """설정에서 기상청 API 키를 안전하게 가져옵니다."""
     api_key = config.KMA_API_KEY
-    if not api_key or api_key == 'YOUR_KMA_API_KEY':
-        logger.warning("기상청 API 키(KMA_API_KEY)가 설정되지 않았습니다.")
-        return None
-    return api_key
+    if api_key and api_key != 'YOUR_KMA_API_KEY':
+        return api_key
+
+    fallback_key = getattr(config, 'GO_DATA_API_KEY_KR', None)
+    if fallback_key and fallback_key not in ('', 'YOUR_GO_DATA_API_KEY_KR'):
+        logger.info("기상청 API 키가 없어 공공데이터포털 인증키를 대신 사용합니다.")
+        return fallback_key
+
+    logger.warning("기상청 API 키(KMA_API_KEY)가 설정되지 않았습니다.")
+    return None
 
 async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict) -> dict | None:
     """
@@ -38,10 +44,10 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict) 
         return {"error": True, "message": config.MSG_KMA_API_DAILY_LIMIT_REACHED}
 
     full_url = f"{config.KMA_BASE_URL}/{endpoint}"
-    base_params = {"authKey": api_key, "pageNo": "1", "numOfRows": "1000", "dataType": "JSON"}
+    base_params = {"serviceKey": api_key, "pageNo": "1", "numOfRows": "1000", "dataType": "JSON"}
     base_params.update(params)
 
-    session = http.get_modern_tls_session()
+    session = http.get_tlsv12_session()
     max_retries = max(1, getattr(config, 'KMA_API_MAX_RETRIES', 3))
     retry_delay = max(0, getattr(config, 'KMA_API_RETRY_DELAY_SECONDS', 2))
 
@@ -50,7 +56,11 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict) 
             try:
                 response = await asyncio.to_thread(session.get, full_url, params=base_params, timeout=15)
                 response.raise_for_status()
-                data = response.json()
+                try:
+                    data = response.json()
+                except ValueError as exc:
+                    logger.error(f"기상청 API가 JSON을 반환하지 않았습니다: {exc} | 응답: {response.text}")
+                    return {"error": True, "message": config.MSG_WEATHER_FETCH_ERROR}
 
                 if data.get('response', {}).get('header', {}).get('resultCode') != '00':
                     error_msg = data.get('response', {}).get('header', {}).get('resultMsg', 'Unknown API Error')
