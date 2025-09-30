@@ -6,7 +6,7 @@
 import discord
 from discord.ext import commands
 import aiosqlite
-from datetime import datetime
+from datetime import datetime, timezone
 
 import config
 from logger_config import logger
@@ -33,7 +33,7 @@ class ActivityCog(commands.Cog):
         try:
             guild_id = message.guild.id
             user_id = message.author.id
-            now_utc_str = datetime.utcnow().isoformat()
+            now_utc_str = datetime.now(timezone.utc).isoformat()
 
             # ON CONFLICT를 사용하여 INSERT 또는 UPDATE를 한 번의 쿼리로 처리 (UPSERT)
             await self.bot.db.execute("""
