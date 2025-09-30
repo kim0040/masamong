@@ -187,27 +187,8 @@ class ToolsCog(commands.Cog):
                         else:
                             logger.warning(f"Google CSE API가 오류를 반환했습니다 (상태 코드: {resp.status}): {await resp.text()}")
 
-            # 2. SerpAPI
-            if getattr(config, 'SERPAPI_KEY', None):
-                params = {'engine': 'google', 'q': query, 'api_key': config.SERPAPI_KEY, 'num': 3}
-                async with aiohttp.ClientSession() as session:
-                    async with session.get('https://serpapi.com/search', params=params, timeout=10) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            organic = data.get('organic_results', []) or data.get('results', [])
-                            if not organic: return f"'{query}'에 대한 검색 결과가 없습니다. (SerpAPI)"
-                            formatted = []
-                            for i, item in enumerate(organic[:3], 1):
-                                title = item.get('title') or item.get('position') or '제목 없음'
-                                snippet = item.get('snippet', '') or item.get('snippet_highlighted', '')
-                                link = item.get('link') or item.get('url')
-                                formatted.append(f"{i}. {title}\n   - {snippet}\n   - {link}")
-                            return f"'{query}'에 대한 웹 검색 결과 (SerpAPI):\n" + "\n\n".join(formatted)
-                        else:
-                            logger.warning(f"SerpAPI가 오류를 반환했습니다 (상태 코드: {resp.status}): {await resp.text()}")
-
             # 3. Kakao Web Search (최후의 폴백)
-            logger.info("Google/SerpAPI 실패, Kakao 웹 검색으로 폴백합니다.")
+            logger.info("Google CSE API 실패, Kakao 웹 검색으로 폴백합니다.")
             return await self.kakao_web_search(query)
 
         except Exception as e:
