@@ -58,7 +58,7 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict) 
         for attempt in range(1, max_retries + 1):
             try:
                 # 이제 params에는 serviceKey가 없습니다.
-                response = await asyncio.to_thread(session.get, full_url, params=base_params, timeout=15)
+                response = await asyncio.to_thread(session.get, full_url, params=base_params, timeout=15, verify=False)
                 response.raise_for_status()
                 try:
                     data = response.json()
