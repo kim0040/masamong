@@ -520,6 +520,55 @@ class AIHandler(commands.Cog):
             logger.error(f"최근 대화 기록 조회 중 DB 오류: {e}", exc_info=True)
             return ""
 
+    async def generate_system_alert_message(self, channel_id: int, alert_context: str, alert_title: str | None = None) -> str | None:
+        """주기적 알림 등 시스템 메시지를 AI 말투로 재작성합니다."""
+        if not self.is_ready:
+            return None
+
+        log_extra = {'channel_id': channel_id, 'alert_title': alert_title}
+
+        try:
+            channel_config = config.CHANNEL_AI_CONFIG.get(channel_id, {})
+            persona = channel_config.get('persona', config.DEFAULT_TSUNDERE_PERSONA)
+            rules = channel_config.get('rules', config.DEFAULT_TSUNDERE_RULES)
+
+            system_prompt = (
+                f"{persona}\n\n{rules}\n\n"
+                "### 추가 지침\n"
+                "- 지금은 서버 구성원에게 전달할 시스템 공지를 작성하는 중이다.\n"
+                "- 핵심 정보는 빠뜨리지 말되 2~3문장 이내로 간결하게 정리한다.\n"
+                "- 필요 시 가벼운 이모지 한두 개만 사용하고, 과한 장식은 피한다.\n"
+                "- 마지막에는 자연스럽게 행동을 촉구하거나 격려하는 말을 덧붙인다."
+            )
+
+            user_prompt = (
+                "다음 정보를 바탕으로 서버에 전달할 공지 메시지를 작성해줘.\n"
+                f"- 알림 주제: {alert_title or '일반 알림'}\n"
+                f"- 전달할 내용: {alert_context}\n\n"
+                "공지 문구는 마사몽의 말투를 유지해 주고, 너무 장황하지 않게 작성해줘."
+            )
+
+            model = genai.GenerativeModel(
+                model_name=config.AI_RESPONSE_MODEL_NAME,
+                system_instruction=system_prompt,
+            )
+            response = await self._safe_generate_content(model, user_prompt, log_extra)
+            if response and response.text:
+                alert_message = response.text.strip()
+                if len(alert_message) > config.AI_RESPONSE_LENGTH_LIMIT:
+                    alert_message = alert_message[:config.AI_RESPONSE_LENGTH_LIMIT].rstrip()
+                return alert_message
+
+        except Exception as e:
+            logger.error(
+                "시스템 알림 메시지 생성 중 오류: %s",
+                e,
+                exc_info=True,
+                extra=log_extra,
+            )
+
+        return None
+
     async def generate_creative_text(self, channel: discord.TextChannel, author: discord.User, prompt_key: str, context: dict) -> str:
         """`!운세`, `!랭킹` 등 특정 명령어에 대한 창의적인 AI 답변을 생성합니다."""
         if not self.is_ready: return config.MSG_AI_ERROR
