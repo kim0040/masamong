@@ -9,6 +9,7 @@ config.json
 *.log
 *.txt
 *.pdf
+*.csv
 
 # Database files
 *.db
