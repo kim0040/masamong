@@ -1,19 +1,35 @@
 # -*- coding: utf-8 -*-
+"""
+마사몽 봇의 모든 설정을 관리하는 모듈입니다.
+
+이 파일은 API 키, 데이터베이스 경로, 모델 이름, 시스템 프롬프트 등
+봇 운영에 필요한 모든 설정 값을 중앙에서 관리합니다.
+설정 값은 .env, config.json, 환경 변수 순서로 불러옵니다.
+"""
+
 import os
 import json
 from dotenv import load_dotenv
 import discord
 
-# .env 파일에서 환경 변수 로드
+# .env 파일이 존재할 경우, 해당 파일의 환경 변수를 로드합니다.
 load_dotenv()
 
-# 설정 값 로드 함수
 def load_config_value(key, default=None):
-    """ .env 파일, config.json, 환경 변수 순으로 설정 값을 로드. """
+    """
+    설정 값을 우선순위에 따라 로드합니다.
+
+    Priority:
+    1. 환경 변수 (os.environ)
+    2. config.json 파일
+    3. 기본값 (default)
+    """
+    # 1. 환경 변수에서 값 조회
     value = os.environ.get(key)
     if value:
         return value
 
+    # 2. config.json 파일에서 값 조회
     try:
         with open('config.json', 'r', encoding='utf-8') as f:
             config_json = json.load(f)
@@ -21,85 +37,85 @@ def load_config_value(key, default=None):
         if value:
             return value
     except FileNotFoundError:
-        pass # config.json이 없어도 괜찮음
+        # config.json 파일은 선택 사항이므로 오류를 출력하지 않음
+        pass
     except json.JSONDecodeError:
-        print("경고: config.json 파일이 유효한 JSON 형식이 아닙니다.")
+        print(f"[경고] config.json 파일이 유효한 JSON 형식이 아닙니다.")
 
+    # 3. 기본값 반환
     return default
 
-# --- Discord 봇 설정 ---
+# ====================================================================
+# 봇 기본 설정
+# ====================================================================
 TOKEN = load_config_value('DISCORD_BOT_TOKEN')
-COMMAND_PREFIX = "!"  # Phase 1: 명령어 접두사 명시적 정의
+COMMAND_PREFIX = "!"  # 명령어 접두사
 
-# --- 로깅 설정 ---
-LOG_FILE_NAME = "discord_logs.txt"
-ERROR_LOG_FILE_NAME = "error_logs.txt"
+# ====================================================================
+# 파일 경로 및 데이터베이스 설정
+# ====================================================================
+LOG_FILE_NAME = "discord_logs.txt"      # 일반 로그 파일명
+ERROR_LOG_FILE_NAME = "error_logs.txt"  # 오류 로그 파일명
+DATABASE_FILE = "database/remasamong.db" # SQLite 데이터베이스 파일 경로
 
-# --- 데이터베이스 설정 ---
-DATABASE_FILE = "database/remasamong.db"
-
-# --- AI 설정 ---
+# ====================================================================
+# API 키 설정
+# ====================================================================
+# --- 주요 API 키 ---
 GEMINI_API_KEY = load_config_value('GEMINI_API_KEY')
 
-# --- Tool-Using Agent API Keys ---
-# 각 API 키를 .env 파일 또는 환경변수에 설정해야 합니다.
+# --- 웹 검색 API 키 (Google/SerpAPI) ---
+# web_search 기능은 아래 키 설정에 따라 Google -> SerpAPI -> Kakao 순으로 자동 폴백됩니다.
+GOOGLE_API_KEY = load_config_value('GOOGLE_API_KEY') # Google Custom Search API 키
+GOOGLE_CX = load_config_value('GOOGLE_CX')             # Google Custom Search 엔진 ID
+SERPAPI_KEY = load_config_value('SERPAPI_KEY')         # SerpAPI 키
 
+# --- 도구용 API 키 ---
 FINNHUB_API_KEY = load_config_value('FINNHUB_API_KEY', 'YOUR_FINNHUB_API_KEY')
 KAKAO_API_KEY = load_config_value('KAKAO_API_KEY', 'YOUR_KAKAO_API_KEY')
 GO_DATA_API_KEY_KR = load_config_value('GO_DATA_API_KEY_KR', 'YOUR_GO_DATA_API_KEY_KR') # 공공데이터포털 (국내 주식)
 EXIM_API_KEY_KR = load_config_value('EXIM_API_KEY_KR', 'YOUR_EXIM_API_KEY_KR')       # 한국수출입은행 (환율)
 OPENWEATHERMAP_API_KEY = load_config_value('OPENWEATHERMAP_API_KEY', 'YOUR_OPENWEATHERMAP_API_KEY')
+KMA_API_KEY = load_config_value('KMA_API_KEY')
 
-
-
-# --- Tool API Base URLs ---
+# ====================================================================
+# API 엔드포인트 URL 설정
+# ====================================================================
 EXIM_BASE_URL = load_config_value('EXIM_BASE_URL', "https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON")
 FINNHUB_BASE_URL = load_config_value('FINNHUB_BASE_URL', "https://finnhub.io/api/v1")
 KAKAO_BASE_URL = load_config_value('KAKAO_BASE_URL', "https://dapi.kakao.com/v2/local/search/keyword.json")
 KRX_BASE_URL = load_config_value('KRX_BASE_URL', "https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo")
-
 KMA_BASE_URL = load_config_value('KMA_BASE_URL', "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0")
 NOMINATIM_BASE_URL = load_config_value('NOMINATIM_BASE_URL', "https://nominatim.openstreetmap.org")
 OPENWEATHERMAP_BASE_URL = load_config_value('OPENWEATHERMAP_BASE_URL', "https://api.openweathermap.org/data/2.5")
 
-
-# '사고'용 모델 (의도분석 등)
+# ====================================================================
+# AI 모델 및 응답 설정
+# ====================================================================
+# --- 모델 이름 ---
 AI_INTENT_MODEL_NAME = "gemini-2.5-flash-lite"
-# '응답'용 모델 (실제 답변 생성)
 AI_RESPONSE_MODEL_NAME = "gemini-2.5-flash"
-# 임베딩 모델
 AI_EMBEDDING_MODEL_NAME = "gemini-embedding-001"
 
-# --- Gemini API 호출 제한 (Free Tier 기준) ---
-# 공식 문서: https://ai.google.dev/gemini-api/docs/rate-limits
-# 분당 요청 수 (RPM)
-RPM_LIMIT_INTENT = 15       # gemini-2.5-flash-lite
-RPM_LIMIT_RESPONSE = 10     # gemini-2.5-flash
-RPM_LIMIT_EMBEDDING = 100   # Gemini Embedding (models/embedding-001)
+# --- API 호출 제한 (Rate Limiting) ---
+RPM_LIMIT_INTENT = 15
+RPM_LIMIT_RESPONSE = 10
+RPM_LIMIT_EMBEDDING = 100
+RPD_LIMIT_INTENT = 250
+RPD_LIMIT_RESPONSE = 250
+RPD_LIMIT_EMBEDDING = 1000
 
-# 일일 요청 수 (RPD)
-RPD_LIMIT_INTENT = 250     # gemini-2.5-flash-lite
-RPD_LIMIT_RESPONSE = 250    # gemini-2.5-flash
-RPD_LIMIT_EMBEDDING = 1000  # Gemini Embedding (models/embedding-001)
-
-# --- Tool API Limits ---
-# agent.md에 명시된 시스템 제한 설정을 따릅니다.
-FINNHUB_API_RPM_LIMIT = 50
-KAKAO_API_RPD_LIMIT = 95000 # 카카오 로컬 API의 키워드 검색은 일일 100,000회 제한
-KRX_API_RPD_LIMIT = 9000
-EXIM_API_RPD_LIMIT = 900
-
-OPENWEATHERMAP_API_RPM_LIMIT = 60
-
-# AI 응답 관련 설정
-AI_RESPONSE_LENGTH_LIMIT = 300 # 답변 길이 제한 (글자 수)
+# --- AI 응답 관련 기본 설정 ---
+AI_RESPONSE_LENGTH_LIMIT = 300
 AI_COOLDOWN_SECONDS = 3
 AI_MEMORY_ENABLED = True
 AI_INTENT_ANALYSIS_ENABLED = True
 
-# --- Phase 2: 모델 역할 분담을 위한 프롬프트 ---
+# ====================================================================
+# 시스템 프롬프트 설정
+# ====================================================================
 
-# 1. Lite 모델 (gemini-2.5-flash-lite): '프로젝트 매니저(PM)' 역할. 작업 계획 수립 및 간단한 답변 담당.
+# 1. Lite 모델 (의도 분석용) 시스템 프롬프트
 LITE_MODEL_SYSTEM_PROMPT = """You are '마사몽', a 'Project Manager' AI. Your primary role is to analyze user queries and create a plan to respond using available tools.
 
 **# Your Responsibilities:**
@@ -187,7 +203,7 @@ LITE_MODEL_SYSTEM_PROMPT = """You are '마사몽', a 'Project Manager' AI. Your 
 16. `web_search(query: str)`: Use for general knowledge questions. **Do not use for weather, stock prices, or place searches** as specific tools exist for those.
 """
 
-# 2. Main 모델 (gemini-2.5-flash): 도구 결과를 바탕으로 최종 답변 생성 담당
+# 2. Main 모델 (답변 생성용) 시스템 프롬프트
 AGENT_SYSTEM_PROMPT = """You are a helpful and conversational AI assistant named '마사몽'.
 Your personality is 'tsundere' - you might act a bit grumpy or reluctant on the outside, but you are genuinely helpful and friendly. You speak in a casual, informal tone (반말).
 
@@ -201,7 +217,7 @@ Based on this, provide a complete and natural-sounding answer to the user.
 If the tool result indicates a failure or doesn't contain the exact information the user asked for, admit it with a typical tsundere attitude (e.g., "흠, 그건 잘 모르겠는걸. 다시 물어봐 줄래?" or "미안, 그건 못 찾았어. 다른 건 없어?"), but avoid being overly negative or using words like "젠장".
 """
 
-# 3. Web Fallback 모델: 도구 실패 시 웹 검색 결과를 바탕으로 답변 생성
+# 3. Web Fallback 모델 (폴백용) 시스템 프롬프트
 WEB_FALLBACK_PROMPT = """You are a helpful and conversational AI assistant named '마사몽'.
 Your personality is 'tsundere' - you might act a bit grumpy or reluctant on the outside, but you are genuinely helpful and friendly. You speak in a casual, informal tone (반말).
 
@@ -216,22 +232,24 @@ Based on this, provide a complete and natural-sounding answer to the user. If th
 If the tool result indicates a failure or doesn't contain the exact information the user asked for, admit it with a typical tsundere attitude (e.g., "흠, 그건 잘 모르겠는걸. 다시 물어봐 줄래?" or "미안, 그건 못 찾았어. 다른 건 없어?"), but avoid being overly negative or using words like "젠장".
 """
 
+# ====================================================================
+# 능동적/창의적 기능 설정
+# ====================================================================
 AI_PROACTIVE_RESPONSE_CONFIG = { "enabled": True, "keywords": ["마사몽", "마사모", "봇", "챗봇"], "probability": 0.6, "cooldown_seconds": 90, "gatekeeper_persona": """너는 대화의 흐름을 분석하는 '눈치 빠른' AI야. 주어진 최근 대화 내용과 마지막 메시지를 보고, AI 챗봇('마사몽')이 지금 대화에 참여하는 것이 자연스럽고 대화를 더 재미있게 만들지를 판단해야 해.
 - 판단 기준:
   1. 긍정적이거나 중립적인 맥락에서 챗봇을 언급하는가?
   2. 챗봇이 답변하기 좋은 질문이나 주제가 나왔는가?
   3. 이미 사용자들끼리 대화가 활발하게 진행 중이라 챗봇의 개입이 불필해 보이지는 않는가? (이 경우 'No')
   4. 부정적인 맥락이거나, 챗봇을 비난하는 내용인가? (이 경우 'No')
-- 위의 기준을 종합적으로 고려해서, 참여하는 것이 좋다고 생각되면 'Yes', 아니면 'No'라고만 대답해. 다른 설명은 절대 붙이지 마.""",
+- 위의 기준을 종합적으로 고려해서, 참여하는 것이 좋다고 생각되면 'Yes', 아니면 'No'라고만 대답해. 다른 설명은 절대 붙이지 마."",
         "look_back_count": 5,
         "min_message_length": 10
 }
-# RAG 대화 기록 아카이빙 설정
 RAG_ARCHIVING_CONFIG = {
-    "enabled": True,  # 아카이빙 기능 활성화 여부
-    "history_limit": 20000,  # `conversation_history` 테이블에 보관할 최대 메시지 수
-    "batch_size": 1000,  # 한 번에 아카이빙할 메시지 수
-    "check_interval_hours": 24  # 아카이빙 실행 주기 (시간)
+    "enabled": True,
+    "history_limit": 20000,
+    "batch_size": 1000,
+    "check_interval_hours": 24
 }
 AI_CREATIVE_PROMPTS = {
     "fortune": "사용자 '{user_name}'를 위한 오늘의 운세를 재치있게 알려줘.",
@@ -242,7 +260,6 @@ AI_CREATIVE_PROMPTS = {
 }
 FUN_KEYWORD_TRIGGERS = { "enabled": True, "cooldown_seconds": 60, "triggers": { "fortune": ["운세", "오늘 운", "운세 좀"], "summarize": ["요약해줘", "무슨 얘기했어", "무슨 얘기함", "요약 좀", "지금까지 뭔 얘기"] } }
 
-# --- 특수 목적용 프롬프트 ---
 SPECIALIZED_PROMPTS = {
     "travel_assistant": """너는 오직 아래 [제공된 정보]만을 사용하여 사용자의 질문에 답변하는 여행 비서야.
 절대로 [제공된 정보]에 없는 내용을 추측하거나 추가해서는 안 돼.
@@ -256,15 +273,13 @@ SPECIALIZED_PROMPTS = {
 """
 }
 
-# --- 기상청 API 설정 (새로운 좌표 시스템으로 변경) ---
-KMA_API_KEY = load_config_value('KMA_API_KEY')
+# ====================================================================
+# 날씨 및 알림 기능 설정
+# ====================================================================
 KMA_API_DAILY_CALL_LIMIT = 10000
-
 DEFAULT_LOCATION_NAME = "광양"
 DEFAULT_NX = "70"
 DEFAULT_NY = "65"
-
-# --- 주기적 알림 설정 ---
 ENABLE_RAIN_NOTIFICATION = True
 RAIN_NOTIFICATION_CHANNEL_ID = 912210558122598450
 WEATHER_CHECK_INTERVAL_MINUTES = 60
@@ -274,8 +289,9 @@ GREETING_NOTIFICATION_CHANNEL_ID = 912210558122598450
 MORNING_GREETING_TIME = {"hour": 7, "minute": 30}
 EVENING_GREETING_TIME = {"hour": 23, "minute": 50}
 
-# --- 채널별/사용자별 AI 설정 ---
-# 기본 츤데레 페르소나 및 규칙
+# ====================================================================
+# 채널/사용자별 페르소나 설정
+# ====================================================================
 DEFAULT_TSUNDERE_PERSONA = """
 ### 너의 정체성
 너는 '마사모' 서버의 AI 챗봇 '마사몽'이야. 인터넷 커뮤니티 유저처럼, 반말을 쓰면서 유머러스하고 친근하게 대화해.
@@ -349,8 +365,6 @@ CHANNEL_AI_CONFIG = {
     }
 }
 
-# --- 사용자별 페르소나 오버라이드 (선택 사항) ---
-# 특정 사용자가 봇을 호출할 때 채널 설정보다 우선 적용됩니다.
 USER_SPECIFIC_PERSONAS = {
     # 123456789012345678: { # 예시: 특정 유저 ID
     #     "persona": "너는 이 사용자의 개인 비서야. 항상 존댓말을 사용하고, 요청에 최대한 정확하고 상세하게 답변해줘.",
@@ -358,8 +372,9 @@ USER_SPECIFIC_PERSONAS = {
     # }
 }
 
-
-# --- 기타 설정 ---
+# ====================================================================
+# Discord 및 Gemini API 상세 설정
+# ====================================================================
 GEMINI_SAFETY_SETTINGS = {
     'HARM_CATEGORY_HARASSMENT': 'BLOCK_MEDIUM_AND_ABOVE',
     'HARM_CATEGORY_HATE_SPEECH': 'BLOCK_MEDIUM_AND_ABOVE',
@@ -372,7 +387,9 @@ intents.message_content = True
 intents.guilds = True
 intents.members = True
 
-# --- 메시지 문자열 ---
+# ====================================================================
+# 시스템 메시지 문자열
+# ====================================================================
 MSG_AI_ERROR = "😥 아놔, 에러났네. 뭐지? 잠시 후에 다시 물어봐봐."
 MSG_AI_COOLDOWN = "😅 야, 좀 천천히 불러라! {remaining:.1f}초 뒤에 다시 말 걸어줘."
 MSG_AI_NO_CONTENT = "🤔 ?? 뭘 말해야 할지 모르겠는데? @{bot_name} 하고 할 말을 써줘."
