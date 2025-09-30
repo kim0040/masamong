@@ -47,7 +47,7 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict) 
     base_params.update(params)
     
     # 외부 설정에 의한 URL 오류를 막기 위해 올바른 BASE URL을 직접 명시합니다.
-    base_url = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0"
+    base_url = "http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0"
     full_url = f"{base_url}/{endpoint}?serviceKey={api_key}"
 
     session = http.get_insecure_session()

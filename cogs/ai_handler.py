@@ -214,39 +214,8 @@ class AIHandler(commands.Cog):
             return None
 
     async def _google_grounded_search(self, query: str, log_extra: dict) -> dict | None:
-        """Google Search Grounding을 사용해 웹 검색 결과를 생성합니다."""
-        if not self.gemini_configured:
-            return None
-
-        google_tool = self._get_google_grounding_tool()
-        if google_tool:
-            try:
-                model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, tools=[google_tool])
-                grounded_response = await self._safe_generate_content(model, query, log_extra)
-                if grounded_response and grounded_response.text:
-                    candidate = grounded_response.candidates[0] if getattr(grounded_response, "candidates", None) else None
-                    metadata = None
-                    if candidate is not None:
-                        metadata = getattr(candidate, "grounding_metadata", None) or getattr(candidate, "groundingMetadata", None)
-                        if metadata is not None:
-                            if hasattr(metadata, "to_dict"):
-                                try:
-                                    metadata = metadata.to_dict()
-                                except Exception:
-                                    metadata = json.loads(metadata.to_json()) if hasattr(metadata, "to_json") else str(metadata)
-                            elif hasattr(metadata, "to_json"):
-                                try:
-                                    metadata = json.loads(metadata.to_json())
-                                except Exception:
-                                    metadata = str(metadata)
-                    return {
-                        "result": grounded_response.text,
-                        "grounding_metadata": metadata,
-                    }
-                logger.warning("Google Grounding 응답에 유효한 텍스트가 없습니다. REST 호출로 폴백합니다.", extra=log_extra)
-            except Exception as exc:
-                logger.error("Google Grounding 도구 실행 실패: %s", exc, extra=log_extra, exc_info=True)
-
+        """Google Search Grounding을 사용해 웹 검색 결과를 생성합니다. (REST API 직접 호출)"""
+        # SDK 방식의 불안정성으로 인해 안정적인 REST API 호출로 직접 연결합니다.
         return await self._google_grounded_search_rest(query, log_extra)
 
     async def _google_grounded_search_rest(self, query: str, log_extra: dict) -> dict | None:
@@ -354,7 +323,7 @@ class AIHandler(commands.Cog):
 
         try:
             query_embedding = np.array(query_embedding_result['embedding'])
-            async with self.bot.db.execute("SELECT content, embedding FROM conversation_history WHERE guild_id = ? AND channel_id = ? AND embedding IS NOT NULL ORDER BY created_at DESC LIMIT 100;", (guild_id, channel_id,)) as cursor:
+            async with self.bot.db.execute("SELECT content, embedding FROM conversation_history WHERE guild_id = ? AND channel_id = ? AND user_id = ? AND embedding IS NOT NULL ORDER BY created_at DESC LIMIT 100;", (guild_id, channel_id, user_id,)) as cursor:
                 rows = await cursor.fetchall()
             if not rows:
                 logger.info("RAG: 검색할 임베딩 데이터가 없습니다.", extra=log_extra)
