@@ -44,16 +44,18 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
         return {"error": True, "message": config.MSG_KMA_API_DAILY_LIMIT_REACHED}
 
     base_params = {}
+    full_url = ""
     if is_apihub:
         base_url = "https://apihub.kma.go.kr/api/typ01/url"
         base_params['authKey'] = api_key
+        base_params.update(params)
+        full_url = f"{base_url}/{endpoint}"
     else:
         base_url = "http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0"
         base_params.update({"pageNo": "1", "numOfRows": "1000", "dataType": "JSON"})
-        base_params['ServiceKey'] = api_key
-
-    base_params.update(params)
-    full_url = f"{base_url}/{endpoint}"
+        base_params.update(params)
+        # 공공데이터포털은 ServiceKey를 직접 URL에 포함해야 인코딩 문제가 발생하지 않는 경우가 많습니다.
+        full_url = f"{base_url}/{endpoint}?ServiceKey={api_key}"
 
     session = http.get_insecure_session()
     max_retries = max(1, getattr(config, 'KMA_API_MAX_RETRIES', 3))
@@ -62,16 +64,15 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
     try:
         for attempt in range(1, max_retries + 1):
             try:
+                # 공공데이터포털의 경우, base_params에 ServiceKey가 없어야 합니다.
                 response = await asyncio.to_thread(session.get, full_url, params=base_params, timeout=15, verify=False)
                 response.raise_for_status()
                 
                 await db_utils.log_api_call(db, 'kma_daily')
 
                 if is_apihub:
-                    # API허브는 텍스트 기반 응답일 수 있음
                     return response.text
 
-                # 공공데이터포털은 JSON 응답 처리
                 try:
                     data = response.json()
                 except ValueError as exc:
