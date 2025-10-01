@@ -26,9 +26,11 @@ class ProactiveAssistant(commands.Cog):
         logger.info("ProactiveAssistant Cog가 성공적으로 초기화되었습니다.")
 
     async def cog_load(self):
+        """Cog가 로드될 때 호출되어 AI 핸들러 참조를 확보합니다."""
         self.ai_handler = self.bot.get_cog('AIHandler')
 
     def cog_unload(self):
+        """Cog 언로드 시 백그라운드 태스크를 안전하게 중지합니다."""
         self.proactive_monitoring_loop.cancel()
 
     async def analyze_user_intent(self, message: discord.Message) -> Optional[str]:
