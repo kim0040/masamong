@@ -162,11 +162,12 @@ def format_weather_alerts(raw_data: str) -> str | None:
             continue
         
         parts = line.split(',')
-        if len(parts) < 8:
+        if len(parts) < 9:
             continue
 
         try:
-            reg_name, tm_fc_str, tm_ef_str, wrn, lvl, cmd, content = parts[1], parts[2], parts[3], parts[5], parts[6], parts[7], parts[8]
+            # content는 disp=1일 때 마지막에 추가되는 것으로 보임
+            reg_name, tm_fc_str, wrn, lvl, cmd, content = parts[1], parts[2], parts[5], parts[6], parts[7], parts[8]
             
             tm_fc = datetime.strptime(tm_fc_str, '%Y%m%d%H%M').strftime('%m/%d %H:%M')
             
