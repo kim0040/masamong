@@ -32,10 +32,12 @@ def get_kma_api_key() -> str | None:
     logger.warning("기상청 API 키(KMA_API_KEY)가 설정되지 않았습니다.")
     return None
 
-async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, is_apihub: bool = False) -> dict | str | None:
+async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, api_type: str = 'forecast') -> dict | str | None:
     """
     기상청 API 엔드포인트를 호출하는 중앙 래퍼 함수입니다.
-    공공데이터포털(is_apihub=False)과 기상청 API허브(is_apihub=True)를 모두 지원합니다.
+    api_type에 따라 다른 API 엔드포인트를 사용합니다.
+    - 'forecast': 동네예보 (JSON 응답)
+    - 'alert': 기상특보 (텍스트 응답)
     """
     api_key = get_kma_api_key()
     if not api_key: return {"error": True, "message": config.MSG_WEATHER_API_KEY_MISSING}
@@ -44,18 +46,20 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
         return {"error": True, "message": config.MSG_KMA_API_DAILY_LIMIT_REACHED}
 
     base_params = {}
-    full_url = ""
-    if is_apihub:
-        base_url = "https://apihub.kma.go.kr/api/typ01/url"
-        base_params['authKey'] = api_key
-        base_params.update(params)
-        full_url = f"{base_url}/{endpoint}"
-    else:
-        base_url = "http://apis.data.go.kr/1360000/VillageFcstInfoService_2.0"
+    base_url = ""
+
+    if api_type == 'forecast':
+        base_url = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0"
         base_params.update({"pageNo": "1", "numOfRows": "1000", "dataType": "JSON"})
-        base_params.update(params)
-        # 공공데이터포털은 ServiceKey를 직접 URL에 포함해야 인코딩 문제가 발생하지 않는 경우가 많습니다.
-        full_url = f"{base_url}/{endpoint}?ServiceKey={api_key}"
+    elif api_type == 'alert':
+        base_url = "https://apihub.kma.go.kr/api/typ01/url"
+        base_params.update({"disp": "1"})
+    else:
+        raise ValueError(f"Invalid api_type: {api_type}")
+
+    base_params['authKey'] = api_key
+    base_params.update(params)
+    full_url = f"{base_url}/{endpoint}"
 
     session = http.get_insecure_session()
     max_retries = max(1, getattr(config, 'KMA_API_MAX_RETRIES', 3))
@@ -64,15 +68,14 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
     try:
         for attempt in range(1, max_retries + 1):
             try:
-                # 공공데이터포털의 경우, base_params에 ServiceKey가 없어야 합니다.
                 response = await asyncio.to_thread(session.get, full_url, params=base_params, timeout=15, verify=False)
                 response.raise_for_status()
-                
                 await db_utils.log_api_call(db, 'kma_daily')
 
-                if is_apihub:
+                if api_type == 'alert':
                     return response.text
 
+                # forecast (JSON) 처리
                 try:
                     data = response.json()
                 except ValueError as exc:
@@ -107,7 +110,7 @@ async def get_current_weather_from_kma(db: aiosqlite.Connection, nx: str, ny: st
     now = datetime.now(KST)
     base_dt = now if now.minute >= 45 else now - timedelta(hours=1)
     params = {"base_date": base_dt.strftime("%Y%m%d"), "base_time": base_dt.strftime("%H00"), "nx": nx, "ny": ny}
-    return await _fetch_kma_api(db, "getUltraSrtNcst", params)
+    return await _fetch_kma_api(db, "getUltraSrtNcst", params, api_type='forecast')
 
 async def get_short_term_forecast_from_kma(db: aiosqlite.Connection, nx: str, ny: str) -> dict | None:
     """
@@ -128,7 +131,7 @@ async def get_short_term_forecast_from_kma(db: aiosqlite.Connection, nx: str, ny
         base_time_str = f"{found_hour:02d}00"
 
     params = {"base_date": base_date_str, "base_time": base_time_str, "nx": nx, "ny": ny}
-    return await _fetch_kma_api(db, "getVilageFcst", params)
+    return await _fetch_kma_api(db, "getVilageFcst", params, api_type='forecast')
 
 async def get_weather_alerts_from_kma(db: aiosqlite.Connection) -> str | dict | None:
     """기상특보 정보를 기상청 API허브로부터 가져옵니다."""
@@ -136,9 +139,8 @@ async def get_weather_alerts_from_kma(db: aiosqlite.Connection) -> str | dict | 
     params = {
         "tmfc1": (now - timedelta(days=1)).strftime("%Y%m%d%H%M"),
         "tmfc2": now.strftime("%Y%m%d%H%M"),
-        "disp": "1" # 특보내용 포함
     }
-    return await _fetch_kma_api(db, "wrn_met_data.php", params, is_apihub=True)
+    return await _fetch_kma_api(db, "wrn_met_data.php", params, api_type='alert')
 
 def format_weather_alerts(raw_data: str) -> str | None:
     """기상특보 원본 텍스트 데이터를 사람이 읽기 좋은 문자열로 변환합니다."""
