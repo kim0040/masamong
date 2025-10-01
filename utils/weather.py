@@ -32,10 +32,10 @@ def get_kma_api_key() -> str | None:
     logger.warning("기상청 API 키(KMA_API_KEY)가 설정되지 않았습니다.")
     return None
 
-async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict) -> dict | None:
+async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, is_apihub: bool = False) -> dict | str | None:
     """
     기상청 API 엔드포인트를 호출하는 중앙 래퍼 함수입니다.
-    API 키, 호출 제한 확인, 비동기 요청, 오류 처리를 담당합니다.
+    공공데이터포털(is_apihub=False)과 기상청 API허브(is_apihub=True)를 모두 지원합니다.
     """
     api_key = get_kma_api_key()
     if not api_key: return {"error": True, "message": config.MSG_WEATHER_API_KEY_MISSING}
@@ -43,12 +43,17 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict) 
     if await db_utils.check_api_rate_limit(db, 'kma_daily', config.KMA_API_DAILY_CALL_LIMIT, 99999):
         return {"error": True, "message": config.MSG_KMA_API_DAILY_LIMIT_REACHED}
 
-    base_params = {"pageNo": "1", "numOfRows": "1000", "dataType": "JSON"}
+    base_params = {}
+    if is_apihub:
+        base_url = "https://apihub.kma.go.kr/api/typ01/url"
+        base_params['authKey'] = api_key
+    else:
+        base_url = "http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0"
+        base_params.update({"pageNo": "1", "numOfRows": "1000", "dataType": "JSON"})
+        base_params['ServiceKey'] = api_key
+
     base_params.update(params)
-    
-    # 외부 설정에 의한 URL 오류를 막기 위해 올바른 BASE URL을 직접 명시합니다.
-    base_url = "http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0"
-    full_url = f"{base_url}/{endpoint}?serviceKey={api_key}"
+    full_url = f"{base_url}/{endpoint}"
 
     session = http.get_insecure_session()
     max_retries = max(1, getattr(config, 'KMA_API_MAX_RETRIES', 3))
@@ -57,9 +62,16 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict) 
     try:
         for attempt in range(1, max_retries + 1):
             try:
-                # 이제 params에는 serviceKey가 없습니다.
                 response = await asyncio.to_thread(session.get, full_url, params=base_params, timeout=15, verify=False)
                 response.raise_for_status()
+                
+                await db_utils.log_api_call(db, 'kma_daily')
+
+                if is_apihub:
+                    # API허브는 텍스트 기반 응답일 수 있음
+                    return response.text
+
+                # 공공데이터포털은 JSON 응답 처리
                 try:
                     data = response.json()
                 except ValueError as exc:
@@ -71,18 +83,14 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict) 
                     logger.error(f"기상청 API 오류: {error_msg}")
                     return {"error": True, "message": error_msg}
 
-                await db_utils.log_api_call(db, 'kma_daily')
                 return data.get('response', {}).get('body', {}).get('items')
 
             except requests.exceptions.Timeout:
                 if attempt >= max_retries:
                     logger.error("기상청 API 요청이 재시도 후에도 시간 초과되었습니다.", exc_info=True)
                     return {"error": True, "message": config.MSG_WEATHER_TIMEOUT}
-
                 logger.warning(f"기상청 API 요청이 시간 초과되었습니다. 재시도합니다... (시도 {attempt}/{max_retries})")
-                if retry_delay:
-                    await asyncio.sleep(retry_delay * attempt)
-                continue
+                if retry_delay: await asyncio.sleep(retry_delay * attempt)
             except requests.exceptions.RequestException as e:
                 logger.error(f"기상청 API 요청 오류: {e}", exc_info=True)
                 return {"error": True, "message": config.MSG_WEATHER_FETCH_ERROR}
@@ -120,6 +128,61 @@ async def get_short_term_forecast_from_kma(db: aiosqlite.Connection, nx: str, ny
 
     params = {"base_date": base_date_str, "base_time": base_time_str, "nx": nx, "ny": ny}
     return await _fetch_kma_api(db, "getVilageFcst", params)
+
+async def get_weather_alerts_from_kma(db: aiosqlite.Connection) -> str | dict | None:
+    """기상특보 정보를 기상청 API허브로부터 가져옵니다."""
+    now = datetime.now(KST)
+    params = {
+        "tmfc1": (now - timedelta(days=1)).strftime("%Y%m%d%H%M"),
+        "tmfc2": now.strftime("%Y%m%d%H%M"),
+        "disp": "1" # 특보내용 포함
+    }
+    return await _fetch_kma_api(db, "wrn_met_data.php", params, is_apihub=True)
+
+def format_weather_alerts(raw_data: str) -> str | None:
+    """기상특보 원본 텍스트 데이터를 사람이 읽기 좋은 문자열로 변환합니다."""
+    if not raw_data or raw_data.startswith("#"): # 데이터 없음 또는 헤더만 있음
+        return None
+
+    lines = raw_data.strip().split('\r\n')
+    alerts = []
+    
+    # 첫 줄은 헤더이므로 건너뜁니다.
+    header_line = lines[0]
+    if not header_line.startswith("REG_ID"):
+        logger.error(f"Unexpected alert data format: {raw_data}")
+        return "기상특보 데이터를 해석하는 데 실패했습니다."
+
+    # 실제 데이터 라인들을 처리합니다.
+    for line in lines[1:]:
+        if not line.strip() or line.startswith("#"):
+            continue
+        
+        parts = line.split(',')
+        if len(parts) < 8:
+            continue
+
+        try:
+            reg_name, tm_fc_str, tm_ef_str, wrn, lvl, cmd, content = parts[1], parts[2], parts[3], parts[5], parts[6], parts[7], parts[8]
+            
+            tm_fc = datetime.strptime(tm_fc_str, '%Y%m%d%H%M').strftime('%m/%d %H:%M')
+            
+            alert_map = {'W': '강풍', 'R': '호우', 'C': '한파', 'D': '건조', 'O': '해일', 'V': '풍랑', 'T': '태풍', 'S': '대설', 'Y': '황사', 'H': '폭염', 'F': '안개'}
+            level_map = {'1': '주의보', '2': '경보'}
+            cmd_map = {'1': '발표', '2': '대치', '3': '해제'}
+
+            alert_type = alert_map.get(wrn, '알 수 없는 특보')
+            alert_level = level_map.get(lvl, '')
+            command = cmd_map.get(cmd, '')
+
+            alerts.append(f"📢 **[{reg_name}] {alert_type} {alert_level} {command}** ({tm_fc} 발표)
+> {content}")
+
+        except (ValueError, IndexError) as e:
+            logger.error(f"기상특보 파싱 오류: {e} | 라인: {line}")
+            continue
+            
+    return "\n\n".join(alerts) if alerts else None
 
 def format_current_weather(items: dict | None) -> str:
     """초단기실황 원본 데이터를 사람이 읽기 좋은 문자열로 변환합니다."""
