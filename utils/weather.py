@@ -175,8 +175,8 @@ def format_weather_alerts(raw_data: str) -> str | None:
             alert_level = level_map.get(lvl, '')
             command = cmd_map.get(cmd, '')
 
-            alerts.append(f"📢 **[{reg_name}] {alert_type} {alert_level} {command}** ({tm_fc} 발표)
-> {content}")
+            alerts.append(f"""📢 **[{reg_name}] {alert_type} {alert_level} {command}** ({tm_fc} 발표)
+> {content}""")
 
         except (ValueError, IndexError) as e:
             logger.error(f"기상특보 파싱 오류: {e} | 라인: {line}")
