@@ -22,7 +22,12 @@ from .ai_handler import AIHandler
 KST = pytz.timezone('Asia/Seoul')
 
 class WeatherCog(commands.Cog):
-    """날씨 정보 제공, AI 연동 응답, 주기적 알림 기능을 담당합니다."""
+    """날씨 조회와 알림 전송을 전담하는 Cog입니다.
+
+    - 명령어(`!날씨`) 실행 시 좌표 변환, KMA 데이터 조회, 응답 포맷팅을 처리합니다.
+    - AI 채널에서는 조회 결과를 `AIHandler`에 전달해 문맥 맞춤형 답변을 생성합니다.
+    - 주기적으로 비/눈 예보 및 아침·저녁 인사를 전송하는 백그라운드 태스크를 관리합니다.
+    """
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -31,7 +36,11 @@ class WeatherCog(commands.Cog):
         logger.info("WeatherCog가 성공적으로 초기화되었습니다.")
 
     def setup_and_start_loops(self):
-        """봇이 준비되면(on_ready), 설정에 따라 주기적인 알림 루프들을 시작합니다."""
+        """봇이 준비되면 설정 플래그에 따라 주기 태스크를 기동합니다.
+
+        Rain/Greeting 알림은 각각 별도의 `tasks.loop`로 구현되어 있으며, 필요 없을 때는
+        불필요한 리소스를 소비하지 않도록 시작 자체를 건너뜁니다.
+        """
         if config.ENABLE_RAIN_NOTIFICATION and config.RAIN_NOTIFICATION_CHANNEL_ID:
             logger.info("주기적 강수 알림 루프를 시작합니다.")
             self.rain_notification_loop.start()
@@ -47,7 +56,18 @@ class WeatherCog(commands.Cog):
         self.evening_greeting_loop.cancel()
 
     async def get_formatted_weather_string(self, day_offset: int, location_name: str, nx: str, ny: str) -> tuple[str | None, str | None]:
-        """날씨 정보를 조회하고 사람이 읽기 좋은 문자열로 포맷팅합니다."""
+        """기상청 자료를 조회해 사용자에게 보여줄 문자열을 생성합니다.
+
+        Args:
+            day_offset (int): 0=오늘, 1=내일, 2=모레 등 조회할 날짜 오프셋.
+            location_name (str): 응답에 표시할 지역명.
+            nx (str): 기상청 격자 X 좌표.
+            ny (str): 기상청 격자 Y 좌표.
+
+        Returns:
+            tuple[str | None, str | None]: (정상 응답 문자열, 오류 메시지).
+            성공 시 첫 번째 값이 문자열이고, 문제가 있으면 두 번째 값에 오류 설명이 담깁니다.
+        """
         try:
             day_names = ["오늘", "내일", "모레"]
             day_name = day_names[day_offset] if 0 <= day_offset < len(day_names) else f"{day_offset}일 후"
@@ -70,7 +90,19 @@ class WeatherCog(commands.Cog):
             return None, config.MSG_WEATHER_FETCH_ERROR
 
     async def prepare_weather_response_for_ai(self, original_message: discord.Message, day_offset: int, location_name: str, nx: str, ny: str, user_original_query: str):
-        """날씨 정보를 조회하고, AI 채널 여부에 따라 AI 응답 또는 일반 응답을 생성합니다."""
+        """날씨 조회 결과를 AI 채널/일반 채널에 맞게 전송합니다.
+
+        Args:
+            original_message (discord.Message): 사용자의 원본 메시지 객체.
+            day_offset (int): 오늘/내일/모레 구분값.
+            location_name (str): 사용자에게 노출할 지역명.
+            nx (str): 기상청 격자 X 좌표.
+            ny (str): 기상청 격자 Y 좌표.
+            user_original_query (str): 사용자가 입력한 원래 질문 텍스트.
+
+        Notes:
+            AI 채널에서는 `AIHandler`를 통해 창의적 멘트를 생성하며, 일반 채널에서는 즉시 텍스트를 회신합니다.
+        """
         if not weather_utils.get_kma_api_key():
             await original_message.reply(config.MSG_WEATHER_API_KEY_MISSING, mention_author=False)
             return
@@ -109,7 +141,12 @@ class WeatherCog(commands.Cog):
 
     @commands.command(name="날씨", aliases=["weather", "현재날씨", "오늘날씨"])
     async def weather_command(self, ctx: commands.Context, *, location_query: str = ""):
-        """`!날씨 [날짜] [지역]` 형식으로 날씨를 조회합니다."""
+        """`!날씨 [날짜] [지역]` 패턴을 해석해 날씨 정보를 제공합니다.
+
+        Args:
+            ctx (commands.Context): 명령을 실행한 컨텍스트.
+            location_query (str, optional): 사용자가 입력한 지역/날짜 정보.
+        """
         user_original_query = location_query.strip() if location_query else "오늘 날씨"
         location_name, nx, ny = config.DEFAULT_LOCATION_NAME, config.DEFAULT_NX, config.DEFAULT_NY
         coords = await coords_utils.get_coords_from_db(self.bot.db, user_original_query.lower())
@@ -118,7 +155,11 @@ class WeatherCog(commands.Cog):
         await self.prepare_weather_response_for_ai(ctx.message, day_offset, location_name, nx, ny, user_original_query)
 
     def _parse_rain_periods(self, forecast_data: dict) -> list:
-        """단기예보에서 강수 관련 값을 시간대별로 묶어 비/눈 구간을 도출합니다."""
+        """단기예보에서 강수 관련 값을 묶어 강수 구간을 계산합니다.
+
+        Returns:
+            list[dict]: `start_dt`, `end_dt`, `type`, `max_pop`, `key` 정보를 담은 기간 목록.
+        """
         try:
             items = forecast_data["item"]
         except (KeyError, TypeError):
@@ -180,7 +221,10 @@ class WeatherCog(commands.Cog):
 
     @tasks.loop(minutes=config.WEATHER_CHECK_INTERVAL_MINUTES)
     async def rain_notification_loop(self):
-        """주기적으로 강수 예보를 확인하고, 비/눈 소식이 있으면 알림을 보냅니다."""
+        """정해진 주기로 강수 예보를 조회하고 필요 시 서버에 알립니다.
+
+        예보상 비/눈 확률이 임계값을 넘으면 채널에 안내 메시지를 전송하고, 동일 시간대 중복 알림을 방지합니다.
+        """
         await self.bot.wait_until_ready()
         if not weather_utils.get_kma_api_key(): return
         alert_channel = self.bot.get_channel(config.RAIN_NOTIFICATION_CHANNEL_ID)
@@ -200,7 +244,11 @@ class WeatherCog(commands.Cog):
                 self.notified_rain_event_starts.add(period["key"])
 
     async def _send_greeting_notification(self, greeting_type: str):
-        """날씨 정보를 포함한 아침/저녁 인사를 생성하고 전송합니다."""
+        """아침/저녁 유형에 맞춰 날씨 요약과 인사 메시지를 전송합니다.
+
+        Args:
+            greeting_type (str): "아침" 또는 "저녁" 중 하나.
+        """
         await self.bot.wait_until_ready()
         if not weather_utils.get_kma_api_key(): return
         channel_id = getattr(config, 'GREETING_NOTIFICATION_CHANNEL_ID', 0) or config.RAIN_NOTIFICATION_CHANNEL_ID

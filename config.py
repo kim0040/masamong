@@ -7,6 +7,15 @@ import discord
 load_dotenv()
 
 def load_config_value(key, default=None):
+    """환경 변수 → `config.json` 순으로 값을 조회하고, 없으면 기본값을 반환합니다.
+
+    Args:
+        key (str): 조회할 설정 키 이름.
+        default (Any, optional): 키가 어디에서도 발견되지 않을 때 사용할 기본값.
+
+    Returns:
+        Any: 발견된 설정값 또는 기본값.
+    """
     value = os.environ.get(key)
     if value:
         return value
