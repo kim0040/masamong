@@ -50,7 +50,12 @@ class ReMasamongBot(commands.Bot):
         self.db_path = config.DATABASE_FILE
 
     async def _migrate_db(self):
-        """데이터베이스 스키마를 확인하고, 필요한 경우 초기 데이터를 시딩(seeding)합니다."""
+        """데이터베이스 스키마를 확인하고 좌표 데이터를 보강합니다.
+
+        이 메서드는 `locations` 테이블이 존재하는지 확인하고, 부족하거나 없는 경우
+        `utils.initial_data` 모듈의 CSV/상수 데이터를 활용해 기본 좌표를 시딩합니다.
+        네트워크나 파일 접근 오류가 발생해도 봇이 기동될 수 있도록 예외를 자체 처리합니다.
+        """
         try:
             await self.db.execute("""
                 CREATE TABLE IF NOT EXISTS locations (
@@ -88,9 +93,10 @@ class ReMasamongBot(commands.Bot):
             logger.error(f"데이터베이스 마이그레이션 중 심각한 오류 발생: {e}", exc_info=True)
 
     async def setup_hook(self):
-        """
-        봇이 Discord에 로그인하기 전에 실행되는 비동기 설정 훅입니다.
-        데이터베이스 연결, Cog 로드, 의존성 주입 등 중요한 초기화 작업을 수행합니다.
+        """Discord 로그인 직전에 실행되어 필수 리소스를 초기화합니다.
+
+        여기서는 데이터베이스 파일과 디렉터리를 준비하고, Cog 확장을 순차적으로 로드하며,
+        Cog 간에 필요한 의존성을 주입합니다. 이 단계가 성공적으로 끝나야 봇이 정상 작동합니다.
         """
         # 데이터베이스 디렉토리 생성 확인
         db_dir = os.path.dirname(self.db_path)
@@ -142,9 +148,14 @@ class ReMasamongBot(commands.Bot):
             logger.warning("AIHandler Cog를 찾을 수 없어 의존성 주입을 건너뜁니다.")
 
     async def on_message(self, message: discord.Message):
-        """
-        모든 메시지 이벤트를 처리하는 중앙 핸들러입니다.
-        명령어 처리, 활동 기록, AI 응답 등 모든 메시지 기반 상호작용이 여기서 시작됩니다.
+        """모든 메시지 이벤트를 받아 명령/AI 파이프라인으로 라우팅합니다.
+
+        Args:
+            message (discord.Message): Discord로부터 전달된 원본 메시지 객체.
+
+        Notes:
+            - 명령 프리픽스가 감지되면 `process_commands`로 위임합니다.
+            - 활동 기록과 AI 핸들러는 예외 발생 시에도 독립적으로 로깅하여 서로 영향을 주지 않습니다.
         """
         # 봇 자신의 메시지, DM, 다른 봇의 메시지는 무시합니다.
         if message.author.bot or not message.guild:
@@ -247,7 +258,10 @@ class ReMasamongBot(commands.Bot):
 
 # --- 3. 메인 실행 함수 ---
 async def main():
-    """봇을 초기화하고 실행하는 메인 비동기 함수입니다."""
+    """봇 인스턴스를 구성하고 Discord 이벤트 루프를 시작합니다.
+
+    이 함수는 `asyncio.run` 진입점에서 호출되며, 봇 토큰 검증과 Discord 세션 수명 관리를 담당합니다.
+    """
     # 커스텀 봇 클래스 인스턴스 생성
     bot = ReMasamongBot(command_prefix=config.COMMAND_PREFIX, intents=config.intents)
 

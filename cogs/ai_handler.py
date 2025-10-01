@@ -40,8 +40,11 @@ from utils import http
 KST = pytz.timezone('Asia/Seoul')
 
 class AIHandler(commands.Cog):
-    """
-    AI 에이전트의 핵심 로직을 담당하며, 대화 관리, 도구 호출, 응답 생성을 처리합니다.
+    """AI 에이전트 워크플로우를 통합 관리하는 Cog입니다.
+
+    - Lite/Flash Gemini 모델을 사용해 의도 분석과 응답 생성을 수행합니다.
+    - `ToolsCog`와 협력해 외부 API 호출, 후처리, 오류 복구를 담당합니다.
+    - 대화 저장소(RAG)를 구축해 장기 기억과 능동형 제안을 지원합니다.
     """
 
     def __init__(self, bot: commands.Bot):
@@ -71,9 +74,16 @@ class AIHandler(commands.Cog):
         return self.gemini_configured and self.bot.db is not None and self.tools_cog is not None
 
     async def _safe_generate_content(self, model: genai.GenerativeModel, prompt: Any, log_extra: dict, generation_config: genai.types.GenerationConfig = None) -> genai.types.GenerateContentResponse | None:
-        """
-        `generate_content_async`를 안전하게 호출하는 래퍼 함수입니다.
-        API 호출 제한을 확인하고, Google API 관련 예외를 처리하여 안정성을 높입니다.
+        """Gemini `generate_content_async` 호출을 감싸 안정성을 높입니다.
+
+        Args:
+            model (genai.GenerativeModel): 사용할 Gemini 모델 인스턴스.
+            prompt (Any): 모델에 전달할 프롬프트 또는 미디어 페이로드.
+            log_extra (dict): 로깅 시 부가 정보를 담을 딕셔너리.
+            generation_config (GenerationConfig, optional): 필요 시 덮어쓸 생성 설정.
+
+        Returns:
+            GenerateContentResponse | None: 성공 시 Gemini 응답, 실패 또는 속도 제한 시 None.
         """
         if generation_config is None:
             generation_config = genai.types.GenerationConfig(temperature=0.0)
@@ -99,9 +109,16 @@ class AIHandler(commands.Cog):
             return None
 
     async def _safe_embed_content(self, model_name: str, content: str, task_type: str, log_extra: dict) -> dict | None:
-        """
-        `embed_content_async`를 안전하게 호출하는 래퍼 함수입니다.
-        API 호출 제한 확인 및 예외 처리를 포함합니다.
+        """임베딩 생성 호출에 속도 제한과 예외 처리를 적용합니다.
+
+        Args:
+            model_name (str): 사용할 임베딩 모델 이름.
+            content (str): 벡터화할 원본 문자열.
+            task_type (str): Gemini 임베딩에서 요구하는 작업 타입.
+            log_extra (dict): 로깅 컨텍스트.
+
+        Returns:
+            dict | None: 임베딩 결과 딕셔너리 또는 실패 시 None.
         """
         try:
             if await db_utils.check_api_rate_limit(self.bot.db, 'gemini_embedding', config.RPM_LIMIT_EMBEDDING, config.RPD_LIMIT_EMBEDDING):
@@ -115,7 +132,14 @@ class AIHandler(commands.Cog):
             return None
 
     async def add_message_to_history(self, message: discord.Message):
-        """AI가 허용된 채널의 메시지를 대화 기록 DB에 저장합니다."""
+        """AI 허용 채널의 메시지를 대화 기록 DB에 저장합니다.
+
+        Args:
+            message (discord.Message): Discord 원본 메시지.
+
+        Notes:
+            메시지가 충분히 길면 임베딩 생성을 비동기 태스크로 예약합니다.
+        """
         if not self.is_ready or not config.AI_MEMORY_ENABLED or not message.guild: return
         try:
             channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
@@ -132,7 +156,13 @@ class AIHandler(commands.Cog):
             logger.error(f"대화 기록 저장 중 DB 오류: {e}", exc_info=True, extra={'guild_id': message.guild.id})
 
     async def _create_and_save_embedding(self, message_id: int, content: str, guild_id: int):
-        """메시지 내용에 대한 벡터 임베딩을 생성하고 데이터베이스에 저장합니다."""
+        """대화 기록 메시지에 대한 임베딩을 생성해 저장합니다.
+
+        Args:
+            message_id (int): 대상 메시지 ID.
+            content (str): 임베딩을 생성할 텍스트.
+            guild_id (int): 메시지가 속한 길드 ID.
+        """
         log_extra = {'guild_id': guild_id, 'message_id': message_id}
         embedding_result = await self._safe_embed_content(
             model_name=self.embedding_model_name,
@@ -151,7 +181,11 @@ class AIHandler(commands.Cog):
             logger.error(f"임베딩 DB 저장/직렬화 중 오류: {e}", extra=log_extra, exc_info=True)
 
     def _discover_google_grounding_tool(self) -> dict[str, object] | None:
-        """모델 버전에 맞춰 Google Search 도구 구성을 동적으로 감지합니다."""
+        """사용 중인 Gemini 버전에 호환되는 구글 서치 도구를 탐색합니다.
+
+        Returns:
+            dict[str, object] | None: `field`/`cls` 정보를 담은 매핑 또는 지원 불가 시 None.
+        """
         if not self.gemini_configured:
             return None
 
