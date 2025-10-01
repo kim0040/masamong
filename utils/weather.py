@@ -192,6 +192,18 @@ def format_current_weather(items: dict | None) -> str:
     """초단기실황 원본 데이터를 사람이 읽기 좋은 문자열로 변환합니다."""
     if not items or not items.get('item'): return config.MSG_WEATHER_FETCH_ERROR
     try:
+        first_item = items['item'][0]
+        base_date = first_item.get('baseDate')
+        base_time = first_item.get('baseTime')
+        
+        date_str = ""
+        if base_date and base_time:
+            try:
+                dt_obj = datetime.strptime(f"{base_date}{base_time}", "%Y%m%d%H%M")
+                date_str = f"({dt_obj.strftime('%m월 %d일 %H:%M')} 기준) "
+            except ValueError:
+                pass # 날짜 변환 실패 시 그냥 넘어감
+
         values = {item['category']: item['obsrValue'] for item in items['item']}
         temp, reh = values.get('T1H'), values.get('REH')
         pty_code, rn1 = values.get('PTY', '0'), values.get('RN1', '0')
@@ -199,7 +211,7 @@ def format_current_weather(items: dict | None) -> str:
         pty_map = {"0": "없음", "1": "비", "2": "비/눈", "3": "눈", "5": "빗방울"}
         pty = pty_map.get(pty_code, "정보 없음")
         rain_info = f" (시간당 {rn1}mm)" if float(rn1) > 0 else ""
-        return f"🌡️기온: {temp}°C, 💧습도: {reh}%, ☔강수: {pty}{rain_info}"
+        return f"{date_str}🌡️기온: {temp}°C, 💧습도: {reh}%, ☔강수: {pty}{rain_info}"
     except Exception: return config.MSG_WEATHER_NO_DATA
 
 def format_short_term_forecast(items: dict | None, day_name: str, target_day_offset: int) -> str:
