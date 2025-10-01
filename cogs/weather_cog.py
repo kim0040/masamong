@@ -74,18 +74,38 @@ class WeatherCog(commands.Cog):
         if not weather_utils.get_kma_api_key():
             await original_message.reply(config.MSG_WEATHER_API_KEY_MISSING, mention_author=False)
             return
+
         async with original_message.channel.typing():
+            # 1. 기상 특보 조회
+            alerts_data = await weather_utils.get_weather_alerts_from_kma(self.bot.db)
+            formatted_alerts = None
+            if isinstance(alerts_data, str):
+                formatted_alerts = weather_utils.format_weather_alerts(alerts_data)
+            
+            # 2. 날씨 정보 조회
             weather_data_str, error_message = await self.get_formatted_weather_string(day_offset, location_name, nx, ny)
-            if error_message: await original_message.reply(error_message, mention_author=False); return
-            if not weather_data_str: await original_message.reply(config.MSG_WEATHER_NO_DATA, mention_author=False); return
+            if error_message:
+                await original_message.reply(error_message, mention_author=False)
+                return
+            if not weather_data_str:
+                await original_message.reply(config.MSG_WEATHER_NO_DATA, mention_author=False)
+                return
+
+            # 3. 특보와 날씨 정보 결합
+            final_response_str = weather_data_str
+            if formatted_alerts:
+                final_response_str = f"{formatted_alerts}\n\n---\n\n{weather_data_str}"
+
+            # 4. AI 또는 일반 응답 생성
             self.ai_handler = self.bot.get_cog('AIHandler')
             is_ai_channel_and_enabled = self.ai_handler and self.ai_handler.is_ready and config.CHANNEL_AI_CONFIG.get(original_message.channel.id, {}).get("allowed", False)
+            
             if is_ai_channel_and_enabled:
-                context = {"location_name": location_name, "weather_data": weather_data_str}
+                context = {"location_name": location_name, "weather_data": final_response_str}
                 ai_response = await self.ai_handler.generate_creative_text(original_message.channel, original_message.author, "answer_weather", context)
                 await original_message.reply(ai_response or config.MSG_AI_ERROR, mention_author=False)
             else:
-                await original_message.reply(f"📍 **{location_name}**\n{weather_data_str}", mention_author=False)
+                await original_message.reply(f"📍 **{location_name}**\n{final_response_str}", mention_author=False)
 
     @commands.command(name="날씨", aliases=["weather", "현재날씨", "오늘날씨"])
     async def weather_command(self, ctx: commands.Context, *, location_query: str = ""):
