@@ -51,7 +51,7 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
         base_params.update(params)
         full_url = f"{base_url}/{endpoint}"
     else:
-        base_url = "http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0"
+        base_url = "http://apis.data.go.kr/1360000/VillageFcstInfoService_2.0"
         base_params.update({"pageNo": "1", "numOfRows": "1000", "dataType": "JSON"})
         base_params.update(params)
         # 공공데이터포털은 ServiceKey를 직접 URL에 포함해야 인코딩 문제가 발생하지 않는 경우가 많습니다.
