@@ -1,0 +1,20 @@
+{
+  "embedding_model_name": "BM-K/KoSimCSE-roberta",
+  "discord_db_path": "database/discord_embeddings.db",
+  "kakao_db_path": "database/kakao_embeddings.db",
+  "embedding_device": "cpu",
+  "normalize_embeddings": true,
+  "query_limit": 200,
+  "kakao_servers": [
+    {
+      "server_id": "kakao_room_01",
+      "db_path": "database/kakao_room_01_embeddings.db",
+      "label": "가족방"
+    },
+    {
+      "server_id": "kakao_room_02",
+      "db_path": "database/kakao_room_02_embeddings.db",
+      "label": "친구방"
+    }
+  ]
+}

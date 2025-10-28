@@ -4,6 +4,7 @@
 
 # Configuration files
 config.json
+emb_config.json
 
 # Log files
 *.log
