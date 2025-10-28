@@ -416,6 +416,7 @@ class AIHandler(commands.Cog):
                                 "speaker": row.get("user_name"),
                                 "db_path": row.get("db_path"),
                                 "matched_server_id": str(guild_id),
+                                "context_window": [],
                             }
                         )
 
@@ -447,6 +448,7 @@ class AIHandler(commands.Cog):
                                     "speaker": row.get("speaker"),
                                     "db_path": row.get("db_path"),
                                     "matched_server_id": row.get("matched_server_id"),
+                                    "context_window": row.get("context_window") or [],
                                 }
                             )
 
@@ -477,7 +479,14 @@ class AIHandler(commands.Cog):
                     prefixes.append(f"db:{entry['db_path']}")
                 prefixes.append(f"유사도 {entry['similarity']:.3f}")
                 prefix_block = " ".join(f"[{p}]" for p in prefixes if p)
-                context_lines.append(f"{idx}. {prefix_block} {entry['message']}")
+                main_text = entry['message']
+                context_lines.append(f"{idx}. {prefix_block} {main_text}")
+
+                window_context = entry.get("context_window") or []
+                for ctx in window_context:
+                    speaker = ctx.get("user_name") or "?"
+                    ctx_message = ctx.get("message") or ""
+                    context_lines.append(f"    - {speaker}: {ctx_message}")
 
             context_str = "참고할 만한 과거 대화 내용:\n" + "\n".join(context_lines)
             top_similarity = top_entries[0]["similarity"] if top_entries else 0.0
@@ -501,6 +510,13 @@ class AIHandler(commands.Cog):
                             snippet,
                         )
                     )
+                    window_context = entry.get("context_window") or []
+                    if window_context:
+                        for ctx in window_context:
+                            speaker = ctx.get("user_name") or "?"
+                            ctx_message = ctx.get("message") or ""
+                            ctx_snippet = ctx_message if len(ctx_message) <= 100 else ctx_message[:97] + "..."
+                            debug_lines.append(f"    • {speaker}: {ctx_snippet}")
                 logger.info("RAG 디버그 상세:\n%s", "\n".join(debug_lines), extra=log_extra)
             logger.debug("RAG 결과: %s", context_str, extra=log_extra)
             return context_str, top_entries, top_similarity
@@ -558,6 +574,12 @@ class AIHandler(commands.Cog):
                         lines.append(
                             f"  • [{origin} | speaker={speaker} | sim={sim:.3f} | db={db_path}] {snippet}"
                         )
+                        ctx_window = entry.get("context_window") or []
+                        for ctx in ctx_window:
+                            ctx_speaker = ctx.get("user_name") or "?"
+                            ctx_msg = ctx.get("message") or ""
+                            ctx_snippet = ctx_msg if len(ctx_msg) <= 180 else ctx_msg[:177] + "..."
+                            lines.append(f"      - {ctx_speaker}: {ctx_snippet}")
                 continue
 
             if isinstance(result, dict):
@@ -734,21 +756,22 @@ class AIHandler(commands.Cog):
                                 "similarity_threshold": similarity_threshold,
                                 "top_similarity": rag_top_similarity,
                             },
-                            "result": {
-                                "entries": [
-                                    {
-                                        "origin": entry.get("origin"),
-                                        "speaker": entry.get("speaker"),
-                                        "similarity": entry.get("similarity"),
-                                        "message": entry.get("message"),
-                                        "db_path": entry.get("db_path"),
-                                        "matched_server_id": entry.get("matched_server_id"),
-                                    }
-                                    for entry in rag_entries
-                                ]
-                            },
-                        }
-                    )
+                                "result": {
+                                    "entries": [
+                                        {
+                                            "origin": entry.get("origin"),
+                                            "speaker": entry.get("speaker"),
+                                            "similarity": entry.get("similarity"),
+                                            "message": entry.get("message"),
+                                            "db_path": entry.get("db_path"),
+                                            "matched_server_id": entry.get("matched_server_id"),
+                                            "context_window": entry.get("context_window") or [],
+                                        }
+                                        for entry in rag_entries
+                                    ]
+                                },
+                            }
+                        )
 
                 for i, tool_call in enumerate(tool_plan, start=1):
                     step_num = i if not rag_prompt else i
