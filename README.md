@@ -67,6 +67,8 @@ masamong/
    ```bash
    pip install --upgrade pip
    pip install -r requirements.txt
+   # (선택) RAG/임베딩 기능이 필요하면 추가 패키지를 설치합니다.
+   pip install numpy==1.26.4 sentence-transformers==2.7.0
    ```
 3. **환경 변수/설정 파일 준비**
    ```bash
@@ -77,6 +79,31 @@ masamong/
 4. **필요한 키와 값 채우기**
    - `.env` 또는 실제 환경 변수에 필수 키를 입력합니다.
    - `config.json`은 `.env` 값이 없을 때 참조되는 보조 설정입니다.
+
+## 가상환경 초기화 & 재설치 절차
+1. (선택) 실행 중인 봇이 있다면 `screen`/`tmux` 세션에서 `Ctrl+C`로 종료합니다.
+2. 가상환경이 활성화돼 있다면 `deactivate`로 빠져나옵니다.
+3. 기존 가상환경 폴더 삭제:
+   ```bash
+   rm -rf venv
+   ```
+4. 새 가상환경 생성 및 활성화:
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate  # Windows는 venv\Scripts\activate
+   ```
+5. 최신 pip로 올린 뒤 필요한 패키지를 다시 설치합니다.
+   ```bash
+   pip install --upgrade pip
+   pip install --no-cache-dir -r requirements.txt
+   # (필요 시) pip install --no-cache-dir numpy==1.26.4 sentence-transformers==2.7.0
+   ```
+   `--no-cache-dir` 옵션을 붙이면 남은 디스크 공간이 매우 적을 때 pip 캐시를 쓰지 않아 설치 용량을 조금 아낄 수 있습니다.
+6. 설치가 끝나면 빠르게 검증합니다.
+   ```bash
+   python -m pip check  # 의존성 충돌 여부 확인
+   python main.py       # Discord 토큰이 맞다면 봇이 실행됩니다.
+   ```
 
 ## 핵심 환경 변수
 `config.py`는 다음 순서로 값을 찾습니다: (1) OS 환경 변수 → (2) `.env` → (3) `config.json`. 주요 키:
@@ -118,6 +145,13 @@ masamong/
 
 > `embedding_device`는 GPU 사용 시 `"cuda"`, CPU만 사용할 경우 `"cpu"`로 유지하세요. `normalize_embeddings`를 `true`로 두면 저장된 벡터가 코사인 유사도를 바로 계산할 수 있도록 정규화됩니다.
 > `kakao_servers` 배열은 카카오 채팅방별 RAG DB 경로를 미리 선언하는 용도로, `server_id` 값은 Kakao 세션 식별자 또는 디스코드 길드/채널 ID 등 매칭하고 싶은 식별자로 자유롭게 지정할 수 있습니다. RAG 검색 시 먼저 채널 ID → 길드 ID 순으로 매칭을 시도하며, 어느 항목과도 맞지 않으면 `kakao_db_path`가 폴백으로 사용됩니다. DB 파일에는 최소한 `message`(텍스트)와 `embedding`(float32 벡터 BLOB) 컬럼이 존재해야 하며, `timestamp`/`speaker` 컬럼이 있을 경우 자동으로 함께 활용됩니다.
+
+## 저사양·CPU 전용 서버 운영 팁
+- `pip install -r requirements.txt`만 설치하면 봇 실행에 필요한 최소 패키지만 들어갑니다. RAG/임베딩이 필요 없으면 `numpy`/`sentence-transformers`는 설치하지 않아도 됩니다.
+- 메모리가 부족하거나 SentenceTransformer 모델을 설치하고 싶지 않다면 `.env` 또는 `config.json`에 `"AI_MEMORY_ENABLED": false`를 추가해 대화 임베딩 기능을 완전히 끌 수 있습니다.
+- 임베딩을 쓰더라도 `emb_config.json`의 `"embedding_device"` 값을 `"cpu"`로 두면 GPU 없이도 동작합니다. 단, 최초 모델 다운로드는 수백 MB 이상이므로 디스크 용량을 반드시 확인하세요.
+- 이미 설치된 임베딩 모델/데이터베이스가 부담된다면 `database/discord_embeddings.db` 등 임베딩 관련 DB 파일을 삭제해 공간을 확보하고 필요 시 다시 생성하세요.
+- `screen` 대신 `tmux`/`systemd`를 쓰면 메모리 사용량이 더 줄어드는 것은 아니지만, 비정상 종료 시 자동 재시작을 설정하는 데 도움이 됩니다.
 
 ## 데이터베이스 초기화
 최초 실행 전 SQLite 스키마를 생성합니다.
