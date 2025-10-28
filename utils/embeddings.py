@@ -226,6 +226,8 @@ class KakaoEmbeddingStore:
 
         self._table_meta_cache: Dict[Path, Optional[_KakaoTableMeta]] = {}
         self._table_meta_lock = asyncio.Lock()
+        self._vector_extension_candidates = self._build_vector_extension_candidates()
+        self._vector_extension_warning_logged = False
 
     async def fetch_recent_embeddings(self, server_ids: Iterable[str], limit: int = 200) -> list[Dict[str, Any]]:
         """서버 ID 후보 목록에 해당하는 Kakao 임베딩 레코드를 읽어옵니다."""
@@ -260,9 +262,58 @@ class KakaoEmbeddingStore:
                 results.append(row)
         return results
 
+    def _build_vector_extension_candidates(self) -> list[str]:
+        candidates: list[str] = []
+        raw = getattr(config, "KAKAO_VECTOR_EXTENSION", None)
+        if isinstance(raw, str) and raw.strip():
+            candidates.append(raw.strip())
+        elif isinstance(raw, (list, tuple)):
+            for item in raw:
+                if isinstance(item, str) and item.strip():
+                    candidates.append(item.strip())
+
+        candidates.extend(["vec0", "vector0"])
+
+        deduped: list[str] = []
+        for candidate in candidates:
+            if candidate not in deduped:
+                deduped.append(candidate)
+        return deduped
+
+    async def _load_vector_extension(self, db: aiosqlite.Connection) -> bool:
+        if not self._vector_extension_candidates:
+            return False
+
+        try:
+            await db.enable_load_extension(True)
+        except AttributeError:
+            pass
+        except aiosqlite.Error as exc:
+            logger.warning("SQLite 확장 로딩을 활성화하지 못했습니다: %s", exc)
+            return False
+
+        last_error: Exception | None = None
+        for candidate in self._vector_extension_candidates:
+            try:
+                await db.execute("SELECT load_extension(?)", (candidate,))
+                return True
+            except aiosqlite.Error as exc:
+                last_error = exc
+                continue
+
+        if not self._vector_extension_warning_logged:
+            details = f"{self._vector_extension_candidates}"
+            if last_error is not None:
+                logger.warning("Kakao 임베딩 벡터 확장 로딩 실패(%s): %s", details, last_error)
+            else:
+                logger.warning("Kakao 임베딩 벡터 확장을 로드할 후보가 없습니다: %s", details)
+            self._vector_extension_warning_logged = True
+        return False
+
     async def _fetch_from_path(self, path: Path, label: str, limit: int) -> list[Dict[str, Any]]:
         try:
             async with aiosqlite.connect(path) as db:
+                await self._load_vector_extension(db)
                 db.row_factory = aiosqlite.Row
                 table_meta = await self._get_or_detect_table_meta(path, db)
                 if table_meta is None:
