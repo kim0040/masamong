@@ -73,14 +73,14 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
     base_params.update(params)
     full_url = f"{base_url}/{endpoint}"
 
-    session = http.get_insecure_session()
+    session = http.get_modern_tls_session()
     max_retries = max(1, getattr(config, 'KMA_API_MAX_RETRIES', 3))
     retry_delay = max(0, getattr(config, 'KMA_API_RETRY_DELAY_SECONDS', 2))
 
     try:
         for attempt in range(1, max_retries + 1):
             try:
-                response = await asyncio.to_thread(session.get, full_url, params=base_params, timeout=15, verify=False)
+                response = await asyncio.to_thread(session.get, full_url, params=base_params, timeout=15, verify=True)
                 response.raise_for_status()
                 await db_utils.log_api_call(db, 'kma_daily')
 

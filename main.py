@@ -221,28 +221,11 @@ class ReMasamongBot(commands.Bot):
 
         is_bot_mentioned = any(mention.id == self.user.id for mention in message.mentions)
 
-        proactive_cog = self.get_cog('ProactiveAssistant')
-        if (
-            proactive_cog
-            and config.ENABLE_PROACTIVE_KEYWORD_HINTS
-            and not is_bot_mentioned
-        ):
-            try:
-                suggestion = await proactive_cog.analyze_user_intent(message)
-                if suggestion:
-                    await message.channel.send(suggestion)
-                    return
-            except Exception as exc:  # pragma: no cover - 방어적 로깅
-                logger.error(
-                    "능동형 제안 생성 중 오류: %s",
-                    exc,
-                    exc_info=True,
-                    extra={'guild_id': message.guild.id, 'channel_id': message.channel.id}
-                )
+        if not is_bot_mentioned:
+            return
 
         try:
-            if is_bot_mentioned or await ai_handler.should_proactively_respond(message):
-                await ai_handler.process_agent_message(message)
+            await ai_handler.process_agent_message(message)
         except Exception as exc:  # pragma: no cover - 방어적 로깅
             logger.error(
                 "AI 메시지 처리 중 오류: %s",

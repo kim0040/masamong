@@ -5,6 +5,7 @@
   "embedding_device": "cpu",
   "normalize_embeddings": true,
   "query_limit": 200,
+  "kakao_vector_extension": "vec0",
   "kakao_servers": [
     {
       "server_id": "kakao_room_01",
