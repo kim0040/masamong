@@ -41,6 +41,16 @@ def as_bool(value, default: bool = False) -> bool:
     return default
 
 
+def as_float(value, default: float) -> float:
+    """입력값을 float로 변환하되 실패 시 기본값을 반환합니다."""
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 EMBED_CONFIG_PATH = os.environ.get('EMB_CONFIG_PATH', 'emb_config.json')
 
 
@@ -123,6 +133,8 @@ LOCAL_EMBEDDING_MODEL_NAME = EMBED_CONFIG.get("embedding_model_name", "BM-K/KoSi
 LOCAL_EMBEDDING_DEVICE = EMBED_CONFIG.get("embedding_device")
 LOCAL_EMBEDDING_NORMALIZE = EMBED_CONFIG.get("normalize_embeddings", True)
 LOCAL_EMBEDDING_QUERY_LIMIT = EMBED_CONFIG.get("query_limit", 200)
+RAG_SIMILARITY_THRESHOLD = as_float(EMBED_CONFIG.get("similarity_threshold"), 0.65)
+RAG_STRONG_SIMILARITY_THRESHOLD = as_float(EMBED_CONFIG.get("strong_similarity_threshold"), 0.72)
 
 AI_INTENT_MODEL_NAME = "gemini-2.5-flash-lite"
 AI_RESPONSE_MODEL_NAME = "gemini-2.5-flash"
@@ -150,19 +162,25 @@ LITE_MODEL_SYSTEM_PROMPT = """You are '마사몽', a planner model. Read the lat
 7. 일반 지식/검색 질문만 `web_search`를 사용하고, 다른 전용 도구가 있으면 반드시 그것을 써.
 
 <tool_call> 또는 <tool_plan> 이외의 텍스트를 출력하지 마."""
-AGENT_SYSTEM_PROMPT = """너는 츤데레 말투의 디코 봇 '마사몽'이야. 아래 입력을 참고해서 반말로 자연스럽게 답장을 만들어.
+AGENT_SYSTEM_PROMPT = """너는 츤데레 말투의 디코 봇 '마사몽'이야. 답장은 반말로 하되, 무례하거나 욕설은 금지야.
+
+아래 자료를 우선순위대로 꼭 참고해:
+1) Local Conversation Context (서버에서 찾은 과거 대화)
+2) 도구 실행 결과
 
 - 사용자 질문: {user_query}
-- 도구 결과: {tool_result}
+- 참고 자료 요약:
+{tool_result}
 
-핵심 정보는 빠뜨리지 말고, 모르는 건 솔직하게 말해. 욕설이나 과도한 비하는 금지야.
+자료에 없는 내용은 억지로 지어내지 말고, 모르면 모른다고 솔직하게 말해.
 """
-WEB_FALLBACK_PROMPT = """너는 츤데레 말투의 디코 봇 '마사몽'이야. 전용 도구들이 실패해서 웹 검색 결과만 가지고 있어.
+WEB_FALLBACK_PROMPT = """너는 츤데레 말투의 디코 봇 '마사몽'이야. 현재는 웹 검색 결과만 사용할 수 있어.
 
 - 사용자 질문: {user_query}
-- 웹 검색 요약: {tool_result}
+- 웹 검색 요약:
+{tool_result}
 
-결과가 부실하면 사실대로 말하고, 추측은 하지 마. 반말 유지, 과한 비하는 금지.
+검색 결과가 모호하거나 부족하면 사실대로 말하고 추측하지 마. 반말 유지, 무례한 표현은 금지.
 """
 AI_PROACTIVE_RESPONSE_CONFIG = {
     "enabled": True, 

@@ -511,6 +511,37 @@ class AIHandler(commands.Cog):
 
         return []
 
+    @staticmethod
+    def _format_tool_results_for_prompt(tool_results: list[dict]) -> str:
+        lines: list[str] = []
+        for entry in tool_results:
+            name = entry.get("tool_name") or "unknown"
+            result = entry.get("result")
+
+            if name == "local_rag":
+                messages = []
+                if isinstance(result, dict):
+                    raw_messages = result.get("messages")
+                    if isinstance(raw_messages, list):
+                        messages = [str(msg) for msg in raw_messages if msg]
+                if messages:
+                    lines.append("[local_rag] 아래 대화 내용을 우선 참고해:")
+                    for msg in messages:
+                        snippet = msg if len(msg) <= 200 else msg[:197] + "..."
+                        lines.append(f"  • {snippet}")
+                continue
+
+            if isinstance(result, dict):
+                result_text = json.dumps(result, ensure_ascii=False)
+            elif result is None:
+                result_text = "(결과 없음)"
+            else:
+                result_text = str(result)
+
+            lines.append(f"[{name}] {result_text}")
+
+        return "\n".join(lines) if lines else "도구 실행 결과 없음"
+
     async def _execute_tool(self, tool_call: dict, guild_id: int, user_query: str) -> dict:
         """파싱된 단일 도구 호출 계획을 실제로 실행하고 결과를 반환합니다."""
         tool_name = tool_call.get('tool_to_use') or tool_call.get('tool_name')
@@ -681,8 +712,8 @@ class AIHandler(commands.Cog):
 
                 # --- [3단계] Main 모델 호출: 최종 답변 생성 ---
                 logger.info("3단계: Main 모델(답변 생성) 호출...", extra=log_extra)
-                tool_results_str = json.dumps(tool_results, ensure_ascii=False)
-                
+                tool_results_str = self._format_tool_results_for_prompt(tool_results)
+
                 # 프롬프트 선택: 일반 또는 웹 폴백용
                 if use_fallback_prompt:
                     main_system_prompt = config.WEB_FALLBACK_PROMPT.format(user_query=user_query, tool_result=tool_results_str)
@@ -701,7 +732,15 @@ class AIHandler(commands.Cog):
                     )
 
                 main_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, system_instruction=main_system_prompt)
-                main_prompt = "이제 모든 도구 실행 결과를 바탕으로, 사용자의 원래 질문에 대해 페르소나를 완벽하게 적용해서 최종 답변을 생성해줘."
+                main_prompt_parts = [f"사용자 질문: {user_query}"]
+                if rag_prompt:
+                    main_prompt_parts.append(
+                        f"로컬 RAG 컨텍스트 (최고 유사도 {rag_top_similarity:.3f}):\n{rag_prompt}"
+                    )
+                main_prompt_parts.append(
+                    "위 자료를 최우선으로 참고해서 사실에 근거한 답장을 반말로 작성해. 자료에 없는 내용은 모른다고 솔직하게 말하고, 억지 추측은 하지 마."
+                )
+                main_prompt = "\n\n".join(main_prompt_parts)
                 main_response = await self._safe_generate_content(main_model, main_prompt, log_extra)
 
                 if main_response and main_response.text:
