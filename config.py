@@ -31,6 +31,70 @@ def load_config_value(key, default=None):
         print("경고: config.json 파일이 유효한 JSON 형식이 아닙니다.")
     return default
 
+
+def as_bool(value, default: bool = False) -> bool:
+    """문자열/불리언 값을 안전하게 bool로 변환합니다."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return default
+
+
+EMBED_CONFIG_PATH = os.environ.get('EMB_CONFIG_PATH', 'emb_config.json')
+
+
+def load_emb_config() -> dict:
+    """임베딩 관련 별도 설정 파일을 읽어옵니다."""
+    try:
+        with open(EMBED_CONFIG_PATH, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                return data
+            print("경고: emb_config.json 내용이 JSON 객체가 아닙니다.")
+    except FileNotFoundError:
+        pass
+    except json.JSONDecodeError:
+        print("경고: emb_config.json 파일이 유효한 JSON 형식이 아닙니다.")
+    return {}
+
+
+EMBED_CONFIG = load_emb_config()
+
+
+def _normalize_kakao_servers(raw_value) -> dict[str, dict[str, str]]:
+    """카카오 임베딩 서버 설정을 일관된 딕셔너리로 변환합니다."""
+    if isinstance(raw_value, dict):
+        normalized = {}
+        for server_id, meta in raw_value.items():
+            if not server_id or not isinstance(meta, dict):
+                continue
+            db_path = meta.get('db_path')
+            if not db_path:
+                continue
+            normalized[str(server_id)] = {
+                'db_path': db_path,
+                'label': meta.get('label', '')
+            }
+        return normalized
+
+    if isinstance(raw_value, list):
+        normalized = {}
+        for entry in raw_value:
+            if not isinstance(entry, dict):
+                continue
+            server_id = entry.get('server_id')
+            db_path = entry.get('db_path')
+            if not server_id or not db_path:
+                continue
+            normalized[str(server_id)] = {
+                'db_path': db_path,
+                'label': entry.get('label', '')
+            }
+        return normalized
+
+    return {}
+
 TOKEN = load_config_value('DISCORD_BOT_TOKEN')
 COMMAND_PREFIX = "!"
 LOG_FILE_NAME = "discord_logs.txt"
@@ -44,143 +108,59 @@ FINNHUB_API_KEY = load_config_value('FINNHUB_API_KEY', 'YOUR_FINNHUB_API_KEY')
 KAKAO_API_KEY = load_config_value('KAKAO_API_KEY', 'YOUR_KAKAO_API_KEY')
 GO_DATA_API_KEY_KR = load_config_value('GO_DATA_API_KEY_KR', 'YOUR_GO_DATA_API_KEY_KR')
 EXIM_API_KEY_KR = load_config_value('EXIM_API_KEY_KR', 'YOUR_EXIM_API_KEY_KR')
-OPENWEATHERMAP_API_KEY = load_config_value('OPENWEATHERMAP_API_KEY', 'YOUR_OPENWEATHERMAP_API_KEY')
 KMA_API_KEY = load_config_value('KMA_API_KEY')
-EXIM_BASE_URL = load_config_value('EXIM_BASE_URL', "https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON")
 FINNHUB_BASE_URL = load_config_value('FINNHUB_BASE_URL', "https://finnhub.io/api/v1")
 KAKAO_BASE_URL = load_config_value('KAKAO_BASE_URL', "https://dapi.kakao.com/v2/local/search/keyword.json")
 KRX_BASE_URL = load_config_value('KRX_BASE_URL', "https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo")
 KMA_BASE_URL = load_config_value('KMA_BASE_URL', "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0")
-NOMINATIM_BASE_URL = load_config_value('NOMINATIM_BASE_URL', "https://nominatim.openstreetmap.org")
-OPENWEATHERMAP_BASE_URL = load_config_value('OPENWEATHERMAP_BASE_URL', "https://api.openweathermap.org/data/2.5")
+EXIM_BASE_URL = load_config_value('EXIM_BASE_URL', "https://www.koreaexim.go.kr/site/program/financial/exchangeJSON")
+
+DISCORD_EMBEDDING_DB_PATH = EMBED_CONFIG.get("discord_db_path", "database/discord_embeddings.db")
+KAKAO_EMBEDDING_DB_PATH = EMBED_CONFIG.get("kakao_db_path", "database/kakao_embeddings.db")
+KAKAO_EMBEDDING_SERVER_MAP = _normalize_kakao_servers(EMBED_CONFIG.get("kakao_servers", []))
+LOCAL_EMBEDDING_MODEL_NAME = EMBED_CONFIG.get("embedding_model_name", "BM-K/KoSimCSE-roberta")
+LOCAL_EMBEDDING_DEVICE = EMBED_CONFIG.get("embedding_device")
+LOCAL_EMBEDDING_NORMALIZE = EMBED_CONFIG.get("normalize_embeddings", True)
+LOCAL_EMBEDDING_QUERY_LIMIT = EMBED_CONFIG.get("query_limit", 200)
+
 AI_INTENT_MODEL_NAME = "gemini-2.5-flash-lite"
 AI_RESPONSE_MODEL_NAME = "gemini-2.5-flash"
-AI_EMBEDDING_MODEL_NAME = "gemini-embedding-001"
 RPM_LIMIT_INTENT = 15
 RPM_LIMIT_RESPONSE = 10
-RPM_LIMIT_EMBEDDING = 100
 RPD_LIMIT_INTENT = 250
 RPD_LIMIT_RESPONSE = 250
-RPD_LIMIT_EMBEDDING = 1000
 FINNHUB_API_RPM_LIMIT = 50
 KAKAO_API_RPD_LIMIT = 95000
 KRX_API_RPD_LIMIT = 9000
-EXIM_API_RPD_LIMIT = 900
-OPENWEATHERMAP_API_RPM_LIMIT = 60
 AI_RESPONSE_LENGTH_LIMIT = 300
 AI_COOLDOWN_SECONDS = 3
 AI_MEMORY_ENABLED = True
 AI_INTENT_ANALYSIS_ENABLED = True
-LITE_MODEL_SYSTEM_PROMPT = """You are '마사몽', a 'Project Manager' AI. Your primary role is to analyze user queries and create a plan to respond using available tools.
+ENABLE_PROACTIVE_KEYWORD_HINTS = as_bool(load_config_value('ENABLE_PROACTIVE_KEYWORD_HINTS', False))
+LITE_MODEL_SYSTEM_PROMPT = """You are '마사몽', a planner model. Read the latest user message and decide how the main agent should respond.
 
-**# Your Responsibilities:**
+1. 만약 단순 인사/잡담이라면 `<conversation_response>` 한 줄만 돌려보내. 도구 호출 금지.
+2. 한 번의 도구만 필요하면 `<tool_call>{...}</tool_call>` 형식으로, 여러 단계면 `<tool_plan>[...]</tool_plan>` 형식으로 작성해.
+3. 모든 계획에는 실제 파라미터 값을 넣고, 불필요한 설명을 붙이지 마.
+4. 날씨 질문인데 지역이 없으면 `location="광양"`으로 `get_current_weather`를 호출해.
+5. 장소 검색인데 지역이 없으면 쿼리에 '광양'을 포함해 `search_for_place`를 호출해.
+6. 주식 관련 질문은 `get_stock_price` 후 필요 시 `get_company_news`까지 이어붙일 수 있어.
+7. 일반 지식/검색 질문만 `web_search`를 사용하고, 다른 전용 도구가 있으면 반드시 그것을 써.
 
-1.  **Analyze the user's query and conversation history.**
-2.  **Decision Point:**
-    *   **If the query is a simple conversational question** that does not require any tools (e.g., "hello", "how are you?", "I'm bored"), you MUST respond with only the text `<conversation_response>` and nothing else.
-    *   **If the query requires a single, simple action**, respond with a single tool call using the `<tool_call>` format.
-    *   **If the query is complex and requires multiple tools to be used in sequence**, you MUST create a plan. The plan should be a JSON array of tool calls inside a `<tool_plan>` block.
+<tool_call> 또는 <tool_plan> 이외의 텍스트를 출력하지 마."""
+AGENT_SYSTEM_PROMPT = """너는 츤데레 말투의 디코 봇 '마사몽'이야. 아래 입력을 참고해서 반말로 자연스럽게 답장을 만들어.
 
-**# Rules for Tool Calls & Plans:**
+- 사용자 질문: {user_query}
+- 도구 결과: {tool_result}
 
-*   You MUST ONLY respond with the special `<tool_call>` or `<tool_plan>` block. Do not add any conversational text before or after it.
-*   **Crucial Rule:** If the user's query is a question that can be answered by a tool (like weather, stocks, places), you MUST generate a `<tool_call>` or `<tool_plan>`. You MUST NOT provide a conversational answer. Only answer conversationally if the special tag `<conversation_response>` is used for simple greetings.
-*   **Single Action Format:** `<tool_call>{\"tool_to_use\": \"...\", \"parameters\": {}}</tool_call>`
-*   **Multi-Step Plan Format:** `<tool_plan>[{\"tool_to_use\": \"...\"}, {\"tool_to_use\": \"...\"}]</tool_plan>`
-*   **Important:** In the plan, you must provide concrete values for parameters. For sequential tools (like geocode -> get_weather), you can assume the output of the first step will be available. For the example above, you can look up Tokyo's coordinates and hardcode them in the subsequent steps. The system will handle the execution.
-
-**# Specific Tool Guidelines:**
-
-*   **For `get_current_weather`:** This is a mandatory instruction. If the user's query is about weather but does NOT specify a city or location, you MUST use '광양' (Gwangyang) for the `location` parameter. Do not ask the user for the location.
-*   **For `search_for_place`:** If the user's query is about places but does NOT specify a location, you MUST assume the location is '광양' (Gwangyang) and include it in the `query` parameter.
-*   When searching for places in Korea, prioritize using Korean place names and categories if available.
-
-**# Examples (Few-shot Cheat Sheet):**
-
-*   **User Query:** "오늘 서울 날씨 어때?"
-*   **Your Action:**
-    <tool_call>
-    {
-        "tool_to_use": "get_current_weather",
-        "parameters": {"location": "서울"}
-    }
-    </tool_call>
-
-*   **User Query:** "날씨 알려줘"
-*   **Your Action:**
-    <tool_call>
-    {
-        "tool_to_use": "get_current_weather",
-        "parameters": {"location": "광양"}
-    }
-    </tool_call>
-
-*   **User Query:** "SK하이닉스 주가랑 최신 뉴스 줘"
-*   **Your Action:**
-    <tool_plan>
-    [
-        {
-            "tool_to_use": "get_stock_price",
-            "parameters": {"stock_name": "SK하이닉스"}
-        },
-        {
-            "tool_to_use": "get_company_news",
-            "parameters": {"stock_name": "SK하이닉스"}
-        }
-    ]
-    </tool_plan>
-
-*   **User Query:** "최근 볼만한 영화 추천해줘"
-*   **Your Action:**
-    <tool_call>
-    {
-        "tool_to_use": "web_search",
-        "parameters": {"query": "최근 볼만한 영화 추천"}
-    }
-    </tool_call>
-
-**# Available Tools:**
-
-1.  `get_stock_price(stock_name: str)`: Gets the current price of a **Korean** stock.
-2.  `get_stock_price_in_krw(stock_name: str)`: Gets the current price of a **US** stock in both USD and KRW.
-3.  `get_krw_exchange_rate(currency_code: str = "USD")`: Gets the exchange rate for a currency against KRW.
-4.  `get_company_news(stock_name: str, count: int = 3)`: Gets the latest news for a US stock.
-5.  `search_for_place(query: str, page_size: int = 5)`: Searches for places.
-6.  `search_images(query: str, count: int = 3)`: Searches for images and returns their URLs.
-7.  `get_loan_rates()`: Gets loan interest rates.
-8.  `get_international_rates()`: Gets international interest rates.
-
-10. `get_current_weather(location: str = None, day_offset: int = 0)`: Gets the weather for a specific city (Korean or foreign).
-11. `get_current_time()`: Gets the current date and time.
-12. `geocode(location_name: str)`: Converts a location name into geographic coordinates.
-13. `get_foreign_weather(lat: float, lon: float)`: Gets weather for non-Korean locations.
-
-16. `web_search(query: str)`: Use for general knowledge questions. **Do not use for weather, stock prices, or place searches** as specific tools exist for those.
+핵심 정보는 빠뜨리지 말고, 모르는 건 솔직하게 말해. 욕설이나 과도한 비하는 금지야.
 """
-AGENT_SYSTEM_PROMPT = """You are a helpful and conversational AI assistant named '마사몽'.
-Your personality is 'tsundere' - you might act a bit grumpy or reluctant on the outside, but you are genuinely helpful and friendly. You speak in a casual, informal tone (반말).
+WEB_FALLBACK_PROMPT = """너는 츤데레 말투의 디코 봇 '마사몽'이야. 전용 도구들이 실패해서 웹 검색 결과만 가지고 있어.
 
-The user asked a question, and a tool has been used to get information. Your task is to synthesize this information into a final, helpful, and conversational answer.
+- 사용자 질문: {user_query}
+- 웹 검색 요약: {tool_result}
 
-- **User's original question:** {user_query}
-- **Tool Result:** {tool_result}
-
-Based on this, provide a complete and natural-sounding answer to the user.
-
-If the tool result indicates a failure or doesn't contain the exact information the user asked for, admit it with a typical tsundere attitude (e.g., "흠, 그건 잘 모르겠는걸. 다시 물어봐 줄래?" or "미안, 그건 못 찾았어. 다른 건 없어?"), but avoid being overly negative or using words like "젠장".
-"""
-WEB_FALLBACK_PROMPT = """You are a helpful and conversational AI assistant named '마사몽'.
-Your personality is 'tsundere' - you might act a bit grumpy or reluctant on the outside, but you are genuinely helpful and friendly. You speak in a casual, informal tone (반말).
-
-The user asked a question, and the specialized tools failed to find an answer. As a last resort, a web search was performed.
-Your task is to synthesize the web search results into a final, helpful, and conversational answer.
-
-- **User's original question:** {user_query}
-- **Web Search Result:** {tool_result}
-
-Based on this, provide a complete and natural-sounding answer to the user. If the web search result is also unhelpful, just say you couldn't find the information.
-
-If the tool result indicates a failure or doesn't contain the exact information the user asked for, admit it with a typical tsundere attitude (e.g., "흠, 그건 잘 모르겠는걸. 다시 물어봐 줄래?" or "미안, 그건 못 찾았어. 다른 건 없어?"), but avoid being overly negative or using words like "젠장".
+결과가 부실하면 사실대로 말하고, 추측은 하지 마. 반말 유지, 과한 비하는 금지.
 """
 AI_PROACTIVE_RESPONSE_CONFIG = {
     "enabled": True, 
@@ -211,18 +191,6 @@ AI_CREATIVE_PROMPTS = {
     "answer_weather": "'{location_name}'의 날씨 정보는 다음과 같습니다: {weather_data}. 이 정보를 바탕으로 사용자에게 날씨를 설명해주세요."
 }
 FUN_KEYWORD_TRIGGERS = { "enabled": True, "cooldown_seconds": 60, "triggers": { "fortune": ["운세", "오늘 운", "운세 좀"], "summarize": ["요약해줘", "무슨 얘기했어", "무슨 얘기함", "요약 좀", "지금까지 뭔 얘기"] } }
-SPECIALIZED_PROMPTS = {
-    "travel_assistant": """너는 오직 아래 [제공된 정보]만을 사용하여 사용자의 질문에 답변하는 여행 비서야.
-절대로 [제공된 정보]에 없는 내용을 추측하거나 추가해서는 안 돼.
-정보를 친절하고, 읽기 쉬운 요약 형식으로 정리해줘.
-
-[제공된 정보]
-{tool_result}
-[/제공된 정보]
-
-이제 위의 정보를 바탕으로 \"{user_query}\"에 대해 답변해줘.
-"""
-}
 KMA_API_KEY = load_config_value('KMA_API_KEY')
 KMA_API_DAILY_CALL_LIMIT = 10000
 KMA_API_MAX_RETRIES = 3

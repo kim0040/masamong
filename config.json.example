@@ -5,17 +5,14 @@
   "GOOGLE_CX": "YOUR_GOOGLE_CUSTOM_SEARCH_ENGINE_ID",
   "SERPAPI_KEY": "YOUR_SERPAPI_KEY",
   "KMA_API_KEY": "YOUR_KMA_API_KEY_FROM_DATA.GO.KR",
+  "EXIM_API_KEY_KR": "YOUR_EXIM_API_KEY_KR",
 
-  "EXIM_BASE_URL": "https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON",
   "FINNHUB_BASE_URL": "https://finnhub.io/api/v1",
   "KAKAO_BASE_URL": "https://dapi.kakao.com/v2/local/search/keyword.json",
   "KRX_BASE_URL": "https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo",
+  "EXIM_BASE_URL": "https://www.koreaexim.go.kr/site/program/financial/exchangeJSON",
 
   "KMA_BASE_URL": "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0",
-  "NOMINATIM_BASE_URL": "https://nominatim.openstreetmap.org",
-
-  "OPENWEATHERMAP_API_KEY": "YOUR_OPENWEATHERMAP_API_KEY",
-
-
-  "OPENWEATHERMAP_BASE_URL": "https://api.openweathermap.org/data/2.5"
+  "DEFAULT_LOCATION_NAME": "광양",
+  "ENABLE_PROACTIVE_KEYWORD_HINTS": false
 }
