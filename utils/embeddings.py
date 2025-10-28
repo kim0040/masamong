@@ -398,10 +398,11 @@ class KakaoEmbeddingStore:
                     "       v.distance AS distance "
                     "FROM vss_kakao AS v "
                     "JOIN kakao_messages AS m ON m.id = v.message_id "
-                    "WHERE v.embedding MATCH ? "
+                    "WHERE v.embedding MATCH ? AND v.k = ? "
                     "ORDER BY v.distance ASC LIMIT ?"
                 )
-                async with db.execute(query, (vector_blob, int(limit))) as cursor:
+                top_k = max(1, int(limit))
+                async with db.execute(query, (vector_blob, top_k, top_k)) as cursor:
                     return [dict(row) for row in await cursor.fetchall()]
         except aiosqlite.Error as exc:
             logger.error("Kakao 벡터 검색 중 오류: %s", exc, exc_info=True)
