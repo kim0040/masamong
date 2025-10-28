@@ -246,7 +246,12 @@ class KakaoEmbeddingStore:
         self._vector_extension_candidates = self._build_vector_extension_candidates()
         self._vector_extension_warning_logged = False
 
-    async def fetch_recent_embeddings(self, server_ids: Iterable[str], limit: int = 200) -> list[Dict[str, Any]]:
+    async def fetch_recent_embeddings(
+        self,
+        server_ids: Iterable[str],
+        limit: int = 200,
+        query_vector: "np.ndarray" | None = None,
+    ) -> list[Dict[str, Any]]:
         """서버 ID 후보 목록에 해당하는 Kakao 임베딩 레코드를 읽어옵니다."""
         targets: list[tuple[Path, str, str]] = []
         seen_paths: set[Path] = set()
@@ -270,8 +275,15 @@ class KakaoEmbeddingStore:
             targets.append((self.default_db_path, "", "default"))
 
         results: list[Dict[str, Any]] = []
+        if query_vector is not None:
+            per_target_limit = max(1, min(int(limit), 50))
+        else:
+            per_target_limit = max(1, int(limit))
         for path, label, matched_id in targets:
-            rows = await self._fetch_from_path(path, label, limit)
+            if query_vector is not None:
+                rows = await self._vector_search(path, per_target_limit, query_vector)
+            else:
+                rows = await self._fetch_from_path(path, label, per_target_limit)
             for row in rows:
                 row.setdefault("label", label or path.stem)
                 row.setdefault("matched_server_id", matched_id)
@@ -356,6 +368,43 @@ class KakaoEmbeddingStore:
                     return [dict(row) for row in await cursor.fetchall()]
         except aiosqlite.Error as exc:
             logger.error("Kakao 임베딩 DB 읽기 중 오류: %s", exc, exc_info=True)
+        return []
+
+    async def _vector_search(
+        self,
+        path: Path,
+        limit: int,
+        query_vector: "np.ndarray",
+    ) -> list[Dict[str, Any]]:
+        if np is None:
+            logger.debug("numpy 미설치로 Kakao 벡터 검색을 건너뜁니다: %s", path)
+            return []
+
+        try:
+            vector_blob = query_vector.astype(np.float32).tobytes()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Kakao 벡터 검색용 쿼리 벡터 직렬화 실패: %s", exc)
+            return []
+
+        try:
+            async with aiosqlite.connect(path) as db:
+                await self._load_vector_extension(db)
+                db.row_factory = aiosqlite.Row
+                query = (
+                    "SELECT m.message AS message, "
+                    "       v.embedding AS embedding, "
+                    "       m.timestamp AS timestamp, "
+                    "       m.user_name AS speaker, "
+                    "       v.distance AS distance "
+                    "FROM vss_kakao AS v "
+                    "JOIN kakao_messages AS m ON m.id = v.message_id "
+                    "WHERE v.embedding MATCH ? "
+                    "ORDER BY v.distance ASC LIMIT ?"
+                )
+                async with db.execute(query, (vector_blob, int(limit))) as cursor:
+                    return [dict(row) for row in await cursor.fetchall()]
+        except aiosqlite.Error as exc:
+            logger.error("Kakao 벡터 검색 중 오류: %s", exc, exc_info=True)
         return []
 
     async def _get_or_detect_table_meta(
