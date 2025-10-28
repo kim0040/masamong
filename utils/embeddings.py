@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Iterable
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, Optional
 
 import aiosqlite
 import numpy as np
@@ -20,6 +21,15 @@ from logger_config import logger
 
 _MODEL: SentenceTransformer | None = None
 _MODEL_LOCK = asyncio.Lock()
+
+
+@dataclass(frozen=True)
+class _KakaoTableMeta:
+    table_name: str
+    text_column: str
+    embedding_column: str
+    timestamp_column: Optional[str] = None
+    speaker_column: Optional[str] = None
 
 
 async def _load_model() -> SentenceTransformer:
@@ -196,3 +206,161 @@ class DiscordEmbeddingStore:
                 ids,
             )
             await db.commit()
+
+
+class KakaoEmbeddingStore:
+    """여러 카카오 채팅방 임베딩 DB를 읽어오는 헬퍼."""
+
+    def __init__(self, default_db_path: str | None, server_map: Dict[str, Dict[str, str]]):
+        self.default_db_path = Path(default_db_path) if default_db_path else None
+        self.server_map: Dict[str, Dict[str, Any]] = {}
+        for raw_server_id, meta in (server_map or {}).items():
+            server_id = str(raw_server_id)
+            db_path = meta.get("db_path") if isinstance(meta, dict) else None
+            if not db_path:
+                continue
+            self.server_map[server_id] = {
+                "path": Path(db_path),
+                "label": meta.get("label", "") if isinstance(meta, dict) else "",
+            }
+
+        self._table_meta_cache: Dict[Path, Optional[_KakaoTableMeta]] = {}
+        self._table_meta_lock = asyncio.Lock()
+
+    async def fetch_recent_embeddings(self, server_ids: Iterable[str], limit: int = 200) -> list[Dict[str, Any]]:
+        """서버 ID 후보 목록에 해당하는 Kakao 임베딩 레코드를 읽어옵니다."""
+        targets: list[tuple[Path, str, str]] = []
+        seen_paths: set[Path] = set()
+
+        for candidate in server_ids:
+            if not candidate:
+                continue
+            meta = self.server_map.get(str(candidate))
+            if not meta:
+                continue
+            path = meta["path"]
+            if path in seen_paths:
+                continue
+            if not path.exists():
+                logger.warning("Kakao 임베딩 DB 파일을 찾을 수 없습니다: %s", path)
+                continue
+            seen_paths.add(path)
+            targets.append((path, meta.get("label", ""), str(candidate)))
+
+        if not targets and self.default_db_path and self.default_db_path.exists():
+            targets.append((self.default_db_path, "", "default"))
+
+        results: list[Dict[str, Any]] = []
+        for path, label, matched_id in targets:
+            rows = await self._fetch_from_path(path, label, limit)
+            for row in rows:
+                row.setdefault("label", label or path.stem)
+                row.setdefault("matched_server_id", matched_id)
+                row.setdefault("db_path", str(path))
+                results.append(row)
+        return results
+
+    async def _fetch_from_path(self, path: Path, label: str, limit: int) -> list[Dict[str, Any]]:
+        try:
+            async with aiosqlite.connect(path) as db:
+                db.row_factory = aiosqlite.Row
+                table_meta = await self._get_or_detect_table_meta(path, db)
+                if table_meta is None:
+                    logger.warning("Kakao 임베딩 테이블 구조를 식별하지 못했습니다: %s", path)
+                    return []
+
+                select_parts = [
+                    f"{table_meta.text_column} AS message",
+                    f"{table_meta.embedding_column} AS embedding",
+                ]
+                if table_meta.timestamp_column:
+                    select_parts.append(f"{table_meta.timestamp_column} AS timestamp")
+                if table_meta.speaker_column:
+                    select_parts.append(f"{table_meta.speaker_column} AS speaker")
+
+                order_column = table_meta.timestamp_column or "rowid"
+                query = (
+                    f"SELECT {', '.join(select_parts)} FROM {table_meta.table_name} "
+                    f"ORDER BY {order_column} DESC LIMIT ?"
+                )
+
+                async with db.execute(query, (limit,)) as cursor:
+                    return [dict(row) for row in await cursor.fetchall()]
+        except aiosqlite.Error as exc:
+            logger.error("Kakao 임베딩 DB 읽기 중 오류: %s", exc, exc_info=True)
+        return []
+
+    async def _get_or_detect_table_meta(
+        self,
+        path: Path,
+        connection: aiosqlite.Connection | None = None,
+    ) -> Optional[_KakaoTableMeta]:
+        cached = self._table_meta_cache.get(path)
+        if cached is not None:
+            return cached
+
+        async with self._table_meta_lock:
+            cached = self._table_meta_cache.get(path)
+            if cached is not None:
+                return cached
+
+            if connection is None:
+                try:
+                    async with aiosqlite.connect(path) as db:
+                        meta = await self._detect_table_meta(db)
+                except aiosqlite.Error as exc:
+                    logger.error("Kakao 임베딩 DB 구조 확인 중 오류: %s", exc, exc_info=True)
+                    meta = None
+            else:
+                meta = await self._detect_table_meta(connection)
+
+            self._table_meta_cache[path] = meta
+            return meta
+
+    async def _detect_table_meta(self, db: aiosqlite.Connection) -> Optional[_KakaoTableMeta]:
+        try:
+            async with db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'") as cursor:
+                candidates = [row[0] for row in await cursor.fetchall()]
+
+            for table_name in candidates:
+                columns = await self._fetch_column_names(db, table_name)
+                if not columns:
+                    continue
+
+                lc_map = {name.lower(): name for name in columns}
+                text_col = self._pick_column(lc_map, ["message", "content", "text", "body"])
+                embedding_col = self._pick_column(lc_map, ["embedding", "embedding_vector", "vector"])
+
+                if not text_col or not embedding_col:
+                    continue
+
+                timestamp_col = self._pick_column(lc_map, ["timestamp", "created_at", "datetime", "sent_at", "time"])
+                speaker_col = self._pick_column(lc_map, ["user_name", "username", "sender", "author", "speaker", "nickname"])
+
+                return _KakaoTableMeta(
+                    table_name=table_name,
+                    text_column=text_col,
+                    embedding_column=embedding_col,
+                    timestamp_column=timestamp_col,
+                    speaker_column=speaker_col,
+                )
+        except aiosqlite.Error as exc:
+            logger.error("Kakao 임베딩 테이블 구조 감지 실패: %s", exc, exc_info=True)
+        return None
+
+    async def _fetch_column_names(self, db: aiosqlite.Connection, table_name: str) -> list[str]:
+        async with db.execute(f"PRAGMA table_info('{table_name}')") as cursor:
+            rows = await cursor.fetchall()
+        return [row[1] for row in rows]
+
+    @staticmethod
+    def _pick_column(lc_map: Dict[str, str], candidates: list[str]) -> Optional[str]:
+        for candidate in candidates:
+            if candidate in lc_map:
+                return lc_map[candidate]
+        # try contains match just in case
+        for name_lower, original in lc_map.items():
+            for candidate in candidates:
+                if candidate in name_lower:
+                    return original
+        return None

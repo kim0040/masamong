@@ -35,7 +35,11 @@ import config
 from logger_config import logger
 from utils import db as db_utils
 from utils import http
-from utils.embeddings import get_embedding, DiscordEmbeddingStore
+from utils.embeddings import (
+    DiscordEmbeddingStore,
+    KakaoEmbeddingStore,
+    get_embedding,
+)
 
 KST = pytz.timezone('Asia/Seoul')
 
@@ -57,6 +61,10 @@ class AIHandler(commands.Cog):
         self._google_grounding_checked = False
         self._google_grounding_descriptor: dict[str, object] | None = None
         self.discord_embedding_store = DiscordEmbeddingStore(config.DISCORD_EMBEDDING_DB_PATH)
+        self.kakao_embedding_store = KakaoEmbeddingStore(
+            config.KAKAO_EMBEDDING_DB_PATH,
+            config.KAKAO_EMBEDDING_SERVER_MAP,
+        ) if config.KAKAO_EMBEDDING_DB_PATH or config.KAKAO_EMBEDDING_SERVER_MAP else None
 
         if config.GEMINI_API_KEY and genai:
             try:
@@ -331,41 +339,118 @@ class AIHandler(commands.Cog):
             return "", []
 
         try:
-            rows = await self.discord_embedding_store.fetch_recent_embeddings(
-                server_id=guild_id,
-                channel_id=channel_id,
-                user_id=user_id,
-                limit=getattr(config, "LOCAL_EMBEDDING_QUERY_LIMIT", 200),
-            )
-            if not rows:
-                logger.info("RAG: 검색할 임베딩 데이터가 없습니다.", extra=log_extra)
-                return "", []
+            similarity_threshold = 0.70
+            limit = getattr(config, "LOCAL_EMBEDDING_QUERY_LIMIT", 200)
 
             def _cosine_similarity(v1: np.ndarray, v2: np.ndarray) -> float:
                 norm_v1, norm_v2 = np.linalg.norm(v1), np.linalg.norm(v2)
                 return float(np.dot(v1, v2) / (norm_v1 * norm_v2)) if norm_v1 > 0 and norm_v2 > 0 else 0.0
 
-            scored_contents: list[tuple[float, str]] = []
-            for row in rows:
-                blob = row["embedding"]
-                message_text = row["message"]
-                if not blob or not message_text:
-                    continue
-                doc_vector = np.frombuffer(blob, dtype=np.float32)
-                similarity = _cosine_similarity(query_embedding, doc_vector)
-                if similarity > 0.70:
-                    scored_contents.append((similarity, message_text))
+            def _to_vector(blob: Any) -> np.ndarray | None:
+                if blob is None:
+                    return None
+                if isinstance(blob, np.ndarray):
+                    return blob.astype(np.float32)
+                if isinstance(blob, memoryview):
+                    blob = blob.tobytes()
+                if isinstance(blob, (bytes, bytearray)):
+                    return np.frombuffer(blob, dtype=np.float32)
+                if isinstance(blob, list):
+                    return np.asarray(blob, dtype=np.float32)
+                if isinstance(blob, str):
+                    try:
+                        parsed = json.loads(blob)
+                    except json.JSONDecodeError:
+                        return None
+                    if isinstance(parsed, list):
+                        return np.asarray(parsed, dtype=np.float32)
+                return None
 
-            if not scored_contents:
+            scored_entries: list[Dict[str, Any]] = []
+            had_candidates = False
+
+            discord_rows = await self.discord_embedding_store.fetch_recent_embeddings(
+                server_id=guild_id,
+                channel_id=channel_id,
+                user_id=user_id,
+                limit=limit,
+            )
+            if discord_rows:
+                had_candidates = True
+                for raw_row in discord_rows:
+                    row = dict(raw_row)
+                    message_text = row.get("message")
+                    vector = _to_vector(row.get("embedding"))
+                    if not message_text or vector is None:
+                        continue
+                    similarity = _cosine_similarity(query_embedding, vector)
+                    if similarity > similarity_threshold:
+                        scored_entries.append(
+                            {
+                                "similarity": similarity,
+                                "message": message_text,
+                                "origin": "Discord",
+                                "speaker": row.get("user_name"),
+                            }
+                        )
+
+            kakao_rows: list[Dict[str, Any]] = []
+            if self.kakao_embedding_store is not None:
+                kakao_rows = await self.kakao_embedding_store.fetch_recent_embeddings(
+                    server_ids={str(channel_id), str(guild_id)},
+                    limit=limit,
+                )
+                if kakao_rows:
+                    had_candidates = True
+                    for row in kakao_rows:
+                        message_text = row.get("message")
+                        vector = _to_vector(row.get("embedding"))
+                        if not message_text or vector is None:
+                            continue
+                        similarity = _cosine_similarity(query_embedding, vector)
+                        if similarity > similarity_threshold:
+                            label = row.get("label")
+                            origin = "카카오"
+                            if label and label != origin:
+                                origin = f"카카오:{label}"
+                            scored_entries.append(
+                                {
+                                    "similarity": similarity,
+                                    "message": message_text,
+                                    "origin": origin,
+                                    "speaker": row.get("speaker"),
+                                }
+                            )
+
+            if not had_candidates:
+                logger.info("RAG: 검색할 임베딩 데이터가 없습니다.", extra=log_extra)
+                return "", []
+
+            if not scored_entries:
                 logger.info("RAG: 유사도 0.70 이상인 문서를 찾지 못했습니다.", extra=log_extra)
                 return "", []
 
-            scored_contents.sort(key=lambda item: item[0], reverse=True)
-            top_contents = [content for _, content in scored_contents[:3]]
-            context_str = "참고할 만한 과거 대화 내용:\n" + "\n".join(f"- {c}" for c in top_contents)
-            logger.info("RAG: %d개의 유사한 대화 내용을 찾았습니다.", len(top_contents), extra=log_extra)
+            scored_entries.sort(key=lambda item: item["similarity"], reverse=True)
+            top_entries = scored_entries[:3]
+            top_messages = [entry["message"] for entry in top_entries]
+
+            context_lines = []
+            for entry in top_entries:
+                prefixes = []
+                if entry.get("origin"):
+                    prefixes.append(entry["origin"])
+                if entry.get("speaker"):
+                    prefixes.append(str(entry["speaker"]))
+                prefix_block = " ".join(f"[{p}]" for p in prefixes)
+                if prefix_block:
+                    context_lines.append(f"- {prefix_block} {entry['message']}")
+                else:
+                    context_lines.append(f"- {entry['message']}")
+
+            context_str = "참고할 만한 과거 대화 내용:\n" + "\n".join(context_lines)
+            logger.info("RAG: %d개의 유사한 대화 내용을 찾았습니다.", len(top_entries), extra=log_extra)
             logger.debug("RAG 결과: %s", context_str, extra=log_extra)
-            return context_str, top_contents
+            return context_str, top_messages
         except (aiosqlite.Error, np.linalg.LinAlgError) as e:
             logger.error(f"RAG 컨텍스트 처리(DB, 유사도 계산) 중 오류: {e}", exc_info=True, extra=log_extra)
             return "", []

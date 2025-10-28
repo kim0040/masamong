@@ -45,19 +45,31 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
     if await db_utils.check_api_rate_limit(db, 'kma_daily', config.KMA_API_DAILY_CALL_LIMIT, 99999):
         return {"error": True, "message": config.MSG_KMA_API_DAILY_LIMIT_REACHED}
 
-    base_params = {}
+    base_params: dict[str, str] = {}
     base_url = ""
 
+    forecast_base = getattr(
+        config,
+        "KMA_BASE_URL",
+        "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0",
+    )
+    alert_base = getattr(
+        config,
+        "KMA_ALERT_BASE_URL",
+        "https://apihub.kma.go.kr/api/typ01/url",
+    )
+
     if api_type == 'forecast':
-        base_url = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0"
+        base_url = forecast_base.rstrip('/')
         base_params.update({"pageNo": "1", "numOfRows": "1000", "dataType": "JSON"})
     elif api_type == 'alert':
-        base_url = "https://apihub.kma.go.kr/api/typ01/url"
+        base_url = alert_base.rstrip('/')
         base_params.update({"disp": "1"})
     else:
         raise ValueError(f"Invalid api_type: {api_type}")
 
-    base_params['authKey'] = api_key
+    param_key = 'authKey' if 'apihub.kma.go.kr' in base_url else 'serviceKey'
+    base_params[param_key] = api_key
     base_params.update(params)
     full_url = f"{base_url}/{endpoint}"
 
