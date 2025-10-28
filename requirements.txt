@@ -1,4 +1,8 @@
-torch==2.3.0+cpu
-sentence-transformers==2.7.0
-transformers==4.41.2
-huggingface-hub==0.23.0
+# 필수 의존성 (저사양 서버 기준)
+discord.py==2.4.0
+aiosqlite==0.19.0
+aiohttp==3.9.5
+requests==2.31.0
+pytz==2024.1
+python-dotenv==1.0.1
+google-generativeai==0.6.0

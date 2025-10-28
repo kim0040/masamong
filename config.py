@@ -135,8 +135,9 @@ KAKAO_API_RPD_LIMIT = 95000
 KRX_API_RPD_LIMIT = 9000
 AI_RESPONSE_LENGTH_LIMIT = 300
 AI_COOLDOWN_SECONDS = 3
-AI_MEMORY_ENABLED = True
-AI_INTENT_ANALYSIS_ENABLED = True
+# AI 메모리/RAG 기능은 기본 활성화지만, 저사양 환경에서는 환경변수/설정으로 비활성화할 수 있다.
+AI_MEMORY_ENABLED = as_bool(load_config_value('AI_MEMORY_ENABLED', EMBED_CONFIG.get("enable_local_embeddings", True)))
+AI_INTENT_ANALYSIS_ENABLED = as_bool(load_config_value('AI_INTENT_ANALYSIS_ENABLED', True))
 ENABLE_PROACTIVE_KEYWORD_HINTS = as_bool(load_config_value('ENABLE_PROACTIVE_KEYWORD_HINTS', False))
 LITE_MODEL_SYSTEM_PROMPT = """You are '마사몽', a planner model. Read the latest user message and decide how the main agent should respond.
 

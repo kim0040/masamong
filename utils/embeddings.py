@@ -9,7 +9,12 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional
 
 import aiosqlite
-import numpy as np
+
+# numpy/torch 기반 의존성은 저사양 서버에서는 설치하지 않을 수 있으므로, ImportError를 허용한다.
+try:
+    import numpy as np  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    np = None  # type: ignore
 
 try:  # pragma: no cover - optional dependency guard
     from sentence_transformers import SentenceTransformer
@@ -34,6 +39,15 @@ class _KakaoTableMeta:
 
 async def _load_model() -> SentenceTransformer:
     """SentenceTransformer 모델을 비동기적으로 로드합니다."""
+    if SentenceTransformer is None:
+        raise RuntimeError(
+            "sentence-transformers 패키지가 설치되어 있지 않습니다. `pip install sentence-transformers`로 설치 후 다시 시도하세요."
+        )
+    if np is None:
+        raise RuntimeError(
+            "numpy 패키지가 설치되어 있지 않습니다. AI 메모리 기능을 사용하려면 `pip install numpy`로 설치하세요."
+        )
+
     global _MODEL
     if _MODEL is not None:
         return _MODEL
@@ -45,11 +59,6 @@ async def _load_model() -> SentenceTransformer:
         loop = asyncio.get_running_loop()
         model_name = getattr(config, "LOCAL_EMBEDDING_MODEL_NAME", "BM-K/KoSimCSE-roberta")
         device = getattr(config, "LOCAL_EMBEDDING_DEVICE", None)
-
-        if SentenceTransformer is None:
-            raise RuntimeError(
-                "sentence-transformers 패키지가 설치되어 있지 않습니다. `pip install sentence-transformers`로 설치 후 다시 시도하세요."
-            )
 
         def _sync_load():
             load_kwargs = {"device": device} if device else {}
@@ -64,6 +73,12 @@ async def _load_model() -> SentenceTransformer:
 async def get_embedding(text: str) -> np.ndarray | None:
     """문자열을 임베딩 벡터(float32)로 변환합니다."""
     if not text:
+        return None
+    if np is None:
+        logger.warning("numpy가 설치되지 않아 임베딩을 생성할 수 없습니다. `AI_MEMORY_ENABLED` 값을 확인하세요.")
+        return None
+    if SentenceTransformer is None:
+        logger.warning("sentence-transformers가 설치되지 않아 임베딩 생성을 건너뜁니다.")
         return None
 
     model = await _load_model()
@@ -141,6 +156,8 @@ class DiscordEmbeddingStore:
     ) -> None:
         """메시지의 임베딩을 저장하거나 갱신합니다."""
         await self.initialize()
+        if np is None:
+            raise RuntimeError("numpy가 설치되어 있지 않아 임베딩을 저장할 수 없습니다.")
         embedding_bytes = np.asarray(embedding, dtype=np.float32).tobytes()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
