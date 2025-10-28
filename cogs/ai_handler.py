@@ -415,6 +415,7 @@ class AIHandler(commands.Cog):
                 kakao_rows = await self.kakao_embedding_store.fetch_recent_embeddings(
                     server_ids={str(channel_id), str(guild_id)},
                     limit=limit,
+                    query_vector=query_embedding,
                 )
                 if kakao_rows:
                     had_candidates = True
@@ -443,7 +444,11 @@ class AIHandler(commands.Cog):
                 return "", []
 
             if not scored_entries:
-                logger.info("RAG: 유사도 0.70 이상인 문서를 찾지 못했습니다.", extra=log_extra)
+                logger.info(
+                    "RAG: 유사도 %.2f 이상인 문서를 찾지 못했습니다.",
+                    similarity_threshold,
+                    extra=log_extra,
+                )
                 return "", []
 
             scored_entries.sort(key=lambda item: item["similarity"], reverse=True)
@@ -464,7 +469,13 @@ class AIHandler(commands.Cog):
                     context_lines.append(f"- {entry['message']}")
 
             context_str = "참고할 만한 과거 대화 내용:\n" + "\n".join(context_lines)
-            logger.info("RAG: %d개의 유사한 대화 내용을 찾았습니다.", len(top_entries), extra=log_extra)
+            top_similarity = top_entries[0]["similarity"] if top_entries else 0.0
+            logger.info(
+                "RAG: %d개의 유사한 대화 내용을 찾았습니다. (최고 유사도=%.3f)",
+                len(top_entries),
+                top_similarity,
+                extra=log_extra,
+            )
             logger.debug("RAG 결과: %s", context_str, extra=log_extra)
             return context_str, top_messages
         except (aiosqlite.Error, np.linalg.LinAlgError) as e:
