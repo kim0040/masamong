@@ -4,8 +4,7 @@
 Phase 2: 효율성 극대화 - LLM 토큰 사용량 최적화
 """
 
-import json
-from typing import Dict, List, Any, Optional
+from typing import Dict, Any
 from logger_config import logger
 
 class WeatherDataFormatter:
@@ -112,36 +111,40 @@ class WeatherDataFormatter:
 
 class FinancialDataFormatter:
     """금융 데이터를 LLM 친화적인 형태로 변환"""
-    
+
     @staticmethod
-    def format_exchange_rate(raw_data: List[Dict[str, Any]], target_currency: str = "USD") -> str:
-        """환율 데이터를 사람이 읽기 쉬운 형태로 변환"""
-        if not raw_data:
-            return f"{target_currency} 환율 정보를 가져올 수 없습니다."
-        
+    def format_exchange_rate(rate_info: Dict[str, Any]) -> str:
+        """단일 통화의 환율 레코드를 사람이 읽기 쉬운 문자열로 변환합니다."""
         try:
-            for rate_info in raw_data:
-                if rate_info.get('cur_unit') == target_currency.upper():
-                    currency_name = rate_info.get('cur_nm', '알 수 없음')
-                    deal_rate = float(rate_info.get('deal_bas_r', '0').replace(',', ''))
-                    ttb = float(rate_info.get('ttb', '0').replace(',', ''))
-                    tts = float(rate_info.get('tts', '0').replace(',', ''))
-                    
-                    result = f"💰 {target_currency.upper()} → KRW 환율 정보\n"
-                    result += f"• 매매기준율: {deal_rate:,.2f}원 ({currency_name})\n"
-                    if ttb > 0 and tts > 0:
-                        result += f"• 현찰 살 때(TTB): {ttb:,.2f}원\n"
-                        result += f"• 현찰 팔 때(TTS): {tts:,.2f}원\n"
-                        result += f"• 스프레드: {tts-ttb:,.2f}원 ({((tts-ttb)/deal_rate*100):.2f}%)"
-                    
-                    return result
-            
-            return f"❌ {target_currency} 통화를 찾을 수 없습니다."
-            
-        except (KeyError, TypeError, ValueError) as e:
-            logger.error(f"환율 데이터 포맷팅 오류: {e}")
+            currency = rate_info.get('cur_unit', 'N/A')
+            currency_name = rate_info.get('cur_nm', '정보 없음')
+            deal_rate = float(str(rate_info.get('deal_bas_r', '0')).replace(',', ''))
+            ttb = str(rate_info.get('ttb', '0')).replace(',', '')
+            tts = str(rate_info.get('tts', '0')).replace(',', '')
+
+            lines = [
+                f"💰 {currency} → KRW 환율",
+                f"• 매매기준율: {deal_rate:,.2f}원 ({currency_name})",
+            ]
+
+            try:
+                ttb_val = float(ttb)
+                tts_val = float(tts)
+            except ValueError:
+                ttb_val = tts_val = 0.0
+
+            if ttb_val > 0 and tts_val > 0:
+                spread = tts_val - ttb_val
+                spread_pct = (spread / deal_rate * 100) if deal_rate else 0.0
+                lines.append(f"• 현찰 살 때(TTB): {ttb_val:,.2f}원")
+                lines.append(f"• 현찰 팔 때(TTS): {tts_val:,.2f}원")
+                lines.append(f"• 스프레드: {spread:,.2f}원 ({spread_pct:.2f}%)")
+
+            return "\n".join(lines)
+        except (TypeError, ValueError) as exc:
+            logger.error(f"환율 데이터 포맷팅 오류: {exc}")
             return "환율 데이터 처리 중 오류가 발생했습니다."
-    
+
     @staticmethod
     def format_stock_data(raw_data: Dict[str, Any], stock_name: str) -> str:
         """주식 데이터를 사람이 읽기 쉬운 형태로 변환"""

@@ -222,7 +222,11 @@ class ReMasamongBot(commands.Bot):
         is_bot_mentioned = any(mention.id == self.user.id for mention in message.mentions)
 
         proactive_cog = self.get_cog('ProactiveAssistant')
-        if proactive_cog and not is_bot_mentioned:
+        if (
+            proactive_cog
+            and config.ENABLE_PROACTIVE_KEYWORD_HINTS
+            and not is_bot_mentioned
+        ):
             try:
                 suggestion = await proactive_cog.analyze_user_intent(message)
                 if suggestion:

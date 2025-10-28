@@ -25,7 +25,6 @@ import re
 from typing import Dict, Any, Tuple
 import aiosqlite
 import numpy as np
-import pickle
 import random
 import time
 import json
@@ -36,6 +35,7 @@ import config
 from logger_config import logger
 from utils import db as db_utils
 from utils import http
+from utils.embeddings import get_embedding, DiscordEmbeddingStore
 
 KST = pytz.timezone('Asia/Seoul')
 
@@ -56,11 +56,11 @@ class AIHandler(commands.Cog):
         self.api_call_lock = asyncio.Lock()
         self._google_grounding_checked = False
         self._google_grounding_descriptor: dict[str, object] | None = None
+        self.discord_embedding_store = DiscordEmbeddingStore(config.DISCORD_EMBEDDING_DB_PATH)
 
         if config.GEMINI_API_KEY and genai:
             try:
                 genai.configure(api_key=config.GEMINI_API_KEY)
-                self.embedding_model_name = config.AI_EMBEDDING_MODEL_NAME
                 logger.info("Gemini API가 성공적으로 설정되었습니다.")
                 self.gemini_configured = True
             except Exception as e:
@@ -108,28 +108,12 @@ class AIHandler(commands.Cog):
             logger.error(f"Gemini 응답 생성 중 예기치 않은 오류: {e}", extra=log_extra, exc_info=True)
             return None
 
-    async def _safe_embed_content(self, model_name: str, content: str, task_type: str, log_extra: dict) -> dict | None:
-        """임베딩 생성 호출에 속도 제한과 예외 처리를 적용합니다.
-
-        Args:
-            model_name (str): 사용할 임베딩 모델 이름.
-            content (str): 벡터화할 원본 문자열.
-            task_type (str): Gemini 임베딩에서 요구하는 작업 타입.
-            log_extra (dict): 로깅 컨텍스트.
-
-        Returns:
-            dict | None: 임베딩 결과 딕셔너리 또는 실패 시 None.
-        """
-        try:
-            if await db_utils.check_api_rate_limit(self.bot.db, 'gemini_embedding', config.RPM_LIMIT_EMBEDDING, config.RPD_LIMIT_EMBEDDING):
-                logger.warning("Gemini Embedding API 호출 제한에 도달했습니다.", extra=log_extra)
-                return None
-            result = await genai.embed_content_async(model=model_name, content=content, task_type=task_type)
-            await db_utils.log_api_call(self.bot.db, 'gemini_embedding')
-            return result
-        except Exception as e:
-            logger.error(f"Gemini 임베딩 생성 중 오류: {e}", extra=log_extra, exc_info=True)
-            return None
+    async def _generate_local_embedding(self, content: str, log_extra: dict) -> np.ndarray | None:
+        """SentenceTransformer 기반 임베딩을 생성합니다."""
+        embedding = await get_embedding(content)
+        if embedding is None:
+            logger.error("임베딩 생성 실패", extra=log_extra)
+        return embedding
 
     async def add_message_to_history(self, message: discord.Message):
         """AI 허용 채널의 메시지를 대화 기록 DB에 저장합니다.
@@ -150,35 +134,31 @@ class AIHandler(commands.Cog):
                 (message.id, message.guild.id, message.channel.id, message.author.id, message.author.display_name, message.content, message.author.bot, message.created_at.isoformat())
             )
             await self.bot.db.commit()
-            if not message.author.bot and len(message.content) > 25:
-                asyncio.create_task(self._create_and_save_embedding(message.id, message.content, message.guild.id))
+            if not message.author.bot and message.content.strip():
+                asyncio.create_task(self._create_and_save_embedding(message))
         except Exception as e:
             logger.error(f"대화 기록 저장 중 DB 오류: {e}", exc_info=True, extra={'guild_id': message.guild.id})
 
-    async def _create_and_save_embedding(self, message_id: int, content: str, guild_id: int):
-        """대화 기록 메시지에 대한 임베딩을 생성해 저장합니다.
-
-        Args:
-            message_id (int): 대상 메시지 ID.
-            content (str): 임베딩을 생성할 텍스트.
-            guild_id (int): 메시지가 속한 길드 ID.
-        """
-        log_extra = {'guild_id': guild_id, 'message_id': message_id}
-        embedding_result = await self._safe_embed_content(
-            model_name=self.embedding_model_name,
-            content=content,
-            task_type="retrieval_document",
-            log_extra=log_extra
-        )
-        if not embedding_result:
+    async def _create_and_save_embedding(self, message: discord.Message):
+        """대화 메시지를 SentenceTransformer 임베딩으로 변환해 별도 DB에 저장합니다."""
+        log_extra = {'guild_id': message.guild.id if message.guild else None, 'message_id': message.id}
+        embedding_vector = await self._generate_local_embedding(message.content, log_extra)
+        if embedding_vector is None:
             return
 
         try:
-            embedding_blob = pickle.dumps(embedding_result['embedding'])
-            await self.bot.db.execute("UPDATE conversation_history SET embedding = ? WHERE message_id = ?", (embedding_blob, message_id))
-            await self.bot.db.commit()
-        except (pickle.PicklingError, aiosqlite.Error) as e:
-            logger.error(f"임베딩 DB 저장/직렬화 중 오류: {e}", extra=log_extra, exc_info=True)
+            await self.discord_embedding_store.upsert_message_embedding(
+                message_id=message.id,
+                server_id=message.guild.id,
+                channel_id=message.channel.id,
+                user_id=message.author.id,
+                user_name=message.author.display_name,
+                message=message.content,
+                timestamp_iso=message.created_at.isoformat(),
+                embedding=embedding_vector,
+            )
+        except Exception as e:
+            logger.error(f"임베딩 DB 저장 중 오류: {e}", extra=log_extra, exc_info=True)
 
     def _discover_google_grounding_tool(self) -> dict[str, object] | None:
         """사용 중인 Gemini 버전에 호환되는 구글 서치 도구를 탐색합니다.
@@ -346,38 +326,47 @@ class AIHandler(commands.Cog):
         log_extra = {'guild_id': guild_id, 'channel_id': channel_id, 'user_id': user_id}
         logger.info(f"RAG 컨텍스트 검색 시작. Query: '{query}'", extra=log_extra)
 
-        query_embedding_result = await self._safe_embed_content(
-            model_name=self.embedding_model_name,
-            content=query,
-            task_type="retrieval_query",
-            log_extra=log_extra
-        )
-        if not query_embedding_result:
+        query_embedding = await self._generate_local_embedding(query, log_extra)
+        if query_embedding is None:
             return "", []
 
         try:
-            query_embedding = np.array(query_embedding_result['embedding'])
-            async with self.bot.db.execute("SELECT content, embedding FROM conversation_history WHERE guild_id = ? AND channel_id = ? AND user_id = ? AND embedding IS NOT NULL ORDER BY created_at DESC LIMIT 100;", (guild_id, channel_id, user_id,)) as cursor:
-                rows = await cursor.fetchall()
+            rows = await self.discord_embedding_store.fetch_recent_embeddings(
+                server_id=guild_id,
+                channel_id=channel_id,
+                user_id=user_id,
+                limit=getattr(config, "LOCAL_EMBEDDING_QUERY_LIMIT", 200),
+            )
             if not rows:
                 logger.info("RAG: 검색할 임베딩 데이터가 없습니다.", extra=log_extra)
                 return "", []
 
-            def _cosine_similarity(v1, v2):
+            def _cosine_similarity(v1: np.ndarray, v2: np.ndarray) -> float:
                 norm_v1, norm_v2 = np.linalg.norm(v1), np.linalg.norm(v2)
-                return np.dot(v1, v2) / (norm_v1 * norm_v2) if norm_v1 > 0 and norm_v2 > 0 else 0.0
+                return float(np.dot(v1, v2) / (norm_v1 * norm_v2)) if norm_v1 > 0 and norm_v2 > 0 else 0.0
 
-            similarities = sorted([(sim, content) for content, blob in rows if (sim := _cosine_similarity(query_embedding, pickle.loads(blob))) > 0.70], key=lambda x: x[0], reverse=True)
-            if not similarities:
+            scored_contents: list[tuple[float, str]] = []
+            for row in rows:
+                blob = row["embedding"]
+                message_text = row["message"]
+                if not blob or not message_text:
+                    continue
+                doc_vector = np.frombuffer(blob, dtype=np.float32)
+                similarity = _cosine_similarity(query_embedding, doc_vector)
+                if similarity > 0.70:
+                    scored_contents.append((similarity, message_text))
+
+            if not scored_contents:
                 logger.info("RAG: 유사도 0.70 이상인 문서를 찾지 못했습니다.", extra=log_extra)
                 return "", []
 
-            top_contents = [content for _, content in similarities[:3]]
+            scored_contents.sort(key=lambda item: item[0], reverse=True)
+            top_contents = [content for _, content in scored_contents[:3]]
             context_str = "참고할 만한 과거 대화 내용:\n" + "\n".join(f"- {c}" for c in top_contents)
-            logger.info(f"RAG: {len(top_contents)}개의 유사한 대화 내용을 찾았습니다.", extra=log_extra)
-            logger.debug(f"RAG 결과: {context_str}", extra=log_extra)
+            logger.info("RAG: %d개의 유사한 대화 내용을 찾았습니다.", len(top_contents), extra=log_extra)
+            logger.debug("RAG 결과: %s", context_str, extra=log_extra)
             return context_str, top_contents
-        except (pickle.UnpicklingError, aiosqlite.Error, np.linalg.LinAlgError) as e:
+        except (aiosqlite.Error, np.linalg.LinAlgError) as e:
             logger.error(f"RAG 컨텍스트 처리(DB, 유사도 계산) 중 오류: {e}", exc_info=True, extra=log_extra)
             return "", []
 
@@ -527,11 +516,9 @@ class AIHandler(commands.Cog):
                 logger.info("3단계: Main 모델(답변 생성) 호출...", extra=log_extra)
                 tool_results_str = json.dumps(tool_results, ensure_ascii=False)
                 
-                # 프롬프트 선택: 일반, 여행용, 웹 폴백용
+                # 프롬프트 선택: 일반 또는 웹 폴백용
                 if use_fallback_prompt:
                     main_system_prompt = config.WEB_FALLBACK_PROMPT.format(user_query=user_query, tool_result=tool_results_str)
-                elif any(tc.get('tool_to_use') == 'get_travel_recommendation' for tc in tool_plan):
-                    main_system_prompt = config.SPECIALIZED_PROMPTS["travel_assistant"].format(user_query=user_query, tool_result=tool_results_str)
                 else:
                     main_system_prompt = config.AGENT_SYSTEM_PROMPT.format(user_query=user_query, tool_result=tool_results_str)
                 
