@@ -355,7 +355,7 @@ class AIHandler(commands.Cog):
             return "", []
 
         try:
-            similarity_threshold = 0.70
+            similarity_threshold = 0.65
             limit = getattr(config, "LOCAL_EMBEDDING_QUERY_LIMIT", 200)
 
             def _cosine_similarity(v1: np.ndarray, v2: np.ndarray) -> float:
