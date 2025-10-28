@@ -65,6 +65,7 @@ async def test_get_rag_context_returns_top_similar_message(monkeypatch, tmp_path
     assert "두 번째 메시지" not in context_text
     assert isinstance(top_entries, list)
     assert top_entries and top_entries[0]["message"] == "첫 번째 메시지"
+    assert "context_window" in top_entries[0]
     assert top_entries[0]["origin"] == "Discord"
     assert top_similarity > 0.0
 

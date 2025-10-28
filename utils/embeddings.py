@@ -245,6 +245,7 @@ class KakaoEmbeddingStore:
         self._table_meta_lock = asyncio.Lock()
         self._vector_extension_candidates = self._build_vector_extension_candidates()
         self._vector_extension_warning_logged = False
+        self._window_size = 3
 
     async def fetch_recent_embeddings(
         self,
@@ -391,7 +392,8 @@ class KakaoEmbeddingStore:
                 await self._load_vector_extension(db)
                 db.row_factory = aiosqlite.Row
                 query = (
-                    "SELECT m.message AS message, "
+                    "SELECT m.id AS message_id, "
+                    "       m.message AS message, "
                     "       v.embedding AS embedding, "
                     "       m.timestamp AS timestamp, "
                     "       m.user_name AS speaker, "
@@ -403,10 +405,38 @@ class KakaoEmbeddingStore:
                 )
                 top_k = max(1, int(limit))
                 async with db.execute(query, (vector_blob, top_k, top_k)) as cursor:
-                    return [dict(row) for row in await cursor.fetchall()]
+                    rows = [dict(row) for row in await cursor.fetchall()]
+
+                for row in rows:
+                    message_id = row.get("message_id")
+                    if not isinstance(message_id, int):
+                        continue
+                    row["context_window"] = await self._fetch_message_window(db, message_id)
+                return rows
         except aiosqlite.Error as exc:
             logger.error("Kakao 벡터 검색 중 오류: %s", exc, exc_info=True)
         return []
+
+    async def _fetch_message_window(self, db: aiosqlite.Connection, message_id: int) -> list[dict[str, str]]:
+        window = self._window_size
+        start_id = max(1, message_id - window)
+        end_id = message_id + window
+        async with db.execute(
+            "SELECT id, user_name, message FROM kakao_messages "
+            "WHERE id BETWEEN ? AND ? ORDER BY id",
+            (start_id, end_id),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        window_rows: list[dict[str, str]] = []
+        for row in rows:
+            window_rows.append(
+                {
+                    "id": row[0],
+                    "user_name": row[1],
+                    "message": row[2],
+                }
+            )
+        return window_rows
 
     async def _get_or_detect_table_meta(
         self,
