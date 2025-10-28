@@ -24,7 +24,11 @@ from collections import deque
 import re
 from typing import Dict, Any, Tuple
 import aiosqlite
-import numpy as np
+# numpy는 AI 메모리 기능(RAG)에서만 필요하므로, 설치되지 않은 환경에서도 실행되도록 가드한다.
+try:
+    import numpy as np
+except ModuleNotFoundError:  # pragma: no cover - 경량 설치 환경 고려
+    np = None  # type: ignore
 import random
 import time
 import json
@@ -118,6 +122,12 @@ class AIHandler(commands.Cog):
 
     async def _generate_local_embedding(self, content: str, log_extra: dict) -> np.ndarray | None:
         """SentenceTransformer 기반 임베딩을 생성합니다."""
+        if not config.AI_MEMORY_ENABLED:
+            return None
+        if np is None:
+            logger.warning("numpy가 설치되어 있지 않아 AI 메모리 기능을 사용할 수 없습니다.", extra=log_extra)
+            return None
+
         embedding = await get_embedding(content)
         if embedding is None:
             logger.error("임베딩 생성 실패", extra=log_extra)
@@ -331,6 +341,12 @@ class AIHandler(commands.Cog):
 
     async def _get_rag_context(self, guild_id: int, channel_id: int, user_id: int, query: str) -> Tuple[str, list[str]]:
         """RAG: 사용자의 질문과 유사한 과거 대화 내용을 DB에서 검색하여 컨텍스트로 반환합니다."""
+        if not config.AI_MEMORY_ENABLED:
+            return "", []
+        if np is None:
+            logger.warning("numpy가 없어 RAG 검색을 건너뜁니다.", extra={'guild_id': guild_id, 'channel_id': channel_id})
+            return "", []
+
         log_extra = {'guild_id': guild_id, 'channel_id': channel_id, 'user_id': user_id}
         logger.info(f"RAG 컨텍스트 검색 시작. Query: '{query}'", extra=log_extra)
 
