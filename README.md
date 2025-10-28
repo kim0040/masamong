@@ -87,6 +87,8 @@ masamong/
 - `SERPAPI_KEY`: SerpAPI 키 (웹 검색 2순위)
 - `KAKAO_API_KEY`: Kakao 로컬/웹 검색 (폴백)
 - `KMA_API_KEY`: 기상청 API 키 (국내 날씨)
+- `KMA_BASE_URL`: (선택) 동네예보 API 기본 URL. 기본값은 기상청 API 허브입니다.
+- `KMA_ALERT_BASE_URL`: (선택) 기상특보 API 기본 URL. 기본값은 기상청 API 허브, 공공데이터 포털 키를 쓰면 `https://apis.data.go.kr/1360000/WthrWrnInfoService` 같은 기존 URL로 변경하세요.
 - `EXIM_API_KEY_KR`: 한국수출입은행 환율 API 키
 - `FINNHUB_API_KEY`: 미국/해외 주식 조회용 키
 - `ENABLE_PROACTIVE_KEYWORD_HINTS`: `true`로 설정하면 키워드 기반 자동 제안을 다시 활성화할 수 있습니다.
@@ -115,7 +117,7 @@ masamong/
 ```
 
 > `embedding_device`는 GPU 사용 시 `"cuda"`, CPU만 사용할 경우 `"cpu"`로 유지하세요. `normalize_embeddings`를 `true`로 두면 저장된 벡터가 코사인 유사도를 바로 계산할 수 있도록 정규화됩니다.
-> `kakao_servers` 배열은 카카오 채팅방별 RAG DB 경로를 미리 선언하는 용도로, `server_id` 값은 Kakao 세션 식별자와 동일하게 맞춰주세요.
+> `kakao_servers` 배열은 카카오 채팅방별 RAG DB 경로를 미리 선언하는 용도로, `server_id` 값은 Kakao 세션 식별자 또는 디스코드 길드/채널 ID 등 매칭하고 싶은 식별자로 자유롭게 지정할 수 있습니다. RAG 검색 시 먼저 채널 ID → 길드 ID 순으로 매칭을 시도하며, 어느 항목과도 맞지 않으면 `kakao_db_path`가 폴백으로 사용됩니다. DB 파일에는 최소한 `message`(텍스트)와 `embedding`(float32 벡터 BLOB) 컬럼이 존재해야 하며, `timestamp`/`speaker` 컬럼이 있을 경우 자동으로 함께 활용됩니다.
 
 ## 데이터베이스 초기화
 최초 실행 전 SQLite 스키마를 생성합니다.
