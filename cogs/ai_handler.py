@@ -361,7 +361,7 @@ class AIHandler(commands.Cog):
             return "", [], 0.0
 
         try:
-            similarity_threshold = getattr(config, "RAG_SIMILARITY_THRESHOLD", 0.65)
+            similarity_threshold = config.RAG_SIMILARITY_THRESHOLD
             limit = getattr(config, "LOCAL_EMBEDDING_QUERY_LIMIT", 200)
 
             def _cosine_similarity(v1: np.ndarray, v2: np.ndarray) -> float:
@@ -405,6 +405,7 @@ class AIHandler(commands.Cog):
                     vector = _to_vector(row.get("embedding"))
                     if not message_text or vector is None:
                         continue
+                    row.setdefault("db_path", config.DISCORD_EMBEDDING_DB_PATH)
                     similarity = _cosine_similarity(query_embedding, vector)
                     if similarity > similarity_threshold:
                         scored_entries.append(
@@ -413,6 +414,8 @@ class AIHandler(commands.Cog):
                                 "message": message_text,
                                 "origin": "Discord",
                                 "speaker": row.get("user_name"),
+                                "db_path": row.get("db_path"),
+                                "matched_server_id": str(guild_id),
                             }
                         )
 
@@ -442,6 +445,8 @@ class AIHandler(commands.Cog):
                                     "message": message_text,
                                     "origin": origin,
                                     "speaker": row.get("speaker"),
+                                    "db_path": row.get("db_path"),
+                                    "matched_server_id": row.get("matched_server_id"),
                                 }
                             )
 
@@ -458,8 +463,8 @@ class AIHandler(commands.Cog):
                 return "", [], 0.0
 
             scored_entries.sort(key=lambda item: item["similarity"], reverse=True)
-            top_entries = scored_entries[:6]
-            top_messages = [entry["message"] for entry in top_entries]
+            top_entries_raw = scored_entries[:6]
+            top_entries = [dict(entry) for entry in top_entries_raw]
 
             context_lines = []
             for idx, entry in enumerate(top_entries, start=1):
@@ -468,6 +473,8 @@ class AIHandler(commands.Cog):
                     prefixes.append(entry["origin"])
                 if entry.get("speaker"):
                     prefixes.append(str(entry["speaker"]))
+                if entry.get("db_path"):
+                    prefixes.append(f"db:{entry['db_path']}")
                 prefixes.append(f"유사도 {entry['similarity']:.3f}")
                 prefix_block = " ".join(f"[{p}]" for p in prefixes if p)
                 context_lines.append(f"{idx}. {prefix_block} {entry['message']}")
@@ -480,8 +487,23 @@ class AIHandler(commands.Cog):
                 top_similarity,
                 extra=log_extra,
             )
+            if config.RAG_DEBUG_ENABLED:
+                debug_lines = []
+                for entry in top_entries:
+                    snippet = entry["message"] if len(entry["message"]) <= 120 else entry["message"][:117] + "..."
+                    debug_lines.append(
+                        "- origin=%s speaker=%s db=%s sim=%.3f msg=%s"
+                        % (
+                            entry.get("origin") or "?",
+                            entry.get("speaker") or "?",
+                            entry.get("db_path") or "-",
+                            entry["similarity"],
+                            snippet,
+                        )
+                    )
+                logger.info("RAG 디버그 상세:\n%s", "\n".join(debug_lines), extra=log_extra)
             logger.debug("RAG 결과: %s", context_str, extra=log_extra)
-            return context_str, top_messages, top_similarity
+            return context_str, top_entries, top_similarity
         except (aiosqlite.Error, np.linalg.LinAlgError) as e:
             logger.error(f"RAG 컨텍스트 처리(DB, 유사도 계산) 중 오류: {e}", exc_info=True, extra=log_extra)
             return "", [], 0.0
@@ -519,16 +541,23 @@ class AIHandler(commands.Cog):
             result = entry.get("result")
 
             if name == "local_rag":
-                messages = []
+                entries = []
                 if isinstance(result, dict):
-                    raw_messages = result.get("messages")
-                    if isinstance(raw_messages, list):
-                        messages = [str(msg) for msg in raw_messages if msg]
-                if messages:
+                    raw_entries = result.get("entries")
+                    if isinstance(raw_entries, list):
+                        entries = [entry for entry in raw_entries if isinstance(entry, dict)]
+                if entries:
                     lines.append("[local_rag] 아래 대화 내용을 우선 참고해:")
-                    for msg in messages:
-                        snippet = msg if len(msg) <= 200 else msg[:197] + "..."
-                        lines.append(f"  • {snippet}")
+                    for entry in entries:
+                        message = entry.get("message") or ""
+                        snippet = message if len(message) <= 200 else message[:197] + "..."
+                        origin = entry.get("origin") or "?"
+                        speaker = entry.get("speaker") or "?"
+                        sim = entry.get("similarity") or 0.0
+                        db_path = entry.get("db_path") or "-"
+                        lines.append(
+                            f"  • [{origin} | speaker={speaker} | sim={sim:.3f} | db={db_path}] {snippet}"
+                        )
                 continue
 
             if isinstance(result, dict):
@@ -541,6 +570,23 @@ class AIHandler(commands.Cog):
             lines.append(f"[{name}] {result_text}")
 
         return "\n".join(lines) if lines else "도구 실행 결과 없음"
+
+    @staticmethod
+    def _build_rag_debug_block(entries: list[dict]) -> str:
+        if not config.RAG_DEBUG_ENABLED or not entries:
+            return ""
+
+        lines: list[str] = []
+        for entry in entries:
+            message = entry.get("message") or ""
+            snippet = message if len(message) <= 160 else message[:157] + "..."
+            origin = entry.get("origin") or "?"
+            speaker = entry.get("speaker") or "?"
+            sim = entry.get("similarity") or 0.0
+            db_path = entry.get("db_path") or "-"
+            lines.append(f"origin={origin} | speaker={speaker} | sim={sim:.3f} | db={db_path} | {snippet}")
+
+        return "```debug\n" + "\n".join(lines) + "\n```"
 
     async def _execute_tool(self, tool_call: dict, guild_id: int, user_query: str) -> dict:
         """파싱된 단일 도구 호출 계획을 실제로 실행하고 결과를 반환합니다."""
@@ -592,15 +638,15 @@ class AIHandler(commands.Cog):
 
         async with message.channel.typing():
             try:
-                rag_prompt, rag_messages, rag_top_similarity = await self._get_rag_context(
+                rag_prompt, rag_entries, rag_top_similarity = await self._get_rag_context(
                     message.guild.id,
                     message.channel.id,
                     message.author.id,
                     user_query,
                 )
                 history = await self._get_recent_history(message, rag_prompt)
-                similarity_threshold = getattr(config, "RAG_SIMILARITY_THRESHOLD", 0.65)
-                strong_similarity_threshold = getattr(config, "RAG_STRONG_SIMILARITY_THRESHOLD", 0.72)
+                similarity_threshold = config.RAG_SIMILARITY_THRESHOLD
+                strong_similarity_threshold = config.RAG_STRONG_SIMILARITY_THRESHOLD
                 rag_is_strong = bool(rag_prompt) and rag_top_similarity >= strong_similarity_threshold
 
                 # --- [1단계] Lite 모델(PM) 호출: 의도 분석 및 계획 수립 --- 
@@ -653,6 +699,9 @@ class AIHandler(commands.Cog):
 
                     if main_response and main_response.text:
                         final_response_text = main_response.text.strip()
+                        debug_block = self._build_rag_debug_block(rag_entries)
+                        if debug_block:
+                            final_response_text = f"{final_response_text}\n\n{debug_block}"
                         await message.reply(final_response_text, mention_author=False)
                         await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {"guild_id": message.guild.id, "user_id": message.author.id, "channel_id": message.channel.id, "trace_id": trace_id, "user_query": user_query, "tool_plan": [], "final_response": final_response_text, "is_fallback": False})
                     else:
@@ -685,7 +734,19 @@ class AIHandler(commands.Cog):
                                 "similarity_threshold": similarity_threshold,
                                 "top_similarity": rag_top_similarity,
                             },
-                            "result": {"messages": rag_messages},
+                            "result": {
+                                "entries": [
+                                    {
+                                        "origin": entry.get("origin"),
+                                        "speaker": entry.get("speaker"),
+                                        "similarity": entry.get("similarity"),
+                                        "message": entry.get("message"),
+                                        "db_path": entry.get("db_path"),
+                                        "matched_server_id": entry.get("matched_server_id"),
+                                    }
+                                    for entry in rag_entries
+                                ]
+                            },
                         }
                     )
 
@@ -705,9 +766,9 @@ class AIHandler(commands.Cog):
                 if executed_tool_results and any_failed and 'web_search' not in executed_tool_names:
                     logger.info("하나 이상의 도구 실행에 실패하여 웹 검색으로 대체합니다.", extra=log_extra)
                     web_search_result = await self._execute_tool({"tool_to_use": "web_search", "parameters": {"query": user_query}}, message.guild.id, user_query)
-                    rag_entries = [res for res in tool_results if res.get("tool_name") == "local_rag"]
-                    next_step = (rag_entries[-1]["step"] + 1) if rag_entries else 1
-                    tool_results = rag_entries + [{"step": next_step, "tool_name": "web_search", "parameters": {"query": user_query}, "result": web_search_result}]
+                    rag_tool_entries = [res for res in tool_results if res.get("tool_name") == "local_rag"]
+                    next_step = (rag_tool_entries[-1]["step"] + 1) if rag_tool_entries else 1
+                    tool_results = rag_tool_entries + [{"step": next_step, "tool_name": "web_search", "parameters": {"query": user_query}, "result": web_search_result}]
                     use_fallback_prompt = True
 
                 # --- [3단계] Main 모델 호출: 최종 답변 생성 ---
@@ -745,6 +806,9 @@ class AIHandler(commands.Cog):
 
                 if main_response and main_response.text:
                     final_response_text = main_response.text.strip()
+                    debug_block = self._build_rag_debug_block(rag_entries)
+                    if debug_block:
+                        final_response_text = f"{final_response_text}\n\n{debug_block}"
                     await message.reply(final_response_text, mention_author=False)
                     await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {"guild_id": message.guild.id, "user_id": message.author.id, "channel_id": message.channel.id, "trace_id": trace_id, "user_query": user_query, "tool_plan": tool_plan, "final_response": final_response_text, "is_fallback": use_fallback_prompt})
                 else:
