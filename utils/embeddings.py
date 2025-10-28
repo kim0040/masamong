@@ -387,23 +387,54 @@ class KakaoEmbeddingStore:
 
     async def _detect_table_meta(self, db: aiosqlite.Connection) -> Optional[_KakaoTableMeta]:
         try:
-            async with db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'") as cursor:
-                candidates = [row[0] for row in await cursor.fetchall()]
+            async with db.execute(
+                "SELECT name, type FROM sqlite_master "
+                "WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'"
+            ) as cursor:
+                raw_candidates = [(row[0], row[1]) for row in await cursor.fetchall()]
 
-            for table_name in candidates:
-                columns = await self._fetch_column_names(db, table_name)
+            # Prefer views (예: kakao_message_embeddings) before physical tables.
+            candidates = sorted(
+                raw_candidates,
+                key=lambda item: 0 if (item[1] or "").lower() == "view" else 1,
+            )
+
+            for table_name, _ in candidates:
+                columns = await self._fetch_column_info(db, table_name)
                 if not columns:
                     continue
 
-                lc_map = {name.lower(): name for name in columns}
-                text_col = self._pick_column(lc_map, ["message", "content", "text", "body"])
-                embedding_col = self._pick_column(lc_map, ["embedding", "embedding_vector", "vector"])
+                lc_map = {name.lower(): name for name, _ in columns}
+                column_types = {name.lower(): (col_type or "").upper() for name, col_type in columns}
+
+                text_col = self._pick_column(
+                    lc_map,
+                    ["message", "content", "text", "body"],
+                    column_types,
+                    {"TEXT", "CHAR", "CLOB", "VARCHAR"},
+                )
+                embedding_col = self._pick_column(
+                    lc_map,
+                    ["embedding", "embedding_vector", "vector"],
+                    column_types,
+                    {"BLOB", "REAL", "FLOAT", "DOUBLE"},
+                )
 
                 if not text_col or not embedding_col:
                     continue
 
-                timestamp_col = self._pick_column(lc_map, ["timestamp", "created_at", "datetime", "sent_at", "time"])
-                speaker_col = self._pick_column(lc_map, ["user_name", "username", "sender", "author", "speaker", "nickname"])
+                timestamp_col = self._pick_column(
+                    lc_map,
+                    ["timestamp", "created_at", "datetime", "sent_at", "time"],
+                    column_types,
+                    {"TEXT", "CHAR", "NUMERIC", "DATE", "DATETIME", "INT"},
+                )
+                speaker_col = self._pick_column(
+                    lc_map,
+                    ["user_name", "username", "sender", "author", "speaker", "nickname"],
+                    column_types,
+                    {"TEXT", "CHAR", "CLOB", "VARCHAR"},
+                )
 
                 return _KakaoTableMeta(
                     table_name=table_name,
@@ -416,19 +447,36 @@ class KakaoEmbeddingStore:
             logger.error("Kakao 임베딩 테이블 구조 감지 실패: %s", exc, exc_info=True)
         return None
 
-    async def _fetch_column_names(self, db: aiosqlite.Connection, table_name: str) -> list[str]:
+    async def _fetch_column_info(self, db: aiosqlite.Connection, table_name: str) -> list[tuple[str, str]]:
         async with db.execute(f"PRAGMA table_info('{table_name}')") as cursor:
             rows = await cursor.fetchall()
-        return [row[1] for row in rows]
+        return [(row[1], row[2]) for row in rows]
 
     @staticmethod
-    def _pick_column(lc_map: Dict[str, str], candidates: list[str]) -> Optional[str]:
+    def _pick_column(
+        lc_map: Dict[str, str],
+        candidates: list[str],
+        column_types: Optional[Dict[str, str]] = None,
+        allowed_type_hints: Optional[set[str]] = None,
+    ) -> Optional[str]:
+        def _type_matches(name_lower: str) -> bool:
+            if not allowed_type_hints or not column_types:
+                return True
+            col_type = column_types.get(name_lower, "")
+            if not col_type:
+                return True
+            for hint in allowed_type_hints:
+                if hint in col_type:
+                    return True
+            return False
+
         for candidate in candidates:
             if candidate in lc_map:
-                return lc_map[candidate]
+                if _type_matches(candidate):
+                    return lc_map[candidate]
         # try contains match just in case
         for name_lower, original in lc_map.items():
             for candidate in candidates:
-                if candidate in name_lower:
+                if candidate in name_lower and _type_matches(name_lower):
                     return original
         return None
