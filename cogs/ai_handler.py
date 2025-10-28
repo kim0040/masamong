@@ -339,23 +339,29 @@ class AIHandler(commands.Cog):
             return fallback_result.get("result")
         return None
 
-    async def _get_rag_context(self, guild_id: int, channel_id: int, user_id: int, query: str) -> Tuple[str, list[str]]:
+    async def _get_rag_context(
+        self,
+        guild_id: int,
+        channel_id: int,
+        user_id: int,
+        query: str,
+    ) -> Tuple[str, list[str], float]:
         """RAG: 사용자의 질문과 유사한 과거 대화 내용을 DB에서 검색하여 컨텍스트로 반환합니다."""
         if not config.AI_MEMORY_ENABLED:
-            return "", []
+            return "", [], 0.0
         if np is None:
             logger.warning("numpy가 없어 RAG 검색을 건너뜁니다.", extra={'guild_id': guild_id, 'channel_id': channel_id})
-            return "", []
+            return "", [], 0.0
 
         log_extra = {'guild_id': guild_id, 'channel_id': channel_id, 'user_id': user_id}
         logger.info(f"RAG 컨텍스트 검색 시작. Query: '{query}'", extra=log_extra)
 
         query_embedding = await self._generate_local_embedding(query, log_extra)
         if query_embedding is None:
-            return "", []
+            return "", [], 0.0
 
         try:
-            similarity_threshold = 0.65
+            similarity_threshold = getattr(config, "RAG_SIMILARITY_THRESHOLD", 0.65)
             limit = getattr(config, "LOCAL_EMBEDDING_QUERY_LIMIT", 200)
 
             def _cosine_similarity(v1: np.ndarray, v2: np.ndarray) -> float:
@@ -441,7 +447,7 @@ class AIHandler(commands.Cog):
 
             if not had_candidates:
                 logger.info("RAG: 검색할 임베딩 데이터가 없습니다.", extra=log_extra)
-                return "", []
+                return "", [], 0.0
 
             if not scored_entries:
                 logger.info(
@@ -449,24 +455,22 @@ class AIHandler(commands.Cog):
                     similarity_threshold,
                     extra=log_extra,
                 )
-                return "", []
+                return "", [], 0.0
 
             scored_entries.sort(key=lambda item: item["similarity"], reverse=True)
-            top_entries = scored_entries[:3]
+            top_entries = scored_entries[:6]
             top_messages = [entry["message"] for entry in top_entries]
 
             context_lines = []
-            for entry in top_entries:
+            for idx, entry in enumerate(top_entries, start=1):
                 prefixes = []
                 if entry.get("origin"):
                     prefixes.append(entry["origin"])
                 if entry.get("speaker"):
                     prefixes.append(str(entry["speaker"]))
-                prefix_block = " ".join(f"[{p}]" for p in prefixes)
-                if prefix_block:
-                    context_lines.append(f"- {prefix_block} {entry['message']}")
-                else:
-                    context_lines.append(f"- {entry['message']}")
+                prefixes.append(f"유사도 {entry['similarity']:.3f}")
+                prefix_block = " ".join(f"[{p}]" for p in prefixes if p)
+                context_lines.append(f"{idx}. {prefix_block} {entry['message']}")
 
             context_str = "참고할 만한 과거 대화 내용:\n" + "\n".join(context_lines)
             top_similarity = top_entries[0]["similarity"] if top_entries else 0.0
@@ -477,10 +481,10 @@ class AIHandler(commands.Cog):
                 extra=log_extra,
             )
             logger.debug("RAG 결과: %s", context_str, extra=log_extra)
-            return context_str, top_messages
+            return context_str, top_messages, top_similarity
         except (aiosqlite.Error, np.linalg.LinAlgError) as e:
             logger.error(f"RAG 컨텍스트 처리(DB, 유사도 계산) 중 오류: {e}", exc_info=True, extra=log_extra)
-            return "", []
+            return "", [], 0.0
 
     def _parse_tool_calls(self, text: str) -> list[dict]:
         """Lite 모델의 응답에서 <tool_plan> 또는 <tool_call> XML 태그를 파싱하여 JSON으로 변환합니다."""
@@ -509,7 +513,9 @@ class AIHandler(commands.Cog):
 
     async def _execute_tool(self, tool_call: dict, guild_id: int, user_query: str) -> dict:
         """파싱된 단일 도구 호출 계획을 실제로 실행하고 결과를 반환합니다."""
-        tool_name = tool_call.get('tool_to_use')
+        tool_name = tool_call.get('tool_to_use') or tool_call.get('tool_name')
+        if tool_name and 'tool_to_use' not in tool_call:
+            tool_call['tool_to_use'] = tool_name
         parameters = tool_call.get('parameters', {})
         log_extra = {'guild_id': guild_id, 'tool_name': tool_name, 'parameters': parameters}
 
@@ -555,8 +561,16 @@ class AIHandler(commands.Cog):
 
         async with message.channel.typing():
             try:
-                rag_prompt, _ = await self._get_rag_context(message.guild.id, message.channel.id, message.author.id, user_query)
+                rag_prompt, rag_messages, rag_top_similarity = await self._get_rag_context(
+                    message.guild.id,
+                    message.channel.id,
+                    message.author.id,
+                    user_query,
+                )
                 history = await self._get_recent_history(message, rag_prompt)
+                similarity_threshold = getattr(config, "RAG_SIMILARITY_THRESHOLD", 0.65)
+                strong_similarity_threshold = getattr(config, "RAG_STRONG_SIMILARITY_THRESHOLD", 0.72)
+                rag_is_strong = bool(rag_prompt) and rag_top_similarity >= strong_similarity_threshold
 
                 # --- [1단계] Lite 모델(PM) 호출: 의도 분석 및 계획 수립 --- 
                 lite_system_prompt = f"{rag_prompt}\n\n{config.LITE_MODEL_SYSTEM_PROMPT}" if rag_prompt else config.LITE_MODEL_SYSTEM_PROMPT
@@ -574,7 +588,25 @@ class AIHandler(commands.Cog):
                 lite_response_text = lite_response.text.strip()
                 logger.info(f"Lite 모델 응답: '{lite_response_text[:150]}...'", extra=log_extra)
                 
-                tool_plan = self._parse_tool_calls(lite_response_text)
+                tool_plan_raw = self._parse_tool_calls(lite_response_text)
+                tool_plan: list[dict] = []
+                for call in tool_plan_raw:
+                    if not isinstance(call, dict):
+                        continue
+                    normalized = dict(call)
+                    if 'tool_to_use' not in normalized and 'tool_name' in normalized:
+                        normalized['tool_to_use'] = normalized.get('tool_name')
+                    tool_plan.append(normalized)
+
+                if rag_is_strong and tool_plan:
+                    filtered_plan = [call for call in tool_plan if call.get('tool_to_use') != 'web_search']
+                    if len(filtered_plan) != len(tool_plan):
+                        logger.info(
+                            "강한 RAG 컨텍스트(최고 유사도=%.3f)로 web_search 단계를 생략합니다.",
+                            rag_top_similarity,
+                            extra=log_extra,
+                        )
+                    tool_plan = filtered_plan
 
                 # --- [분기 처리] ---
                 # Case 1: 간단한 대화로 판단된 경우 (<conversation_response> 태그 포함)
@@ -598,30 +630,53 @@ class AIHandler(commands.Cog):
                     return
 
                 # Case 2: 도구 계획이 없는 경우 (Lite 모델이 직접 답변)
-                if not tool_plan:
+                if not tool_plan and not rag_prompt:
                     logger.info("분기: 도구 계획이 없으며, Lite 모델의 답변으로 바로 응답합니다.", extra=log_extra)
                     await message.reply(lite_response_text, mention_author=False)
                     await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {"guild_id": message.guild.id, "user_id": message.author.id, "channel_id": message.channel.id, "trace_id": trace_id, "user_query": user_query, "tool_plan": [], "final_response": lite_response_text, "is_fallback": False})
                     return
 
+                if not tool_plan and rag_prompt:
+                    logger.info(
+                        "도구 계획이 없지만 강한 RAG 컨텍스트를 활용하여 Main 모델로 진행합니다.",
+                        extra=log_extra,
+                    )
+
                 # --- [2단계] 도구 실행 ---
                 logger.info(f"2단계: 도구 실행 시작. 총 {len(tool_plan)}단계.", extra=log_extra)
                 tool_results = []
-                for i, tool_call in enumerate(tool_plan):
-                    step_num = i + 1
-                    logger.info(f"계획 실행 ({step_num}/{len(tool_plan)}): {tool_call.get('tool_to_use')}", extra=log_extra)
+                if rag_prompt:
+                    tool_results.append(
+                        {
+                            "step": 0,
+                            "tool_name": "local_rag",
+                            "parameters": {
+                                "similarity_threshold": similarity_threshold,
+                                "top_similarity": rag_top_similarity,
+                            },
+                            "result": {"messages": rag_messages},
+                        }
+                    )
+
+                for i, tool_call in enumerate(tool_plan, start=1):
+                    step_num = i if not rag_prompt else i
+                    logger.info(f"계획 실행 ({i}/{len(tool_plan)}): {tool_call.get('tool_to_use')}", extra=log_extra)
                     result = await self._execute_tool(tool_call, message.guild.id, user_query)
                     tool_results.append({"step": step_num, "tool_name": tool_call.get('tool_to_use'), "parameters": tool_call.get('parameters'), "result": result})
 
                 # --- [폴백 로직] 도구 실패 시 웹 검색으로 대체 ---
                 def is_tool_failed(result): return result is None or any(keyword in str(result).lower() for keyword in ["error", "오류", "실패", "없습니다", "알 수 없는", "찾을 수"])
-                any_failed = any(is_tool_failed(res.get("result")) for res in tool_results)
+                executed_tool_results = [res for res in tool_results if res.get("tool_name") not in {"local_rag"}]
+                any_failed = any(is_tool_failed(res.get("result")) for res in executed_tool_results)
                 use_fallback_prompt = False
 
-                if tool_plan and any_failed and not any(tc.get('tool_to_use') == 'web_search' for tc in tool_plan):
+                executed_tool_names = {res.get("tool_name") for res in executed_tool_results}
+                if executed_tool_results and any_failed and 'web_search' not in executed_tool_names:
                     logger.info("하나 이상의 도구 실행에 실패하여 웹 검색으로 대체합니다.", extra=log_extra)
                     web_search_result = await self._execute_tool({"tool_to_use": "web_search", "parameters": {"query": user_query}}, message.guild.id, user_query)
-                    tool_results = [{"step": 1, "tool_name": "web_search", "parameters": {"query": user_query}, "result": web_search_result}]
+                    rag_entries = [res for res in tool_results if res.get("tool_name") == "local_rag"]
+                    next_step = (rag_entries[-1]["step"] + 1) if rag_entries else 1
+                    tool_results = rag_entries + [{"step": next_step, "tool_name": "web_search", "parameters": {"query": user_query}, "result": web_search_result}]
                     use_fallback_prompt = True
 
                 # --- [3단계] Main 모델 호출: 최종 답변 생성 ---
@@ -639,6 +694,11 @@ class AIHandler(commands.Cog):
                 persona = channel_config.get('persona', config.DEFAULT_TSUNDERE_PERSONA)
                 rules = channel_config.get('rules', config.DEFAULT_TSUNDERE_RULES)
                 main_system_prompt = f"{persona}\n\n{rules}\n\n{main_system_prompt}"
+                if rag_prompt:
+                    main_system_prompt = (
+                        f"{main_system_prompt}\n\n### Local Conversation Context "
+                        f"(최고 유사도 {rag_top_similarity:.3f})\n{rag_prompt}"
+                    )
 
                 main_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, system_instruction=main_system_prompt)
                 main_prompt = "이제 모든 도구 실행 결과를 바탕으로, 사용자의 원래 질문에 대해 페르소나를 완벽하게 적용해서 최종 답변을 생성해줘."

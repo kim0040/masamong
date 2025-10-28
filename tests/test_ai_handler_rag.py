@@ -59,10 +59,11 @@ async def test_get_rag_context_returns_top_similar_message(monkeypatch, tmp_path
     monkeypatch.setattr("utils.embeddings.get_embedding", fake_get_embedding)
     monkeypatch.setattr("cogs.ai_handler.get_embedding", fake_get_embedding)
 
-    context_text, top_contents = await handler._get_rag_context(123, 456, 111, "테스트 질문")
+    context_text, top_contents, top_similarity = await handler._get_rag_context(123, 456, 111, "테스트 질문")
 
     assert "첫 번째 메시지" in context_text
     assert "두 번째 메시지" not in context_text
     assert top_contents == ["첫 번째 메시지"]
+    assert top_similarity > 0.0
 
     await db.close()
