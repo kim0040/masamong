@@ -5,6 +5,11 @@
 # Configuration files
 config.json
 emb_config.json
+prompts*.json
+prompts*.yaml
+prompts*.yml
+prompts*.env
+channel_prompts.*
 
 # Log files
 *.log
