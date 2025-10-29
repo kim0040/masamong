@@ -5,6 +5,7 @@
 ## 프로젝트 개요
 - Discord.py 2.x 기반의 비동기 Discord 봇
 - Google Gemini(Lite/Flash) + 맞춤 도구 묶음을 활용한 2단계 에이전트 구조
+- Reciprocal Rank Fusion(RRF) 하이브리드 검색 + 선택적 Cross-Encoder 리랭커
 - 기상청(OpenAPI)·Finnhub·Kakao 등 핵심 외부 API 연동
 - SentenceTransformer 기반 로컬 임베딩 + SQLite RAG 저장소
 - SQLite + aiosqlite로 사용자 활동·대화 내역·API 호출 제한을 관리
@@ -19,7 +20,7 @@
 - 기타 Cog: 유틸리티 명령(`!delete_log`), 투표, 재미 요소 등
 
 ## Discord 사용 가이드
-- **AI 호출 (`@마사몽`)**: 멘션하면 의도 분석 → 도구 실행 → 응답 생성 파이프라인이 동작합니다. 대화 맥락을 일부 기억하므로 "아까 말한 그거?" 같은 추억팔이도 가능합니다.
+- **AI 호출 (`@마사몽`)**: 멘션이 확인되면 의도 분석 → 도구 실행 → 응답 생성 파이프라인이 동작합니다. 멘션이 없다면 어떤 경우에도 답변하거나 API를 호출하지 않습니다.
 - **바로 쓸 수 있는 질문**
 -  - `📈` 주식: "애플 주가 얼마야?", "삼성전자 오늘 주가 알려줘"
   - `💱` 환율: "달러 환율 알려줘", "엔화 환율은?"
@@ -40,14 +41,39 @@
 ```
 masamong/
 ├── main.py                 # 봇 엔트리포인트 및 Cog 로딩
-├── config.py               # 환경 변수/설정 로딩 유틸리티
+├── config.py               # 환경 변수·임베딩·프롬프트 설정 로더
 ├── logger_config.py        # 콘솔·파일·Discord 로그 핸들러
 ├── cogs/                   # 기능 모듈 (AI, 날씨, 활동 통계 등)
 ├── utils/                  # API 래퍼, DB/HTTP 유틸리티, 초기 데이터
-├── database/               # SQLite 초기화 스크립트 및 스키마
+├── database/               # SQLite 초기화 스크립트 및 하이브리드 색인
 ├── tests/                  # pytest 기반 단위 테스트
 └── requirements.txt        # 의존성 목록
 ```
+
+## 프롬프트 & 멘션 관리
+- 모든 시스템/페르소나 프롬프트는 `prompts.json`(또는 `PROMPT_CONFIG_PATH` 환경변수로 지정한 JSON·YAML)에서 로드하며 저장소에는 포함하지 않습니다.
+- 로드된 프롬프트에는 자동으로 **“사용자가 봇을 멘션한 메시지에만 응답한다”**는 가드 문구가 추가됩니다.
+- `CHANNEL_AI_CONFIG` 역시 이 파일을 기반으로 재구성되므로, 응답을 허용할 채널은 `allowed: true`로 명시해야 합니다.
+- `<@봇ID>`, `<@!봇ID>`, `@봇닉네임` 등 다양한 멘션 표기를 모두 인식하며, 멘션이 없으면 Gemini 호출을 포함한 어떤 처리도 실행되지 않습니다.
+
+```jsonc
+{
+  "prompts": {
+    "lite_system_prompt": "…",          // Lite(의도 분석) 시스템 프롬프트
+    "agent_system_prompt": "…",         // 메인 답변용 프롬프트
+    "web_fallback_prompt": "…"          // 웹 검색만 가능할 때 사용
+  },
+  "channels": {
+    "912210558122598450": {
+      "allowed": true,
+      "persona": "…",                   // 채널 전용 페르소나
+      "rules": "…"                      // 채널 전용 규칙
+    }
+  }
+}
+```
+
+> `prompts.json`은 `.gitignore`에 포함되어 있으므로 운영 서버에만 배포하세요.
 
 ## 준비 사항
 - Python 3.9 이상 (3.11 권장)
@@ -79,6 +105,7 @@ masamong/
 4. **필요한 키와 값 채우기**
    - `.env` 또는 실제 환경 변수에 필수 키를 입력합니다.
    - `config.json`은 `.env` 값이 없을 때 참조되는 보조 설정입니다.
+   - `prompts.json`을 작성해 채널별 페르소나·규칙·시스템 프롬프트를 정의합니다.
 
 ## 가상환경 초기화 & 재설치 절차
 1. (선택) 실행 중인 봇이 있다면 `screen`/`tmux` 세션에서 `Ctrl+C`로 종료합니다.
@@ -154,13 +181,23 @@ masamong/
 - `screen` 대신 `tmux`/`systemd`를 쓰면 메모리 사용량이 더 줄어드는 것은 아니지만, 비정상 종료 시 자동 재시작을 설정하는 데 도움이 됩니다.
 
 ## 데이터베이스 초기화
-최초 실행 전 SQLite 스키마를 생성합니다.
+최초 실행 전 SQLite 스키마와 BM25 인덱스를 준비합니다.
 ```bash
 python database/init_db.py
+python database/init_bm25.py   # (선택) 기존 대화 로그를 FTS5 인덱스로 재구축
 ```
 - `database/remasamong.db`가 생성되며, 필수 테이블과 카운터가 준비됩니다.
 - `utils/initial_data.py`가 위치 좌표를 시드합니다.
 - 임베딩 전용 DB(`discord_embeddings.db` 등)는 메시지 저장 시 자동 생성됩니다.
+- BM25 하이브리드 검색을 활용하려면 `init_bm25.py`를 주기적으로 실행해 FTS 인덱스를 최신 상태로 유지하세요.
+
+## RAG 검색 고도화 운용 가이드
+- 임베딩 기반 벡터 검색과 BM25 텍스트 검색을 동시에 수행한 뒤 Reciprocal Rank Fusion(RRF)으로 점수를 결합합니다.
+- 상위 후보는 선택적으로 Cross-Encoder 리랭커가 재평가하며, 의존 라이브러리(torch/transformers)가 없으면 자동으로 건너뜁니다.
+- 시맨틱 청킹(`utils/chunker.py`)을 이용해 주변 문장을 묶어 전달하므로, 답변 시 맥락 손실을 최소화합니다.
+- `utils/query_rewriter.py`가 멘션 확인 이후에만 Gemini 쿼리 리라이트를 호출하며, 생성된 변형 쿼리는 모두 동일한 멘션 정책을 따릅니다.
+- `emb_config.json`의 `hybrid_top_k`, `bm25_top_n`, `rrf_constant`, `reranker_model_name`, `query_rewrite_variants` 등을 조정해 성능을 튜닝할 수 있습니다.
+- 운영 환경에서는 BM25 인덱스 파일과 임베딩 DB를 정기적으로 백업하고, 필요 시 `database/init_bm25.py`로 재구축하세요.
 
 ## 실행 (screen 기반 운영)
 운영 환경에서 `screen` 세션을 사용해 봇을 띄울 때는 다음 절차를 따릅니다.
@@ -192,10 +229,17 @@ python database/init_db.py
 - Discord 채널 로그: 서버 내 `#logs` 채널 (권한 필요)
 - 실시간 확인이 필요하면 `screen -r`로 세션에 재접속하여 콘솔 출력을 확인하세요.
 
+## 디버그 설정
+- `RAG_DEBUG_ENABLED`: RAG 후보/유사도 정보를 서버 로그에만 남깁니다. 채팅에는 절대 노출되지 않습니다.
+- `AI_DEBUG_ENABLED`: 멘션 게이트 판단, Gemini 프롬프트·응답, 도구 실행/폴백 과정을 세부 로그로 기록합니다.
+- `AI_DEBUG_LOG_MAX_LEN`: 디버그 로그에 표시할 프롬프트/응답 미리보기 길이 (기본 400자)를 조정합니다.
+
 ## 테스트 실행
 단위 테스트는 pytest로 구성되어 있습니다. 가상환경에서 실행하세요.
 ```bash
 pytest
+pytest tests/test_ai_handler_mentions.py      # 멘션 게이트 확인
+pytest tests/test_hybrid_search.py            # 하이브리드 검색 검증
 pytest tests/test_weather_handler.py::TestWeatherCog  # 특정 테스트 예시
 ```
 일부 테스트는 외부 API 호출을 모킹하므로 네트워크 없이도 동작합니다.

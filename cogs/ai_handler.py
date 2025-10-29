@@ -44,6 +44,9 @@ from utils.embeddings import (
     KakaoEmbeddingStore,
     get_embedding,
 )
+from database.bm25_index import BM25IndexManager
+from utils.hybrid_search import HybridSearchEngine
+from utils.reranker import Reranker, RerankerConfig
 
 KST = pytz.timezone('Asia/Seoul')
 
@@ -69,6 +72,25 @@ class AIHandler(commands.Cog):
             config.KAKAO_EMBEDDING_DB_PATH,
             config.KAKAO_EMBEDDING_SERVER_MAP,
         ) if config.KAKAO_EMBEDDING_DB_PATH or config.KAKAO_EMBEDDING_SERVER_MAP else None
+        self.bm25_manager = BM25IndexManager(config.BM25_DATABASE_PATH) if config.BM25_DATABASE_PATH else None
+
+        reranker: Reranker | None = None
+        if config.RAG_RERANKER_MODEL_NAME:
+            reranker_config = RerankerConfig(
+                model_name=config.RAG_RERANKER_MODEL_NAME,
+                device=config.RAG_RERANKER_DEVICE,
+                score_threshold=config.RAG_RERANKER_SCORE_THRESHOLD,
+            )
+            reranker = Reranker(reranker_config)
+        self.reranker = reranker
+        self.hybrid_search_engine = HybridSearchEngine(
+            self.discord_embedding_store,
+            self.kakao_embedding_store,
+            self.bm25_manager,
+            reranker=self.reranker,
+        )
+        self.debug_enabled = config.AI_DEBUG_ENABLED
+        self._debug_log_len = getattr(config, "AI_DEBUG_LOG_MAX_LEN", 400)
 
         if config.GEMINI_API_KEY and genai:
             try:
@@ -84,6 +106,120 @@ class AIHandler(commands.Cog):
     def is_ready(self) -> bool:
         """AI 핸들러가 모든 의존성(Gemini, DB, ToolsCog)을 포함하여 준비되었는지 확인합니다."""
         return self.gemini_configured and self.bot.db is not None and self.tools_cog is not None
+
+    def _debug(self, message: str, log_extra: dict[str, Any] | None = None) -> None:
+        """디버그 설정이 켜진 경우에만 메시지를 기록합니다."""
+        if not self.debug_enabled:
+            return
+        if log_extra:
+            logger.debug(message, extra=log_extra)
+        else:
+            logger.debug(message)
+
+    def _truncate_for_debug(self, value: Any) -> str:
+        """긴 문자열을 로그용으로 잘라냅니다."""
+        if value is None:
+            return ""
+        rendered = str(value)
+        max_len = self._debug_log_len
+        if len(rendered) <= max_len:
+            return rendered
+        return rendered[:max_len] + "…"
+
+    def _format_prompt_debug(self, prompt: Any) -> str:
+        """Gemini 프롬프트를 JSON 문자열 또는 일반 문자열로 축약합니다."""
+        try:
+            if isinstance(prompt, (dict, list)):
+                rendered = json.dumps(prompt, ensure_ascii=False)
+            else:
+                rendered = str(prompt)
+        except Exception:
+            rendered = repr(prompt)
+        return self._truncate_for_debug(rendered)
+
+    def _message_has_valid_mention(self, message: discord.Message) -> bool:
+        """메시지에 봇 멘션이 존재하는지 확인합니다."""
+        bot_user = getattr(self.bot, "user", None)
+        if bot_user is None:
+            return False
+
+        try:
+            mentions = getattr(message, "mentions", []) or []
+        except AttributeError:
+            mentions = []
+        if any(getattr(member, "id", None) == bot_user.id for member in mentions):
+            return True
+
+        content = (message.content or "").lower()
+        alias_candidates: set[str] = set()
+        name = getattr(bot_user, "name", None)
+        if name:
+            alias_candidates.add(f"@{name.lower()}")
+        display_name = getattr(bot_user, "display_name", None)
+        if display_name:
+            alias_candidates.add(f"@{display_name.lower()}")
+        global_name = getattr(bot_user, "global_name", None)
+        if global_name:
+            alias_candidates.add(f"@{global_name.lower()}")
+
+        guild = getattr(message, "guild", None)
+        if guild is not None:
+            guild_me = getattr(guild, "me", None)
+            guild_display = getattr(guild_me, "display_name", None)
+            if guild_display:
+                alias_candidates.add(f"@{str(guild_display).lower()}")
+
+        # 사용자들이 다양한 별칭으로 부를 수 있으므로, 모든 별칭을 소문자로 비교한다.
+        alias_candidates = {alias for alias in alias_candidates if alias.strip("@")}
+        return any(alias in content for alias in alias_candidates)
+
+    def _strip_bot_references(self, content: str, guild: discord.Guild | None) -> str:
+        """메시지 내용에서 봇 멘션 및 별칭을 제거합니다."""
+        base_content = content or ""
+        bot_user = getattr(self.bot, "user", None)
+        if bot_user is None:
+            return base_content.strip()
+
+        patterns: set[str] = set()
+        patterns.add(f"<@{bot_user.id}>")
+        patterns.add(f"<@!{bot_user.id}>")
+
+        for alias in (
+            getattr(bot_user, "name", None),
+            getattr(bot_user, "display_name", None),
+            getattr(bot_user, "global_name", None),
+        ):
+            if alias:
+                patterns.add(f"@{alias}")
+
+        if guild is not None:
+            guild_me = getattr(guild, "me", None)
+            guild_display = getattr(guild_me, "display_name", None)
+            if guild_display:
+                patterns.add(f"@{guild_display}")
+
+        patterns = {p for p in patterns if p}
+        if not patterns:
+            return base_content.strip()
+
+        pattern = re.compile("|".join(re.escape(p) for p in patterns), flags=re.IGNORECASE)
+        stripped = pattern.sub(" ", base_content)
+        return re.sub(r"\s+", " ", stripped).strip()
+
+    def _prepare_user_query(self, message: discord.Message, log_extra: dict[str, Any]) -> str | None:
+        """멘션 검증 후 사용자 쿼리를 정제합니다."""
+        if not self._message_has_valid_mention(message):
+            self._debug("멘션이 없어 메시지를 무시합니다.", log_extra)
+            logger.info("멘션이 없는 메시지를 무시합니다.", extra=log_extra)
+            return None
+        # 멘션만 포함된 메시지는 Gemini 호출을 막기 위해 빈 문자열로 처리한다.
+        stripped = self._strip_bot_references(message.content or "", message.guild)
+        if not stripped:
+            self._debug("멘션만 존재해 쿼리가 비어 있습니다.", log_extra)
+            logger.info("봇 멘션만 포함된 메시지를 무시합니다.", extra=log_extra)
+            return None
+        self._debug(f"정제된 사용자 쿼리: {self._truncate_for_debug(stripped)}", log_extra)
+        return stripped
 
     async def _safe_generate_content(self, model: genai.GenerativeModel, prompt: Any, log_extra: dict, generation_config: genai.types.GenerationConfig = None) -> genai.types.GenerateContentResponse | None:
         """Gemini `generate_content_async` 호출을 감싸 안정성을 높입니다.
@@ -105,7 +241,12 @@ class AIHandler(commands.Cog):
             rpm = config.RPM_LIMIT_INTENT if limit_key == 'gemini_intent' else config.RPM_LIMIT_RESPONSE
             rpd = config.RPD_LIMIT_INTENT if limit_key == 'gemini_intent' else config.RPD_LIMIT_RESPONSE
 
+            if self.debug_enabled:
+                preview = self._format_prompt_debug(prompt)
+                self._debug(f"[Gemini:{model.model_name}] 호출 프롬프트: {preview}", log_extra)
+
             if await db_utils.check_api_rate_limit(self.bot.db, limit_key, rpm, rpd):
+                self._debug(f"[Gemini:{model.model_name}] 호출 차단 - rate limit 도달 ({limit_key})", log_extra)
                 logger.warning(f"Gemini API 호출 제한({limit_key})에 도달했습니다.", extra=log_extra)
                 return None
 
@@ -115,6 +256,12 @@ class AIHandler(commands.Cog):
                 safety_settings=config.GEMINI_SAFETY_SETTINGS,
             )
             await db_utils.log_api_call(self.bot.db, limit_key)
+            if self.debug_enabled and response is not None:
+                text = getattr(response, "text", None)
+                self._debug(
+                    f"[Gemini:{model.model_name}] 응답 요약: {self._truncate_for_debug(text)}",
+                    log_extra,
+                )
             return response
         except Exception as e:
             logger.error(f"Gemini 응답 생성 중 예기치 않은 오류: {e}", extra=log_extra, exc_info=True)
@@ -346,183 +493,123 @@ class AIHandler(commands.Cog):
         user_id: int,
         query: str,
     ) -> Tuple[str, list[str], float]:
-        """RAG: 사용자의 질문과 유사한 과거 대화 내용을 DB에서 검색하여 컨텍스트로 반환합니다."""
+        """RAG: 하이브리드 검색 결과를 바탕으로 컨텍스트를 구성합니다."""
         if not config.AI_MEMORY_ENABLED:
-            return "", [], 0.0
-        if np is None:
-            logger.warning("numpy가 없어 RAG 검색을 건너뜁니다.", extra={'guild_id': guild_id, 'channel_id': channel_id})
             return "", [], 0.0
 
         log_extra = {'guild_id': guild_id, 'channel_id': channel_id, 'user_id': user_id}
-        logger.info(f"RAG 컨텍스트 검색 시작. Query: '{query}'", extra=log_extra)
+        logger.info("RAG 컨텍스트 검색 시작. Query: '%s'", query, extra=log_extra)
 
-        query_embedding = await self._generate_local_embedding(query, log_extra)
-        if query_embedding is None:
+        engine = getattr(self, "hybrid_search_engine", None)
+        if engine is None:
+            logger.warning("하이브리드 검색 엔진이 초기화되지 않았습니다.", extra=log_extra)
             return "", [], 0.0
 
         try:
-            similarity_threshold = config.RAG_SIMILARITY_THRESHOLD
-            limit = getattr(config, "LOCAL_EMBEDDING_QUERY_LIMIT", 200)
-
-            def _cosine_similarity(v1: np.ndarray, v2: np.ndarray) -> float:
-                norm_v1, norm_v2 = np.linalg.norm(v1), np.linalg.norm(v2)
-                return float(np.dot(v1, v2) / (norm_v1 * norm_v2)) if norm_v1 > 0 and norm_v2 > 0 else 0.0
-
-            def _to_vector(blob: Any) -> np.ndarray | None:
-                if blob is None:
-                    return None
-                if isinstance(blob, np.ndarray):
-                    return blob.astype(np.float32)
-                if isinstance(blob, memoryview):
-                    blob = blob.tobytes()
-                if isinstance(blob, (bytes, bytearray)):
-                    return np.frombuffer(blob, dtype=np.float32)
-                if isinstance(blob, list):
-                    return np.asarray(blob, dtype=np.float32)
-                if isinstance(blob, str):
-                    try:
-                        parsed = json.loads(blob)
-                    except json.JSONDecodeError:
-                        return None
-                    if isinstance(parsed, list):
-                        return np.asarray(parsed, dtype=np.float32)
-                return None
-
-            scored_entries: list[Dict[str, Any]] = []
-            had_candidates = False
-
-            discord_rows = await self.discord_embedding_store.fetch_recent_embeddings(
-                server_id=guild_id,
+            result = await engine.search(
+                query,
+                guild_id=guild_id,
                 channel_id=channel_id,
                 user_id=user_id,
-                limit=limit,
             )
-            if discord_rows:
-                had_candidates = True
-                for raw_row in discord_rows:
-                    row = dict(raw_row)
-                    message_text = row.get("message")
-                    vector = _to_vector(row.get("embedding"))
-                    if not message_text or vector is None:
-                        continue
-                    row.setdefault("db_path", config.DISCORD_EMBEDDING_DB_PATH)
-                    similarity = _cosine_similarity(query_embedding, vector)
-                    if similarity > similarity_threshold:
-                        scored_entries.append(
-                            {
-                                "similarity": similarity,
-                                "message": message_text,
-                                "origin": "Discord",
-                                "speaker": row.get("user_name"),
-                                "db_path": row.get("db_path"),
-                                "matched_server_id": str(guild_id),
-                                "context_window": [],
-                            }
-                        )
-
-            kakao_rows: list[Dict[str, Any]] = []
-            if self.kakao_embedding_store is not None:
-                kakao_rows = await self.kakao_embedding_store.fetch_recent_embeddings(
-                    server_ids={str(channel_id), str(guild_id)},
-                    limit=limit,
-                    query_vector=query_embedding,
-                )
-                if kakao_rows:
-                    had_candidates = True
-                    for row in kakao_rows:
-                        message_text = row.get("message")
-                        vector = _to_vector(row.get("embedding"))
-                        if not message_text or vector is None:
-                            continue
-                        similarity = _cosine_similarity(query_embedding, vector)
-                        if similarity > similarity_threshold:
-                            label = row.get("label")
-                            origin = "카카오"
-                            if label and label != origin:
-                                origin = f"카카오:{label}"
-                            scored_entries.append(
-                                {
-                                    "similarity": similarity,
-                                    "message": message_text,
-                                    "origin": origin,
-                                    "speaker": row.get("speaker"),
-                                    "db_path": row.get("db_path"),
-                                    "matched_server_id": row.get("matched_server_id"),
-                                    "context_window": row.get("context_window") or [],
-                                }
-                            )
-
-            if not had_candidates:
-                logger.info("RAG: 검색할 임베딩 데이터가 없습니다.", extra=log_extra)
-                return "", [], 0.0
-
-            if not scored_entries:
-                logger.info(
-                    "RAG: 유사도 %.2f 이상인 문서를 찾지 못했습니다.",
-                    similarity_threshold,
-                    extra=log_extra,
-                )
-                return "", [], 0.0
-
-            scored_entries.sort(key=lambda item: item["similarity"], reverse=True)
-            top_entries_raw = scored_entries[:6]
-            top_entries = [dict(entry) for entry in top_entries_raw]
-
-            context_lines = []
-            for idx, entry in enumerate(top_entries, start=1):
-                prefixes = []
-                if entry.get("origin"):
-                    prefixes.append(entry["origin"])
-                if entry.get("speaker"):
-                    prefixes.append(str(entry["speaker"]))
-                if entry.get("db_path"):
-                    prefixes.append(f"db:{entry['db_path']}")
-                prefixes.append(f"유사도 {entry['similarity']:.3f}")
-                prefix_block = " ".join(f"[{p}]" for p in prefixes if p)
-                main_text = entry['message']
-                context_lines.append(f"{idx}. {prefix_block} {main_text}")
-
-                window_context = entry.get("context_window") or []
-                for ctx in window_context:
-                    speaker = ctx.get("user_name") or "?"
-                    ctx_message = ctx.get("message") or ""
-                    context_lines.append(f"    - {speaker}: {ctx_message}")
-
-            context_str = "참고할 만한 과거 대화 내용:\n" + "\n".join(context_lines)
-            top_similarity = top_entries[0]["similarity"] if top_entries else 0.0
-            logger.info(
-                "RAG: %d개의 유사한 대화 내용을 찾았습니다. (최고 유사도=%.3f)",
-                len(top_entries),
-                top_similarity,
-                extra=log_extra,
-            )
-            if config.RAG_DEBUG_ENABLED:
-                debug_lines = []
-                for entry in top_entries:
-                    snippet = entry["message"] if len(entry["message"]) <= 120 else entry["message"][:117] + "..."
-                    debug_lines.append(
-                        "- origin=%s speaker=%s db=%s sim=%.3f msg=%s"
-                        % (
-                            entry.get("origin") or "?",
-                            entry.get("speaker") or "?",
-                            entry.get("db_path") or "-",
-                            entry["similarity"],
-                            snippet,
-                        )
-                    )
-                    window_context = entry.get("context_window") or []
-                    if window_context:
-                        for ctx in window_context:
-                            speaker = ctx.get("user_name") or "?"
-                            ctx_message = ctx.get("message") or ""
-                            ctx_snippet = ctx_message if len(ctx_message) <= 100 else ctx_message[:97] + "..."
-                            debug_lines.append(f"    • {speaker}: {ctx_snippet}")
-                logger.info("RAG 디버그 상세:\n%s", "\n".join(debug_lines), extra=log_extra)
-            logger.debug("RAG 결과: %s", context_str, extra=log_extra)
-            return context_str, top_entries, top_similarity
-        except (aiosqlite.Error, np.linalg.LinAlgError) as e:
-            logger.error(f"RAG 컨텍스트 처리(DB, 유사도 계산) 중 오류: {e}", exc_info=True, extra=log_extra)
+        except Exception as exc:
+            logger.error("하이브리드 검색 중 오류: %s", exc, extra=log_extra, exc_info=True)
             return "", [], 0.0
+
+        if not result.entries:
+            logger.info("RAG: 하이브리드 검색 결과가 없습니다.", extra=log_extra)
+            return "", [], 0.0
+
+        top_entries = []
+        for entry in result.entries:
+            cloned = dict(entry)
+            sources = cloned.get("sources")
+            if isinstance(sources, set):
+                cloned["sources"] = sorted(sources)
+            top_entries.append(cloned)
+
+        def _score(entry: dict[str, Any]) -> float:
+            return max(
+                entry.get("similarity") or 0.0,
+                entry.get("bm25_score") or 0.0,
+                entry.get("hybrid_score") or 0.0,
+                entry.get("rerank_score") or 0.0,
+            )
+
+        context_lines: list[str] = []
+        for idx, entry in enumerate(top_entries, start=1):
+            prefixes: list[str] = []
+            origin = entry.get("origin")
+            if origin:
+                prefixes.append(str(origin))
+            speaker = entry.get("speaker")
+            if speaker:
+                prefixes.append(str(speaker))
+
+            metrics: list[str] = []
+            if entry.get("similarity") is not None:
+                metrics.append(f"sim={entry['similarity']:.3f}")
+            if entry.get("bm25_score") is not None:
+                metrics.append(f"bm25={entry['bm25_score']:.3f}")
+            if entry.get("hybrid_score") is not None:
+                metrics.append(f"hybrid={entry['hybrid_score']:.3f}")
+            if entry.get("rerank_score") is not None:
+                metrics.append(f"rerank={entry['rerank_score']:.3f}")
+            if metrics:
+                prefixes.append(" ".join(metrics))
+
+            prefix_block = " ".join(f"[{p}]" for p in prefixes if p)
+            message = entry.get("message") or ""
+            context_lines.append(f"{idx}. {prefix_block} {message}".strip())
+
+            for ctx_item in entry.get("context_window") or []:
+                ctx_speaker = ctx_item.get("user_name") or ctx_item.get("speaker") or "?"
+                ctx_message = ctx_item.get("message") or ""
+                if ctx_message:
+                    context_lines.append(f"    - {ctx_speaker}: {ctx_message}")
+
+        if len(result.query_variants) > 1:
+            variant_str = ", ".join(result.query_variants)
+            header = f"참고할 만한 과거 대화 내용 (확장 쿼리: {variant_str}):"
+        else:
+            header = "참고할 만한 과거 대화 내용:"
+        context_str = header + "\n" + "\n".join(context_lines)
+
+        top_entry = top_entries[0]
+        top_metric = float(_score(top_entry))
+        logger.info(
+            "RAG: 하이브리드 검색 결과 %d개 (최고 점수=%.3f)",
+            len(top_entries),
+            top_metric,
+            extra=log_extra,
+        )
+
+        if config.RAG_DEBUG_ENABLED:
+            debug_lines = []
+            for entry in top_entries:
+                snippet = entry.get("message") or ""
+                snippet = snippet if len(snippet) <= 160 else snippet[:157] + "..."
+                debug_lines.append(
+                    "- origin=%s speaker=%s hybrid=%.3f sim=%.3f bm25=%.3f rerank=%.3f msg=%s"
+                    % (
+                        entry.get("origin") or "?",
+                        entry.get("speaker") or "?",
+                        entry.get("hybrid_score") or 0.0,
+                        entry.get("similarity") or 0.0,
+                        entry.get("bm25_score") or 0.0,
+                        entry.get("rerank_score") or 0.0,
+                        snippet,
+                    )
+                )
+                for ctx_item in entry.get("context_window") or []:
+                    ctx_speaker = ctx_item.get("user_name") or ctx_item.get("speaker") or "?"
+                    ctx_message = ctx_item.get("message") or ""
+                    ctx_snippet = ctx_message if len(ctx_message) <= 100 else ctx_message[:97] + "..."
+                    debug_lines.append(f"    • {ctx_speaker}: {ctx_snippet}")
+            logger.info("RAG 디버그 상세:\n%s", "\n".join(debug_lines), extra=log_extra)
+
+        logger.debug("RAG 결과: %s", context_str, extra=log_extra)
+        return context_str, top_entries, top_metric
 
     def _parse_tool_calls(self, text: str) -> list[dict]:
         """Lite 모델의 응답에서 <tool_plan> 또는 <tool_call> XML 태그를 파싱하여 JSON으로 변환합니다."""
@@ -595,6 +682,7 @@ class AIHandler(commands.Cog):
 
     @staticmethod
     def _build_rag_debug_block(entries: list[dict]) -> str:
+        """RAG 후보를 로그로 남기기 위한 포맷터."""
         if not config.RAG_DEBUG_ENABLED or not entries:
             return ""
 
@@ -625,11 +713,14 @@ class AIHandler(commands.Cog):
         if tool_name == 'web_search':
             logger.info("특별 도구 실행: web_search (Google Grounding)", extra=log_extra)
             query = parameters.get('query', user_query)
+            self._debug(f"[도구:web_search] 쿼리: {self._truncate_for_debug(query)}", log_extra)
             grounded_payload = await self._google_grounded_search(query, log_extra)
             if grounded_payload and grounded_payload.get("result"):
+                self._debug(f"[도구:web_search] 결과: {self._truncate_for_debug(grounded_payload)}", log_extra)
                 return grounded_payload
             fallback_result = await self._run_web_search_fallback(query, log_extra)
             if fallback_result:
+                self._debug(f"[도구:web_search] 폴백 결과: {self._truncate_for_debug(fallback_result)}", log_extra)
                 return {"result": fallback_result}
             return {"error": "Google 검색을 통해 정보를 찾는 데 실패했습니다."}
 
@@ -637,7 +728,9 @@ class AIHandler(commands.Cog):
         try:
             tool_method = getattr(self.tools_cog, tool_name)
             logger.info(f"일반 도구 실행: {tool_name} with params: {parameters}", extra=log_extra)
+            self._debug(f"[도구:{tool_name}] 파라미터: {self._truncate_for_debug(parameters)}", log_extra)
             result = await tool_method(**parameters)
+            self._debug(f"[도구:{tool_name}] 결과: {self._truncate_for_debug(result)}", log_extra)
             if not isinstance(result, dict):
                 return {"result": str(result)}
             return result
@@ -650,13 +743,23 @@ class AIHandler(commands.Cog):
 
     async def process_agent_message(self, message: discord.Message):
         """2-Step Agent의 전체 흐름을 관리합니다."""
-        if not self.is_ready: return
-        user_query = re.sub(f'<@!?{self.bot.user.id}>', '', message.content).strip()
-        if not user_query: return
+        if not self.is_ready:
+            return
+
+        base_log_extra = {
+            'guild_id': message.guild.id if message.guild else None,
+            'channel_id': message.channel.id,
+            'user_id': message.author.id,
+        }
+        user_query = self._prepare_user_query(message, base_log_extra)
+        if not user_query:
+            return
 
         trace_id = uuid.uuid4().hex[:8]
-        log_extra = {'guild_id': message.guild.id, 'channel_id': message.channel.id, 'user_id': message.author.id, 'trace_id': trace_id}
+        log_extra = dict(base_log_extra)
+        log_extra['trace_id'] = trace_id
         logger.info(f"에이전트 처리 시작. Query: '{user_query}'", extra=log_extra)
+        self._debug(f"--- 에이전트 세션 시작 trace_id={trace_id}", log_extra)
 
         async with message.channel.typing():
             try:
@@ -670,11 +773,19 @@ class AIHandler(commands.Cog):
                 similarity_threshold = config.RAG_SIMILARITY_THRESHOLD
                 strong_similarity_threshold = config.RAG_STRONG_SIMILARITY_THRESHOLD
                 rag_is_strong = bool(rag_prompt) and rag_top_similarity >= strong_similarity_threshold
+                self._debug(
+                    f"RAG 결과: strong={rag_is_strong} top_sim={rag_top_similarity:.3f} entries={len(rag_entries)}",
+                    log_extra,
+                )
 
                 # --- [1단계] Lite 모델(PM) 호출: 의도 분석 및 계획 수립 --- 
                 lite_system_prompt = f"{rag_prompt}\n\n{config.LITE_MODEL_SYSTEM_PROMPT}" if rag_prompt else config.LITE_MODEL_SYSTEM_PROMPT
                 lite_model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME, system_instruction=lite_system_prompt)
                 lite_conversation = history + [{'role': 'user', 'parts': [user_query]}]
+                self._debug(
+                    f"[Lite] system_prompt={self._truncate_for_debug(lite_system_prompt)} conversation={self._truncate_for_debug(lite_conversation)}",
+                    log_extra,
+                )
 
                 logger.info("1단계: Lite 모델(의도 분석) 호출...", extra=log_extra)
                 lite_response = await self._safe_generate_content(lite_model, lite_conversation, log_extra)
@@ -686,6 +797,7 @@ class AIHandler(commands.Cog):
 
                 lite_response_text = lite_response.text.strip()
                 logger.info(f"Lite 모델 응답: '{lite_response_text[:150]}...'", extra=log_extra)
+                self._debug(f"[Lite] 응답: {self._truncate_for_debug(lite_response_text)}", log_extra)
                 
                 tool_plan_raw = self._parse_tool_calls(lite_response_text)
                 tool_plan: list[dict] = []
@@ -721,9 +833,10 @@ class AIHandler(commands.Cog):
 
                     if main_response and main_response.text:
                         final_response_text = main_response.text.strip()
+                        self._debug(f"[Main] 최종 응답(간단대화): {self._truncate_for_debug(final_response_text)}", log_extra)
                         debug_block = self._build_rag_debug_block(rag_entries)
                         if debug_block:
-                            final_response_text = f"{final_response_text}\n\n{debug_block}"
+                            logger.debug("RAG 디버그 블록:\n%s", debug_block, extra=log_extra)
                         await message.reply(final_response_text, mention_author=False)
                         await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {"guild_id": message.guild.id, "user_id": message.author.id, "channel_id": message.channel.id, "trace_id": trace_id, "user_query": user_query, "tool_plan": [], "final_response": final_response_text, "is_fallback": False})
                     else:
@@ -746,6 +859,7 @@ class AIHandler(commands.Cog):
 
                 # --- [2단계] 도구 실행 ---
                 logger.info(f"2단계: 도구 실행 시작. 총 {len(tool_plan)}단계.", extra=log_extra)
+                self._debug(f"도구 계획: {self._truncate_for_debug(tool_plan)}", log_extra)
                 tool_results = []
                 if rag_prompt:
                     tool_results.append(
@@ -793,6 +907,7 @@ class AIHandler(commands.Cog):
                     next_step = (rag_tool_entries[-1]["step"] + 1) if rag_tool_entries else 1
                     tool_results = rag_tool_entries + [{"step": next_step, "tool_name": "web_search", "parameters": {"query": user_query}, "result": web_search_result}]
                     use_fallback_prompt = True
+                    self._debug("[도구] 웹 검색 폴백 수행", log_extra)
 
                 # --- [3단계] Main 모델 호출: 최종 답변 생성 ---
                 logger.info("3단계: Main 모델(답변 생성) 호출...", extra=log_extra)
@@ -825,13 +940,16 @@ class AIHandler(commands.Cog):
                     "위 자료를 최우선으로 참고해서 사실에 근거한 답장을 반말로 작성해. 자료에 없는 내용은 모른다고 솔직하게 말하고, 억지 추측은 하지 마."
                 )
                 main_prompt = "\n\n".join(main_prompt_parts)
+                self._debug(f"[Main] system_prompt={self._truncate_for_debug(main_system_prompt)}", log_extra)
+                self._debug(f"[Main] user_prompt={self._truncate_for_debug(main_prompt)}", log_extra)
                 main_response = await self._safe_generate_content(main_model, main_prompt, log_extra)
 
                 if main_response and main_response.text:
                     final_response_text = main_response.text.strip()
+                    self._debug(f"[Main] 최종 응답: {self._truncate_for_debug(final_response_text)}", log_extra)
                     debug_block = self._build_rag_debug_block(rag_entries)
                     if debug_block:
-                        final_response_text = f"{final_response_text}\n\n{debug_block}"
+                        logger.debug("RAG 디버그 블록:\n%s", debug_block, extra=log_extra)
                     await message.reply(final_response_text, mention_author=False)
                     await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {"guild_id": message.guild.id, "user_id": message.author.id, "channel_id": message.channel.id, "trace_id": trace_id, "user_query": user_query, "tool_plan": tool_plan, "final_response": final_response_text, "is_fallback": use_fallback_prompt})
                 else:
@@ -843,6 +961,8 @@ class AIHandler(commands.Cog):
             except Exception as e:
                 logger.error(f"에이전트 처리 중 최상위 오류: {e}", exc_info=True, extra=log_extra)
                 await message.reply(config.MSG_AI_ERROR, mention_author=False)
+            finally:
+                self._debug(f"--- 에이전트 세션 종료 trace_id={trace_id}", log_extra)
 
     async def _get_recent_history(self, message: discord.Message, rag_prompt: str) -> list:
         """모델에 전달할 최근 대화 기록을 채널에서 가져옵니다."""
@@ -862,6 +982,9 @@ class AIHandler(commands.Cog):
         """봇이 대화에 능동적으로 참여할지 여부를 결정하는 게이트키퍼 로직입니다."""
         conf = config.AI_PROACTIVE_RESPONSE_CONFIG
         if not conf.get("enabled"): return False
+        if not self._message_has_valid_mention(message):
+            # 멘션이 없다면 어떤 경우에도 Gemini 호출을 수행하지 않는다.
+            return False
 
         now = time.time()
         if (now - self.proactive_cooldowns.get(message.channel.id, 0)) < conf.get("cooldown_seconds", 90): return False

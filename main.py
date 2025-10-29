@@ -219,9 +219,7 @@ class ReMasamongBot(commands.Bot):
         if not ai_enabled_channel:
             return
 
-        is_bot_mentioned = any(mention.id == self.user.id for mention in message.mentions)
-
-        if not is_bot_mentioned:
+        if not ai_handler._message_has_valid_mention(message):
             return
 
         try:
