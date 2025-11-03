@@ -6,13 +6,17 @@
 - Discord.py 2.x 기반의 비동기 Discord 봇
 - Google Gemini(Lite/Flash) + 맞춤 도구 묶음을 활용한 2단계 에이전트 구조
 - Reciprocal Rank Fusion(RRF) 하이브리드 검색 + 선택적 Cross-Encoder 리랭커
+- Lite(Thinking) JSON 응답 → Flash 단일 승급으로 비용을 관리하는 라우팅 규칙
+- 슬라이딩 윈도우(6/stride 3) 기반 대화 맥락과 의미/키워드 가중 결합 RAG 파이프라인
 - 기상청(OpenAPI)·Finnhub·Kakao 등 핵심 외부 API 연동
 - SentenceTransformer 기반 로컬 임베딩 + SQLite RAG 저장소
 - SQLite + aiosqlite로 사용자 활동·대화 내역·API 호출 제한을 관리
 - 구조화된 로깅(`logger_config.py`)과 Discord 임베드 로그 지원
 
 ## 주요 기능
-- `AIHandler`: Gemini 모델 호출, 대화 기록(RAG), 도구 실행 파이프라인
+- `AIHandler`: Gemini 모델 호출, Thinking/Flash 라우팅, 도구 실행 파이프라인
+- `Thinking 라우팅`: Lite 모델이 JSON으로 초안/도구 계획/셀프 스코어를 작성하고 필요할 때만 Flash를 1회 호출합니다.
+- `대화 윈도우 저장`: 최근 6개의 메시지를 묶어 ±3 메시지 이웃까지 한 번에 RAG 컨텍스트로 제공합니다.
 - `ToolsCog`: 날씨/환율/주식/Kakao 검색 등 외부 API에 대한 통합 인터페이스
 - `WeatherCog`: 기상청(KMA) 날씨 조회와 비/눈 알림, 인사 알림 루프
 - `ActivityCog`: 사용자 메시지 누적 → `!랭킹` 명령으로 활동 순위 안내
@@ -80,6 +84,7 @@ masamong/
 - Git, SQLite3
 - Discord 봇 토큰과 필수 API 키 (Gemini, 기상청 등)
 - macOS/Linux 환경에서의 `screen` 사용 가능 여부
+- CPU-only 환경을 기본 가정하며, Flash 승급 비율을 1회 이하로 유지하도록 설계되어 있습니다.
 
 ## 설치 절차
 1. **소스 코드 가져오기 및 가상환경 구성**
@@ -133,19 +138,28 @@ masamong/
    ```
 
 ## 핵심 환경 변수
-`config.py`는 다음 순서로 값을 찾습니다: (1) OS 환경 변수 → (2) `.env` → (3) `config.json`. 주요 키:
+`config.py`는 다음 순서로 값을 찾습니다: (1) OS 환경 변수 → (2) `.env` → (3) `config.json`. 자주 쓰는 키는 아래 표를 참고하세요.
 
-- `DISCORD_BOT_TOKEN`: Discord 봇 토큰 (필수)
-- `GEMINI_API_KEY`: Google Gemini API 키 (필수)
-- `GOOGLE_API_KEY`, `GOOGLE_CX`: Google Custom Search (웹 검색 1순위)
-- `SERPAPI_KEY`: SerpAPI 키 (웹 검색 2순위)
-- `KAKAO_API_KEY`: Kakao 로컬/웹 검색 (폴백)
-- `KMA_API_KEY`: 기상청 API 키 (국내 날씨)
-- `KMA_BASE_URL`: (선택) 동네예보 API 기본 URL. 기본값은 기상청 API 허브입니다.
-- `KMA_ALERT_BASE_URL`: (선택) 기상특보 API 기본 URL. 기본값은 기상청 API 허브, 공공데이터 포털 키를 쓰면 `https://apis.data.go.kr/1360000/WthrWrnInfoService` 같은 기존 URL로 변경하세요.
-- `EXIM_API_KEY_KR`: 한국수출입은행 환율 API 키
-- `FINNHUB_API_KEY`: 미국/해외 주식 조회용 키
-- `ENABLE_PROACTIVE_KEYWORD_HINTS`: `true`로 설정하면 키워드 기반 자동 제안을 다시 활성화할 수 있습니다.
+| 키 | 설명 | 기본값 |
+| --- | --- | --- |
+| `DISCORD_BOT_TOKEN` | Discord 봇 토큰 | 필수 |
+| `GEMINI_API_KEY` | Google Gemini API 키 | 필수 |
+| `GOOGLE_API_KEY`, `GOOGLE_CX` | Google Custom Search | 선택 |
+| `SERPAPI_KEY` | SerpAPI 키 (웹 검색 2순위) | 선택 |
+| `KAKAO_API_KEY` | Kakao 로컬/웹 검색 | 선택 |
+| `KMA_API_KEY` | 기상청 API 키 | 선택 |
+| `FINNHUB_API_KEY` | 미국/해외 주식 조회 | 선택 |
+| `ENABLE_PROACTIVE_KEYWORD_HINTS` | 키워드 기반 능동 응답 | `false` |
+| `SEARCH_QUERY_EXPANSION_ENABLED` | Thinking 단계 쿼리 확장 | `true` |
+| `SEARCH_CHUNKING_ENABLED` | RAG 청킹 사용 여부 | `false` |
+| `RERANK_ENABLED` | Cross-Encoder 리랭킹 | `false` |
+| `AI_MEMORY_ENABLED` | 로컬 임베딩/RAG | `true` |
+| `CONVERSATION_WINDOW_SIZE` | 대화 윈도우 크기 | `6` |
+| `CONVERSATION_WINDOW_STRIDE` | 대화 윈도우 stride | `3` |
+| `CONVERSATION_NEIGHBOR_RADIUS` | 인접 대화 half-window | `3` |
+| `DISABLE_VERBOSE_THINKING_OUTPUT` | Thinking JSON 전체 로그 | `true` |
+
+그 외 `KMA_BASE_URL`, `KMA_ALERT_BASE_URL`, `EXIM_API_KEY_KR` 등 세부 API 엔드포인트 역시 환경 변수로 조정할 수 있습니다.
 
 임베딩/RAG 관련 경로 및 모델 설정은 `emb_config.json`에서 관리합니다. 기본 예시 파일(`emb_config.json.example`)을 참고해 서버/채널별 저장소 경로나 SentenceTransformer 모델명을 조정하세요.
 
@@ -189,15 +203,31 @@ python database/init_bm25.py   # (선택) 기존 대화 로그를 FTS5 인덱스
 - `database/remasamong.db`가 생성되며, 필수 테이블과 카운터가 준비됩니다.
 - `utils/initial_data.py`가 위치 좌표를 시드합니다.
 - 임베딩 전용 DB(`discord_embeddings.db` 등)는 메시지 저장 시 자동 생성됩니다.
+- `conversation_windows` 테이블에는 메시지 6개 단위의 슬라이딩 묶음이 저장되어 RAG에서 즉시 재사용됩니다.
 - BM25 하이브리드 검색을 활용하려면 `init_bm25.py`를 주기적으로 실행해 FTS 인덱스를 최신 상태로 유지하세요.
 
 ## RAG 검색 고도화 운용 가이드
-- 임베딩 기반 벡터 검색과 BM25 텍스트 검색을 동시에 수행한 뒤 Reciprocal Rank Fusion(RRF)으로 점수를 결합합니다.
-- 상위 후보는 선택적으로 Cross-Encoder 리랭커가 재평가하며, 의존 라이브러리(torch/transformers)가 없으면 자동으로 건너뜁니다.
-- 시맨틱 청킹(`utils/chunker.py`)을 이용해 주변 문장을 묶어 전달하므로, 답변 시 맥락 손실을 최소화합니다.
-- `utils/query_rewriter.py`가 멘션 확인 이후에만 Gemini 쿼리 리라이트를 호출하며, 생성된 변형 쿼리는 모두 동일한 멘션 정책을 따릅니다.
-- `emb_config.json`의 `hybrid_top_k`, `bm25_top_n`, `rrf_constant`, `reranker_model_name`, `query_rewrite_variants` 등을 조정해 성능을 튜닝할 수 있습니다.
-- 운영 환경에서는 BM25 인덱스 파일과 임베딩 DB를 정기적으로 백업하고, 필요 시 `database/init_bm25.py`로 재구축하세요.
+1. **Thinking 단계 쿼리 확장**: 사용자의 현재 질문과 직전 사용자/봇 발화를 조합해 시드 쿼리를 만들고, 필요하면 Gemini로 패러프레이즈를 1회 생성합니다.
+2. **의미·키워드 하이브리드**: SentenceTransformer 임베딩 상위 `RAG_EMBEDDING_TOP_N`과 BM25 상위 `RAG_BM25_TOP_N`을 불러와 0.55/0.45 가중치로 `combined_score`를 계산합니다.
+3. **대화 윈도우 재구성**: 각 후보는 저장된 슬라이딩 윈도우(`conversation_windows`)나 ±`CONVERSATION_NEIGHBOR_RADIUS` 이웃 메시지를 묶어 `[speaker][time] text` 형식으로 정리됩니다.
+4. **선택적 리랭킹**: `RERANK_ENABLED=true`라면 Cross-Encoder가 상위 후보만 재평가하고, torch/transformers가 설치되어 있지 않으면 자동으로 생략됩니다.
+5. **Thinking JSON**: Lite 모델은 위 RAG 블록을 바탕으로 `{analysis, tool_plan, draft, self_score, needs_flash}`를 채운 JSON을 반드시 반환합니다. self_score가 낮거나 위험 판단 시 Flash를 한 번만 호출합니다.
+6. **운영 팁**: `emb_config.json`의 `hybrid_top_k`, `bm25_top_n`, `rrf_constant`, `query_rewrite_variants` 등을 조정해 성향을 튜닝하고, 인덱스/임베딩 DB는 정기적으로 백업하세요.
+
+## Thinking/Flash 라우팅 규칙
+- **Thinking(Flash Lite)** 단계는 다음 JSON 형식을 준수합니다.
+  ```json
+  {
+    "analysis": "요약/의도 분석",
+    "tool_plan": [{"tool_name": "search_for_place", "parameters": {...}}],
+    "draft": "반말 초안",
+    "self_score": {"accuracy": 0.92, "completeness": 0.85, "risk": 0.10, "overall": 0.90},
+    "needs_flash": false
+  }
+  ```
+- `self_score.overall < 0.75`, `risk > 0.6`, 금융/법률/의료/정책 등 고위험 질의, 예상 토큰 > 1200, 근거 충돌 등이 감지되면 Flash가 1회 호출됩니다.
+- 도구 실행이 실패하면 자동으로 `web_search`가 폴백으로 추가되며, 강한 RAG 컨텍스트(`combined_score >= RAG_STRONG_SIMILARITY_THRESHOLD`)에서는 중복 웹 검색을 제거합니다.
+- Thinking 초안이 충분히 신뢰할 수 있으면 Flash 없이 Lite 응답만으로 최종 답변을 반환합니다.
 
 ## 실행 (screen 기반 운영)
 운영 환경에서 `screen` 세션을 사용해 봇을 띄울 때는 다음 절차를 따릅니다.
@@ -237,12 +267,12 @@ python database/init_bm25.py   # (선택) 기존 대화 로그를 FTS5 인덱스
 ## 테스트 실행
 단위 테스트는 pytest로 구성되어 있습니다. 가상환경에서 실행하세요.
 ```bash
-pytest
+pytest                  # huggingface_hub 미설치 시 test_download.py에서 오류가 발생할 수 있습니다.
+pytest tests            # tests/ 디렉터리만 실행하면 huggingface 의존 테스트가 제외됩니다.
 pytest tests/test_ai_handler_mentions.py      # 멘션 게이트 확인
 pytest tests/test_hybrid_search.py            # 하이브리드 검색 검증
-pytest tests/test_weather_handler.py::TestWeatherCog  # 특정 테스트 예시
 ```
-일부 테스트는 외부 API 호출을 모킹하므로 네트워크 없이도 동작합니다.
+일부 테스트는 외부 API를 모킹하므로 네트워크 없이도 동작합니다.
 
 ## 운영 팁 & 문제 해결
 - **Gemini 키 누락**: `config.GEMINI_API_KEY`가 비어 있으면 AI 응답이 동작하지 않습니다. 봇 시작 시 경고 로그를 확인하세요.

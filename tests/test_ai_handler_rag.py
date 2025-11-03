@@ -25,6 +25,7 @@ async def test_get_rag_context_returns_top_similar_message(monkeypatch, tmp_path
     monkeypatch.setattr(config, "DISCORD_EMBEDDING_DB_PATH", str(temp_embed_db))
     monkeypatch.setattr(config, "BM25_DATABASE_PATH", str(tmp_path / "bm25.db"))
     monkeypatch.setattr(config, "RAG_QUERY_REWRITE_ENABLED", False)
+    monkeypatch.setattr(config, "SEARCH_QUERY_EXPANSION_ENABLED", False)
     monkeypatch.setattr(config, "RAG_RERANKER_MODEL_NAME", "")
 
     dummy_bot = SimpleNamespace(db=db, get_cog=lambda name: None)
@@ -63,14 +64,15 @@ async def test_get_rag_context_returns_top_similar_message(monkeypatch, tmp_path
     monkeypatch.setattr("utils.hybrid_search.get_embedding", fake_get_embedding)
     monkeypatch.setattr("cogs.ai_handler.get_embedding", fake_get_embedding)
 
-    context_text, top_entries, top_similarity = await handler._get_rag_context(123, 456, 111, "테스트 질문")
+    context_text, top_entries, top_score, rag_blocks = await handler._get_rag_context(123, 456, 111, "테스트 질문")
 
     assert "첫 번째 메시지" in context_text
     assert "두 번째 메시지" not in context_text
     assert isinstance(top_entries, list)
-    assert top_entries and top_entries[0]["message"] == "첫 번째 메시지"
-    assert "context_window" in top_entries[0]
-    assert top_entries[0]["origin"] == "Discord"
-    assert top_similarity > 0.0
+    assert top_entries and "dialogue_block" in top_entries[0]
+    assert "첫 번째 메시지" in top_entries[0]["dialogue_block"]
+    assert top_entries[0]["combined_score"] > 0.0
+    assert top_score > 0.0
+    assert rag_blocks and "첫 번째 메시지" in rag_blocks[0]
 
     await db.close()
