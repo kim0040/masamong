@@ -6,6 +6,12 @@
   "normalize_embeddings": true,
   "query_limit": 200,
   "kakao_vector_extension": "vec0",
+  "conversation_neighbor_radius": 3,
+  "bm25_auto_rebuild": {
+    "enabled": false,
+    "idle_minutes": 180,
+    "poll_minutes": 15
+  },
   "kakao_servers": [
     {
       "server_id": "kakao_room_01",
