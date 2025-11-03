@@ -75,7 +75,7 @@ class AIHandler(commands.Cog):
         self.bm25_manager = BM25IndexManager(config.BM25_DATABASE_PATH) if config.BM25_DATABASE_PATH else None
 
         reranker: Reranker | None = None
-        if config.RAG_RERANKER_MODEL_NAME:
+        if config.RERANK_ENABLED and config.RAG_RERANKER_MODEL_NAME:
             reranker_config = RerankerConfig(
                 model_name=config.RAG_RERANKER_MODEL_NAME,
                 device=config.RAG_RERANKER_DEVICE,
@@ -89,6 +89,8 @@ class AIHandler(commands.Cog):
             self.bm25_manager,
             reranker=self.reranker,
         )
+        self._window_buffers: dict[tuple[int, int], deque[dict[str, Any]]] = {}
+        self._window_counts: dict[tuple[int, int], int] = {}
         self.debug_enabled = config.AI_DEBUG_ENABLED
         self._debug_log_len = getattr(config, "AI_DEBUG_LOG_MAX_LEN", 400)
 
@@ -296,8 +298,18 @@ class AIHandler(commands.Cog):
 
             await self.bot.db.execute(
                 "INSERT INTO conversation_history (message_id, guild_id, channel_id, user_id, user_name, content, is_bot, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (message.id, message.guild.id, message.channel.id, message.author.id, message.author.display_name, message.content, message.author.bot, message.created_at.isoformat())
+                (
+                    message.id,
+                    message.guild.id,
+                    message.channel.id,
+                    message.author.id,
+                    message.author.display_name,
+                    message.content,
+                    message.author.bot,
+                    message.created_at.isoformat(),
+                ),
             )
+            await self._update_conversation_windows(message)
             await self.bot.db.commit()
             if not message.author.bot and message.content.strip():
                 asyncio.create_task(self._create_and_save_embedding(message))
@@ -324,6 +336,64 @@ class AIHandler(commands.Cog):
             )
         except Exception as e:
             logger.error(f"임베딩 DB 저장 중 오류: {e}", extra=log_extra, exc_info=True)
+
+    async def _update_conversation_windows(self, message: discord.Message) -> None:
+        """대화 슬라이딩 윈도우(6개, stride=3)를 누적해 별도 테이블에 저장합니다."""
+        if not message.guild or self.bot.db is None:
+            return
+
+        window_size = max(1, getattr(config, "CONVERSATION_WINDOW_SIZE", 6))
+        stride = max(1, getattr(config, "CONVERSATION_WINDOW_STRIDE", 3))
+        key = (message.guild.id, message.channel.id)
+
+        # 채널별 슬라이딩 버퍼에 메시지를 누적한다.
+        buffer = self._window_buffers.setdefault(key, deque(maxlen=window_size))
+        entry = {
+            "message_id": int(message.id),
+            "user_id": int(message.author.id),
+            "user_name": message.author.display_name or message.author.name or str(message.author.id),
+            "content": (message.content or "").strip(),
+            "is_bot": bool(message.author.bot),
+            "created_at": message.created_at.isoformat(),
+        }
+        buffer.append(entry)
+
+        # stride 계산을 위해 채널별 삽입 횟수를 기록한다.
+        counter = self._window_counts.get(key, 0) + 1
+        self._window_counts[key] = counter
+
+        if len(buffer) < window_size:
+            return
+        # stride 간격에 맞춰 윈도우를 저장한다.
+        if (counter - window_size) % stride != 0:
+            return
+
+        try:
+            payload = list(buffer)
+            await self.bot.db.execute(
+                """
+                INSERT OR REPLACE INTO conversation_windows (
+                    guild_id, channel_id, start_message_id, end_message_id,
+                    message_count, messages_json, anchor_timestamp
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    message.guild.id,
+                    message.channel.id,
+                    payload[0]["message_id"],
+                    payload[-1]["message_id"],
+                    len(payload),
+                    json.dumps(payload, ensure_ascii=False),
+                    payload[-1]["created_at"],
+                ),
+            )
+        except Exception as exc:  # pragma: no cover - 방어적 로깅
+            logger.error(
+                "대화 윈도우 저장 중 DB 오류: %s",
+                exc,
+                extra={"guild_id": message.guild.id, "channel_id": message.channel.id},
+                exc_info=True,
+            )
 
     def _discover_google_grounding_tool(self) -> dict[str, object] | None:
         """사용 중인 Gemini 버전에 호환되는 구글 서치 도구를 탐색합니다.
@@ -486,16 +556,18 @@ class AIHandler(commands.Cog):
             return fallback_result.get("result")
         return None
 
+
     async def _get_rag_context(
         self,
         guild_id: int,
         channel_id: int,
         user_id: int,
         query: str,
-    ) -> Tuple[str, list[str], float]:
+        recent_messages: list[str] | None = None,
+    ) -> tuple[str, list[dict[str, Any]], float, list[str]]:
         """RAG: 하이브리드 검색 결과를 바탕으로 컨텍스트를 구성합니다."""
         if not config.AI_MEMORY_ENABLED:
-            return "", [], 0.0
+            return "", [], 0.0, []
 
         log_extra = {'guild_id': guild_id, 'channel_id': channel_id, 'user_id': user_id}
         logger.info("RAG 컨텍스트 검색 시작. Query: '%s'", query, extra=log_extra)
@@ -503,7 +575,7 @@ class AIHandler(commands.Cog):
         engine = getattr(self, "hybrid_search_engine", None)
         if engine is None:
             logger.warning("하이브리드 검색 엔진이 초기화되지 않았습니다.", extra=log_extra)
-            return "", [], 0.0
+            return "", [], 0.0, []
 
         try:
             result = await engine.search(
@@ -511,105 +583,211 @@ class AIHandler(commands.Cog):
                 guild_id=guild_id,
                 channel_id=channel_id,
                 user_id=user_id,
+                recent_messages=recent_messages,
             )
         except Exception as exc:
             logger.error("하이브리드 검색 중 오류: %s", exc, extra=log_extra, exc_info=True)
-            return "", [], 0.0
+            return "", [], 0.0, []
 
         if not result.entries:
             logger.info("RAG: 하이브리드 검색 결과가 없습니다.", extra=log_extra)
-            return "", [], 0.0
+            return "", [], 0.0, []
 
-        top_entries = []
-        for entry in result.entries:
-            cloned = dict(entry)
-            sources = cloned.get("sources")
-            if isinstance(sources, set):
-                cloned["sources"] = sorted(sources)
-            top_entries.append(cloned)
+        limit = max(getattr(config, "RAG_HYBRID_TOP_K", 4), 1)
+        prepared_entries: list[dict[str, Any]] = []
+        rag_blocks: list[str] = []
 
-        def _score(entry: dict[str, Any]) -> float:
-            return max(
-                entry.get("similarity") or 0.0,
-                entry.get("bm25_score") or 0.0,
-                entry.get("hybrid_score") or 0.0,
-                entry.get("rerank_score") or 0.0,
+        for entry in result.entries[:limit]:
+            dialogue_block = (entry.get("dialogue_block") or entry.get("message") or "").strip()
+            if not dialogue_block:
+                continue
+            rag_blocks.append(dialogue_block)  # LLM 컨텍스트에 포함할 핵심 대화 묶음
+            prepared_entries.append(
+                {
+                    "dialogue_block": dialogue_block,
+                    "combined_score": float(entry.get("combined_score", 0.0) or 0.0),
+                    "similarity": entry.get("similarity"),
+                    "bm25_score": entry.get("bm25_score"),
+                    "sources": entry.get("sources"),
+                    "origin": entry.get("origin"),
+                    "speaker": entry.get("speaker"),
+                    "message_id": entry.get("message_id"),
+                }
             )
 
-        context_lines: list[str] = []
-        for idx, entry in enumerate(top_entries, start=1):
-            prefixes: list[str] = []
-            origin = entry.get("origin")
-            if origin:
-                prefixes.append(str(origin))
-            speaker = entry.get("speaker")
-            if speaker:
-                prefixes.append(str(speaker))
+        if not rag_blocks:
+            return "", [], 0.0, []
 
-            metrics: list[str] = []
-            if entry.get("similarity") is not None:
-                metrics.append(f"sim={entry['similarity']:.3f}")
-            if entry.get("bm25_score") is not None:
-                metrics.append(f"bm25={entry['bm25_score']:.3f}")
-            if entry.get("hybrid_score") is not None:
-                metrics.append(f"hybrid={entry['hybrid_score']:.3f}")
-            if entry.get("rerank_score") is not None:
-                metrics.append(f"rerank={entry['rerank_score']:.3f}")
-            if metrics:
-                prefixes.append(" ".join(metrics))
+        context_sections = []
+        for idx, block in enumerate(rag_blocks, start=1):
+            context_sections.append(f"[대화 {idx}]\\n{block}")  # 순번을 붙여 블록 경계를 명시한다.
+        context_str = "\\n\\n".join(context_sections)
 
-            prefix_block = " ".join(f"[{p}]" for p in prefixes if p)
-            message = entry.get("message") or ""
-            context_lines.append(f"{idx}. {prefix_block} {message}".strip())
-
-            for ctx_item in entry.get("context_window") or []:
-                ctx_speaker = ctx_item.get("user_name") or ctx_item.get("speaker") or "?"
-                ctx_message = ctx_item.get("message") or ""
-                if ctx_message:
-                    context_lines.append(f"    - {ctx_speaker}: {ctx_message}")
-
-        if len(result.query_variants) > 1:
-            variant_str = ", ".join(result.query_variants)
-            header = f"참고할 만한 과거 대화 내용 (확장 쿼리: {variant_str}):"
-        else:
-            header = "참고할 만한 과거 대화 내용:"
-        context_str = header + "\n" + "\n".join(context_lines)
-
-        top_entry = top_entries[0]
-        top_metric = float(_score(top_entry))
+        top_score = float(result.top_score or 0.0)
         logger.info(
             "RAG: 하이브리드 검색 결과 %d개 (최고 점수=%.3f)",
-            len(top_entries),
-            top_metric,
+            len(prepared_entries),
+            top_score,
             extra=log_extra,
         )
 
         if config.RAG_DEBUG_ENABLED:
             debug_lines = []
-            for entry in top_entries:
-                snippet = entry.get("message") or ""
-                snippet = snippet if len(snippet) <= 160 else snippet[:157] + "..."
-                debug_lines.append(
-                    "- origin=%s speaker=%s hybrid=%.3f sim=%.3f bm25=%.3f rerank=%.3f msg=%s"
-                    % (
-                        entry.get("origin") or "?",
-                        entry.get("speaker") or "?",
-                        entry.get("hybrid_score") or 0.0,
-                        entry.get("similarity") or 0.0,
-                        entry.get("bm25_score") or 0.0,
-                        entry.get("rerank_score") or 0.0,
-                        snippet,
-                    )
-                )
-                for ctx_item in entry.get("context_window") or []:
-                    ctx_speaker = ctx_item.get("user_name") or ctx_item.get("speaker") or "?"
-                    ctx_message = ctx_item.get("message") or ""
-                    ctx_snippet = ctx_message if len(ctx_message) <= 100 else ctx_message[:97] + "..."
-                    debug_lines.append(f"    • {ctx_speaker}: {ctx_snippet}")
-            logger.info("RAG 디버그 상세:\n%s", "\n".join(debug_lines), extra=log_extra)
+            for entry in prepared_entries:
+                score = entry.get("combined_score", 0.0)
+                snippet = entry.get("dialogue_block", "")
+                snippet = snippet if len(snippet) <= 200 else snippet[:197] + "..."
+                origin = entry.get("origin") or "?"
+                speaker = entry.get("speaker") or "?"
+                debug_lines.append(f"- origin={origin} speaker={speaker} score={score:.3f} | {snippet}")
+            logger.info("RAG 디버그 상세:\\n%s", "\\n".join(debug_lines), extra=log_extra)
 
         logger.debug("RAG 결과: %s", context_str, extra=log_extra)
-        return context_str, top_entries, top_metric
+        return context_str, prepared_entries, top_score, rag_blocks
+
+    async def _collect_recent_search_messages(self, message: discord.Message, limit: int = 10) -> list[str]:
+        """최근 채널 메시지에서 사용자/봇 발화를 추출해 검색 확장에 사용합니다."""
+        previous_user: str | None = None
+        previous_bot: str | None = None
+        async for msg in message.channel.history(limit=limit):
+            if msg.id == message.id:
+                continue
+            content = (msg.content or "").strip()
+            if not content:
+                continue
+            if previous_user is None and msg.author.id == message.author.id:
+                previous_user = content  # 바로 이전 사용자의 질문
+            elif previous_bot is None and getattr(msg.author, "bot", False):
+                previous_bot = content  # 직전 봇 답변
+            if previous_user and previous_bot:
+                break
+
+        collected: list[str] = []
+        if previous_user:
+            collected.append(previous_user)
+        if previous_bot:
+            collected.append(previous_bot)
+        return collected
+
+    @staticmethod
+    def _extract_json_block(text: str) -> str:
+        stripped = text.strip()
+        if stripped.startswith("```"):
+            stripped = re.sub(r'^```[a-zA-Z0-9_]*\s*', '', stripped)
+            if stripped.endswith("```"):
+                stripped = stripped[:-3]
+        start = stripped.find('{')
+        end = stripped.rfind('}')
+        if start != -1 and end != -1 and end >= start:
+            return stripped[start : end + 1]
+        return stripped
+
+    @staticmethod
+    def _normalize_score(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            score = float(value)
+        except (TypeError, ValueError):
+            return None
+        if score < 0.0:
+            return 0.0
+        if score > 1.0:
+            return 1.0
+        return score
+
+    def _parse_thinking_response(self, text: str) -> dict[str, Any]:
+        payload_text = self._extract_json_block(text)  # 코드블럭 등을 제거하고 JSON 본문만 남긴다.
+        try:
+            data = json.loads(payload_text)
+        except json.JSONDecodeError as exc:
+            logger.warning("Thinking 응답 JSON 파싱 실패: %s", exc)
+            return {}
+        if not isinstance(data, dict):
+            return {}
+
+        analysis = str(data.get("analysis") or "").strip()
+        draft = str(data.get("draft") or "").strip()
+
+        plan: list[dict[str, Any]] = []
+        raw_plan = data.get("tool_plan")
+        if isinstance(raw_plan, list):
+            for item in raw_plan:
+                if not isinstance(item, dict):
+                    continue
+                tool_name = item.get("tool_name") or item.get("tool_to_use")
+                if not tool_name:
+                    continue
+                parameters = item.get("parameters")
+                if not isinstance(parameters, dict):
+                    parameters = {}
+                plan.append({
+                    "tool_to_use": tool_name,
+                    "tool_name": tool_name,
+                    "parameters": parameters,
+                })
+
+        score_payload = data.get("self_score")
+        scores: dict[str, float] = {}
+        if isinstance(score_payload, dict):
+            for key in ("accuracy", "completeness", "risk", "overall"):
+                normalized = self._normalize_score(score_payload.get(key))
+                if normalized is not None:
+                    scores[key] = normalized
+
+        needs_flash = bool(data.get("needs_flash"))
+
+        return {
+            "analysis": analysis,
+            "draft": draft,
+            "tool_plan": plan,
+            "self_score": scores,
+            "needs_flash": needs_flash,
+        }
+
+    def _should_use_flash(self, thinking: dict[str, Any], rag_top_score: float) -> bool:
+        if not thinking:
+            return True
+        if thinking.get("needs_flash"):
+            return True
+        scores = thinking.get("self_score") or {}
+        overall = scores.get("overall")
+        if isinstance(overall, float) and overall < 0.75:
+            return True  # 자체 평가 점수가 임계치 미만이면 Flash 승급
+        risk = scores.get("risk")
+        if isinstance(risk, float) and risk > 0.6:
+            return True
+        return False
+
+    def _compose_main_prompt(
+        self,
+        message: discord.Message,
+        *,
+        user_query: str,
+        rag_blocks: list[str],
+        tool_results_block: str | None,
+    ) -> str:
+        channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
+        persona = (channel_config.get('persona') or config.DEFAULT_TSUNDERE_PERSONA).strip()
+        rules = (channel_config.get('rules') or config.DEFAULT_TSUNDERE_RULES).strip()
+
+        sections: list[str] = []
+        sections.append("SYSTEM RULES")
+        sections.append(f"{persona}\n\n{rules}")  # 페르소나와 기본 규칙을 시스템 입력으로 고정
+
+        # USER MEMORY는 현재 비활성화 상태이므로 생략. 추후 확장 가능.
+
+        if rag_blocks:
+            sections.append("[RAG CONTEXT — trimmed]")
+            sections.append("\n\n".join(rag_blocks))
+
+        if tool_results_block:
+            sections.append("[TOOL RESULTS]")
+            sections.append(tool_results_block)  # 도구 출력 요약을 별도 블록으로 전달
+
+        sections.append("USER:")
+        sections.append(user_query)
+        return "\n\n".join(section for section in sections if section)
 
     def _parse_tool_calls(self, text: str) -> list[dict]:
         """Lite 모델의 응답에서 <tool_plan> 또는 <tool_call> XML 태그를 파싱하여 JSON으로 변환합니다."""
@@ -648,25 +826,19 @@ class AIHandler(commands.Cog):
                 if isinstance(result, dict):
                     raw_entries = result.get("entries")
                     if isinstance(raw_entries, list):
-                        entries = [entry for entry in raw_entries if isinstance(entry, dict)]
+                        entries = [item for item in raw_entries if isinstance(item, dict)]
                 if entries:
-                    lines.append("[local_rag] 아래 대화 내용을 우선 참고해:")
-                    for entry in entries:
-                        message = entry.get("message") or ""
-                        snippet = message if len(message) <= 200 else message[:197] + "..."
-                        origin = entry.get("origin") or "?"
-                        speaker = entry.get("speaker") or "?"
-                        sim = entry.get("similarity") or 0.0
-                        db_path = entry.get("db_path") or "-"
-                        lines.append(
-                            f"  • [{origin} | speaker={speaker} | sim={sim:.3f} | db={db_path}] {snippet}"
-                        )
-                        ctx_window = entry.get("context_window") or []
-                        for ctx in ctx_window:
-                            ctx_speaker = ctx.get("user_name") or "?"
-                            ctx_msg = ctx.get("message") or ""
-                            ctx_snippet = ctx_msg if len(ctx_msg) <= 180 else ctx_msg[:177] + "..."
-                            lines.append(f"      - {ctx_speaker}: {ctx_snippet}")
+                    for idx, rag_entry in enumerate(entries, start=1):
+                        block = (rag_entry.get("dialogue_block") or rag_entry.get("message") or "").strip()
+                        if not block:
+                            continue
+                        score = rag_entry.get("combined_score")
+                        header = f"[local_rag #{idx}]"
+                        if isinstance(score, (int, float)):
+                            header += f" score={float(score):.3f}"
+                        lines.append(header)
+                        for line in block.splitlines():
+                            lines.append(f"  {line}")
                 continue
 
             if isinstance(result, dict):
@@ -688,13 +860,11 @@ class AIHandler(commands.Cog):
 
         lines: list[str] = []
         for entry in entries:
-            message = entry.get("message") or ""
-            snippet = message if len(message) <= 160 else message[:157] + "..."
+            block = entry.get("dialogue_block") or entry.get("message") or ""
+            snippet = block if len(block) <= 200 else block[:197] + "..."
             origin = entry.get("origin") or "?"
-            speaker = entry.get("speaker") or "?"
-            sim = entry.get("similarity") or 0.0
-            db_path = entry.get("db_path") or "-"
-            lines.append(f"origin={origin} | speaker={speaker} | sim={sim:.3f} | db={db_path} | {snippet}")
+            score = entry.get("combined_score") or 0.0
+            lines.append(f"origin={origin} | score={float(score):.3f} | {snippet}")
 
         return "```debug\n" + "\n".join(lines) + "\n```"
 
@@ -741,6 +911,7 @@ class AIHandler(commands.Cog):
             logger.error(f"도구 '{tool_name}' 실행 중 예기치 않은 오류: {e}", exc_info=True, extra=log_extra)
             return {"error": "도구 실행 중 예상치 못한 오류가 발생했습니다."}
 
+
     async def process_agent_message(self, message: discord.Message):
         """2-Step Agent의 전체 흐름을 관리합니다."""
         if not self.is_ready:
@@ -763,30 +934,30 @@ class AIHandler(commands.Cog):
 
         async with message.channel.typing():
             try:
-                rag_prompt, rag_entries, rag_top_similarity = await self._get_rag_context(
+                recent_search_messages = await self._collect_recent_search_messages(message)
+                rag_prompt, rag_entries, rag_top_score, rag_blocks = await self._get_rag_context(
                     message.guild.id,
                     message.channel.id,
                     message.author.id,
                     user_query,
+                    recent_messages=recent_search_messages,
                 )
                 history = await self._get_recent_history(message, rag_prompt)
-                similarity_threshold = config.RAG_SIMILARITY_THRESHOLD
-                strong_similarity_threshold = config.RAG_STRONG_SIMILARITY_THRESHOLD
-                rag_is_strong = bool(rag_prompt) and rag_top_similarity >= strong_similarity_threshold
+                rag_is_strong = bool(rag_blocks) and rag_top_score >= config.RAG_STRONG_SIMILARITY_THRESHOLD
                 self._debug(
-                    f"RAG 결과: strong={rag_is_strong} top_sim={rag_top_similarity:.3f} entries={len(rag_entries)}",
+                    f"RAG 결과: strong={rag_is_strong} top_score={rag_top_score:.3f} blocks={len(rag_blocks)}",
                     log_extra,
                 )
 
-                # --- [1단계] Lite 모델(PM) 호출: 의도 분석 및 계획 수립 --- 
-                lite_system_prompt = f"{rag_prompt}\n\n{config.LITE_MODEL_SYSTEM_PROMPT}" if rag_prompt else config.LITE_MODEL_SYSTEM_PROMPT
-                lite_model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME, system_instruction=lite_system_prompt)
+                lite_system_prompt = config.LITE_MODEL_SYSTEM_PROMPT
+                if rag_prompt:
+                    lite_system_prompt = f"{rag_prompt}\\n\\n{config.LITE_MODEL_SYSTEM_PROMPT}"  # RAG 컨텍스트를 Lite 시스템 프롬프트와 결합
+                lite_model = genai.GenerativeModel(
+                    config.AI_INTENT_MODEL_NAME,
+                    system_instruction=lite_system_prompt,
+                )
+
                 lite_conversation = history + [{'role': 'user', 'parts': [user_query]}]
-                self._debug(
-                    f"[Lite] system_prompt={self._truncate_for_debug(lite_system_prompt)} conversation={self._truncate_for_debug(lite_conversation)}",
-                    log_extra,
-                )
-
                 logger.info("1단계: Lite 모델(의도 분석) 호출...", extra=log_extra)
                 lite_response = await self._safe_generate_content(lite_model, lite_conversation, log_extra)
 
@@ -796,151 +967,158 @@ class AIHandler(commands.Cog):
                     return
 
                 lite_response_text = lite_response.text.strip()
-                logger.info(f"Lite 모델 응답: '{lite_response_text[:150]}...'", extra=log_extra)
-                self._debug(f"[Lite] 응답: {self._truncate_for_debug(lite_response_text)}", log_extra)
-                
-                tool_plan_raw = self._parse_tool_calls(lite_response_text)
-                tool_plan: list[dict] = []
-                for call in tool_plan_raw:
-                    if not isinstance(call, dict):
-                        continue
-                    normalized = dict(call)
-                    if 'tool_to_use' not in normalized and 'tool_name' in normalized:
-                        normalized['tool_to_use'] = normalized.get('tool_name')
-                    tool_plan.append(normalized)
+                if not config.DISABLE_VERBOSE_THINKING_OUTPUT:
+                    self._debug(f"[Lite] 응답: {self._truncate_for_debug(lite_response_text)}", log_extra)
+
+                thinking = self._parse_thinking_response(lite_response_text)
+                if not thinking:
+                    logger.warning("Thinking 응답 파싱 실패, 레거시 플랜 파서로 대체합니다.", extra=log_extra)
+                    legacy_plan_raw = self._parse_tool_calls(lite_response_text)
+                    normalized_legacy: list[dict[str, Any]] = []
+                    for call in legacy_plan_raw:
+                        if not isinstance(call, dict):
+                            continue
+                        tool_name = call.get("tool_to_use") or call.get("tool_name")
+                        if not tool_name:
+                            continue
+                        parameters = call.get("parameters") if isinstance(call.get("parameters"), dict) else {}
+                        normalized_legacy.append(
+                            {
+                                "tool_to_use": tool_name,
+                                "tool_name": tool_name,
+                                "parameters": parameters,
+                            }
+                        )
+                    thinking = {
+                        "analysis": "",
+                        "draft": lite_response_text,
+                        "tool_plan": normalized_legacy,
+                        "self_score": {},
+                        "needs_flash": bool(normalized_legacy),
+                    }
+
+                tool_plan = thinking.get("tool_plan") or []
+                draft = thinking.get("draft") or ""
+                should_use_flash = self._should_use_flash(thinking, rag_top_score)
+                self._debug(
+                    f"Thinking 결과: plan={tool_plan} self_score={thinking.get('self_score')} needs_flash={thinking.get('needs_flash')}",
+                    log_extra,
+                )
 
                 if rag_is_strong and tool_plan:
                     filtered_plan = [call for call in tool_plan if call.get('tool_to_use') != 'web_search']
                     if len(filtered_plan) != len(tool_plan):
                         logger.info(
-                            "강한 RAG 컨텍스트(최고 유사도=%.3f)로 web_search 단계를 생략합니다.",
-                            rag_top_similarity,
+                            "강한 RAG 컨텍스트(최고 점수=%.3f)로 web_search 단계를 생략합니다.",
+                            rag_top_score,
                             extra=log_extra,
                         )
                     tool_plan = filtered_plan
 
-                # --- [분기 처리] ---
-                # Case 1: 간단한 대화로 판단된 경우 (<conversation_response> 태그 포함)
-                if "<conversation_response>" in lite_response_text:
-                    logger.info("분기: 간단한 대화로 판단, Main 모델을 호출하여 페르소나 기반으로 응답합니다.", extra=log_extra)
-                    channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
-                    persona = channel_config.get('persona', config.DEFAULT_TSUNDERE_PERSONA)
-                    rules = channel_config.get('rules', config.DEFAULT_TSUNDERE_RULES)
-                    system_prompt = f"{persona}\n\n{rules}"
-                    
-                    main_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, system_instruction=system_prompt)
-                    main_response = await self._safe_generate_content(main_model, user_query, log_extra)
+                tool_results: list[dict[str, Any]] = []
+                executed_plan: list[dict[str, Any]] = []
 
-                    if main_response and main_response.text:
-                        final_response_text = main_response.text.strip()
-                        self._debug(f"[Main] 최종 응답(간단대화): {self._truncate_for_debug(final_response_text)}", log_extra)
-                        debug_block = self._build_rag_debug_block(rag_entries)
-                        if debug_block:
-                            logger.debug("RAG 디버그 블록:\n%s", debug_block, extra=log_extra)
-                        await message.reply(final_response_text, mention_author=False)
-                        await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {"guild_id": message.guild.id, "user_id": message.author.id, "channel_id": message.channel.id, "trace_id": trace_id, "user_query": user_query, "tool_plan": [], "final_response": final_response_text, "is_fallback": False})
-                    else:
-                        logger.error("간단한 대화에 대해 Main 모델이 응답을 생성하지 못했습니다.", extra=log_extra)
-                        await message.reply(config.MSG_AI_ERROR, mention_author=False)
-                    return
-
-                # Case 2: 도구 계획이 없는 경우 (Lite 모델이 직접 답변)
-                if not tool_plan and not rag_prompt:
-                    logger.info("분기: 도구 계획이 없으며, Lite 모델의 답변으로 바로 응답합니다.", extra=log_extra)
-                    await message.reply(lite_response_text, mention_author=False)
-                    await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {"guild_id": message.guild.id, "user_id": message.author.id, "channel_id": message.channel.id, "trace_id": trace_id, "user_query": user_query, "tool_plan": [], "final_response": lite_response_text, "is_fallback": False})
-                    return
-
-                if not tool_plan and rag_prompt:
-                    logger.info(
-                        "도구 계획이 없지만 강한 RAG 컨텍스트를 활용하여 Main 모델로 진행합니다.",
-                        extra=log_extra,
-                    )
-
-                # --- [2단계] 도구 실행 ---
-                logger.info(f"2단계: 도구 실행 시작. 총 {len(tool_plan)}단계.", extra=log_extra)
-                self._debug(f"도구 계획: {self._truncate_for_debug(tool_plan)}", log_extra)
-                tool_results = []
-                if rag_prompt:
+                if rag_blocks:
                     tool_results.append(
                         {
                             "step": 0,
                             "tool_name": "local_rag",
-                            "parameters": {
-                                "similarity_threshold": similarity_threshold,
-                                "top_similarity": rag_top_similarity,
-                            },
-                                "result": {
-                                    "entries": [
-                                        {
-                                            "origin": entry.get("origin"),
-                                            "speaker": entry.get("speaker"),
-                                            "similarity": entry.get("similarity"),
-                                            "message": entry.get("message"),
-                                            "db_path": entry.get("db_path"),
-                                            "matched_server_id": entry.get("matched_server_id"),
-                                            "context_window": entry.get("context_window") or [],
-                                        }
-                                        for entry in rag_entries
-                                    ]
-                                },
+                            "parameters": {"top_score": rag_top_score},
+                            "result": {"entries": rag_entries},
+                        }
+                    )
+
+                if tool_plan:
+                    logger.info(f"2단계: 도구 실행 시작. 총 {len(tool_plan)}단계.", extra=log_extra)
+                    self._debug(f"도구 계획: {self._truncate_for_debug(tool_plan)}", log_extra)
+                    for idx, tool_call in enumerate(tool_plan, start=1):
+                        logger.info(f"계획 실행 ({idx}/{len(tool_plan)}): {tool_call.get('tool_to_use')}", extra=log_extra)
+                        result = await self._execute_tool(tool_call, message.guild.id, user_query)
+                        tool_results.append(
+                            {
+                                "step": idx,
+                                "tool_name": tool_call.get('tool_to_use'),
+                                "parameters": tool_call.get('parameters'),
+                                "result": result,
                             }
                         )
+                        executed_plan.append(tool_call)
+                else:
+                    logger.info("도구 계획이 없어 도구 실행을 건너뜁니다.", extra=log_extra)
 
-                for i, tool_call in enumerate(tool_plan, start=1):
-                    step_num = i if not rag_prompt else i
-                    logger.info(f"계획 실행 ({i}/{len(tool_plan)}): {tool_call.get('tool_to_use')}", extra=log_extra)
-                    result = await self._execute_tool(tool_call, message.guild.id, user_query)
-                    tool_results.append({"step": step_num, "tool_name": tool_call.get('tool_to_use'), "parameters": tool_call.get('parameters'), "result": result})
-
-                # --- [폴백 로직] 도구 실패 시 웹 검색으로 대체 ---
-                def is_tool_failed(result): return result is None or any(keyword in str(result).lower() for keyword in ["error", "오류", "실패", "없습니다", "알 수 없는", "찾을 수"])
                 executed_tool_results = [res for res in tool_results if res.get("tool_name") not in {"local_rag"}]
-                any_failed = any(is_tool_failed(res.get("result")) for res in executed_tool_results)
+
+                def _is_tool_failed(result_obj: Any) -> bool:
+                    if result_obj is None:
+                        return True
+                    lowered = str(result_obj).lower()
+                    failure_keywords = ["error", "오류", "실패", "없습니다", "알 수 없는", "찾을 수"]
+                    return any(keyword in lowered for keyword in failure_keywords)
+
+                any_failed = any(_is_tool_failed(res.get("result")) for res in executed_tool_results)
+                executed_tool_names = {res.get("tool_name") for res in executed_tool_results}
                 use_fallback_prompt = False
 
-                executed_tool_names = {res.get("tool_name") for res in executed_tool_results}
                 if executed_tool_results and any_failed and 'web_search' not in executed_tool_names:
                     logger.info("하나 이상의 도구 실행에 실패하여 웹 검색으로 대체합니다.", extra=log_extra)
-                    web_search_result = await self._execute_tool({"tool_to_use": "web_search", "parameters": {"query": user_query}}, message.guild.id, user_query)
-                    rag_tool_entries = [res for res in tool_results if res.get("tool_name") == "local_rag"]
-                    next_step = (rag_tool_entries[-1]["step"] + 1) if rag_tool_entries else 1
-                    tool_results = rag_tool_entries + [{"step": next_step, "tool_name": "web_search", "parameters": {"query": user_query}, "result": web_search_result}]
+                    web_result = await self._execute_tool(
+                        {"tool_to_use": "web_search", "parameters": {"query": user_query}},
+                        message.guild.id,
+                        user_query,
+                    )
+                    tool_results = [res for res in tool_results if res.get("tool_name") == "local_rag"]
+                    tool_results.append(
+                        {
+                            "step": len(tool_results) + 1,
+                            "tool_name": "web_search",
+                            "parameters": {"query": user_query},
+                            "result": web_result,
+                        }
+                    )
                     use_fallback_prompt = True
-                    self._debug("[도구] 웹 검색 폴백 수행", log_extra)
 
-                # --- [3단계] Main 모델 호출: 최종 답변 생성 ---
-                logger.info("3단계: Main 모델(답변 생성) 호출...", extra=log_extra)
                 tool_results_str = self._format_tool_results_for_prompt(tool_results)
+                if len(tool_results_str) > 3800:
+                    tool_results_str = tool_results_str[:3800]  # Gemini 입력 제한 보호
 
-                # 프롬프트 선택: 일반 또는 웹 폴백용
-                if use_fallback_prompt:
-                    main_system_prompt = config.WEB_FALLBACK_PROMPT.format(user_query=user_query, tool_result=tool_results_str)
-                else:
-                    main_system_prompt = config.AGENT_SYSTEM_PROMPT.format(user_query=user_query, tool_result=tool_results_str)
-                
-                # 페르소나 적용
-                channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
-                persona = channel_config.get('persona', config.DEFAULT_TSUNDERE_PERSONA)
-                rules = channel_config.get('rules', config.DEFAULT_TSUNDERE_RULES)
-                main_system_prompt = f"{persona}\n\n{rules}\n\n{main_system_prompt}"
-                if rag_prompt:
-                    main_system_prompt = (
-                        f"{main_system_prompt}\n\n### Local Conversation Context "
-                        f"(최고 유사도 {rag_top_similarity:.3f})\n{rag_prompt}"
+                if not tool_plan and not should_use_flash and draft:
+                    # Thinking 단계 초안이 충분하면 Flash 없이 바로 답변한다.
+                    final_response_text = draft
+                    self._debug(f"[Lite] 최종 응답(직접): {self._truncate_for_debug(final_response_text)}", log_extra)
+                    debug_block = self._build_rag_debug_block(rag_entries)
+                    if debug_block:
+                        logger.debug("RAG 디버그 블록:\n%s", debug_block, extra=log_extra)
+                    await message.reply(final_response_text, mention_author=False)
+                    await db_utils.log_analytics(
+                        self.bot.db,
+                        "AI_INTERACTION",
+                        {
+                            "guild_id": message.guild.id,
+                            "user_id": message.author.id,
+                            "channel_id": message.channel.id,
+                            "trace_id": trace_id,
+                            "user_query": user_query,
+                            "tool_plan": executed_plan,
+                            "final_response": final_response_text,
+                            "is_fallback": False,
+                        },
                     )
+                    return
 
-                main_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, system_instruction=main_system_prompt)
-                main_prompt_parts = [f"사용자 질문: {user_query}"]
-                if rag_prompt:
-                    main_prompt_parts.append(
-                        f"로컬 RAG 컨텍스트 (최고 유사도 {rag_top_similarity:.3f}):\n{rag_prompt}"
-                    )
-                main_prompt_parts.append(
-                    "위 자료를 최우선으로 참고해서 사실에 근거한 답장을 반말로 작성해. 자료에 없는 내용은 모른다고 솔직하게 말하고, 억지 추측은 하지 마."
+                logger.info("3단계: Main 모델(답변 생성) 호출...", extra=log_extra)
+                system_prompt = config.WEB_FALLBACK_PROMPT if use_fallback_prompt else config.AGENT_SYSTEM_PROMPT
+                rag_blocks_for_prompt = [] if use_fallback_prompt else rag_blocks
+                main_prompt = self._compose_main_prompt(
+                    message,
+                    user_query=user_query,
+                    rag_blocks=rag_blocks_for_prompt,
+                    tool_results_block=tool_results_str if tool_results_str else None,
                 )
-                main_prompt = "\n\n".join(main_prompt_parts)
-                self._debug(f"[Main] system_prompt={self._truncate_for_debug(main_system_prompt)}", log_extra)
+                main_model = genai.GenerativeModel(
+                    config.AI_RESPONSE_MODEL_NAME,
+                    system_instruction=system_prompt,
+                )
+                self._debug(f"[Main] system_prompt={self._truncate_for_debug(system_prompt)}", log_extra)
                 self._debug(f"[Main] user_prompt={self._truncate_for_debug(main_prompt)}", log_extra)
                 main_response = await self._safe_generate_content(main_model, main_prompt, log_extra)
 
@@ -951,19 +1129,34 @@ class AIHandler(commands.Cog):
                     if debug_block:
                         logger.debug("RAG 디버그 블록:\n%s", debug_block, extra=log_extra)
                     await message.reply(final_response_text, mention_author=False)
-                    await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {"guild_id": message.guild.id, "user_id": message.author.id, "channel_id": message.channel.id, "trace_id": trace_id, "user_query": user_query, "tool_plan": tool_plan, "final_response": final_response_text, "is_fallback": use_fallback_prompt})
+                    await db_utils.log_analytics(
+                        self.bot.db,
+                        "AI_INTERACTION",
+                        {
+                            "guild_id": message.guild.id,
+                            "user_id": message.author.id,
+                            "channel_id": message.channel.id,
+                            "trace_id": trace_id,
+                            "user_query": user_query,
+                            "tool_plan": executed_plan or tool_plan,
+                            "final_response": final_response_text,
+                            "is_fallback": use_fallback_prompt,
+                        },
+                    )
                 else:
                     logger.error("Main 모델이 최종 답변을 생성하지 못했습니다.", extra=log_extra)
-                    # 메시지 길이 제한 오류 방지를 위해 tool_results_str를 3800자로 자릅니다.
                     truncated_results = tool_results_str[:3800]
-                    await message.reply(f"모든 도구를 실행했지만, 최종 답변을 만드는 데 실패했어요. 여기 결과라도 확인해보세요.\n```json\n{truncated_results}\n```", mention_author=False)
+                    await message.reply(
+                        "모든 도구를 실행했지만, 최종 답변을 만드는 데 실패했어요. 여기 결과라도 확인해보세요.\n```json\n"
+                        f"{truncated_results}\n```",
+                        mention_author=False,
+                    )
 
             except Exception as e:
                 logger.error(f"에이전트 처리 중 최상위 오류: {e}", exc_info=True, extra=log_extra)
                 await message.reply(config.MSG_AI_ERROR, mention_author=False)
             finally:
                 self._debug(f"--- 에이전트 세션 종료 trace_id={trace_id}", log_extra)
-
     async def _get_recent_history(self, message: discord.Message, rag_prompt: str) -> list:
         """모델에 전달할 최근 대화 기록을 채널에서 가져옵니다."""
         history_limit = 6 if rag_prompt else 12

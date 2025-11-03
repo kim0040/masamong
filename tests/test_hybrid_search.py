@@ -27,7 +27,7 @@ class DummyDiscordStore:
 
 @pytest.mark.asyncio
 async def test_hybrid_search_returns_embedding_match(monkeypatch):
-    monkeypatch.setattr(config, "RAG_QUERY_REWRITE_ENABLED", False)
+    monkeypatch.setattr(config, "SEARCH_QUERY_EXPANSION_ENABLED", False)
     monkeypatch.setattr(config, "RAG_SIMILARITY_THRESHOLD", 0.1)
     monkeypatch.setattr(config, "RAG_EMBEDDING_TOP_N", 5)
     monkeypatch.setattr(config, "RAG_HYBRID_TOP_K", 3)
@@ -56,6 +56,6 @@ async def test_hybrid_search_returns_embedding_match(monkeypatch):
 
     assert result.entries, "최소 한 개의 결과가 반환되어야 합니다."
     top_entry = result.entries[0]
-    assert "하이브리드 검색 테스트 관련 메시지" in top_entry["message"]
+    assert "하이브리드 검색 테스트 관련 메시지" in (top_entry.get("dialogue_block") or "")
     assert top_entry["origin"] == "Discord"
-    assert top_entry["similarity"] >= 0.1
+    assert top_entry["combined_score"] > 0.0

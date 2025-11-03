@@ -58,6 +58,16 @@ def as_float(value, default: float) -> float:
         return default
 
 
+def as_int(value, default: int) -> int:
+    """입력값을 int로 변환하되 실패 시 기본값을 반환합니다."""
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 EMBED_CONFIG_PATH = os.environ.get('EMB_CONFIG_PATH', 'emb_config.json')
 
 
@@ -243,9 +253,9 @@ LOCAL_EMBEDDING_QUERY_LIMIT = EMBED_CONFIG.get("query_limit", 200)
 RAG_SIMILARITY_THRESHOLD = as_float(EMBED_CONFIG.get("similarity_threshold"), 0.65)
 RAG_STRONG_SIMILARITY_THRESHOLD = as_float(EMBED_CONFIG.get("strong_similarity_threshold"), 0.72)
 RAG_DEBUG_ENABLED = as_bool(load_config_value('RAG_DEBUG_ENABLED', EMBED_CONFIG.get("debug_enabled", False)))
-RAG_HYBRID_TOP_K = int(EMBED_CONFIG.get("hybrid_top_k", 6))
-RAG_EMBEDDING_TOP_N = int(EMBED_CONFIG.get("embedding_top_n", 24))
-RAG_BM25_TOP_N = int(EMBED_CONFIG.get("bm25_top_n", 24))
+RAG_HYBRID_TOP_K = int(EMBED_CONFIG.get("hybrid_top_k", 4))
+RAG_EMBEDDING_TOP_N = int(EMBED_CONFIG.get("embedding_top_n", 8))
+RAG_BM25_TOP_N = int(EMBED_CONFIG.get("bm25_top_n", 8))
 RAG_RRF_K = float(EMBED_CONFIG.get("rrf_constant", 60))
 RAG_QUERY_REWRITE_ENABLED = as_bool(
     load_config_value('RAG_QUERY_REWRITE_ENABLED', EMBED_CONFIG.get("query_rewrite_enabled", True))
@@ -260,6 +270,17 @@ if RAG_RERANKER_SCORE_THRESHOLD is not None:
         RAG_RERANKER_SCORE_THRESHOLD = float(RAG_RERANKER_SCORE_THRESHOLD)
     except (TypeError, ValueError):
         RAG_RERANKER_SCORE_THRESHOLD = None
+
+SEARCH_CHUNKING_ENABLED = as_bool(load_config_value('SEARCH_CHUNKING_ENABLED', False))
+SEARCH_NEIGHBORHOOD_EXPAND_ENABLED = as_bool(load_config_value('SEARCH_NEIGHBORHOOD_EXPAND_ENABLED', False))
+SEARCH_QUERY_EXPANSION_ENABLED = as_bool(load_config_value('SEARCH_QUERY_EXPANSION_ENABLED', True))
+RERANK_ENABLED = as_bool(load_config_value('RERANK_ENABLED', False))
+USER_MEMORY_ENABLED = as_bool(load_config_value('USER_MEMORY_ENABLED', False))
+SELF_REFLECTION_ENABLED = as_bool(load_config_value('SELF_REFLECTION_ENABLED', False))
+DISABLE_VERBOSE_THINKING_OUTPUT = as_bool(load_config_value('DISABLE_VERBOSE_THINKING_OUTPUT', True))
+CONVERSATION_WINDOW_SIZE = max(1, as_int(load_config_value('CONVERSATION_WINDOW_SIZE', EMBED_CONFIG.get("conversation_window_size", 6)), 6))
+CONVERSATION_WINDOW_STRIDE = max(1, as_int(load_config_value('CONVERSATION_WINDOW_STRIDE', EMBED_CONFIG.get("conversation_window_stride", 3)), 3))
+CONVERSATION_NEIGHBOR_RADIUS = max(1, as_int(load_config_value('CONVERSATION_NEIGHBOR_RADIUS', EMBED_CONFIG.get("conversation_neighbor_radius", 3)), 3))
 
 AI_INTENT_MODEL_NAME = "gemini-2.5-flash-lite"
 AI_RESPONSE_MODEL_NAME = "gemini-2.5-flash"

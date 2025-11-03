@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, List, Optional
@@ -267,6 +268,118 @@ class BM25IndexManager:
                 )
         except aiosqlite.Error:
             return []
+
+    async def fetch_window_for_message(
+        self,
+        *,
+        channel_id: int,
+        message_id: int,
+    ) -> list[dict[str, Any]]:
+        """슬라이딩 윈도우 테이블에서 지정 메시지를 포함하는 묶음을 조회합니다."""
+        await self.ensure_index()
+        if not self.db_path.exists():
+            return []
+
+        query = """
+            SELECT messages_json
+            FROM conversation_windows
+            WHERE channel_id = ?
+              AND start_message_id <= ?
+              AND end_message_id >= ?
+            ORDER BY anchor_timestamp DESC
+            LIMIT 1
+        """
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute(query, (int(channel_id), int(message_id), int(message_id))) as cursor:
+                    row = await cursor.fetchone()
+        except aiosqlite.Error as exc:
+            logger.error("대화 윈도우 조회 중 DB 오류: %s", exc, exc_info=True)
+            return []
+
+        if not row:
+            return []
+
+        try:
+            data = json.loads(row["messages_json"])  # 저장된 윈도우 JSON을 역직렬화한다.
+        except (TypeError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "conversation_windows JSON 파싱 실패(channel=%s message=%s): %s",
+                channel_id,
+                message_id,
+                exc,
+            )
+            return []
+
+        if not isinstance(data, list):
+            return []
+        return [dict(item) for item in data if isinstance(item, dict)]
+
+    async def fetch_neighbors(
+        self,
+        *,
+        channel_id: int,
+        message_id: int,
+        radius: int,
+    ) -> list[dict[str, Any]]:
+        """중심 메시지를 기준으로 이전/이후 메시지를 조회합니다."""
+        await self.ensure_index()
+        if not self.db_path.exists():
+            return []
+
+        radius = max(1, int(radius))
+        center_query = """
+            SELECT message_id, user_name, content, is_bot, created_at
+            FROM conversation_history
+            WHERE message_id = ?
+            LIMIT 1
+        """
+        neighbors_before = """
+            SELECT message_id, user_name, content, is_bot, created_at
+            FROM conversation_history
+            WHERE channel_id = ? AND created_at < ?
+            ORDER BY created_at DESC
+            LIMIT ?
+        """
+        neighbors_after = """
+            SELECT message_id, user_name, content, is_bot, created_at
+            FROM conversation_history
+            WHERE channel_id = ? AND created_at > ?
+            ORDER BY created_at ASC
+            LIMIT ?
+        """
+
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute(center_query, (int(message_id),)) as cursor:
+                    center = await cursor.fetchone()  # 기준 메시지 1건을 확보한다.
+                if not center:
+                    return []
+
+                center_ts = center["created_at"]
+                async with db.execute(neighbors_before, (int(channel_id), center_ts, radius)) as cursor:
+                    prev_rows = await cursor.fetchall()  # 이전 메시지 역순
+                async with db.execute(neighbors_after, (int(channel_id), center_ts, radius)) as cursor:
+                    next_rows = await cursor.fetchall()  # 이후 메시지 정순
+        except aiosqlite.Error as exc:
+            logger.error("대화 이웃 조회 중 DB 오류: %s", exc, exc_info=True)
+            return []
+
+        ordered: list[aiosqlite.Row] = list(reversed(prev_rows)) + [center] + list(next_rows)  # 시간 순서로 재배열
+        results: list[dict[str, Any]] = []
+        for row in ordered:
+            results.append(
+                {
+                    "message_id": row["message_id"],
+                    "user_name": row["user_name"],
+                    "content": row["content"],
+                    "is_bot": bool(row["is_bot"]),
+                    "created_at": row["created_at"],
+                }
+            )
+        return results
 
     def _shift_timestamp(self, timestamp_iso: str, minutes: int) -> str:
         """ISO 포맷 문자열에 대해 분 단위 이동을 수행합니다."""
