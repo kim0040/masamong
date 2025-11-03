@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import List
+import inspect
 
 import config
 from logger_config import logger
@@ -75,7 +76,12 @@ async def _get_model() -> SentenceTransformer | None:
             return _MODEL_INSTANCE
         try:
             if backend:
-                _MODEL_INSTANCE = SentenceTransformer(model_name, backend=backend)
+                ctor_params = set(inspect.signature(SentenceTransformer.__init__).parameters)
+                if "backend" in ctor_params:
+                    _MODEL_INSTANCE = SentenceTransformer(model_name, backend=backend)
+                else:
+                    logger.warning("SentenceTransformer 버전이 backend 인자를 지원하지 않아 기본 설정으로 로드합니다.")
+                    _MODEL_INSTANCE = SentenceTransformer(model_name)
             else:
                 _MODEL_INSTANCE = SentenceTransformer(model_name)
             logger.info("쿼리 재작성용 SentenceTransformer 로드 완료: %s", model_name)
