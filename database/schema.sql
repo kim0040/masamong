@@ -36,6 +36,21 @@ CREATE TABLE IF NOT EXISTS conversation_history (
     embedding BLOB
 );
 
+CREATE TABLE IF NOT EXISTS conversation_windows (
+    window_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER NOT NULL,
+    channel_id INTEGER NOT NULL,
+    start_message_id INTEGER NOT NULL,
+    end_message_id INTEGER NOT NULL,
+    message_count INTEGER NOT NULL,
+    messages_json TEXT NOT NULL,
+    anchor_timestamp TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_windows_channel ON conversation_windows (channel_id, anchor_timestamp DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_windows_span ON conversation_windows (channel_id, start_message_id, end_message_id);
+
 -- 시스템 전체의 카운터(예: API 호출 횟수)를 관리하는 테이블
 CREATE TABLE IF NOT EXISTS system_counters (
     counter_name TEXT PRIMARY KEY,
