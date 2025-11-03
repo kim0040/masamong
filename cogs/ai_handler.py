@@ -959,7 +959,23 @@ class AIHandler(commands.Cog):
 
                 lite_conversation = history + [{'role': 'user', 'parts': [user_query]}]
                 logger.info("1단계: Lite 모델(의도 분석) 호출...", extra=log_extra)
-                lite_response = await self._safe_generate_content(lite_model, lite_conversation, log_extra)
+                lite_generation_config = None
+                if genai and hasattr(genai, "types"):
+                    try:
+                        # Lite 단계가 JSON만 반환하도록 MIME 타입을 강제한다.
+                        lite_generation_config = genai.types.GenerationConfig(
+                            temperature=0.0,
+                            response_mime_type="application/json",
+                        )
+                    except TypeError:
+                        lite_generation_config = genai.types.GenerationConfig(temperature=0.0)
+
+                lite_response = await self._safe_generate_content(
+                    lite_model,
+                    lite_conversation,
+                    log_extra,
+                    generation_config=lite_generation_config,
+                )
 
                 if not lite_response or not lite_response.text:
                     logger.error("Lite 모델이 응답을 생성하지 못했습니다.", extra=log_extra)
