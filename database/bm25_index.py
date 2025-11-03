@@ -281,8 +281,25 @@ class BM25IndexManager:
 
     def _normalize_query(self, query: str) -> str:
         """FTS 쿼리에 사용할 문자열을 간단히 정규화합니다."""
-        cleaned = query.replace('"', ' ').replace("'", " ")
-        return " ".join(segment for segment in cleaned.split() if segment)
+        tokens: list[str] = []
+        for raw in query.split():
+            # FTS5 특수문자(따옴표, 콜론 등)는 제거해 한 단어로 만든다.
+            stripped = raw.strip().strip('"\'')
+            stripped = stripped.replace('"', " ").replace("'", " ").replace(":", " ")
+            # 알파벳/숫자/한글 외 문자를 공백으로 치환한다.
+            normalized = []
+            for char in stripped:
+                if char.isalnum() or '가' <= char <= '힣':
+                    normalized.append(char)
+                else:
+                    normalized.append(" ")
+            candidate = "".join(part for part in "".join(normalized).split() if part)
+            if candidate:
+                tokens.append(candidate)
+        if not tokens:
+            return ""
+        # 특수 명령으로 해석되지 않도록 각 토큰을 따옴표로 감싼 OR 쿼리로 변환한다.
+        return " OR ".join(f'"{token}"' for token in tokens)
 
 
 async def bulk_rebuild(db_path: str) -> None:
