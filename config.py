@@ -279,6 +279,35 @@ RERANK_ENABLED = as_bool(load_config_value('RERANK_ENABLED', False))
 USER_MEMORY_ENABLED = as_bool(load_config_value('USER_MEMORY_ENABLED', False))
 SELF_REFLECTION_ENABLED = as_bool(load_config_value('SELF_REFLECTION_ENABLED', False))
 DISABLE_VERBOSE_THINKING_OUTPUT = as_bool(load_config_value('DISABLE_VERBOSE_THINKING_OUTPUT', True))
+
+# BM25 자동 재구축 설정
+_BM25_AUTO_REBUILD_RAW = EMBED_CONFIG.get("bm25_auto_rebuild", {})
+if not isinstance(_BM25_AUTO_REBUILD_RAW, dict):
+    _BM25_AUTO_REBUILD_RAW = {}
+
+BM25_AUTO_REBUILD_CONFIG = {
+    "enabled": as_bool(
+        load_config_value(
+            "BM25_AUTO_REBUILD_ENABLED",
+            _BM25_AUTO_REBUILD_RAW.get("enabled", False),
+        ),
+        False,
+    ),
+    "idle_minutes": as_int(
+        load_config_value(
+            "BM25_AUTO_REBUILD_IDLE_MINUTES",
+            _BM25_AUTO_REBUILD_RAW.get("idle_minutes", 180),
+        ),
+        180,
+    ),
+    "poll_minutes": as_int(
+        load_config_value(
+            "BM25_AUTO_REBUILD_POLL_MINUTES",
+            _BM25_AUTO_REBUILD_RAW.get("poll_minutes", 15),
+        ),
+        15,
+    ),
+}
 CONVERSATION_WINDOW_SIZE = max(1, as_int(load_config_value('CONVERSATION_WINDOW_SIZE', EMBED_CONFIG.get("conversation_window_size", 6)), 6))
 CONVERSATION_WINDOW_STRIDE = max(1, as_int(load_config_value('CONVERSATION_WINDOW_STRIDE', EMBED_CONFIG.get("conversation_window_stride", 3)), 3))
 CONVERSATION_NEIGHBOR_RADIUS = max(1, as_int(load_config_value('CONVERSATION_NEIGHBOR_RADIUS', EMBED_CONFIG.get("conversation_neighbor_radius", 3)), 3))
