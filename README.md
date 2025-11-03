@@ -157,6 +157,9 @@ masamong/
 | `CONVERSATION_WINDOW_SIZE` | 대화 윈도우 크기 | `6` |
 | `CONVERSATION_WINDOW_STRIDE` | 대화 윈도우 stride | `3` |
 | `CONVERSATION_NEIGHBOR_RADIUS` | 인접 대화 half-window | `3` |
+| `BM25_AUTO_REBUILD_ENABLED` | 대화 유휴 시 BM25 자동 재구축 | `false` |
+| `BM25_AUTO_REBUILD_IDLE_MINUTES` | 유휴 판단 기준 (분) | `180` |
+| `BM25_AUTO_REBUILD_POLL_MINUTES` | 유휴 체크 주기 (분) | `15` |
 | `DISABLE_VERBOSE_THINKING_OUTPUT` | Thinking JSON 전체 로그 | `true` |
 
 그 외 `KMA_BASE_URL`, `KMA_ALERT_BASE_URL`, `EXIM_API_KEY_KR` 등 세부 API 엔드포인트 역시 환경 변수로 조정할 수 있습니다.
@@ -213,6 +216,7 @@ python database/init_bm25.py   # (선택) 기존 대화 로그를 FTS5 인덱스
 4. **선택적 리랭킹**: `RERANK_ENABLED=true`라면 Cross-Encoder가 상위 후보만 재평가하고, torch/transformers가 설치되어 있지 않으면 자동으로 생략됩니다.
 5. **Thinking JSON**: Lite 모델은 위 RAG 블록을 바탕으로 `{analysis, tool_plan, draft, self_score, needs_flash}`를 채운 JSON을 반드시 반환합니다. self_score가 낮거나 위험 판단 시 Flash를 한 번만 호출합니다.
 6. **운영 팁**: `emb_config.json`의 `hybrid_top_k`, `bm25_top_n`, `rrf_constant`, `query_rewrite_variants` 등을 조정해 성향을 튜닝하고, 인덱스/임베딩 DB는 정기적으로 백업하세요.
+7. **BM25 자동 재구축**: 장시간 대화가 없으면 `bm25_auto_rebuild` 설정에 따라 자동으로 FTS 인덱스를 갱신할 수 있습니다. 유휴 시간(`idle_minutes`) 이하로는 재구축이 수행되지 않으며, 새 대화가 기록되면 다음 유휴 구간까지 대기합니다.
 
 ## Thinking/Flash 라우팅 규칙
 - **Thinking(Flash Lite)** 단계는 다음 JSON 형식을 준수합니다.
