@@ -697,12 +697,58 @@ class AIHandler(commands.Cog):
         return score
 
     def _parse_thinking_response(self, text: str) -> dict[str, Any]:
-        payload_text = self._extract_json_block(text)  # 코드블럭 등을 제거하고 JSON 본문만 남긴다.
-        try:
-            data = json.loads(payload_text)
-        except json.JSONDecodeError as exc:
-            logger.warning("Thinking 응답 JSON 파싱 실패: %s", exc)
+        stripped = text.strip()
+        data: Any | None = None
+        for candidate in (stripped, self._extract_json_block(stripped)):
+            if not candidate:
+                continue
+            try:
+                data = json.loads(candidate)
+                break
+            except json.JSONDecodeError:
+                continue
+
+        if data is None:
+            logger.warning("Thinking 응답 JSON 파싱 실패: 유효한 JSON 블록을 찾지 못했습니다.")
             return {}
+
+        if isinstance(data, list):
+            plan: list[dict[str, Any]] = []
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                tool_call = item.get("tool_call") or item
+                if not isinstance(tool_call, dict):
+                    continue
+                tool_name = (
+                    tool_call.get("tool_name")
+                    or tool_call.get("tool_to_use")
+                    or tool_call.get("function")
+                )
+                if not tool_name:
+                    continue
+                params = (
+                    tool_call.get("parameters")
+                    or tool_call.get("args")
+                    or {}
+                )
+                if not isinstance(params, dict):
+                    params = {}
+                plan.append(
+                    {
+                        "tool_to_use": tool_name,
+                        "tool_name": tool_name,
+                        "parameters": params,
+                    }
+                )
+            return {
+                "analysis": "",
+                "draft": "",
+                "tool_plan": plan,
+                "self_score": {},
+                "needs_flash": bool(plan),
+            }
+
         if not isinstance(data, dict):
             return {}
 
