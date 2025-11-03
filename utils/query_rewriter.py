@@ -9,38 +9,115 @@ from typing import List
 import config
 from logger_config import logger
 
-try:  # pragma: no cover - 환경에 따라 설치되지 않을 수 있음
-    import google.generativeai as genai  # type: ignore
+try:  # pragma: no cover - 경량 환경에서는 sentence-transformers가 없을 수 있다.
+    from sentence_transformers import SentenceTransformer
 except ModuleNotFoundError:  # pragma: no cover
-    genai = None  # type: ignore
+    SentenceTransformer = None  # type: ignore
 
-_MODEL_CACHE: dict[str, "genai.GenerativeModel"] = {}
+import numpy as np
+
 _MODEL_LOCK = asyncio.Lock()
-_GENAI_READY = False
+_MODEL_INSTANCE: SentenceTransformer | None = None
+
+_SYNONYM_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("알려줘", ("말해줘", "설명해줘", "얘기해줘", "알려줄래", "알려줄 수 있어?")),
+    ("알려줄래", ("말해줄래", "설명해줄래")),
+    ("알려줄 수 있어", ("말해줄 수 있어", "설명해줄 수 있어")),
+    ("찾아줘", ("검색해줘", "찾아볼 수 있어?", "찾아줄래")),
+    ("추천해줘", ("추천해줄래", "추천해줄 수 있어?", "추천 좀 해줘")),
+    ("확인해줘", ("확인해줄래", "체크해줘", "봐줄래")),
+    ("어때", ("어떤지 알려줘", "상황이 어때", "어떤지 말해줘")),
+    ("가격", ("비용", "가격대")),
+    ("날씨", ("기상", "날씨 상황")),
+    ("주가", ("주식 가격", "주식 시세")),
+    ("환율", ("환 시세", "환율 정보")),
+)
+
+_TAIL_VARIANTS: tuple[str, ...] = (
+    "{query}?",
+    "{query} 알려줘",
+    "{query}에 대해 알려줘",
+    "{query} 정보 알려줘",
+    "{query} 자세히 말해줘",
+    "{query} 정리해줘",
+    "{query} 요약해줘",
+)
 
 
-async def _ensure_model(model_name: str) -> "genai.GenerativeModel":
-    if genai is None:
-        raise RuntimeError("google-generativeai 패키지가 필요합니다.")
-    global _GENAI_READY
-    if not _GENAI_READY:
-        if not config.GEMINI_API_KEY:
-            raise RuntimeError("Gemini API 키가 설정되어 있지 않습니다.")
-        genai.configure(api_key=config.GEMINI_API_KEY)
-        _GENAI_READY = True
+def _normalize_query(text: str) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return ""
+    return stripped
 
-    cached = _MODEL_CACHE.get(model_name)
-    if cached is not None:
-        return cached
+
+async def _async_encode(model: SentenceTransformer, sentences: List[str]) -> np.ndarray:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: model.encode(sentences, normalize_embeddings=True),
+    )
+
+
+async def _get_model() -> SentenceTransformer | None:
+    global _MODEL_INSTANCE
+    if SentenceTransformer is None:
+        logger.warning("sentence-transformers 패키지를 찾을 수 없어 쿼리 재작성을 비활성화합니다.")
+        return None
+    if _MODEL_INSTANCE is not None:
+        return _MODEL_INSTANCE
+
+    model_name = config.RAG_QUERY_REWRITE_MODEL_NAME or "upskyy/e5-small-korean"
+    backend = getattr(config, "RAG_QUERY_REWRITE_BACKEND", None)
 
     async with _MODEL_LOCK:
-        cached = _MODEL_CACHE.get(model_name)
-        if cached is not None:
-            return cached
-        # 동일 모델을 여러 번 로드하지 않도록 캐시에 저장한다.
-        model = genai.GenerativeModel(model_name)
-        _MODEL_CACHE[model_name] = model
-        return model
+        if _MODEL_INSTANCE is not None:
+            return _MODEL_INSTANCE
+        try:
+            if backend:
+                _MODEL_INSTANCE = SentenceTransformer(model_name, backend=backend)
+            else:
+                _MODEL_INSTANCE = SentenceTransformer(model_name)
+            logger.info("쿼리 재작성용 SentenceTransformer 로드 완료: %s", model_name)
+        except Exception as exc:  # pragma: no cover - 외부 모델 로드 실패 대비
+            logger.warning("쿼리 재작성 모델 로드 실패(%s): %s", model_name, exc)
+            _MODEL_INSTANCE = None
+        return _MODEL_INSTANCE
+
+
+def _build_candidate_variants(query: str) -> list[str]:
+    base = _normalize_query(query)
+    if not base:
+        return []
+
+    variants: set[str] = {base}
+    normalized_base = base.rstrip(".!?")
+    variants.add(normalized_base)
+
+    for template in _TAIL_VARIANTS:
+        candidate = template.format(query=normalized_base)
+        variants.add(candidate.strip())
+
+    for needle, replacements in _SYNONYM_GROUPS:
+        if needle in base:
+            for replacement in replacements:
+                variants.add(base.replace(needle, replacement))
+
+    if "?" in base:
+        variants.add(base.replace("?", ""))
+    else:
+        variants.add(f"{normalized_base}?")
+
+    if " 알려줘" not in base and " 말해줘" not in base:
+        variants.add(f"{normalized_base} 알려줘")
+
+    deduped = [variant.strip() for variant in variants if variant.strip()]
+    # 길이가 너무 긴 변형은 제거 (모델 입력 제한 보호)
+    deduped = [v for v in deduped if len(v) <= 200]
+
+    # 원본 문장은 항상 첫 번째에 위치하도록 정렬
+    deduped.sort(key=lambda v: (0 if v == base else 1, len(v)))
+    return deduped
 
 
 async def expand_query(
@@ -55,50 +132,48 @@ async def expand_query(
 
     variants_target = max_variants or config.RAG_QUERY_REWRITE_VARIANTS
     variants_target = max(1, variants_target)
+    candidates = _build_candidate_variants(trimmed)
+    if not candidates:
+        return [trimmed][:variants_target]
+
     results: List[str] = [trimmed]
 
     if not config.RAG_QUERY_REWRITE_ENABLED:
-        return results
+        return results[:variants_target]
 
-    model_name = config.RAG_QUERY_REWRITE_MODEL_NAME
     try:
-        model = await _ensure_model(model_name)
-    except Exception as exc:  # pragma: no cover - 네트워크/환경 이슈 대비
-        logger.warning("쿼리 재작성 모델 초기화 실패: %s", exc)
-        return results
+        model = await _get_model()
+    except Exception as exc:  # pragma: no cover
+        logger.warning("쿼리 재작성 모델 로딩 중 오류: %s", exc)
+        model = None
 
-    prompt = (
-        "다음 한국어 질문을 의미는 유지하되 표현을 바꾸어 3~5개의 버전으로 만들어 주세요.\n"
-        "출력 형식: 각 줄마다 하나의 패러프레이즈만 작성하고, 불필요한 서두나 번호는 쓰지 마세요.\n"
-        f"질문: {trimmed}"
+    if model is None:
+        return results[:variants_target]
+
+    try:
+        encoded = await _async_encode(model, candidates)
+    except Exception as exc:  # pragma: no cover - 모델 추론 실패 대비
+        logger.warning("쿼리 재작성 임베딩 계산 실패: %s", exc)
+        return results[:variants_target]
+
+    query_embedding = encoded[0]
+    candidate_embeddings = encoded[1:]
+    candidate_sentences = candidates[1:]
+
+    if candidate_embeddings.size == 0:
+        return results[:variants_target]
+
+    scores = candidate_embeddings @ query_embedding
+    scored_candidates = sorted(
+        zip(candidate_sentences, scores.tolist()),
+        key=lambda item: item[1],
+        reverse=True,
     )
 
-    try:
-        response = await model.generate_content_async(
-            prompt,
-            generation_config=genai.types.GenerationConfig(
-                candidate_count=1,
-                temperature=0.7,
-            ),
-        )
-    except Exception as exc:  # pragma: no cover - API 오류 대비
-        logger.warning("쿼리 재작성 호출 실패: %s", exc)
-        return results
-
-    candidates: List[str] = []
-    text = (response.text or "").strip() if hasattr(response, "text") else ""
-    for line in text.splitlines():
-        candidate = line.strip("-•· ").strip()
-        if not candidate:
-            continue
-        if candidate in results or candidate in candidates:
-            continue
-        candidates.append(candidate)
-        if len(candidates) >= variants_target - 1:
+    for sentence, _score in scored_candidates:
+        if sentence not in results:
+            results.append(sentence)
+        if len(results) >= variants_target:
             break
 
-    if not candidates:
-        return results
-
-    results.extend(candidates)
     return results[:variants_target]
