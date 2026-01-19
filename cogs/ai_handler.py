@@ -1237,31 +1237,9 @@ class AIHandler(commands.Cog):
                 if len(tool_results_str) > 3800:
                     tool_results_str = tool_results_str[:3800]  # Gemini 입력 제한 보호
 
-                if not tool_plan and not should_use_flash and draft:
-                    # Thinking 단계 초안이 충분하면 Flash 없이 바로 답변한다.
-                    final_response_text = draft
-                    self._debug(f"[Lite] 최종 응답(직접): {self._truncate_for_debug(final_response_text)}", log_extra)
-                    debug_block = self._build_rag_debug_block(rag_entries)
-                    if debug_block:
-                        logger.debug("RAG 디버그 블록:\n%s", debug_block, extra=log_extra)
-                    await message.reply(final_response_text, mention_author=False)
-                    await db_utils.log_analytics(
-                        self.bot.db,
-                        "AI_INTERACTION",
-                        {
-                            "guild_id": message.guild.id,
-                            "user_id": message.author.id,
-                            "channel_id": message.channel.id,
-                            "trace_id": trace_id,
-                            "user_query": user_query,
-                            "tool_plan": executed_plan,
-                            "final_response": final_response_text,
-                            "is_fallback": False,
-                        },
-                    )
-                    return
 
-                logger.info("3단계: Main 모델(답변 생성) 호출...", extra=log_extra)
+                # 단일 모델 아키텍처: Main 모델 호출
+                logger.info("Main 모델(답변 생성) 호출...", extra=log_extra)
                 system_prompt = config.WEB_FALLBACK_PROMPT if use_fallback_prompt else config.AGENT_SYSTEM_PROMPT
                 rag_blocks_for_prompt = [] if use_fallback_prompt else rag_blocks
                 main_prompt = self._compose_main_prompt(
