@@ -16,6 +16,7 @@ from pathlib import Path
 
 import discord
 from discord.ext import commands
+import aiosqlite
 
 import config
 from logger_config import logger, register_discord_logging
