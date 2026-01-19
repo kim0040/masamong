@@ -862,27 +862,43 @@ class AIHandler(commands.Cog):
         rag_blocks: list[str],
         tool_results_block: str | None,
     ) -> str:
+        """메인 모델에 전달할 프롬프트를 `emb` 스타일로 구성합니다.
+        
+        프롬프트 구조:
+        1. 시스템 페르소나/규칙
+        2. [과거 대화 기억] - RAG 컨텍스트
+        3. [도구 실행 결과] - 도구 출력 (있을 경우)
+        4. [현재 질문] - 사용자 쿼리
+        5. 지시사항
+        """
         channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
         persona = (channel_config.get('persona') or config.DEFAULT_TSUNDERE_PERSONA).strip()
         rules = (channel_config.get('rules') or config.DEFAULT_TSUNDERE_RULES).strip()
 
-        sections: list[str] = []
-        sections.append("SYSTEM RULES")
-        sections.append(f"{persona}\n\n{rules}")  # 페르소나와 기본 규칙을 시스템 입력으로 고정
+        # 시스템 프롬프트 (페르소나 + 규칙)
+        system_part = f"{persona}\n\n{rules}"
 
-        # USER MEMORY는 현재 비활성화 상태이므로 생략. 추후 확장 가능.
+        sections: list[str] = [system_part]
 
+        # RAG 컨텍스트 (과거 대화 기억)
         if rag_blocks:
-            sections.append("[RAG CONTEXT — trimmed]")
-            sections.append("\n\n".join(rag_blocks))
+            rag_content = "\n\n".join(rag_blocks)
+            sections.append(f"[과거 대화 기억]\n{rag_content}")
 
+        # 도구 실행 결과
         if tool_results_block:
-            sections.append("[TOOL RESULTS]")
-            sections.append(tool_results_block)  # 도구 출력 요약을 별도 블록으로 전달
+            sections.append(f"[도구 실행 결과]\n{tool_results_block}")
 
-        sections.append("USER:")
-        sections.append(user_query)
-        return "\n\n".join(section for section in sections if section)
+        # 현재 질문
+        sections.append(f"[현재 질문]\n{user_query}")
+
+        # 지시사항
+        if rag_blocks:
+            sections.append("위 기억을 참고하여 친구처럼 자연스럽게 답변해줘. 기억에 없는 내용이면 모른다고 솔직하게 말해도 돼.")
+        else:
+            sections.append("관련 기억은 없지만, 친구처럼 자연스럽게 답변해줘.")
+
+        return "\n\n".join(sections)
 
     def _parse_tool_calls(self, text: str) -> list[dict]:
         """Lite 모델의 응답에서 <tool_plan> 또는 <tool_call> XML 태그를 파싱하여 JSON으로 변환합니다."""
