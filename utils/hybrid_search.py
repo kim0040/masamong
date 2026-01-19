@@ -277,12 +277,14 @@ class HybridSearchEngine:
             )
             for raw_row in kakao_rows:
                 row = dict(raw_row)
-                vector = self._to_vector(row.get("embedding"))
-                message = row.get("message") or ""
-                if vector is None or not message.strip():
-                    continue
-                similarity = self._cosine_similarity(query_vector, vector)
-                if similarity < self.embedding_threshold:
+                # Offline store returns 'score' (pre-calculated similarity) and might skip 'embedding'
+                similarity = row.get("score")
+                if similarity is None:
+                    vector = self._to_vector(row.get("embedding"))
+                    if vector is not None:
+                        similarity = self._cosine_similarity(query_vector, vector)
+
+                if similarity is None or similarity < self.embedding_threshold:
                     continue
 
                 message_id = row.get("message_id")
