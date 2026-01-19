@@ -21,6 +21,10 @@ from utils.embeddings import DiscordEmbeddingStore, KakaoEmbeddingStore, get_emb
 from utils.query_rewriter import expand_query
 from utils.reranker import Reranker
 
+# 성능 최적화: 정규식 패턴 컴파일 (모듈 레벨에서 한 번만)
+_URL_PATTERN = re.compile(r"https?://\S+")
+_WHITESPACE_PATTERN = re.compile(r"\s+")
+
 
 @dataclass
 class HybridSearchResult:
@@ -503,19 +507,31 @@ class HybridSearchEngine:
         return messages[start:end]
 
     def _dedupe_messages(self, messages: List[dict[str, Any]]) -> List[dict[str, Any]]:
+        """메시지 목록에서 중복을 제거합니다.
+        
+        성능 최적화: dict를 사용하여 O(1) 조회 성능 확보
+        """
         deduped: List[dict[str, Any]] = []
-        seen: set[str] = set()
+        seen: dict[tuple, bool] = {}  # (message_id, content_hash) -> True
+        
         for item in messages:
             content = self._clean_content(item.get("content") or item.get("message") or "")
             if not content:
                 continue
+            
             item = dict(item)
             item["content"] = content
-            key = f"{item.get('message_id')}::{content}"
+            
+            # 메시지 ID와 내용의 해시값을 조합한 튜플로 중복 확인
+            msg_id = item.get('message_id')
+            key = (msg_id, hash(content))
+            
             if key in seen:
                 continue
-            seen.add(key)
+            
+            seen[key] = True
             deduped.append(item)
+        
         return deduped
 
     def _format_dialogue_block(self, messages: List[dict[str, Any]]) -> str:
@@ -544,11 +560,15 @@ class HybridSearchEngine:
         return combined
 
     def _clean_content(self, text: str) -> str:
+        """텍스트에서 URL을 제거하고 공백을 정규화합니다.
+        
+        성능 최적화를 위해 미리 컴파일된 정규식 패턴을 사용합니다.
+        """
         if not text:
             return ""
         normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-        normalized = re.sub(r"https?://\S+", "[링크]", normalized)
-        normalized = re.sub(r"\s+", " ", normalized).strip()
+        normalized = _URL_PATTERN.sub("[링크]", normalized)  # 컴파일된 패턴 사용
+        normalized = _WHITESPACE_PATTERN.sub(" ", normalized).strip()  # 컴파일된 패턴 사용
         return normalized
 
     def _compose_recent_context(self, recent_messages: list[str] | None) -> str:

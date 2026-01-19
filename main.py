@@ -5,22 +5,33 @@
 
 이 파일은 다음의 주요 작업을 수행합니다:
 1. 설정 및 로거를 초기화합니다.
-2. 필요한 API 키가 설정되었는지 확인합니다.
-3. 데이터베이스 연결을 관리하는 커스텀 Bot 클래스(`ReMasamongBot`)를 정의합니다.
-4. 봇의 핵심 로직이 담긴 Cog(모듈)들을 로드합니다.
-5. 봇을 Discord에 연결하고 실행합니다.
+2. Discord 봇 인스턴스를 생성하고 Cog를 로드합니다.
+3. 데이터베이스 마이그레이션 및 초기 데이터를 세팅합니다.
+4. 봇을 실행하여 Discord와 연결합니다.
 """
+import asyncio
+import os
+import sys
+from pathlib import Path
 
 import discord
 from discord.ext import commands
-import os
-import asyncio
-import sys
-import aiosqlite
 
 import config
 from logger_config import logger, register_discord_logging
 from utils import initial_data
+
+# 봇 버전 정보
+__version__ = "2.0.0"
+__author__ = "kim0040"
+
+# --- 1. 시작 로그 및 환경 확인 ---
+logger.info("=" * 70)
+logger.info(f"🤖 마사몽 Discord 봇 v{__version__} 시작 중...")
+logger.info(f"Python 버전: {sys.version.split()[0]}")
+logger.info(f"Discord.py 버전: {discord.__version__}")
+logger.info(f"작업 디렉터리: {os.getcwd()}")
+logger.info("=" * 70)
 
 # --- 1. 초기 설정 및 API 키 유효성 검사 ---
 # 봇 실행에 필수적인 토큰이 없으면 즉시 종료합니다.
