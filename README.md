@@ -43,10 +43,10 @@
 | 카테고리 | 기술 |
 |---------|------|
 | **프레임워크** | Discord.py 2.4+ |
-| **AI/ML** | Google Gemini API, SentenceTransformers |
+| **AI/ML** | Google Gemini 2.5 Flash/Lite, SentenceTransformers |
 | **데이터베이스** | SQLite3 with aiosqlite |
-| **임베딩** | BM-K/KoSimCSE-roberta (기본) |
-| **검색** | BM25 (FTS5) + Cosine Similarity |
+| **임베딩** | `dragonkue/multilingual-e5-small-ko-v2` |
+| **검색** | Cosine Similarity (오프라인 Numpy) |
 | **HTTP** | aiohttp, requests |
 | **환경 관리** | python-dotenv |
 
@@ -399,11 +399,8 @@ python3 setup.py
 | `CONVERSATION_WINDOW_SIZE` | 대화 윈도우 크기 | `12` |
 | `CONVERSATION_WINDOW_STRIDE` | 슬라이딩 stride | `6` |
 | `CONVERSATION_NEIGHBOR_RADIUS` | 인접 대화 반경 | `3` |
-| `RAG_SIMILARITY_THRESHOLD` | 임베딩 유사도 임계값 | `0.3` |
-| `RAG_STRONG_SIMILARITY_THRESHOLD` | 강한 유사도 임계값 | `0.75` |
+| `RAG_SIMILARITY_THRESHOLD` | 임베딩 유사도 임계값 | `0.6` |
 | `RAG_HYBRID_TOP_K` | 하이브리드 결과 개수 | `4` |
-| `RAG_EMBEDDING_TOP_N` | 임베딩 후보 개수 | `8` |
-| `RAG_BM25_TOP_N` | BM25 후보 개수 | `8` |
 
 ### BM25 자동 재구축
 
