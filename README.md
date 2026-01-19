@@ -387,9 +387,8 @@ python3 setup.py
 | 변수명 | 설명 | 기본값 |
 |-------|------|--------|
 | `AI_MEMORY_ENABLED` | RAG 메모리 기능 활성화 | `true` |
-| `SEARCH_QUERY_EXPANSION_ENABLED` | 쿼리 확장 (패러프레이즈) | `true` |
+| `query_rewrite_enabled` | 쿼리 재작성 (추가 모델 로드) | `false` |
 | `RERANK_ENABLED` | Cross-Encoder 리랭킹 | `false` |
-| `SEARCH_CHUNKING_ENABLED` | RAG 청킹 사용 | `false` |
 | `ENABLE_PROACTIVE_KEYWORD_HINTS` | 능동 응답 | `false` |
 
 ### RAG 파라미터
@@ -420,40 +419,34 @@ python3 setup.py
 
 전체 환경 변수 목록은 `config.py`를 참고하세요.
 
-## RAG 시스템
+### RAG 검색 파이프라인
 
-### 하이브리드 검색 파이프라인
+현재 마사몽은 **임베딩 기반 유사도 검색**을 사용합니다. (BM25, Reranker는 기본 비활성화)
 
 ```mermaid
 graph LR
-    A[사용자 쿼리] --> B[쿼리 확장]
-    B --> C[변형 쿼리 3개]
+    A[사용자 쿼리] --> B["query:" prefix 추가]
+    B --> C[E5 임베딩 생성]
     
-    C --> D[BM25 검색]
-    C --> E[임베딩 검색]
+    C --> D[Cosine Similarity 검색]
+    D --> E[상위 4개 후보]
     
-    D --> F[키워드 매칭<br/>상위 8개]
-    E --> G[의미 유사도<br/>상위 8개]
+    E --> F{score >= 0.6?}
+    F -->|Yes| G[RAG 컨텍스트로 사용]
+    F -->|No| H[컨텍스트 없이 응답]
     
-    F --> H[RRF 결합<br/>0.45 가중치]
-    G --> I[Cosine Similarity<br/>0.55 가중치]
-    
-    H --> J[Combined Score]
-    I --> J
-    
-    J --> K{리랭킹?}
-    K -->|Yes| L[Cross-Encoder]
-    K -->|No| M[상위 4개 선택]
-    L --> M
-    
-    M --> N[대화 윈도우 확장]
-    N --> O[최종 컨텍스트]
+    G --> I[프롬프트에 포함]
+    H --> I
+    I --> J[Gemini 응답 생성]
     
     style C fill:#e3f2fd
     style F fill:#fff3e0
-    style G fill:#f3e5f5
-    style J fill:#e8f5e9
+    style G fill:#e8f5e9
+    style H fill:#ffebee
 ```
+
+> [!NOTE]
+> `similarity_threshold: 0.6` 미만의 결과는 자동으로 무시됩니다. 이로 인해 관련 없는 맥락이 응답에 영향을 주지 않습니다.
 
 ### 대화 윈도우 관리
 
@@ -531,10 +524,22 @@ python3 database/init_bm25.py
 
 ### 로컬 개발 환경
 
+**macOS:**
 ```bash
+cd /path/to/masamong
 source venv/bin/activate
 python3 main.py
 ```
+
+**Ubuntu/Linux:**
+```bash
+cd /path/to/masamong
+source venv/bin/activate
+python3 main.py
+```
+
+> [!TIP]
+> 우분투 서버에서 `mps` 관련 오류 발생 시 `emb_config.json`에서 `"embedding_device": "cpu"`로 설정하세요.
 
 ### Screen 세션 (운영 환경)
 
