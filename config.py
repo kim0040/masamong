@@ -234,7 +234,7 @@ SERPAPI_KEY = load_config_value('SERPAPI_KEY')
 # CometAPI 설정 (Gemini 대체 - OpenAI Compatible)
 COMETAPI_KEY = load_config_value('COMETAPI_KEY')
 COMETAPI_BASE_URL = load_config_value('COMETAPI_BASE_URL', 'https://api.cometapi.com/v1')
-COMETAPI_MODEL = load_config_value('COMETAPI_MODEL', 'deepseek-v3.2-exp')
+COMETAPI_MODEL = load_config_value('COMETAPI_MODEL', 'DeepSeek-V3.2-Exp-nothinking')
 USE_COMETAPI = as_bool(load_config_value('USE_COMETAPI', 'true'))  # CometAPI 우선 사용
 
 FINNHUB_API_KEY = load_config_value('FINNHUB_API_KEY', 'YOUR_FINNHUB_API_KEY')
