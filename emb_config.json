@@ -2,7 +2,7 @@
   "embedding_model_name": "dragonkue/multilingual-e5-small-ko-v2",
   "discord_db_path": "database/discord_embeddings.db",
   "kakao_db_path": "database/kakao_embeddings.db",
-  "embedding_device": "mps",
+  "embedding_device": "cpu",
   "normalize_embeddings": true,
   "query_limit": 200,
   "kakao_vector_extension": "vec0",
