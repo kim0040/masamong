@@ -56,10 +56,10 @@
 
 ```mermaid
 graph TB
-    User[Discord 사용자] -->|@멘션 메시지| Bot[마사몽 봇]
+    User[Discord 사용자] -->|"@멘션 메시지"| Bot[마사몽 봇]
     Bot --> MentionCheck{멘션 확인}
-    MentionCheck -->|멘션 있음| AIHandler[AI Handler]
-    MentionCheck -->|멘션 없음| Skip[처리 안 함]
+    MentionCheck -->|"멘션 있음"| AIHandler[AI Handler]
+    MentionCheck -->|"멘션 없음"| Skip[처리 안 함]
     
     AIHandler --> RAG[RAG 검색]
     AIHandler --> LiteModel[Gemini Lite<br/>의도 분석]
@@ -79,8 +79,8 @@ graph TB
     ToolsCog --> Response[응답 생성]
     
     Response --> FlashCheck{Flash 필요?}
-    FlashCheck -->|자신감 낮음| FlashModel[Gemini Flash<br/>정교한 응답]
-    FlashCheck -->|자신감 높음| LiteResponse[Lite 응답 사용]
+    FlashCheck -->|"자신감 낮음"| FlashModel[Gemini Flash<br/>정교한 응답]
+    FlashCheck -->|"자신감 높음"| LiteResponse[Lite 응답 사용]
     
     FlashModel --> Final[최종 응답]
     LiteResponse --> Final
@@ -396,8 +396,8 @@ python3 setup.py
 
 | 변수명 | 설명 | 기본값 |
 |-------|------|--------|
-| `CONVERSATION_WINDOW_SIZE` | 대화 윈도우 크기 | `6` |
-| `CONVERSATION_WINDOW_STRIDE` | 슬라이딩 stride | `3` |
+| `CONVERSATION_WINDOW_SIZE` | 대화 윈도우 크기 | `12` |
+| `CONVERSATION_WINDOW_STRIDE` | 슬라이딩 stride | `6` |
 | `CONVERSATION_NEIGHBOR_RADIUS` | 인접 대화 반경 | `3` |
 | `RAG_SIMILARITY_THRESHOLD` | 임베딩 유사도 임계값 | `0.3` |
 | `RAG_STRONG_SIMILARITY_THRESHOLD` | 강한 유사도 임계값 | `0.75` |
@@ -460,30 +460,31 @@ graph LR
 
 ### 대화 윈도우 관리
 
-마사몽은 대화의 맥락을 유지하기 위해 **슬라이딩 윈도우** 방식을 사용합니다:
+마사몽은 대화의 맥락을 완벽하게 유지하기 위해 **화자 병합(Speaker Merging)** 및 **슬라이딩 윈도우** 방식을 사용합니다:
 
-- **윈도우 크기**: 6개 메시지
-- **Stride**: 3개씩 이동
+- **윈도우 크기**: 12개 메시지 (약 15개 기준 최적화)
+- **Stride**: 6개씩 이동 (중복 최소화)
 - **인접 반경**: ±3 메시지
+- **화자 병합**: 연속된 동일 화자의 메시지는 하나의 블록으로 병합하여 문맥 파악 용이
 
 ```
-메시지:  1  2  3  4  5  6  7  8  9  10
-윈도우1: [1  2  3  4  5  6]
-윈도우2:          [4  5  6  7  8  9]
-윈도우3:                   [7  8  9  10]
+메시지: [A] [A] [B] [A] [A] [A] ...
+병합후: [A: ...] [B: ...] [A: ...] ...
+윈도우: 병합된 블록 단위로 슬라이딩
 ```
 
 검색 결과에서 메시지가 발견되면, 해당 윈도우 전체를 컨텍스트로 제공합니다.
 
 ### 임베딩 모델
 
-**기본 모델**: `BM-K/KoSimCSE-roberta`
+**기본 모델**: `dragonkue/multilingual-e5-small-ko-v2`
 
-한국어에 최적화된 경량 임베딩 모델입니다. `emb_config.json`에서 변경 가능:
+한국어 성능이 검증된 E5 모델을 사용하며, `query:` 및 `passage:` prefix를 자동으로 적용합니다.
+`emb_config.json`에서 변경 가능:
 
 ```json
 {
-  "embedding_model_name": "BM-K/KoSimCSE-roberta",
+  "embedding_model_name": "dragonkue/multilingual-e5-small-ko-v2",
   "embedding_device": "cpu",
   "normalize_embeddings": true
 }
@@ -507,6 +508,27 @@ python3 database/init_bm25.py
 - 사용자 이름
 - 타임스탬프
 - 대화 윈도우
+
+### 오프라인 임베딩 (저사양 서버 지원)
+
+서버 성능이 낮거나(GPU 없음), 대량의 과거 대화를 미리 처리하고 싶은 경우 **오프라인 생성**을 권장합니다.
+
+1. **준비**: `data/kakao_raw/` 폴더에 카카오톡 대화 내용 CSV 파일을 넣습니다. (`date`, `user`, `message` 컬럼 포함)
+2. **생성**:
+   ```bash
+   # 로컬(고성능 PC)에서 실행
+   python scripts/generate_kakao_embeddings.py --input data/kakao_raw/chat.csv
+   ```
+3. **업로드**: 생성된 `data/kakao_store/` 폴더를 서버의 동일한 위치로 업로드합니다.
+4. **설정**: `emb_config.json`의 `kakao_servers`에 해당 폴더 경로를 지정합니다.
+   ```json
+   {
+     "server_id": "my_server",
+     "db_path": "data/kakao_store",
+     "label": "오프라인 대화"
+   }
+   ```
+5. **실행**: 봇이 시작되면 `.npy` 파일을 메모리로 로드하여 즉시 검색에 사용합니다 (SQLite 불필요).
 
 ## 실행 방법
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional
 
+import json
 import aiosqlite
 
 # numpy/torch 기반 의존성은 저사양 서버에서는 설치하지 않을 수 있으므로, ImportError를 허용한다.
@@ -70,8 +71,13 @@ async def _load_model() -> SentenceTransformer:
         return _MODEL
 
 
-async def get_embedding(text: str) -> np.ndarray | None:
-    """문자열을 임베딩 벡터(float32)로 변환합니다."""
+async def get_embedding(text: str, prefix: str = "") -> np.ndarray | None:
+    """문자열을 임베딩 벡터(float32)로 변환합니다.
+    
+    Args:
+        text: 임베딩할 텍스트
+        prefix: 모델에 따른 접두사 (예: "query: ", "passage: ")
+    """
     if not text:
         return None
     if np is None:
@@ -85,8 +91,11 @@ async def get_embedding(text: str) -> np.ndarray | None:
     normalize = getattr(config, "LOCAL_EMBEDDING_NORMALIZE", True)
     loop = asyncio.get_running_loop()
 
+    # E5 모델의 경우 접두사 추가
+    final_text = f"{prefix}{text}"
+
     def _sync_encode() -> np.ndarray:
-        vector = model.encode(text, normalize_embeddings=normalize)
+        vector = model.encode(final_text, normalize_embeddings=normalize)
         if not isinstance(vector, np.ndarray):
             vector = np.asarray(vector)
         return vector.astype(np.float32)
@@ -247,6 +256,51 @@ class KakaoEmbeddingStore:
         self._vector_extension_warning_logged = False
         self._window_size = 3
 
+        # Numpy Backend Cache: Path -> (vectors, metadata_list)
+        self._numpy_cache: Dict[Path, Any] = {}
+        self._numpy_lock = asyncio.Lock()
+
+    async def _ensure_numpy_backend(self, path: Path) -> bool:
+        """Check if path is a directory with numpy files and load them if needed."""
+        if not path.is_dir():
+            return False
+            
+        if path in self._numpy_cache:
+            return True
+            
+        async with self._numpy_lock:
+            if path in self._numpy_cache:
+                return True
+                
+            vec_path = path / "vectors.npy"
+            meta_path = path / "metadata.json"
+            
+            if not vec_path.exists() or not meta_path.exists():
+                return False
+                
+            try:
+                if np is None:
+                    logger.warning("Numpy required for offline embeddings at %s", path)
+                    return False
+                    
+                # Load in thread to avoid blocking loop
+                loop = asyncio.get_running_loop()
+                vectors, metadata = await loop.run_in_executor(None, self._load_numpy_files, vec_path, meta_path)
+                
+                self._numpy_cache[path] = (vectors, metadata)
+                logger.info(f"Loaded offline embeddings from {path}: {len(metadata)} items")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to load offline embeddings from {path}: {e}")
+                return False
+
+    @staticmethod
+    def _load_numpy_files(vec_path: Path, meta_path: Path):
+        vectors = np.load(vec_path)
+        with open(meta_path, 'r', encoding='utf-8') as f:
+            metadata = json.load(f)
+        return vectors, metadata
+
     async def fetch_recent_embeddings(
         self,
         server_ids: Iterable[str],
@@ -340,7 +394,14 @@ class KakaoEmbeddingStore:
             self._vector_extension_warning_logged = True
         return False
 
+
+
     async def _fetch_from_path(self, path: Path, label: str, limit: int) -> list[Dict[str, Any]]:
+        # 1. Numpy Backend Check
+        if await self._ensure_numpy_backend(path):
+            return self._fetch_from_numpy(path, limit)
+
+        # 2. SQLite Backend
         try:
             async with aiosqlite.connect(path) as db:
                 await self._load_vector_extension(db)
@@ -388,6 +449,10 @@ class KakaoEmbeddingStore:
             return []
 
         try:
+            # 1. Numpy Backend
+            if await self._ensure_numpy_backend(path):
+                return self._vector_search_numpy(path, query_vector, limit)
+
             async with aiosqlite.connect(path) as db:
                 await self._load_vector_extension(db)
                 db.row_factory = aiosqlite.Row
@@ -417,16 +482,6 @@ class KakaoEmbeddingStore:
             logger.error("Kakao 벡터 검색 중 오류: %s", exc, exc_info=True)
         return []
 
-    async def _fetch_message_window(self, db: aiosqlite.Connection, message_id: int) -> list[dict[str, str]]:
-        window = self._window_size
-        start_id = max(1, message_id - window)
-        end_id = message_id + window
-        async with db.execute(
-            "SELECT id, user_name, message FROM kakao_messages "
-            "WHERE id BETWEEN ? AND ? ORDER BY id",
-            (start_id, end_id),
-        ) as cursor:
-            rows = await cursor.fetchall()
         window_rows: list[dict[str, str]] = []
         for row in rows:
             window_rows.append(
@@ -437,6 +492,65 @@ class KakaoEmbeddingStore:
                 }
             )
         return window_rows
+
+    def _fetch_from_numpy(self, path: Path, limit: int) -> list[Dict[str, Any]]:
+        """Fetch recent items from numpy store (just returns last N items)."""
+        vectors, metadata = self._numpy_cache[path]
+        
+        # Taking last N items
+        slice_start = max(0, len(metadata) - limit)
+        recent_meta = metadata[slice_start:]
+        recent_meta.reverse() # Newest first
+        
+        results = []
+        for m in recent_meta:
+            results.append({
+                "message_id": m.get("id"),
+                "message": m.get("text", ""),
+                "timestamp": m.get("start_date", ""),
+                "speaker": "Merged Context", # Offline chunks don't have single speaker
+                "embedding": None, # Not strictly needed for display
+                "context_window": [], # Already chunked
+            })
+        return results
+
+    def _vector_search_numpy(self, path: Path, query_vector: np.ndarray, limit: int) -> list[Dict[str, Any]]:
+        vectors, metadata = self._numpy_cache[path]
+        
+        # Cosine Similarity: (A . B) / (|A| * |B|)
+        # encoding normalize_embeddings=True used in generation, so |V| should be ~1
+        # query_vector also likely normalized if from get_embedding
+        
+        norm_q = np.linalg.norm(query_vector)
+        # norm_v is pre-calculated or assumed 1 if normalized during save.
+        # But let's compute to be safe or assume optimized script.
+        # For speed in python, we'll assume vectors are normalized or just do dot if we trust it.
+        # Let's do full cosine for safety.
+        
+        norm_v = np.linalg.norm(vectors, axis=1)
+        norm_v[norm_v == 0] = 1e-10
+        
+        similarities = np.dot(vectors, query_vector) / (norm_v * norm_q)
+        
+        # Top K
+        top_indices = np.argsort(similarities)[::-1][:limit]
+        
+        results = []
+        for idx in top_indices:
+            score = similarities[idx]
+            meta = metadata[idx]
+            
+            results.append({
+                "message_id": meta.get("id"),
+                "message": meta.get("text", ""),
+                "timestamp": meta.get("start_date", ""),
+                "speaker": "Merged Context",
+                "distance": 1.0 - score, # Convert similarity to distance-like for compatibility
+                "score": float(score),
+                "context_window": [], # It's already a chunk
+            })
+            
+        return results
 
     async def _get_or_detect_table_meta(
         self,
