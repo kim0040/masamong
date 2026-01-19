@@ -15,14 +15,19 @@
   },
   "kakao_servers": [
     {
-      "server_id": "kakao_nodap",
+      "server_id": "912210558122598450",
       "db_path": "data/kakao_store/room1",
       "label": "노답형제들"
     },
     {
-      "server_id": "kakao_yeonsamo",
+      "server_id": "949696135688253554",
       "db_path": "data/kakao_store/room2",
       "label": "연사모 동호회"
+    },
+    {
+      "server_id": "1406585232752381970",
+      "db_path": "data/kakao_store/room1",
+      "label": "마사모 테스트서버"
     }
   ]
 }
