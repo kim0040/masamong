@@ -606,6 +606,99 @@ class AIHandler(commands.Cog):
         return None
 
 
+    # ========== 키워드 기반 도구 감지 (Lite 모델 대체) ==========
+
+    _WEATHER_KEYWORDS = frozenset(['날씨', '기온', '온도', '비', '눈', '맑', '흐림', '우산', '강수', '일기예보'])
+    _STOCK_US_KEYWORDS = frozenset(['애플', 'apple', 'aapl', '테슬라', 'tesla', 'tsla', '구글', 'google', 'googl', '엔비디아', 'nvidia', 'nvda', '마이크로소프트', 'microsoft', 'msft', '아마존', 'amazon', 'amzn'])
+    _STOCK_KR_KEYWORDS = frozenset(['삼성전자', '현대차', 'sk하이닉스', '네이버', '카카오', 'lg에너지', '셀트리온', '삼성바이오', '기아', '포스코'])
+    _STOCK_GENERAL_KEYWORDS = frozenset(['주가', '주식', '시세', '종가', '시가', '상장'])
+    _PLACE_KEYWORDS = frozenset(['맛집', '카페', '음식점', '식당', '추천', '근처', '주변', '가볼만한', '핫플'])
+    _LOCATION_KEYWORDS = ['서울', '부산', '인천', '대구', '광주', '대전', '울산', '세종', '경기', '강원', '충북', '충남', '전북', '전남', '경북', '경남', '제주', '광양', '여수', '순천', '목포', '강남', '홍대', '이태원', '명동']
+
+    def _detect_tools_by_keyword(self, query: str) -> list[dict]:
+        """키워드 패턴으로 필요한 도구를 감지합니다. Lite 모델을 대체합니다."""
+        tools = []
+        query_lower = query.lower()
+
+        # 날씨 감지
+        if any(kw in query_lower for kw in self._WEATHER_KEYWORDS):
+            location = self._extract_location_from_query(query) or '광양'
+            tools.append({
+                'tool_to_use': 'get_current_weather',
+                'tool_name': 'get_current_weather',
+                'parameters': {'location': location}
+            })
+            return tools  # 날씨 요청은 단일 도구로 처리
+
+        # 미국 주식 감지
+        if any(kw in query_lower for kw in self._STOCK_US_KEYWORDS):
+            symbol = self._extract_us_stock_symbol(query_lower)
+            if symbol:
+                tools.append({
+                    'tool_to_use': 'get_us_stock_info',
+                    'tool_name': 'get_us_stock_info',
+                    'parameters': {'symbol': symbol}
+                })
+                return tools
+
+        # 한국 주식 감지
+        if any(kw in query_lower for kw in self._STOCK_KR_KEYWORDS) or any(kw in query_lower for kw in self._STOCK_GENERAL_KEYWORDS):
+            ticker = self._extract_kr_stock_ticker(query_lower)
+            if ticker:
+                tools.append({
+                    'tool_to_use': 'get_kr_stock_info',
+                    'tool_name': 'get_kr_stock_info',
+                    'parameters': {'ticker': ticker}
+                })
+                return tools
+
+        # 장소 검색 감지
+        if any(kw in query_lower for kw in self._PLACE_KEYWORDS):
+            location = self._extract_location_from_query(query) or ''
+            tools.append({
+                'tool_to_use': 'search_for_place',
+                'tool_name': 'search_for_place',
+                'parameters': {'query': query, 'location': location}
+            })
+            return tools
+
+        # 도구 필요 없음 - 일반 대화 또는 RAG로 처리
+        return tools
+
+    def _extract_location_from_query(self, query: str) -> str | None:
+        """쿼리에서 지역명을 추출합니다."""
+        for location in self._LOCATION_KEYWORDS:
+            if location in query:
+                return location
+        return None
+
+    def _extract_us_stock_symbol(self, query_lower: str) -> str | None:
+        """쿼리에서 미국 주식 심볼을 추출합니다."""
+        symbol_map = {
+            '애플': 'AAPL', 'apple': 'AAPL', 'aapl': 'AAPL',
+            '테슬라': 'TSLA', 'tesla': 'TSLA', 'tsla': 'TSLA',
+            '구글': 'GOOGL', 'google': 'GOOGL', 'googl': 'GOOGL',
+            '엔비디아': 'NVDA', 'nvidia': 'NVDA', 'nvda': 'NVDA',
+            '마이크로소프트': 'MSFT', 'microsoft': 'MSFT', 'msft': 'MSFT',
+            '아마존': 'AMZN', 'amazon': 'AMZN', 'amzn': 'AMZN',
+        }
+        for keyword, symbol in symbol_map.items():
+            if keyword in query_lower:
+                return symbol
+        return None
+
+    def _extract_kr_stock_ticker(self, query_lower: str) -> str | None:
+        """쿼리에서 한국 주식 종목 코드를 추출합니다."""
+        ticker_map = {
+            '삼성전자': '005930', '현대차': '005380', 'sk하이닉스': '000660',
+            '네이버': '035420', '카카오': '035720', 'lg에너지': '373220',
+            '셀트리온': '068270', '삼성바이오': '207940', '기아': '000270', '포스코': '005490',
+        }
+        for keyword, ticker in ticker_map.items():
+            if keyword in query_lower:
+                return ticker
+        return None
+
     async def _get_rag_context(
         self,
         guild_id: int,
@@ -1070,87 +1163,13 @@ class AIHandler(commands.Cog):
                     log_extra,
                 )
 
-                lite_system_prompt = config.LITE_MODEL_SYSTEM_PROMPT
-                if rag_prompt:
-                    lite_system_prompt = f"{rag_prompt}\\n\\n{config.LITE_MODEL_SYSTEM_PROMPT}"  # RAG 컨텍스트를 Lite 시스템 프롬프트와 결합
-                lite_model = genai.GenerativeModel(
-                    config.AI_INTENT_MODEL_NAME,
-                    system_instruction=lite_system_prompt,
-                )
-
-                lite_conversation = history + [{'role': 'user', 'parts': [user_query]}]
-                logger.info("1단계: Lite 모델(의도 분석) 호출...", extra=log_extra)
-                lite_generation_config = None
-                if genai and hasattr(genai, "types"):
-                    try:
-                        # Lite 단계가 JSON만 반환하도록 MIME 타입을 강제한다.
-                        lite_generation_config = genai.types.GenerationConfig(
-                            temperature=0.0,
-                            response_mime_type="application/json",
-                        )
-                    except TypeError:
-                        lite_generation_config = genai.types.GenerationConfig(temperature=0.0)
-
-                lite_response = await self._safe_generate_content(
-                    lite_model,
-                    lite_conversation,
-                    log_extra,
-                    generation_config=lite_generation_config,
-                )
-
-                if not lite_response or not lite_response.text:
-                    logger.error("Lite 모델이 응답을 생성하지 못했습니다.", extra=log_extra)
-                    await message.reply(config.MSG_AI_ERROR, mention_author=False)
-                    return
-
-                lite_response_text = lite_response.text.strip()
-                if not config.DISABLE_VERBOSE_THINKING_OUTPUT:
-                    self._debug(f"[Lite] 응답: {self._truncate_for_debug(lite_response_text)}", log_extra)
-
-                thinking = self._parse_thinking_response(lite_response_text)
-                if not thinking:
-                    logger.warning("Thinking 응답 파싱 실패, 레거시 플랜 파서로 대체합니다.", extra=log_extra)
-                    legacy_plan_raw = self._parse_tool_calls(lite_response_text)
-                    normalized_legacy: list[dict[str, Any]] = []
-                    for call in legacy_plan_raw:
-                        if not isinstance(call, dict):
-                            continue
-                        tool_name = call.get("tool_to_use") or call.get("tool_name")
-                        if not tool_name:
-                            continue
-                        parameters = call.get("parameters") if isinstance(call.get("parameters"), dict) else {}
-                        normalized_legacy.append(
-                            {
-                                "tool_to_use": tool_name,
-                                "tool_name": tool_name,
-                                "parameters": parameters,
-                            }
-                        )
-                    thinking = {
-                        "analysis": "",
-                        "draft": lite_response_text,
-                        "tool_plan": normalized_legacy,
-                        "self_score": {},
-                        "needs_flash": bool(normalized_legacy),
-                    }
-
-                tool_plan = thinking.get("tool_plan") or []
-                draft = thinking.get("draft") or ""
-                should_use_flash = self._should_use_flash(thinking, rag_top_score)
-                self._debug(
-                    f"Thinking 결과: plan={tool_plan} self_score={thinking.get('self_score')} needs_flash={thinking.get('needs_flash')}",
-                    log_extra,
-                )
-
-                if rag_is_strong and tool_plan:
-                    filtered_plan = [call for call in tool_plan if call.get('tool_to_use') != 'web_search']
-                    if len(filtered_plan) != len(tool_plan):
-                        logger.info(
-                            "강한 RAG 컨텍스트(최고 점수=%.3f)로 web_search 단계를 생략합니다.",
-                            rag_top_score,
-                            extra=log_extra,
-                        )
-                    tool_plan = filtered_plan
+                # ========== 단일 모델 아키텍처: Lite 모델 제거, 키워드 기반 도구 감지 ==========
+                # 키워드 패턴으로 도구 필요 여부 판단 (API 호출 없음)
+                tool_plan = self._detect_tools_by_keyword(user_query)
+                if tool_plan:
+                    logger.info(f"키워드 기반 도구 감지: {[t['tool_to_use'] for t in tool_plan]}", extra=log_extra)
+                else:
+                    logger.info("도구 필요 없음 - RAG/일반 대화로 처리", extra=log_extra)
 
                 tool_results: list[dict[str, Any]] = []
                 executed_plan: list[dict[str, Any]] = []
