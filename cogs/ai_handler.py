@@ -1262,6 +1262,51 @@ class AIHandler(commands.Cog):
                         },
                     )
                 else:
+                    # RAG 문맥이 독성/안전 문제로 차단되었을 가능성 -> RAG 없이 재시도
+                    if rag_blocks_for_prompt:
+                        logger.warning("Main 모델 응답이 비어있어, RAG 문맥을 제외하고 재시도합니다.", extra=log_extra)
+                        main_prompt_retry = self._compose_main_prompt(
+                            message,
+                            user_query=user_query,
+                            rag_blocks=[], # RAG 제거
+                            tool_results_block=tool_results_str if tool_results_str else None,
+                        )
+                        self._debug(f"[Main Retry] user_prompt={self._truncate_for_debug(main_prompt_retry)}", log_extra)
+                        retry_response = await self._safe_generate_content(main_model, main_prompt_retry, log_extra)
+                        
+                        retry_text = ""
+                        if retry_response and retry_response.parts:
+                            try:
+                                retry_text = retry_response.text.strip()
+                            except ValueError:
+                                pass
+                        
+                        if retry_text:
+                            await message.reply(retry_text, mention_author=False)
+                            await db_utils.log_analytics(
+                                self.bot.db,
+                                "AI_INTERACTION",
+                                {
+                                    "guild_id": message.guild.id,
+                                    "user_id": message.author.id,
+                                    "channel_id": message.channel.id,
+                                    "trace_id": trace_id,
+                                    "user_query": user_query,
+                                    "tool_plan": executed_plan or tool_plan,
+                                    "final_response": retry_text,
+                                    "is_fallback": True, # 재시도 했으므로 fallback 취급
+                                },
+                            )
+                            return
+
+                    logger.error("Main 모델이 최종 답변을 생성하지 못했습니다 (재시도 실패 포함).", extra=log_extra)
+                    truncated_results = tool_results_str[:3800] if tool_results_str else "No tool results."
+                    await message.reply(
+                        "모든 도구를 실행했지만, 최종 답변을 만드는 데 실패했어요. (AI 응답 없음)\n```json\n"
+                        f"{truncated_results}\n```",
+                        mention_author=False,
+                    )
+                else:
                     logger.error("Main 모델이 최종 답변을 생성하지 못했습니다.", extra=log_extra)
                     truncated_results = tool_results_str[:3800]
                     await message.reply(
