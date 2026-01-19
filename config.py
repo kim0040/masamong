@@ -246,11 +246,11 @@ KAKAO_EMBEDDING_DB_PATH = EMBED_CONFIG.get("kakao_db_path", "database/kakao_embe
 KAKAO_EMBEDDING_SERVER_MAP = _normalize_kakao_servers(EMBED_CONFIG.get("kakao_servers", []))
 KAKAO_VECTOR_EXTENSION = EMBED_CONFIG.get("kakao_vector_extension")
 BM25_DATABASE_PATH = EMBED_CONFIG.get("bm25_db_path", DATABASE_FILE)
-LOCAL_EMBEDDING_MODEL_NAME = EMBED_CONFIG.get("embedding_model_name", "BM-K/KoSimCSE-roberta")
+LOCAL_EMBEDDING_MODEL_NAME = EMBED_CONFIG.get("embedding_model_name", "dragonkue/multilingual-e5-small-ko-v2")
 LOCAL_EMBEDDING_DEVICE = EMBED_CONFIG.get("embedding_device")
 LOCAL_EMBEDDING_NORMALIZE = EMBED_CONFIG.get("normalize_embeddings", True)
 LOCAL_EMBEDDING_QUERY_LIMIT = EMBED_CONFIG.get("query_limit", 200)
-RAG_SIMILARITY_THRESHOLD = as_float(EMBED_CONFIG.get("similarity_threshold"), 0.65)
+RAG_SIMILARITY_THRESHOLD = as_float(EMBED_CONFIG.get("similarity_threshold"), 0.6)
 RAG_STRONG_SIMILARITY_THRESHOLD = as_float(EMBED_CONFIG.get("strong_similarity_threshold"), 0.72)
 RAG_DEBUG_ENABLED = as_bool(load_config_value('RAG_DEBUG_ENABLED', EMBED_CONFIG.get("debug_enabled", False)))
 RAG_HYBRID_TOP_K = int(EMBED_CONFIG.get("hybrid_top_k", 4))
@@ -308,8 +308,8 @@ BM25_AUTO_REBUILD_CONFIG = {
         15,
     ),
 }
-CONVERSATION_WINDOW_SIZE = max(1, as_int(load_config_value('CONVERSATION_WINDOW_SIZE', EMBED_CONFIG.get("conversation_window_size", 6)), 6))
-CONVERSATION_WINDOW_STRIDE = max(1, as_int(load_config_value('CONVERSATION_WINDOW_STRIDE', EMBED_CONFIG.get("conversation_window_stride", 3)), 3))
+CONVERSATION_WINDOW_SIZE = max(1, as_int(load_config_value('CONVERSATION_WINDOW_SIZE', EMBED_CONFIG.get("conversation_window_size", 12)), 12))
+CONVERSATION_WINDOW_STRIDE = max(1, as_int(load_config_value('CONVERSATION_WINDOW_STRIDE', EMBED_CONFIG.get("conversation_window_stride", 6)), 6))
 CONVERSATION_NEIGHBOR_RADIUS = max(1, as_int(load_config_value('CONVERSATION_NEIGHBOR_RADIUS', EMBED_CONFIG.get("conversation_neighbor_radius", 3)), 3))
 
 AI_INTENT_MODEL_NAME = "gemini-2.5-flash-lite"
