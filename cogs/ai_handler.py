@@ -1233,8 +1233,15 @@ class AIHandler(commands.Cog):
                 self._debug(f"[Main] user_prompt={self._truncate_for_debug(main_prompt)}", log_extra)
                 main_response = await self._safe_generate_content(main_model, main_prompt, log_extra)
 
-                if main_response and main_response.text:
-                    final_response_text = main_response.text.strip()
+                final_response_text = ""
+                if main_response and main_response.parts:
+                    try:
+                        final_response_text = main_response.text.strip()
+                    except ValueError:
+                        # parts가 있지만 text변환이 안되는 경우 (ex: function call only)
+                        pass
+                
+                if final_response_text:
                     self._debug(f"[Main] 최종 응답: {self._truncate_for_debug(final_response_text)}", log_extra)
                     debug_block = self._build_rag_debug_block(rag_entries)
                     if debug_block:
