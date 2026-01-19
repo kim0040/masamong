@@ -7,7 +7,7 @@
   "query_limit": 200,
   "query_rewrite_enabled": false,
   "conversation_neighbor_radius": 3,
-  "similarity_threshold": 0.35,
+  "similarity_threshold": 0.6,
   "bm25_auto_rebuild": {
     "enabled": false,
     "idle_minutes": 180,
