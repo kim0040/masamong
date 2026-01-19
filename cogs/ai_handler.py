@@ -1298,14 +1298,22 @@ class AIHandler(commands.Cog):
                                 },
                             )
                             return
-
-                    logger.error("Main 모델이 최종 답변을 생성하지 못했습니다 (재시도 실패 포함).", extra=log_extra)
-                    truncated_results = tool_results_str[:3800] if tool_results_str else "No tool results."
-                    await message.reply(
-                        "모든 도구를 실행했지만, 최종 답변을 만드는 데 실패했어요. (AI 응답 없음)\n```json\n"
-                        f"{truncated_results}\n```",
-                        mention_author=False,
-                    )
+                        else:
+                            logger.error("Main 모델이 최종 답변을 생성하지 못했습니다.", extra=log_extra)
+                            truncated_results = tool_results_str[:1900] if tool_results_str else "No tool results."
+                            await message.reply(
+                                "모든 도구를 실행했지만, 최종 답변을 만드는 데 실패했어요. 도구 응답 요약:\n```json\n"
+                                f"{truncated_results}\n```",
+                                mention_author=False,
+                            )
+                    else: # No RAG blocks for prompt, so no retry attempt
+                        logger.error("Main 모델이 최종 답변을 생성하지 못했습니다 (재시도 실패 포함).", extra=log_extra)
+                        truncated_results = tool_results_str[:1900] if tool_results_str else "No tool results."
+                        await message.reply(
+                            "모든 도구를 실행했지만, 최종 답변을 만드는 데 실패했어요. (AI 응답 없음)\n```json\n"
+                            f"{truncated_results}\n```",
+                            mention_author=False,
+                        )
 
 
             except Exception as e:
