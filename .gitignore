@@ -1,34 +1,64 @@
-# Environment variables
+# =============================================================================
+# 마사몽 - Git 제외 파일 목록
+# =============================================================================
+
+# --- 환경 변수 및 설정 파일 ---
 .env
 .env.*
+!.env.example
 
-# Configuration files
+# 개인 설정 파일
 config.json
 emb_config.json
-prompts*.json
-prompts*.yaml
-prompts*.yml
-prompts*.env
+prompts.json
+prompts.yaml
+prompts.yml
 channel_prompts.*
 
-# Log files
+# --- 로그 파일 ---
 *.log
+logs/
 *.txt
+!requirements.txt
+
+# 문서 파일 (개인 메모 등)
 *.pdf
 *.csv
+*.xlsx
 
-# Database files
+# --- 데이터베이스 파일 ---
 *.db
 *.sqlite
 *.sqlite3
+*.db-journal
 
-# Python cache & artifacts
+# 데이터베이스 백업
+*.db.bak
+*.sqlite.bak
+
+# --- 임베딩 및 모델 데이터 ---
+# 임베딩 벡터와 모델 데이터 (용량이 크므로 제외)
+emb/
+*.npy
+*.npz
+*.pt
+*.pth
+*.onnx
+models/
+checkpoints/
+
+# HuggingFace 캐시
+.cache/
+huggingface/
+
+# --- Python 캐시 및 빌드 파일 ---
 __pycache__/
-.pytest_cache/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
 .Python
+
+# 배포 및 빌드
 build/
 develop-eggs/
 dist/
@@ -42,16 +72,101 @@ sdist/
 var/
 wheels/
 *.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
-# IDE
+# PyInstaller
+*.manifest
+*.spec
+
+# 테스트 커버리지
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# --- IDE 및 에디터 ---
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
 
-# OS
+# JetBrains IDEs
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# --- OS 파일 ---
+# macOS
 .DS_Store
-Thumbs.db
+.AppleDouble
+.LSOverride
+._*
 
-# Virtual environment
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.directory
+
+# --- 가상환경 ---
 venv/
+env/
+ENV/
+.venv/
+virtualenv/
+
+# --- 임시 파일 ---
+tmp/
+temp/
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# --- 기타 ---
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb
+
+# 환경별 설정
+local_settings.py
+
+# 백업 파일
+*.backup
+*~
+
+# =============================================================================
+# 프로젝트 고유 제외 항목
+# =============================================================================
+
+# 테스트 데이터
+test_data/
+*.test.db
+
+# 임시 스크립트 (개발 중 테스트용)
+scratch.py
+test_*.py
+!tests/test_*.py  # tests 폴더의 테스트는 포함
+
+# 개인 메모
+notes.md
+TODO.md
+NOTES.md
