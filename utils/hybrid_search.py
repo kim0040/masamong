@@ -13,8 +13,7 @@ try:  # pragma: no cover - 선택적 의존성
 except ModuleNotFoundError:  # pragma: no cover
     np = None  # type: ignore
 
-import config
-from database.bm25_index import BM25IndexManager
+from utils.text_cleaner import clean_profanity
 from logger_config import logger
 from utils.chunker import SemanticChunker, ChunkerConfig
 from utils.embeddings import DiscordEmbeddingStore, KakaoEmbeddingStore, get_embedding
@@ -563,7 +562,7 @@ class HybridSearchEngine:
         return combined
 
     def _clean_content(self, text: str) -> str:
-        """텍스트에서 URL을 제거하고 공백을 정규화합니다.
+        """텍스트에서 URL을 제거하고 공백을 정규화하며 욕설을 마스킹합니다.
         
         성능 최적화를 위해 미리 컴파일된 정규식 패턴을 사용합니다.
         """
@@ -572,7 +571,7 @@ class HybridSearchEngine:
         normalized = text.replace("\r\n", "\n").replace("\r", "\n")
         normalized = _URL_PATTERN.sub("[링크]", normalized)  # 컴파일된 패턴 사용
         normalized = _WHITESPACE_PATTERN.sub(" ", normalized).strip()  # 컴파일된 패턴 사용
-        return normalized
+        return clean_profanity(normalized)
 
     def _compose_recent_context(self, recent_messages: list[str] | None) -> str:
         if not recent_messages:

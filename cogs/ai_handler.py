@@ -1306,14 +1306,7 @@ class AIHandler(commands.Cog):
                         f"{truncated_results}\n```",
                         mention_author=False,
                     )
-                else:
-                    logger.error("Main 모델이 최종 답변을 생성하지 못했습니다.", extra=log_extra)
-                    truncated_results = tool_results_str[:3800]
-                    await message.reply(
-                        "모든 도구를 실행했지만, 최종 답변을 만드는 데 실패했어요. 여기 결과라도 확인해보세요.\n```json\n"
-                        f"{truncated_results}\n```",
-                        mention_author=False,
-                    )
+
 
             except Exception as e:
                 logger.error(f"에이전트 처리 중 최상위 오류: {e}", exc_info=True, extra=log_extra)
