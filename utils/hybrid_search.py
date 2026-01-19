@@ -277,6 +277,7 @@ class HybridSearchEngine:
             )
             for raw_row in kakao_rows:
                 row = dict(raw_row)
+                message = row.get("message") or ""
                 # Offline store returns 'score' (pre-calculated similarity) and might skip 'embedding'
                 similarity = row.get("score")
                 if similarity is None:
