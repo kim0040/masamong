@@ -207,7 +207,7 @@ class HybridSearchEngine:
                 self._warned_numpy = True
             return []
 
-        query_vector = await get_embedding(query)
+        query_vector = await get_embedding(query, prefix="query: ")
         if query_vector is None:
             return []
 

@@ -1,12 +1,13 @@
 {
-  "embedding_model_name": "BM-K/KoSimCSE-roberta",
+  "embedding_model_name": "dragonkue/multilingual-e5-small-ko-v2",
   "discord_db_path": "database/discord_embeddings.db",
   "kakao_db_path": "database/kakao_embeddings.db",
-  "embedding_device": "cpu",
+  "embedding_device": "mps",
   "normalize_embeddings": true,
   "query_limit": 200,
   "kakao_vector_extension": "vec0",
   "conversation_neighbor_radius": 3,
+  "similarity_threshold": 0.6,
   "bm25_auto_rebuild": {
     "enabled": false,
     "idle_minutes": 180,
@@ -14,14 +15,9 @@
   },
   "kakao_servers": [
     {
-      "server_id": "kakao_room_01",
-      "db_path": "database/kakao_room_01_embeddings.db",
-      "label": "가족방"
-    },
-    {
-      "server_id": "kakao_room_02",
-      "db_path": "database/kakao_room_02_embeddings.db",
-      "label": "친구방"
+      "server_id": "YOUR_SERVER_ID_HERE",
+      "db_path": "data/kakao_store",
+      "label": "Offline Embedded Chat"
     }
   ]
 }

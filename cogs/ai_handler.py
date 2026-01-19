@@ -269,7 +269,7 @@ class AIHandler(commands.Cog):
             logger.error(f"Gemini 응답 생성 중 예기치 않은 오류: {e}", extra=log_extra, exc_info=True)
             return None
 
-    async def _generate_local_embedding(self, content: str, log_extra: dict) -> np.ndarray | None:
+    async def _generate_local_embedding(self, content: str, log_extra: dict, prefix: str = "") -> np.ndarray | None:
         """SentenceTransformer 기반 임베딩을 생성합니다."""
         if not config.AI_MEMORY_ENABLED:
             return None
@@ -277,7 +277,7 @@ class AIHandler(commands.Cog):
             logger.warning("numpy가 설치되어 있지 않아 AI 메모리 기능을 사용할 수 없습니다.", extra=log_extra)
             return None
 
-        embedding = await get_embedding(content)
+        embedding = await get_embedding(content, prefix=prefix)
         if embedding is None:
             logger.error("임베딩 생성 실패", extra=log_extra)
         return embedding
@@ -311,27 +311,72 @@ class AIHandler(commands.Cog):
             )
             await self._update_conversation_windows(message)
             await self.bot.db.commit()
-            if not message.author.bot and message.content.strip():
-                asyncio.create_task(self._create_and_save_embedding(message))
+            # 단일 메시지 임베딩 생성 로직 제거 (윈도우 기반 임베딩으로 전환)
+            # if not message.author.bot and message.content.strip():
+            #     asyncio.create_task(self._create_and_save_embedding(message))
         except Exception as e:
             logger.error(f"대화 기록 저장 중 DB 오류: {e}", exc_info=True, extra={'guild_id': message.guild.id})
 
-    async def _create_and_save_embedding(self, message: discord.Message):
-        """대화 메시지를 SentenceTransformer 임베딩으로 변환해 별도 DB에 저장합니다."""
-        log_extra = {'guild_id': message.guild.id if message.guild else None, 'message_id': message.id}
-        embedding_vector = await self._generate_local_embedding(message.content, log_extra)
+    async def _create_window_embedding(self, guild_id: int, channel_id: int, payload: list[dict[str, Any]]):
+        """대화 윈도우(청크)를 임베딩하여 로컬 DB에 저장합니다 (E5 passage prefix 적용)."""
+        if not payload:
+            return
+
+        # 1. 청크 텍스트 포맷팅
+        merged_lines = []
+        if payload and payload[0].get('created_at'):
+            merged_lines.append(f"[대화 시간: {payload[0]['created_at']}]")
+        
+        prev_user = None
+        current_block = []
+        
+        for p in payload:
+            user = p.get('user_name', 'Unknown')
+            content = p.get('content', '')
+            
+            if user == prev_user:
+                current_block.append(content)
+            else:
+                if prev_user:
+                    merged_content = " ".join(current_block)
+                    merged_lines.append(f"{prev_user}: {merged_content}")
+                prev_user = user
+                current_block = [content]
+        
+        if prev_user:
+            merged_content = " ".join(current_block)
+            merged_lines.append(f"{prev_user}: {merged_content}")
+            
+        chunk_text = "\n".join(merged_lines)
+        
+        # 2. 메타데이터 결정 (마지막 메시지 기준)
+        last_msg = payload[-1]
+        message_id = last_msg['message_id']
+        timestamp = last_msg['created_at']
+        user_id = last_msg['user_id']
+        
+        log_extra = {'guild_id': guild_id, 'channel_id': channel_id, 'window_id': message_id}
+
+        # 3. 임베딩 생성 (passage: prefix 필수)
+        embedding_vector = await self._generate_local_embedding(
+            chunk_text, 
+            log_extra, 
+            prefix="passage: "
+        )
         if embedding_vector is None:
             return
 
+        # 4. DB 저장
         try:
+            # message 컬럼에 '청크 전체 텍스트'를 저장하여 검색 시 문맥을 제공함.
             await self.discord_embedding_store.upsert_message_embedding(
-                message_id=message.id,
-                server_id=message.guild.id,
-                channel_id=message.channel.id,
-                user_id=message.author.id,
-                user_name=message.author.display_name,
-                message=message.content,
-                timestamp_iso=message.created_at.isoformat(),
+                message_id=message_id,
+                server_id=guild_id,
+                channel_id=channel_id,
+                user_id=user_id,
+                user_name="Conversation Chunk",  # 청크 데이터임을 명시
+                message=chunk_text,             # 전체 대화 흐름 저장
+                timestamp_iso=timestamp,
                 embedding=embedding_vector,
             )
         except Exception as e:
@@ -386,6 +431,10 @@ class AIHandler(commands.Cog):
                     json.dumps(payload, ensure_ascii=False),
                     payload[-1]["created_at"],
                 ),
+            )
+            # 윈도우가 저장될 때 해당 윈도우에 대한 임베딩도 생성 (비동기 처리)
+            asyncio.create_task(
+                self._create_window_embedding(message.guild.id, message.channel.id, payload)
             )
         except Exception as exc:  # pragma: no cover - 방어적 로깅
             logger.error(

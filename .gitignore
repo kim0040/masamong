@@ -160,6 +160,8 @@ local_settings.py
 # 테스트 데이터
 test_data/
 *.test.db
+data/
+
 
 # 임시 스크립트 (개발 중 테스트용)
 scratch.py
