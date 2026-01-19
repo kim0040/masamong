@@ -643,18 +643,30 @@ class AIHandler(commands.Cog):
             return "", [], 0.0, []
 
         limit = max(getattr(config, "RAG_HYBRID_TOP_K", 4), 1)
+        threshold = getattr(config, "RAG_SIMILARITY_THRESHOLD", 0.6)
         prepared_entries: list[dict[str, Any]] = []
         rag_blocks: list[str] = []
 
+        # 항상 RAG 검색 결과를 로그로 출력
+        log_lines = []
         for entry in result.entries[:limit]:
+            score = float(entry.get("combined_score", 0.0) or entry.get("score", 0.0) or 0.0)
             dialogue_block = (entry.get("dialogue_block") or entry.get("message") or "").strip()
+            snippet = dialogue_block[:100] + "..." if len(dialogue_block) > 100 else dialogue_block
+            log_lines.append(f"  [{score:.3f}] {snippet}")
+
+            # 임계값 이하는 무시 (쓰레기값 필터링)
+            if score < threshold:
+                continue
+
             if not dialogue_block:
                 continue
-            rag_blocks.append(dialogue_block)  # LLM 컨텍스트에 포함할 핵심 대화 묶음
+
+            rag_blocks.append(dialogue_block)
             prepared_entries.append(
                 {
                     "dialogue_block": dialogue_block,
-                    "combined_score": float(entry.get("combined_score", 0.0) or 0.0),
+                    "combined_score": score,
                     "similarity": entry.get("similarity"),
                     "bm25_score": entry.get("bm25_score"),
                     "sources": entry.get("sources"),
@@ -664,32 +676,30 @@ class AIHandler(commands.Cog):
                 }
             )
 
+        # 항상 로그 출력 (점수 포함)
+        logger.info(
+            "RAG 검색 결과 (threshold=%.2f):\n%s",
+            threshold,
+            "\n".join(log_lines) if log_lines else "  (없음)",
+            extra=log_extra,
+        )
+
         if not rag_blocks:
+            logger.info("RAG: 임계값(%.2f) 이상의 결과가 없어 RAG 컨텍스트를 사용하지 않습니다.", threshold, extra=log_extra)
             return "", [], 0.0, []
 
         context_sections = []
         for idx, block in enumerate(rag_blocks, start=1):
-            context_sections.append(f"[대화 {idx}]\\n{block}")  # 순번을 붙여 블록 경계를 명시한다.
-        context_str = "\\n\\n".join(context_sections)
+            context_sections.append(f"[대화 {idx}]\n{block}")
+        context_str = "\n\n".join(context_sections)
 
         top_score = float(result.top_score or 0.0)
         logger.info(
-            "RAG: 하이브리드 검색 결과 %d개 (최고 점수=%.3f)",
+            "RAG: 사용할 컨텍스트 %d개 (최고 점수=%.3f)",
             len(prepared_entries),
             top_score,
             extra=log_extra,
         )
-
-        if config.RAG_DEBUG_ENABLED:
-            debug_lines = []
-            for entry in prepared_entries:
-                score = entry.get("combined_score", 0.0)
-                snippet = entry.get("dialogue_block", "")
-                snippet = snippet if len(snippet) <= 200 else snippet[:197] + "..."
-                origin = entry.get("origin") or "?"
-                speaker = entry.get("speaker") or "?"
-                debug_lines.append(f"- origin={origin} speaker={speaker} score={score:.3f} | {snippet}")
-            logger.info("RAG 디버그 상세:\\n%s", "\\n".join(debug_lines), extra=log_extra)
 
         logger.debug("RAG 결과: %s", context_str, extra=log_extra)
         return context_str, prepared_entries, top_score, rag_blocks
