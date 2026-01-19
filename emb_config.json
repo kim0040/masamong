@@ -1,0 +1,28 @@
+{
+  "embedding_model_name": "dragonkue/multilingual-e5-small-ko-v2",
+  "discord_db_path": "database/discord_embeddings.db",
+  "kakao_db_path": "database/kakao_embeddings.db",
+  "embedding_device": "mps",
+  "normalize_embeddings": true,
+  "query_limit": 200,
+  "kakao_vector_extension": "vec0",
+  "conversation_neighbor_radius": 3,
+  "similarity_threshold": 0.6,
+  "bm25_auto_rebuild": {
+    "enabled": false,
+    "idle_minutes": 180,
+    "poll_minutes": 15
+  },
+  "kakao_servers": [
+    {
+      "server_id": "kakao_nodap",
+      "db_path": "data/kakao_store/room1",
+      "label": "노답형제들"
+    },
+    {
+      "server_id": "kakao_yeonsamo",
+      "db_path": "data/kakao_store/room2",
+      "label": "연사모 동호회"
+    }
+  ]
+}
