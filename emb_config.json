@@ -5,7 +5,7 @@
   "embedding_device": "cpu",
   "normalize_embeddings": true,
   "query_limit": 200,
-  "kakao_vector_extension": "vec0",
+  "query_rewrite_enabled": false,
   "conversation_neighbor_radius": 3,
   "similarity_threshold": 0.6,
   "bm25_auto_rebuild": {
