@@ -14,6 +14,7 @@ except ModuleNotFoundError:  # pragma: no cover
     np = None  # type: ignore
 
 from utils.text_cleaner import clean_profanity
+import config
 from logger_config import logger
 from utils.chunker import SemanticChunker, ChunkerConfig
 from utils.embeddings import DiscordEmbeddingStore, KakaoEmbeddingStore, get_embedding
