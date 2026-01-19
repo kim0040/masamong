@@ -116,15 +116,11 @@ class HybridSearchEngine:
             if isinstance(sources, set):
                 candidate["sources"] = sorted(sources)
 
-            similarity = candidate.get("similarity") or 0.0
+            similarity = candidate.get("similarity") or candidate.get("score") or 0.0
             bm25_score = candidate.get("bm25_score") or 0.0
-            combined = 0.0
-            if similarity > 0.0:
-                combined += similarity * self.embedding_weight  # 의미 기반 점수 비중
-            if bm25_score > 0.0:
-                combined += bm25_score * self.bm25_weight  # 키워드 기반 점수 비중
-            if combined == 0.0:
-                combined = max(similarity, bm25_score)
+            # 임베딩 유사도를 주 점수로 사용 (BM25 가중치 제거)
+            # EMB 참조 구현과 동일하게 raw similarity 사용
+            combined = similarity if similarity > 0.0 else bm25_score
             candidate["combined_score"] = combined
             if not candidate.get("dialogue_block"):
                 candidate["dialogue_block"] = self._format_dialogue_block(candidate.get("dialogue_messages") or [])
