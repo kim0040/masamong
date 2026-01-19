@@ -17,6 +17,13 @@ try:
     import google.generativeai as genai
 except ModuleNotFoundError:  # pragma: no cover - 환경에 따라 설치되지 않을 수 있음
     genai = None
+
+# CometAPI용 OpenAI 호환 클라이언트
+try:
+    from openai import AsyncOpenAI
+except ModuleNotFoundError:  # pragma: no cover
+    AsyncOpenAI = None
+
 from datetime import datetime, timedelta
 import asyncio
 import pytz
@@ -103,6 +110,24 @@ class AIHandler(commands.Cog):
                 logger.critical(f"Gemini API 설정 실패: {e}. AI 관련 기능이 비활성화됩니다.", exc_info=True)
         elif config.GEMINI_API_KEY and not genai:
             logger.critical("google-generativeai 패키지를 찾을 수 없어 Gemini 기능을 초기화하지 못했습니다.")
+
+        # CometAPI 클라이언트 초기화 (Gemini 대체)
+        self.cometapi_client = None
+        self.use_cometapi = config.USE_COMETAPI and config.COMETAPI_KEY
+        if self.use_cometapi:
+            if AsyncOpenAI:
+                try:
+                    self.cometapi_client = AsyncOpenAI(
+                        base_url=config.COMETAPI_BASE_URL,
+                        api_key=config.COMETAPI_KEY,
+                    )
+                    logger.info(f"CometAPI 클라이언트가 초기화되었습니다. 모델: {config.COMETAPI_MODEL}")
+                except Exception as e:
+                    logger.error(f"CometAPI 클라이언트 초기화 실패: {e}")
+                    self.use_cometapi = False
+            else:
+                logger.warning("openai 패키지가 설치되지 않아 CometAPI를 사용할 수 없습니다.")
+                self.use_cometapi = False
 
     @property
     def is_ready(self) -> bool:
@@ -267,6 +292,53 @@ class AIHandler(commands.Cog):
             return response
         except Exception as e:
             logger.error(f"Gemini 응답 생성 중 예기치 않은 오류: {e}", extra=log_extra, exc_info=True)
+            return None
+
+    async def _cometapi_generate_content(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        log_extra: dict,
+    ) -> str | None:
+        """CometAPI(OpenAI 호환)를 통해 응답을 생성합니다.
+
+        Args:
+            system_prompt: 시스템 프롬프트
+            user_prompt: 사용자 프롬프트 (RAG 컨텍스트 포함)
+            log_extra: 로깅용 추가 정보
+
+        Returns:
+            생성된 응답 텍스트, 실패 시 None
+        """
+        if not self.cometapi_client:
+            logger.warning("CometAPI 클라이언트가 초기화되지 않았습니다.", extra=log_extra)
+            return None
+
+        try:
+            if self.debug_enabled:
+                self._debug(f"[CometAPI] system={self._truncate_for_debug(system_prompt)}", log_extra)
+                self._debug(f"[CometAPI] user={self._truncate_for_debug(user_prompt)}", log_extra)
+
+            completion = await self.cometapi_client.chat.completions.create(
+                model=config.COMETAPI_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                max_tokens=1024,
+                temperature=0.7,
+            )
+
+            response_text = completion.choices[0].message.content
+            await db_utils.log_api_call(self.bot.db, "cometapi")
+
+            if self.debug_enabled:
+                self._debug(f"[CometAPI] 응답: {self._truncate_for_debug(response_text)}", log_extra)
+
+            return response_text.strip() if response_text else None
+
+        except Exception as e:
+            logger.error(f"CometAPI 응답 생성 중 오류: {e}", extra=log_extra, exc_info=True)
             return None
 
     async def _generate_local_embedding(self, content: str, log_extra: dict, prefix: str = "") -> np.ndarray | None:
@@ -1239,7 +1311,6 @@ class AIHandler(commands.Cog):
 
 
                 # 단일 모델 아키텍처: Main 모델 호출
-                logger.info("Main 모델(답변 생성) 호출...", extra=log_extra)
                 system_prompt = config.WEB_FALLBACK_PROMPT if use_fallback_prompt else config.AGENT_SYSTEM_PROMPT
                 rag_blocks_for_prompt = [] if use_fallback_prompt else rag_blocks
                 main_prompt = self._compose_main_prompt(
@@ -1248,21 +1319,31 @@ class AIHandler(commands.Cog):
                     rag_blocks=rag_blocks_for_prompt,
                     tool_results_block=tool_results_str if tool_results_str else None,
                 )
-                main_model = genai.GenerativeModel(
-                    config.AI_RESPONSE_MODEL_NAME,
-                    system_instruction=system_prompt,
-                )
-                self._debug(f"[Main] system_prompt={self._truncate_for_debug(system_prompt)}", log_extra)
-                self._debug(f"[Main] user_prompt={self._truncate_for_debug(main_prompt)}", log_extra)
-                main_response = await self._safe_generate_content(main_model, main_prompt, log_extra)
 
                 final_response_text = ""
-                if main_response and main_response.parts:
-                    try:
-                        final_response_text = main_response.text.strip()
-                    except ValueError:
-                        # parts가 있지만 text변환이 안되는 경우 (ex: function call only)
-                        pass
+
+                # CometAPI 우선 사용, 실패 시 Gemini로 폴백
+                if self.use_cometapi:
+                    logger.info("CometAPI(답변 생성) 호출...", extra=log_extra)
+                    final_response_text = await self._cometapi_generate_content(
+                        system_prompt, main_prompt, log_extra
+                    ) or ""
+                
+                # CometAPI 실패 또는 비활성화 시 Gemini 사용
+                if not final_response_text and self.gemini_configured and genai:
+                    logger.info("Gemini(답변 생성) 호출...", extra=log_extra)
+                    main_model = genai.GenerativeModel(
+                        config.AI_RESPONSE_MODEL_NAME,
+                        system_instruction=system_prompt,
+                    )
+                    self._debug(f"[Gemini] system_prompt={self._truncate_for_debug(system_prompt)}", log_extra)
+                    self._debug(f"[Gemini] user_prompt={self._truncate_for_debug(main_prompt)}", log_extra)
+                    main_response = await self._safe_generate_content(main_model, main_prompt, log_extra)
+                    if main_response and main_response.parts:
+                        try:
+                            final_response_text = main_response.text.strip()
+                        except ValueError:
+                            pass
                 
                 if final_response_text:
                     self._debug(f"[Main] 최종 응답: {self._truncate_for_debug(final_response_text)}", log_extra)
