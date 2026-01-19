@@ -52,110 +52,73 @@
 
 ## 시스템 아키텍처
 
-### 전체 구조
+### 단일 모델 아키텍처 (v2.1)
+
+> [!NOTE]
+> v2.1부터 2-Step 에이전트를 **단일 모델 아키텍처**로 최적화하여 API 호출을 50% 감소시켰습니다.
 
 ```mermaid
 graph TB
-    User[Discord 사용자] -->|"@멘션 메시지"| Bot[마사몽 봇]
+    User[Discord 사용자] -->|"@마사몽 메시지"| Bot[마사몽 봇]
     Bot --> MentionCheck{멘션 확인}
-    MentionCheck -->|"멘션 있음"| AIHandler[AI Handler]
     MentionCheck -->|"멘션 없음"| Skip[처리 안 함]
+    MentionCheck -->|"멘션 있음"| KeywordDetect[키워드 감지]
     
-    AIHandler --> RAG[RAG 검색]
-    AIHandler --> LiteModel[Gemini Lite<br/>의도 분석]
+    KeywordDetect -->|"날씨/주식/장소"| Tools[도구 실행]
+    KeywordDetect -->|"일반 대화"| RAG[RAG 검색]
     
-    RAG --> BM25[BM25 키워드 검색]
-    RAG --> Embedding[임베딩 검색]
-    BM25 --> Hybrid[하이브리드 결합]
-    Embedding --> Hybrid
-    
-    LiteModel --> Tools{도구 필요?}
-    Tools -->|Yes| ToolsCog[Tools Cog]
-    Tools -->|No| Response
-    
-    ToolsCog --> Weather[날씨 API]
-    ToolsCog --> Finance[금융 API]
-    ToolsCog --> Kakao[Kakao API]
-    ToolsCog --> Response[응답 생성]
-    
-    Response --> FlashCheck{Flash 필요?}
-    FlashCheck -->|"자신감 낮음"| FlashModel[Gemini Flash<br/>정교한 응답]
-    FlashCheck -->|"자신감 높음"| LiteResponse[Lite 응답 사용]
-    
-    FlashModel --> Final[최종 응답]
-    LiteResponse --> Final
-    Final --> User
+    Tools --> RAG
+    RAG --> MainModel[Gemini Flash<br/>응답 생성]
+    MainModel --> User
     
     style Bot fill:#e1f5ff
-    style AIHandler fill:#fff4e1
+    style KeywordDetect fill:#fff4e1
     style RAG fill:#f3e5f5
-    style LiteModel fill:#e8f5e9
-    style FlashModel fill:#fff3e0
+    style MainModel fill:#e8f5e9
 ```
 
-### 2-Step 에이전트 워크플로우
+### 처리 흐름
 
 ```mermaid
 sequenceDiagram
     participant U as 사용자
     participant B as 봇
-    participant L as Gemini Lite
-    participant T as Tools
-    participant F as Gemini Flash
-    participant R as RAG
+    participant K as 키워드 감지
+    participant T as 도구 실행
+    participant R as RAG 검색
+    participant M as Gemini Flash
     
-    U->>B: @마사몽 서울 날씨 알려줘
+    U->>B: @마사몽 광양 날씨 어때
     B->>B: 멘션 확인 ✓
-    B->>R: 대화 컨텍스트 검색
-    R-->>B: 관련 대화 히스토리
-    B->>L: 의도 분석 요청 + RAG 컨텍스트
-    L->>L: JSON 생성<br/>{tool_plan, draft, self_score}
-    L-->>B: 도구: get_weather(서울)
-    B->>T: get_weather(서울) 실행
+    B->>K: 키워드 분석 (API 호출 없음)
+    K-->>B: 도구: get_weather(광양)
+    B->>T: get_weather(광양) 실행
     T-->>B: 날씨 데이터
-    
-    alt self_score >= 0.75
-        B->>U: Lite draft 응답
-    else self_score < 0.75 or 고위험
-        B->>F: Flash 재생성 요청
-        F-->>B: 정교한 응답
-        B->>U: Flash 응답
-    end
+    B->>R: 과거 대화 검색
+    R-->>B: RAG 컨텍스트
+    B->>M: RAG + 도구 결과 + 질문
+    M-->>B: 최종 응답
+    B->>U: "광양 오늘 맑고 15도야~"
 ```
 
-### 데이터 흐름
+### 키워드 기반 도구 감지
 
-```mermaid
-graph LR
-    A[Discord 메시지] --> B[conversation_history]
-    B --> C[임베딩 생성]
-    C --> D[discord_embeddings.db]
-    B --> E[BM25 인덱스]
-    E --> F[FTS5 테이블]
-    
-    B --> G[슬라이딩 윈도우]
-    G --> H[conversation_windows]
-    
-    D --> I[RAG 검색]
-    F --> I
-    H --> I
-    I --> J[AI 응답 생성]
-    
-    style B fill:#e3f2fd
-    style D fill:#f3e5f5
-    style F fill:#fff3e0
-    style H fill:#e8f5e9
-```
+| 키워드 | 도구 | 예시 |
+|-------|-----|-----|
+| 날씨, 기온, 비, 눈 | `get_weather` | "서울 날씨 어때" |
+| 주가, 주식, 애플, 테슬라 | `get_us_stock_info` | "테슬라 주가" |
+| 삼성전자, 카카오, 네이버 | `get_kr_stock_info` | "삼성전자 시세" |
+| 맛집, 카페, 추천 | `search_for_place` | "광양 맛집 추천" |
 
 ## 주요 기능
 
 ### AI Handler (`cogs/ai_handler.py`)
 
 - ✅ **멘션 게이트**: 봇 멘션이 있는 메시지만 처리
-- ✅ **Thinking 라우팅**: Lite 모델이 JSON으로 초안/도구 계획/자기 평가 작성
-- ✅ **선택적 Flash 승급**: self_score < 0.75, 고위험 질의, 토큰 > 1200 시 Flash 호출
-- ✅ **대화 윈도우 저장**: 최근 6개 메시지를 묶어 ±3 메시지 이웃까지 RAG 컨텍스트 제공
-- ✅ **하이브리드 RAG**: BM25 + 임베딩 결합 (0.45/0.55 가중치)
+- ✅ **키워드 기반 도구 감지**: Lite 모델 없이 패턴 매칭으로 도구 필요 여부 판단
+- ✅ **단일 API 호출**: RAG + 도구 결과를 Main 모델 한 번에 전달
+- ✅ **RAG 점수 필터링**: 0.6 미만 결과 자동 무시
+- ✅ **하이브리드 RAG**: 임베딩 기반 유사도 검색 (BM25 옵션)
 
 ### Tools Cog (`cogs/tools_cog.py`)
 
