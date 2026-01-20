@@ -641,18 +641,33 @@ class AIHandler(commands.Cog):
             return {"result": None, "error": "검색 결과 없음", "search_keywords": search_keywords}
 
         # 4. LLM으로 검색 결과 해석 및 요약
-        summarize_prompt = f"""다음은 '{user_query}'에 대한 웹 검색 결과야.
-이 결과를 바탕으로 사용자 질문에 답변할 수 있는 핵심 정보만 요약해줘. 3-4문장으로 간결하게.
+        channel_id = log_extra.get('channel_id')
+        persona_prompt = self._get_channel_system_prompt(channel_id)
+
+        system_prompt = f"""너는 웹 검색 결과를 보고 사용자에게 정보를 전달하는 AI 에이전트야.
+검색 결과를 단순 요약하지 말고, 아래 페르소나에 맞춰서 네 주관적인 의견이나 감상을 섞어 친구에게 말하듯이 설명해줘.
+반드시 아래 설정된 말투를 완벽하게 유지해야 해.
+
+{persona_prompt}
+"""
+
+        summarize_prompt = f"""사용자 질문: '{user_query}'
 
 검색 결과:
-{search_result[:2000]}
+{search_result[:2500]}
 
-핵심 정보 요약:"""
+답변 가이드:
+1. 검색된 정보의 핵심을 정확히 전달해.
+2. 하지만 말투는 위에서 설정된 페르소나를 완벽하게 유지해야 해.
+3. 단순 정보 나열 대신 "와, 이거 진짜 신기하다", "이런 것도 있네?", "도움이 됐으면 좋겠어" 같이 네 감상이나 리액션을 자연스럽게 섞어줘.
+4. 친구에게 카톡하듯이 3-4문장으로 답변해.
+
+답변:"""
 
         summary = None
         if self.use_cometapi:
             summary = await self._cometapi_generate_content(
-                "너는 검색 결과를 분석하는 전문가야. 핵심 정보만 간결하게 요약해.",
+                system_prompt,
                 summarize_prompt,
                 log_extra,
             )
@@ -1032,6 +1047,15 @@ class AIHandler(commands.Cog):
             return True
         return False
 
+    def _get_channel_system_prompt(self, channel_id: int | None) -> str:
+        """채널별 페르소나와 규칙을 가져와 시스템 프롬프트를 구성합니다."""
+        if not channel_id:
+            return ""
+        channel_config = config.CHANNEL_AI_CONFIG.get(channel_id, {})
+        persona = (channel_config.get('persona') or config.DEFAULT_TSUNDERE_PERSONA).strip()
+        rules = (channel_config.get('rules') or config.DEFAULT_TSUNDERE_RULES).strip()
+        return f"{persona}\n\n{rules}"
+
     def _compose_main_prompt(
         self,
         message: discord.Message,
@@ -1050,12 +1074,8 @@ class AIHandler(commands.Cog):
         5. [현재 질문] - 사용자 쿼리
         6. 지시사항
         """
-        channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
-        persona = (channel_config.get('persona') or config.DEFAULT_TSUNDERE_PERSONA).strip()
-        rules = (channel_config.get('rules') or config.DEFAULT_TSUNDERE_RULES).strip()
-
         # 시스템 프롬프트 (페르소나 + 규칙)
-        system_part = f"{persona}\n\n{rules}"
+        system_part = self._get_channel_system_prompt(message.channel.id)
 
         sections: list[str] = [system_part]
 
@@ -1080,10 +1100,10 @@ class AIHandler(commands.Cog):
             sections.append(
                 "위 기억은 과거 대화에서 가져온 배경 정보야. "
                 "'아까', '전에', '방금' 같은 시간 표현 없이 자연스럽게 답변해. "
-                "같은 주제라도 처음 듣는 것처럼 새롭게 대답해줘."
+                "같은 주제라도 처음 듣는 것처럼 새롭게, 네 주관과 감정을 섞어서 대답해줘."
             )
         else:
-            sections.append("관련 기억은 없지만, 친구처럼 자연스럽게 답변해줘.")
+            sections.append("관련 기억은 없지만, 너만의 주관적인 의견이나 리액션을 섞어서 완전한 친구처럼 자연스럽게 답변해줘.")
 
         return "\n\n".join(sections)
 
