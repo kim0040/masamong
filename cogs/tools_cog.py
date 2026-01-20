@@ -37,7 +37,7 @@ class ToolsCog(commands.Cog):
         """현재 시간과 날짜를 KST 기준 문자열로 반환합니다."""
         return f"현재 시간: {db_utils.get_current_time()}"
 
-    async def get_current_weather(self, location: str = None, day_offset: int = 0) -> str:
+    async def get_weather_forecast(self, location: str = None, day_offset: int = 0) -> str:
         """주어진 위치의 날씨 정보를 문자열로 반환합니다."""
         if not self.weather_cog:
             return "날씨 정보 모듈이 준비되지 않았습니다."

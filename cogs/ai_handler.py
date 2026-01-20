@@ -575,12 +575,15 @@ class AIHandler(commands.Cog):
 
     async def _generate_search_keywords(self, user_query: str, log_extra: dict) -> str:
         """LLM을 사용하여 검색에 최적화된 키워드를 생성합니다."""
-        keyword_prompt = f"""사용자 질문을 Google 검색에 적합한 키워드로 변환해줘.
+        keyword_prompt = f"""[현재 시간]: {db_utils.get_current_time()}
+
+사용자 질문을 Google 검색에 적합한 키워드로 변환해줘.
 
 규칙:
 - 한국어 질문이면 한국어 키워드 유지
 - 핵심 단어만 추출 (조사, 어미 제거)
 - 최대 5개 단어
+- '요즘', '최근' 등의 시간 표현이 있으면 [현재 시간]을 참고하여 구체적인 연도나 월을 키워드에 포함할 것 (예: 2026년 1월)
 - 검색 결과가 잘 나오도록 구체적으로
 
 사용자 질문: {user_query}
@@ -701,10 +704,17 @@ class AIHandler(commands.Cog):
         # 날씨 감지
         if any(kw in query_lower for kw in self._WEATHER_KEYWORDS):
             location = self._extract_location_from_query(query) or '광양'
+
+            day_offset = 0
+            if "내일" in query:
+                day_offset = 1
+            elif "모레" in query:
+                day_offset = 2
+
             tools.append({
-                'tool_to_use': 'get_current_weather',
-                'tool_name': 'get_current_weather',
-                'parameters': {'location': location}
+                'tool_to_use': 'get_weather_forecast',
+                'tool_name': 'get_weather_forecast',
+                'parameters': {'location': location, 'day_offset': day_offset}
             })
             return tools  # 날씨 요청은 단일 도구로 처리
 
