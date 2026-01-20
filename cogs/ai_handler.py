@@ -162,18 +162,41 @@ class AIHandler(commands.Cog):
             rendered = repr(prompt)
         return self._truncate_for_debug(rendered)
 
-    def _message_has_valid_mention(self, message: discord.Message) -> bool:
-        """메시지에 봇 멘션이 존재하는지 확인합니다."""
+    async def _message_has_valid_mention(self, message: discord.Message) -> bool:
+        """메시지에 봇 멘션, 봇 역할 멘션, 또는 봇 메시지에 대한 답장이 존재하는지 확인합니다."""
         bot_user = getattr(self.bot, "user", None)
         if bot_user is None:
             return False
 
+        # 1. 봇 직접 멘션 확인 (<@BOT_ID>)
         try:
             mentions = getattr(message, "mentions", []) or []
         except AttributeError:
             mentions = []
         if any(getattr(member, "id", None) == bot_user.id for member in mentions):
             return True
+
+        # 2. 봇이 가진 역할 멘션 확인 (<@&ROLE_ID>)
+        # 메시지에서 멘션된 역할 중 하나라도 봇(길드 멤버)이 가지고 있다면 인정
+        if message.guild and message.guild.me:
+            bot_roles = set(message.guild.me.roles)
+            mentioned_roles = getattr(message, "role_mentions", []) or []
+            # role_mentions에는 Role 객체들이 들어있음
+            if any(role in bot_roles for role in mentioned_roles):
+                return True
+
+        # 3. 답장 확인 (Reply)
+        # 이 메시지가 답장(reference)이고, 그 원본 메시지의 작성자가 봇이라면 인정
+        if message.reference:
+            # message.reference.resolved는 캐시된 메시지 객체일 수 있음 (없을 수도 있음)
+            ref_msg = message.reference.resolved
+            # resolved가 없으면 fetch하지 않고 안전하게 넘어감 (성능상 이유)
+            # 만약 꼭 잡아야 한다면 fetch_message를 해야 하지만, 보통 캐시됨.
+            if ref_msg and ref_msg.author.id == bot_user.id:
+                return True
+            # resolved가 None인 경우(캐시 미스), bot_user.id가 message.reference.created_at과 같은 정보로는 알 수 없음.
+            # 하지만 discord.py 최신 버전에서는 cached_message 속성 등이 있을 수 있음.
+            # 여기서는 resolved가 있는 경우만 확실히 처리.
 
         content = (message.content or "").lower()
         alias_candidates: set[str] = set()
@@ -231,9 +254,9 @@ class AIHandler(commands.Cog):
         stripped = pattern.sub(" ", base_content)
         return re.sub(r"\s+", " ", stripped).strip()
 
-    def _prepare_user_query(self, message: discord.Message, log_extra: dict[str, Any]) -> str | None:
+    async def _prepare_user_query(self, message: discord.Message, log_extra: dict[str, Any]) -> str | None:
         """멘션 검증 후 사용자 쿼리를 정제합니다."""
-        if not self._message_has_valid_mention(message):
+        if not await self._message_has_valid_mention(message):
             self._debug("멘션이 없어 메시지를 무시합니다.", log_extra)
             logger.info("멘션이 없는 메시지를 무시합니다.", extra=log_extra)
             return None
