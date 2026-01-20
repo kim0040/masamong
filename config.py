@@ -229,7 +229,20 @@ DATABASE_FILE = "database/remasamong.db"
 GEMINI_API_KEY = load_config_value('GEMINI_API_KEY')
 GOOGLE_API_KEY = load_config_value('GOOGLE_API_KEY')
 GOOGLE_CX = load_config_value('GOOGLE_CX')
+GOOGLE_CUSTOM_SEARCH_DAILY_LIMIT = as_int(load_config_value('GOOGLE_CUSTOM_SEARCH_DAILY_LIMIT', 100), 100)
 SERPAPI_KEY = load_config_value('SERPAPI_KEY')
+
+# ========== API 안전장치 설정 ==========
+# 사용자별 쿨다운 (초) - 한 사용자가 연속 요청 시 대기 시간
+USER_COOLDOWN_SECONDS = as_int(load_config_value('USER_COOLDOWN_SECONDS', 3), 3)
+# 일일 LLM 호출 제한 (사용자당)
+USER_DAILY_LLM_LIMIT = as_int(load_config_value('USER_DAILY_LLM_LIMIT', 200), 200)
+# 글로벌 일일 LLM 호출 제한
+GLOBAL_DAILY_LLM_LIMIT = as_int(load_config_value('GLOBAL_DAILY_LLM_LIMIT', 5000), 5000)
+# 프롬프트 최대 토큰 (초과 시 RAG 컨텍스트 줄임)
+MAX_PROMPT_TOKENS = as_int(load_config_value('MAX_PROMPT_TOKENS', 4000), 4000)
+# 동일 메시지 스팸 방지 시간 (초)
+SPAM_PREVENTION_SECONDS = as_int(load_config_value('SPAM_PREVENTION_SECONDS', 10), 10)
 
 # CometAPI 설정 (Gemini 대체 - OpenAI Compatible)
 COMETAPI_KEY = load_config_value('COMETAPI_KEY')
@@ -260,7 +273,7 @@ LOCAL_EMBEDDING_QUERY_LIMIT = EMBED_CONFIG.get("query_limit", 200)
 RAG_SIMILARITY_THRESHOLD = as_float(EMBED_CONFIG.get("similarity_threshold"), 0.6)
 RAG_STRONG_SIMILARITY_THRESHOLD = as_float(EMBED_CONFIG.get("strong_similarity_threshold"), 0.72)
 RAG_DEBUG_ENABLED = as_bool(load_config_value('RAG_DEBUG_ENABLED', EMBED_CONFIG.get("debug_enabled", False)))
-RAG_HYBRID_TOP_K = int(EMBED_CONFIG.get("hybrid_top_k", 4))
+RAG_HYBRID_TOP_K = int(EMBED_CONFIG.get("hybrid_top_k", 5))
 RAG_EMBEDDING_TOP_N = int(EMBED_CONFIG.get("embedding_top_n", 8))
 RAG_BM25_TOP_N = int(EMBED_CONFIG.get("bm25_top_n", 8))
 RAG_RRF_K = float(EMBED_CONFIG.get("rrf_constant", 60))

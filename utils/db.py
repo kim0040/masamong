@@ -109,6 +109,31 @@ async def log_api_call(db: aiosqlite.Connection, api_type: str):
     except Exception as e:
         logger.error(f"API 호출 기록 중 DB 오류 ({api_type}): {e}", exc_info=True)
 
+
+async def get_daily_api_count(db: aiosqlite.Connection, api_type: str) -> int:
+    """오늘 특정 API의 호출 횟수를 반환합니다.
+    
+    Args:
+        db: 데이터베이스 연결
+        api_type: API 종류 (예: 'google_custom_search')
+        
+    Returns:
+        오늘의 API 호출 횟수
+    """
+    try:
+        now_utc = datetime.now(timezone.utc)
+        today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        
+        async with db.execute(
+            "SELECT COUNT(*) FROM api_call_log WHERE api_type = ? AND called_at >= ?",
+            (api_type, today_start)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+    except Exception as e:
+        logger.error(f"일일 API 호출 횟수 조회 중 오류 ({api_type}): {e}", exc_info=True)
+        return 0
+
 async def archive_old_conversations(db: aiosqlite.Connection):
     """
     `conversation_history` 테이블의 레코드 수가 한도를 초과하면,
