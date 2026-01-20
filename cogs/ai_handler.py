@@ -718,8 +718,10 @@ class AIHandler(commands.Cog):
             })
             return tools  # 날씨 요청은 단일 도구로 처리
 
-        # 미국 주식 감지
-        if any(kw in query_lower for kw in self._STOCK_US_KEYWORDS):
+        # 주식 감지 (미국/한국/일반 통합)
+        stock_triggers = self._STOCK_US_KEYWORDS | self._STOCK_KR_KEYWORDS | self._STOCK_GENERAL_KEYWORDS
+        if any(kw in query_lower for kw in stock_triggers):
+            # 1. 매핑된 종목 우선 확인 (미국)
             symbol = self._extract_us_stock_symbol(query_lower)
             if symbol:
                 tools.append({
@@ -729,8 +731,7 @@ class AIHandler(commands.Cog):
                 })
                 return tools
 
-        # 한국 주식 감지
-        if any(kw in query_lower for kw in self._STOCK_KR_KEYWORDS) or any(kw in query_lower for kw in self._STOCK_GENERAL_KEYWORDS):
+            # 2. 매핑된 종목 우선 확인 (한국)
             ticker = self._extract_kr_stock_ticker(query_lower)
             if ticker:
                 tools.append({
@@ -739,6 +740,25 @@ class AIHandler(commands.Cog):
                     'parameters': {'stock_name': ticker}
                 })
                 return tools
+
+            # 3. 매핑 안 된 종목 추출 (일반 키워드가 있을 경우에만 시도)
+            # 예: "astx 주가", "P&G 주가 어때" -> astx, P&G 추출
+            if any(kw in query_lower for kw in self._STOCK_GENERAL_KEYWORDS):
+                # 영문/숫자/특수문자(&)가 포함된 단어 추출 (최소 2글자)
+                # '주가' 같은 한글 키워드는 제외됨
+                potential_symbols = re.findall(r'[a-zA-Z0-9&]{2,}', query)
+                
+                # 불용어 필터링 (혹시 모를 영어 불용어)
+                ignore_list = {'stock', 'price', 'info'} 
+                
+                for sym in potential_symbols:
+                    if sym.lower() not in ignore_list:
+                        tools.append({
+                            'tool_to_use': 'get_stock_price',
+                            'tool_name': 'get_stock_price',
+                            'parameters': {'stock_name': sym}
+                        })
+                        return tools
 
         # 장소 검색 감지
         if any(kw in query_lower for kw in self._PLACE_KEYWORDS):
