@@ -25,7 +25,7 @@ LOCATION_DATA = [
     {'name': '제주', 'nx': 52, 'ny': 38},
 ]
 
-CSV_FILENAME = "동네예보지점좌표(위경도)_202510.csv"
+CSV_FILENAME = "weather_coords_202510.csv"
 SHORT_NAME_MAP = {
     '서울특별시': ['서울'],
     '부산광역시': ['부산'],
