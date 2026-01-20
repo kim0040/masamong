@@ -663,7 +663,7 @@ class AIHandler(commands.Cog):
 
         if summary:
             self._debug(f"[웹검색] 요약 결과: {self._truncate_for_debug(summary)}", log_extra)
-            return {"result": summary, "search_keywords": search_keywords}
+            return {"result": summary, "summary": summary, "search_keywords": search_keywords}
 
         # LLM 요약 실패 시 원본 검색 결과 반환
         return {"result": search_result[:1500], "search_keywords": search_keywords}
@@ -1335,6 +1335,31 @@ class AIHandler(commands.Cog):
                     if await self._should_use_web_search(user_query, rag_top_score):
                         logger.info("자동 판단: 웹 검색이 필요한 질문으로 판단됨", extra=log_extra)
                         web_result = await self._execute_web_search_with_llm(user_query, log_extra)
+                        
+                        # 웹 검색 요약 결과가 있으면 바로 응답 (3번째 LLM 호출 방지)
+                        if web_result.get("summary"):
+                            final_response_text = web_result["summary"]
+                            logger.info("웹 검색 요약을 최종 응답으로 사용", extra=log_extra)
+                            
+                            # LLM 일일 카운터 증가 (안전장치)
+                            await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
+                            await db_utils.log_api_call(self.bot.db, "llm_global")
+                            
+                            await message.reply(final_response_text, mention_author=False)
+                            await db_utils.log_analytics(
+                                self.bot.db,
+                                "AI_INTERACTION",
+                                {
+                                    "guild_id": message.guild.id,
+                                    "user_id": message.author.id,
+                                    "channel_id": message.channel.id,
+                                    "trace_id": trace_id,
+                                    "mode": "web_search_auto",
+                                },
+                            )
+                            return  # 여기서 종료 - 추가 LLM 호출 방지
+                        
+                        # 요약 실패 시 기존 로직으로 폴백
                         if web_result.get("result"):
                             tool_results.append(
                                 {
