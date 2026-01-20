@@ -698,9 +698,9 @@ class AIHandler(commands.Cog):
             symbol = self._extract_us_stock_symbol(query_lower)
             if symbol:
                 tools.append({
-                    'tool_to_use': 'get_us_stock_info',
-                    'tool_name': 'get_us_stock_info',
-                    'parameters': {'symbol': symbol}
+                    'tool_to_use': 'get_stock_price',
+                    'tool_name': 'get_stock_price',
+                    'parameters': {'stock_name': symbol}
                 })
                 return tools
 
@@ -709,9 +709,9 @@ class AIHandler(commands.Cog):
             ticker = self._extract_kr_stock_ticker(query_lower)
             if ticker:
                 tools.append({
-                    'tool_to_use': 'get_kr_stock_info',
-                    'tool_name': 'get_kr_stock_info',
-                    'parameters': {'ticker': ticker}
+                    'tool_to_use': 'get_stock_price',
+                    'tool_name': 'get_stock_price',
+                    'parameters': {'stock_name': ticker}
                 })
                 return tools
 
