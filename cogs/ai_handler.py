@@ -690,7 +690,7 @@ class AIHandler(commands.Cog):
     # ========== 키워드 기반 도구 감지 (Lite 모델 대체) ==========
 
     _WEATHER_KEYWORDS = frozenset(['날씨', '기온', '온도', '비', '눈', '맑', '흐림', '우산', '강수', '일기예보'])
-    _STOCK_US_KEYWORDS = frozenset(['애플', 'apple', 'aapl', '테슬라', 'tesla', 'tsla', '구글', 'google', 'googl', '엔비디아', 'nvidia', 'nvda', '마이크로소프트', 'microsoft', 'msft', '아마존', 'amazon', 'amzn'])
+    _STOCK_US_KEYWORDS = frozenset(['애플', 'apple', 'aapl', '테슬라', 'tesla', 'tsla', '구글', 'google', 'googl', '엔비디아', 'nvidia', 'nvda', '마이크로소프트', 'microsoft', 'msft', '아마존', 'amazon', 'amzn', '맥도날드', '스타벅스', '코카콜라', '펩시', '넷플릭스', '메타', '페이스북', '디즈니', '인텔', 'amd', '나이키', '코스트코', '버크셔'])
     _STOCK_KR_KEYWORDS = frozenset(['삼성전자', '현대차', 'sk하이닉스', '네이버', '카카오', 'lg에너지', '셀트리온', '삼성바이오', '기아', '포스코'])
     _STOCK_GENERAL_KEYWORDS = frozenset(['주가', '주식', '시세', '종가', '시가', '상장'])
     _PLACE_KEYWORDS = frozenset(['맛집', '카페', '음식점', '식당', '추천', '근처', '주변', '가볼만한', '핫플'])
@@ -791,6 +791,18 @@ class AIHandler(commands.Cog):
             '엔비디아': 'NVDA', 'nvidia': 'NVDA', 'nvda': 'NVDA',
             '마이크로소프트': 'MSFT', 'microsoft': 'MSFT', 'msft': 'MSFT',
             '아마존': 'AMZN', 'amazon': 'AMZN', 'amzn': 'AMZN',
+            '맥도날드': 'MCD', 'mcd': 'MCD',
+            '스타벅스': 'SBUX', 'sbux': 'SBUX',
+            '코카콜라': 'KO', 'coca-cola': 'KO', 'ko': 'KO',
+            '펩시': 'PEP', 'pepsi': 'PEP',
+            '넷플릭스': 'NFLX', 'netflix': 'NFLX',
+            '메타': 'META', '페이스북': 'META', 'meta': 'META',
+            '디즈니': 'DIS', 'disney': 'DIS',
+            '인텔': 'INTC', 'intel': 'INTC',
+            'amd': 'AMD',
+            '나이키': 'NKE', 'nike': 'NKE',
+            '코스트코': 'COST', 'costco': 'COST',
+            '버크셔': 'BRK.B', 'berkshire': 'BRK.B'
         }
         for keyword, symbol in symbol_map.items():
             if keyword in query_lower:
@@ -1505,6 +1517,11 @@ class AIHandler(commands.Cog):
                     # LLM 일일 카운터 증가 (안전장치)
                     await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
                     await db_utils.log_api_call(self.bot.db, "llm_global")
+
+                    # 응답 텍스트 후처리: 자기 자신 멘션(@마사몽 등) 제거
+                    final_response_text = re.sub(r'^@마사몽\s*', '', final_response_text)
+                    final_response_text = re.sub(r'^@masamong\s*', '', final_response_text, flags=re.IGNORECASE)
+                    final_response_text = re.sub(r'^<@!?[0-9]+>\s*', '', final_response_text)
                     
                     await message.reply(final_response_text, mention_author=False)
                     await db_utils.log_analytics(
