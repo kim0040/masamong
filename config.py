@@ -265,7 +265,12 @@ DISCORD_EMBEDDING_DB_PATH = EMBED_CONFIG.get("discord_db_path", "database/discor
 KAKAO_EMBEDDING_DB_PATH = EMBED_CONFIG.get("kakao_db_path", "database/kakao_embeddings.db")
 KAKAO_EMBEDDING_SERVER_MAP = _normalize_kakao_servers(EMBED_CONFIG.get("kakao_servers", []))
 KAKAO_VECTOR_EXTENSION = EMBED_CONFIG.get("kakao_vector_extension")
-BM25_DATABASE_PATH = EMBED_CONFIG.get("bm25_db_path", DATABASE_FILE)
+
+# 검색 엔진 활성화 설정 (emb_config.json에서 관리)
+EMBEDDING_ENABLED = as_bool(EMBED_CONFIG.get("embedding_enabled", True))
+BM25_ENABLED = as_bool(EMBED_CONFIG.get("bm25_enabled", True))
+
+BM25_DATABASE_PATH = EMBED_CONFIG.get("bm25_db_path", DATABASE_FILE) if BM25_ENABLED else None
 LOCAL_EMBEDDING_MODEL_NAME = EMBED_CONFIG.get("embedding_model_name", "dragonkue/multilingual-e5-small-ko-v2")
 LOCAL_EMBEDDING_DEVICE = EMBED_CONFIG.get("embedding_device")
 LOCAL_EMBEDDING_NORMALIZE = EMBED_CONFIG.get("normalize_embeddings", True)
