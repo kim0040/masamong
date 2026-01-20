@@ -175,6 +175,8 @@ class ReMasamongBot(commands.Bot):
         if message.author.bot or not message.guild:
             return
 
+        logger.info(f"[DEBUG] Message received from {message.author} ({message.author.id}): {message.content}")
+
         activity_cog = self.get_cog('ActivityCog')
         if activity_cog:
             try:
@@ -234,6 +236,7 @@ class ReMasamongBot(commands.Bot):
             return
 
         if not ai_handler._message_has_valid_mention(message):
+            logger.info(f"[DEBUG] Message ignored (No valid mention): {message.content}")
             return
 
         try:
