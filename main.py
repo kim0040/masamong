@@ -235,7 +235,7 @@ class ReMasamongBot(commands.Bot):
         if not ai_enabled_channel:
             return
 
-        if not await ai_handler._message_has_valid_mention(message):
+        if not ai_handler._message_has_valid_mention(message):
             logger.info(f"[DEBUG] Message ignored (No valid mention): {message.content}")
             return
 
