@@ -72,8 +72,6 @@ class AIHandler(commands.Cog):
         self.proactive_cooldowns: Dict[int, float] = {}
         self.gemini_configured = False
         self.api_call_lock = asyncio.Lock()
-        self._google_grounding_checked = False
-        self._google_grounding_descriptor: dict[str, object] | None = None
         self.discord_embedding_store = DiscordEmbeddingStore(config.DISCORD_EMBEDDING_DB_PATH)
         self.kakao_embedding_store = KakaoEmbeddingStore(
             config.KAKAO_EMBEDDING_DB_PATH,
@@ -516,166 +514,159 @@ class AIHandler(commands.Cog):
                 exc_info=True,
             )
 
-    def _discover_google_grounding_tool(self) -> dict[str, object] | None:
-        """사용 중인 Gemini 버전에 호환되는 구글 서치 도구를 탐색합니다.
+    # ========== 스마트 웹 검색 시스템 (Google Custom Search API 사용) ==========
 
-        Returns:
-            dict[str, object] | None: `field`/`cls` 정보를 담은 매핑 또는 지원 불가 시 None.
-        """
-        if not self.gemini_configured:
-            return None
+    _WEB_SEARCH_TRIGGER_KEYWORDS = frozenset([
+        '오늘', '최근', '뉴스', '현재', '지금', '실시간', '최신',
+        '어제', '이번 주', '이번 달', '올해', '가격', '시세',
+        '언제', '무슨 일', '뭔 일', '어떻게', '방법',
+        '찾아', '검색', '알려줘', '뭐야', '무엇', '왜'
+    ])
 
-        model_name = config.AI_RESPONSE_MODEL_NAME
+    _NO_SEARCH_PATTERNS = frozenset([
+        '나', '너', '우리', '마사몽', '마사모', '서버',
+        '아까', '전에', '지난번', '기억', '했었', '말했'
+    ])
+
+    async def _should_use_web_search(self, query: str, rag_top_score: float) -> bool:
+        """웹 검색이 필요한 질문인지 판단합니다.
         
-        # 모델 이름에 '1.5'가 포함되어 있는지 여부에 따라 사용할 도구 설정 결정
-        if "1.5" in model_name:
-            logger.info("Gemini 1.5 모델 감지, 'google_search_retrieval' 도구를 시도합니다.")
-            field_name = "google_search_retrieval"
-            class_name = "GoogleSearchRetrieval"
-        else:
-            logger.info("Gemini 2.0+ 모델 감지, 'google_search' 도구를 시도합니다.")
-            field_name = "google_search"
-            class_name = "GoogleSearch"
+        일일 100회 제한을 고려하여 보수적으로 판단합니다.
+        """
+        query_lower = query.lower()
 
-        try:
-            # getattr을 사용하여 해당 클래스가 존재하는지 확인
-            google_cls = getattr(genai.types, class_name, None)
-            
-            if not google_cls:
-                # grounding 서브모듈에서도 찾아보기 (구버전 호환성)
-                grounding_module = getattr(genai.types, "grounding", None)
-                if grounding_module:
-                    google_cls = getattr(grounding_module, class_name, None)
+        # RAG 점수가 충분히 높으면 검색 불필요
+        if rag_top_score >= config.RAG_STRONG_SIMILARITY_THRESHOLD:
+            return False
 
-            if not google_cls:
-                logger.warning(f"현재 라이브러리에서 '{class_name}' 클래스를 찾을 수 없습니다.")
-                return None
+        # 이미 다른 도구(날씨, 주식 등)로 처리 가능한 질문은 제외
+        if any(kw in query_lower for kw in self._WEATHER_KEYWORDS):
+            return False
+        if any(kw in query_lower for kw in self._STOCK_US_KEYWORDS | self._STOCK_KR_KEYWORDS):
+            return False
+        if any(kw in query_lower for kw in self._PLACE_KEYWORDS):
+            return False
 
-            # 도구 생성 테스트
-            genai.types.Tool(**{field_name: google_cls()})
-            
-            logger.info(f"Google Grounding 도구를 '{field_name}' 필드와 '{class_name}' 타입으로 설정했습니다.")
-            return {"field": field_name, "cls": google_cls}
+        # 내부 정보로 해결 가능한 패턴 제외
+        if any(pat in query_lower for pat in self._NO_SEARCH_PATTERNS):
+            return False
 
-        except Exception as exc:
-            logger.error(f"Google Grounding 도구 ('{field_name}', '{class_name}') 초기화 검사 실패: {exc}")
-            return None
+        # 웹 검색 트리거 키워드가 있어야 검색 수행
+        if not any(kw in query_lower for kw in self._WEB_SEARCH_TRIGGER_KEYWORDS):
+            return False
 
-    def _get_google_grounding_tool(self):
-        if not self.gemini_configured:
-            return None
+        # 일일 제한 확인
+        if await self._check_daily_search_limit():
+            return False
 
-        if not self._google_grounding_checked:
-            self._google_grounding_descriptor = self._discover_google_grounding_tool()
-            self._google_grounding_checked = True
+        return True
 
-        if not self._google_grounding_descriptor:
-            return None
+    async def _check_daily_search_limit(self) -> bool:
+        """Google Custom Search API 일일 사용량이 제한에 도달했는지 확인합니다."""
+        if not self.bot.db:
+            return True  # DB 없으면 검색 비활성화
 
-        field_name = self._google_grounding_descriptor.get("field")
-        google_cls = self._google_grounding_descriptor.get("cls")
-        if not field_name or not google_cls:
-            return None
+        today_count = await db_utils.get_daily_api_count(self.bot.db, 'google_custom_search')
+        limit = getattr(config, 'GOOGLE_CUSTOM_SEARCH_DAILY_LIMIT', 100)
+        if today_count >= limit:
+            logger.warning(f"Google Custom Search API 일일 제한({limit})에 도달했습니다. 현재: {today_count}")
+            return True
+        return False
 
-        try:
-            return genai.types.Tool(**{field_name: google_cls()})
-        except Exception as exc:
-            logger.error("Google Grounding 도구 인스턴스화 실패: %s", exc)
-            return None
+    async def _generate_search_keywords(self, user_query: str, log_extra: dict) -> str:
+        """LLM을 사용하여 검색에 최적화된 키워드를 생성합니다."""
+        keyword_prompt = f"""사용자 질문을 Google 검색에 적합한 키워드로 변환해줘.
 
-    async def _google_grounded_search(self, query: str, log_extra: dict) -> dict | None:
-        """Google Search Grounding을 사용해 웹 검색 결과를 생성합니다. (REST API 직접 호출)"""
-        # SDK 방식의 불안정성으로 인해 안정적인 REST API 호출로 직접 연결합니다.
-        return await self._google_grounded_search_rest(query, log_extra)
+규칙:
+- 한국어 질문이면 한국어 키워드 유지
+- 핵심 단어만 추출 (조사, 어미 제거)
+- 최대 5개 단어
+- 검색 결과가 잘 나오도록 구체적으로
 
-    async def _google_grounded_search_rest(self, query: str, log_extra: dict) -> dict | None:
-        """google-generativeai SDK에서 Grounding 도구를 제공하지 않을 때 REST API로 호출합니다."""
-        if not config.GEMINI_API_KEY:
-            logger.warning("Gemini API 키가 없어 Google Grounding REST 호출을 건너뜁니다.", extra=log_extra)
-            return None
+사용자 질문: {user_query}
+검색 키워드:"""
 
-        if await db_utils.check_api_rate_limit(self.bot.db, 'gemini_response', config.RPM_LIMIT_RESPONSE, config.RPD_LIMIT_RESPONSE):
-            logger.warning("Gemini Grounding REST 호출이 Rate Limit에 막혔습니다.", extra=log_extra)
-            return None
+        keywords = None
+        if self.use_cometapi:
+            keywords = await self._cometapi_generate_content(
+                "너는 검색 키워드 생성 전문가야. 입력된 질문을 검색에 최적화된 키워드로 변환해. 키워드만 출력해.",
+                keyword_prompt,
+                log_extra,
+            )
+        elif self.gemini_configured and genai:
+            model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME)
+            response = await self._safe_generate_content(model, keyword_prompt, log_extra)
+            keywords = response.text.strip() if response and response.text else None
 
-        endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{config.AI_RESPONSE_MODEL_NAME}:generateContent"
-        params = {"key": config.GEMINI_API_KEY}
-        payload = {
-            "contents": [{"role": "user", "parts": [{"text": query}]}],
-            "tools": [{"googleSearch": {}}],
-            "generationConfig": {"temperature": 0.0},
-        }
+        if not keywords:
+            # LLM 실패 시 간단한 키워드 추출
+            return self._extract_simple_keywords(user_query)
 
-        if config.GEMINI_SAFETY_SETTINGS:
-            payload["safetySettings"] = [
-                {"category": category, "threshold": threshold}
-                for category, threshold in config.GEMINI_SAFETY_SETTINGS.items()
-            ]
+        return keywords.strip()
 
-        session = http.get_modern_tls_session()
-        try:
-            logger.info("Google Grounding REST 호출을 실행합니다.", extra=log_extra)
-            
-            # 재시도 로직 추가
-            for attempt in range(3):
-                try:
-                    response = await asyncio.to_thread(
-                        session.post, endpoint, params=params, json=payload, timeout=30  # 타임아웃 30초로 증가
-                    )
-                    response.raise_for_status()
-                    break  # 성공 시 루프 탈출
-                except requests.exceptions.ReadTimeout as exc:
-                    if attempt >= 2:
-                        logger.error("Google Grounding REST 호출이 재시도 후에도 시간 초과되었습니다.", extra=log_extra, exc_info=True)
-                        raise exc  # 마지막 시도 실패 시 예외 다시 발생
-                    logger.warning(f"Google Grounding REST 호출 시간 초과 (시도 {attempt + 1}/3). {5 * (attempt + 1)}초 후 재시도합니다.", extra=log_extra)
-                    await asyncio.sleep(5 * (attempt + 1))
-            else: # for-else: break로 탈출하지 못한 경우 (모든 재시도 실패)
-                return None
+    def _extract_simple_keywords(self, query: str) -> str:
+        """간단한 규칙 기반 키워드 추출 (LLM 폴백용)"""
+        stopwords = {'이', '가', '은', '는', '을', '를', '에', '의', '와', '과', '도', '로', '으로', 
+                     '해줘', '알려줘', '뭐야', '뭔가', '좀', '그', '저', '이거', '뭐', '어떻게'}
+        words = query.split()
+        keywords = [w for w in words if w not in stopwords and len(w) > 1]
+        return ' '.join(keywords[:5])
 
-            try:
-                data = response.json()
-            except ValueError as exc:
-                logger.error(f"Google Grounding REST 응답 JSON 파싱 실패: {exc} | 응답: {response.text}", extra=log_extra)
-                return None
+    async def _execute_web_search_with_llm(
+        self,
+        user_query: str,
+        log_extra: dict
+    ) -> dict:
+        """Google Custom Search API 호출 후 LLM으로 결과를 해석합니다.
 
-            await db_utils.log_api_call(self.bot.db, 'gemini_response')
+        플로우:
+        1. LLM이 검색 키워드 생성
+        2. Google Custom Search API 호출 (tools_cog.web_search 사용)
+        3. LLM이 검색 결과를 읽고 답변 생성용 요약 반환
+        """
+        # 1. 검색 키워드 생성
+        search_keywords = await self._generate_search_keywords(user_query, log_extra)
+        self._debug(f"[웹검색] 생성된 키워드: {search_keywords}", log_extra)
 
-            candidates = data.get("candidates", [])
-            candidate = candidates[0] if candidates else {}
-            content = candidate.get("content", {})
-            parts = content.get("parts", []) if isinstance(content, dict) else []
-            texts = [part.get("text", "") for part in parts if isinstance(part, dict) and part.get("text")]
-            answer_text = "\n".join(filter(None, (text.strip() for text in texts))).strip()
-            metadata = candidate.get("groundingMetadata") or candidate.get("grounding_metadata") or data.get("groundingMetadata")
+        # 2. tools_cog.web_search 호출 (이미 Google CSE 연동됨)
+        if not self.tools_cog:
+            return {"error": "ToolsCog가 초기화되지 않았습니다."}
 
-            if not answer_text:
-                logger.warning("Google Grounding REST 호출이 비어있는 응답을 반환했습니다.", extra=log_extra)
-                return None
+        search_result = await self.tools_cog.web_search(search_keywords)
 
-            web_queries = None
-            if isinstance(metadata, dict):
-                web_queries = metadata.get("webSearchQueries") or metadata.get("web_search_queries")
+        # 3. 검색 결과 기록
+        await db_utils.log_api_call(self.bot.db, 'google_custom_search')
 
-            return {
-                "result": answer_text,
-                "grounding_metadata": metadata,
-                "web_search_queries": web_queries,
-            }
+        if not search_result or '검색 결과가 없습니다' in search_result:
+            return {"result": None, "error": "검색 결과 없음", "search_keywords": search_keywords}
 
-        except requests.exceptions.RequestException as exc:
-            logger.error("Google Grounding REST 호출 중 네트워크 오류: %s", exc, extra=log_extra, exc_info=True)
-            return None
-        finally:
-            session.close()
+        # 4. LLM으로 검색 결과 해석 및 요약
+        summarize_prompt = f"""다음은 '{user_query}'에 대한 웹 검색 결과야.
+이 결과를 바탕으로 사용자 질문에 답변할 수 있는 핵심 정보만 요약해줘. 3-4문장으로 간결하게.
 
-    async def _run_web_search_fallback(self, query: str, log_extra: dict) -> str | None:
-        """Gemini Grounding 검색 실패 시 호출되는 폴백 함수. REST API를 직접 호출하여 재시도합니다."""
-        logger.info("기본 Gemini Grounding 검색에 실패하여 폴백으로 REST API 검색을 재시도합니다.", extra=log_extra)
-        fallback_result = await self._google_grounded_search_rest(query, log_extra)
-        if fallback_result and fallback_result.get("result"):
-            return fallback_result.get("result")
-        return None
+검색 결과:
+{search_result[:2000]}
+
+핵심 정보 요약:"""
+
+        summary = None
+        if self.use_cometapi:
+            summary = await self._cometapi_generate_content(
+                "너는 검색 결과를 분석하는 전문가야. 핵심 정보만 간결하게 요약해.",
+                summarize_prompt,
+                log_extra,
+            )
+        elif self.gemini_configured and genai:
+            model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME)
+            response = await self._safe_generate_content(model, summarize_prompt, log_extra)
+            summary = response.text.strip() if response and response.text else None
+
+        if summary:
+            self._debug(f"[웹검색] 요약 결과: {self._truncate_for_debug(summary)}", log_extra)
+            return {"result": summary, "search_keywords": search_keywords}
+
+        # LLM 요약 실패 시 원본 검색 결과 반환
+        return {"result": search_result[:1500], "search_keywords": search_keywords}
 
 
     # ========== 키워드 기반 도구 감지 (Lite 모델 대체) ==========
@@ -818,7 +809,17 @@ class AIHandler(commands.Cog):
             score = float(entry.get("combined_score", 0.0) or entry.get("score", 0.0) or 0.0)
             dialogue_block = (entry.get("dialogue_block") or entry.get("message") or "").strip()
             snippet = dialogue_block[:100] + "..." if len(dialogue_block) > 100 else dialogue_block
-            log_lines.append(f"  [{score:.3f}] {snippet}")
+            
+            # 소스 태그 결정: origin 필드 또는 형식으로 판단
+            origin = entry.get("origin", "")
+            if origin == "kakao" or "[Merged Context]" in snippet:
+                source_tag = "[KAKAO]"
+            elif origin == "discord" or "[" in snippet and "][2026-" in snippet:
+                source_tag = "[DISCORD]"
+            else:
+                source_tag = "[UNKNOWN]"
+            
+            log_lines.append(f"  [{score:.3f}] {source_tag} {snippet}")
 
             # 임계값 이하는 무시 (쓰레기값 필터링)
             if score < threshold:
@@ -1041,10 +1042,11 @@ class AIHandler(commands.Cog):
         
         프롬프트 구조:
         1. 시스템 페르소나/규칙
-        2. [과거 대화 기억] - RAG 컨텍스트
-        3. [도구 실행 결과] - 도구 출력 (있을 경우)
-        4. [현재 질문] - 사용자 쿼리
-        5. 지시사항
+        2. [현재 시간] - 서버 시간 (KST)
+        3. [과거 대화 기억] - RAG 컨텍스트
+        4. [도구 실행 결과] - 도구 출력 (있을 경우)
+        5. [현재 질문] - 사용자 쿼리
+        6. 지시사항
         """
         channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
         persona = (channel_config.get('persona') or config.DEFAULT_TSUNDERE_PERSONA).strip()
@@ -1054,6 +1056,10 @@ class AIHandler(commands.Cog):
         system_part = f"{persona}\n\n{rules}"
 
         sections: list[str] = [system_part]
+
+        # 서버 현재 시간 (KST) - 항상 포함
+        current_time = db_utils.get_current_time()
+        sections.append(f"[현재 시간]\n{current_time}")
 
         # RAG 컨텍스트 (과거 대화 기억)
         if rag_blocks:
@@ -1067,9 +1073,13 @@ class AIHandler(commands.Cog):
         # 현재 질문
         sections.append(f"[현재 질문]\n{user_query}")
 
-        # 지시사항
+        # 지시사항 - RAG 데이터를 배경 지식으로 취급하도록 명시
         if rag_blocks:
-            sections.append("위 기억을 참고하여 친구처럼 자연스럽게 답변해줘. 기억에 없는 내용이면 모른다고 솔직하게 말해도 돼.")
+            sections.append(
+                "위 기억은 과거 대화에서 가져온 배경 정보야. "
+                "'아까', '전에', '방금' 같은 시간 표현 없이 자연스럽게 답변해. "
+                "같은 주제라도 처음 듣는 것처럼 새롭게 대답해줘."
+            )
         else:
             sections.append("관련 기억은 없지만, 친구처럼 자연스럽게 답변해줘.")
 
@@ -1165,20 +1175,21 @@ class AIHandler(commands.Cog):
         if not tool_name: 
             return {"error": "tool_to_use가 지정되지 않았습니다."}
 
-        # web_search는 ToolsCog에 구현된 다른 도구들과 달리, Gemini의 Grounding 기능을 직접 사용합니다.
+        # web_search는 Google Custom Search API와 LLM 2-step 처리를 사용합니다.
         if tool_name == 'web_search':
-            logger.info("특별 도구 실행: web_search (Google Grounding)", extra=log_extra)
+            logger.info("특별 도구 실행: web_search (Google Custom Search API)", extra=log_extra)
             query = parameters.get('query', user_query)
             self._debug(f"[도구:web_search] 쿼리: {self._truncate_for_debug(query)}", log_extra)
-            grounded_payload = await self._google_grounded_search(query, log_extra)
-            if grounded_payload and grounded_payload.get("result"):
-                self._debug(f"[도구:web_search] 결과: {self._truncate_for_debug(grounded_payload)}", log_extra)
-                return grounded_payload
-            fallback_result = await self._run_web_search_fallback(query, log_extra)
-            if fallback_result:
-                self._debug(f"[도구:web_search] 폴백 결과: {self._truncate_for_debug(fallback_result)}", log_extra)
-                return {"result": fallback_result}
-            return {"error": "Google 검색을 통해 정보를 찾는 데 실패했습니다."}
+            
+            # 일일 제한 확인
+            if await self._check_daily_search_limit():
+                return {"error": "Google Custom Search API 일일 제한에 도달했습니다."}
+            
+            search_result = await self._execute_web_search_with_llm(query, log_extra)
+            if search_result.get("result"):
+                self._debug(f"[도구:web_search] 결과: {self._truncate_for_debug(search_result)}", log_extra)
+                return search_result
+            return {"error": search_result.get("error", "웹 검색을 통해 정보를 찾는 데 실패했습니다.")}
 
         # 그 외 일반 도구들은 ToolsCog에서 찾아 실행합니다.
         try:
@@ -1208,6 +1219,54 @@ class AIHandler(commands.Cog):
             'channel_id': message.channel.id,
             'user_id': message.author.id,
         }
+        
+        # ========== 안전장치 검사 ==========
+        user_id = message.author.id
+        now = datetime.now()
+        
+        # 1. 사용자별 쿨다운 검사
+        last_request = self.ai_user_cooldowns.get(user_id)
+        if last_request:
+            elapsed = (now - last_request).total_seconds()
+            if elapsed < config.USER_COOLDOWN_SECONDS:
+                remaining = config.USER_COOLDOWN_SECONDS - elapsed
+                logger.debug(f"사용자 {user_id} 쿨다운 중 ({remaining:.1f}초 남음)", extra=base_log_extra)
+                return
+        
+        # 2. 스팸 방지: 동일 메시지 반복 감지
+        user_msg_key = f"{user_id}:{message.content[:50]}"
+        spam_cache = getattr(self, '_spam_cache', {})
+        if user_msg_key in spam_cache:
+            if (now - spam_cache[user_msg_key]).total_seconds() < config.SPAM_PREVENTION_SECONDS:
+                logger.warning(f"스팸 감지: 사용자 {user_id}가 동일 메시지 반복", extra=base_log_extra)
+                return
+        spam_cache[user_msg_key] = now
+        # 오래된 캐시 정리 (100개 초과 시)
+        if len(spam_cache) > 100:
+            oldest_keys = sorted(spam_cache.keys(), key=lambda k: spam_cache[k])[:50]
+            for k in oldest_keys:
+                del spam_cache[k]
+        self._spam_cache = spam_cache
+        
+        # 3. 사용자별 일일 LLM 호출 제한 검사
+        user_daily_key = f"llm_user_{user_id}"
+        user_daily_count = await db_utils.get_daily_api_count(self.bot.db, user_daily_key)
+        if user_daily_count >= config.USER_DAILY_LLM_LIMIT:
+            logger.warning(f"사용자 {user_id} 일일 LLM 제한 도달 ({user_daily_count}/{config.USER_DAILY_LLM_LIMIT})", extra=base_log_extra)
+            await message.reply("오늘 너무 많이 물어봤어! 내일 다시 물어봐~ 😅", mention_author=False)
+            return
+        
+        # 4. 글로벌 일일 LLM 호출 제한 검사
+        global_daily_count = await db_utils.get_daily_api_count(self.bot.db, "llm_global")
+        if global_daily_count >= config.GLOBAL_DAILY_LLM_LIMIT:
+            logger.warning(f"글로벌 일일 LLM 제한 도달 ({global_daily_count}/{config.GLOBAL_DAILY_LLM_LIMIT})", extra=base_log_extra)
+            await message.reply("오늘 할 수 있는 대화가 다 끝났어... 내일 봐! 😢", mention_author=False)
+            return
+        
+        # 쿨다운 갱신
+        self.ai_user_cooldowns[user_id] = now
+        # ========== 안전장치 검사 완료 ==========
+        
         user_query = self._prepare_user_query(message, base_log_extra)
         if not user_query:
             return
@@ -1272,7 +1331,22 @@ class AIHandler(commands.Cog):
                         )
                         executed_plan.append(tool_call)
                 else:
-                    logger.info("도구 계획이 없어 도구 실행을 건너뜁니다.", extra=log_extra)
+                    # 도구 계획이 없을 때, 웹 검색이 필요한 질문인지 자동 판단
+                    if await self._should_use_web_search(user_query, rag_top_score):
+                        logger.info("자동 판단: 웹 검색이 필요한 질문으로 판단됨", extra=log_extra)
+                        web_result = await self._execute_web_search_with_llm(user_query, log_extra)
+                        if web_result.get("result"):
+                            tool_results.append(
+                                {
+                                    "step": 1,
+                                    "tool_name": "web_search",
+                                    "parameters": {"query": user_query, "auto_triggered": True},
+                                    "result": web_result,
+                                }
+                            )
+                            executed_plan.append({"tool_to_use": "web_search", "parameters": {"query": user_query}})
+                    else:
+                        logger.info("도구 계획 없음 - RAG/일반 대화로 처리", extra=log_extra)
 
                 executed_tool_results = [res for res in tool_results if res.get("tool_name") not in {"local_rag"}]
 
@@ -1350,6 +1424,11 @@ class AIHandler(commands.Cog):
                     debug_block = self._build_rag_debug_block(rag_entries)
                     if debug_block:
                         logger.debug("RAG 디버그 블록:\n%s", debug_block, extra=log_extra)
+                    
+                    # LLM 일일 카운터 증가 (안전장치)
+                    await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
+                    await db_utils.log_api_call(self.bot.db, "llm_global")
+                    
                     await message.reply(final_response_text, mention_author=False)
                     await db_utils.log_analytics(
                         self.bot.db,
