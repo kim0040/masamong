@@ -717,11 +717,13 @@ class AIHandler(commands.Cog):
 
         # 장소 검색 감지
         if any(kw in query_lower for kw in self._PLACE_KEYWORDS):
+            # 위치 정보가 있으면 query에 포함시킴 (API는 query만 받음)
             location = self._extract_location_from_query(query) or ''
+            search_query = f"{location} {query}".strip() if location else query
             tools.append({
                 'tool_to_use': 'search_for_place',
                 'tool_name': 'search_for_place',
-                'parameters': {'query': query, 'location': location}
+                'parameters': {'query': search_query}
             })
             return tools
 
