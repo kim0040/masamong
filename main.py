@@ -69,14 +69,16 @@ class ReMasamongBot(commands.Bot):
         네트워크나 파일 접근 오류가 발생해도 봇이 기동될 수 있도록 예외를 자체 처리합니다.
         """
         try:
-            await self.db.execute("""
-                CREATE TABLE IF NOT EXISTS locations (
-                    name TEXT PRIMARY KEY,
-                    nx INTEGER NOT NULL,
-                    ny INTEGER NOT NULL
-                )
-            """)
-            await self.db.commit()
+            # 스키마 파일 실행 (전체 테이블 생성)
+            schema_path = Path("database/schema.sql")
+            if schema_path.exists():
+                logger.info(f"스키마 파일 로드 중: {schema_path}")
+                with open(schema_path, "r", encoding="utf-8") as f:
+                    schema_script = f.read()
+                await self.db.executescript(schema_script)
+                await self.db.commit()
+            else:
+                logger.error("database/schema.sql 파일을 찾을 수 없습니다.")
             # locations 테이블이 비어있을 경우, 초기 좌표 데이터를 삽입합니다.
             async with self.db.execute("SELECT COUNT(*) FROM locations") as cursor:
                 existing_count = (await cursor.fetchone())[0]
