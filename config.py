@@ -250,6 +250,24 @@ COMETAPI_BASE_URL = load_config_value('COMETAPI_BASE_URL', 'https://api.cometapi
 COMETAPI_MODEL = load_config_value('COMETAPI_MODEL', 'DeepSeek-V3.2-Exp-nothinking')
 USE_COMETAPI = as_bool(load_config_value('USE_COMETAPI', 'true'))  # CometAPI 우선 사용
 
+# CometAPI 이미지 생성 설정 (flux-2-flex 모델)
+COMETAPI_IMAGE_ENABLED = as_bool(load_config_value('COMETAPI_IMAGE_ENABLED', 'true'))
+COMETAPI_IMAGE_API_URL = "https://api.cometapi.com/flux/v1/flux-2-flex"
+COMETAPI_IMAGE_MODEL = "flux-2-flex"
+
+# 이미지 생성 사용량 제한
+IMAGE_USER_LIMIT = as_int(load_config_value('IMAGE_USER_LIMIT', 7), 7)  # 유저당 최대 7장
+IMAGE_USER_RESET_HOURS = as_int(load_config_value('IMAGE_USER_RESET_HOURS', 6), 6)  # 6시간 후 리셋
+IMAGE_GLOBAL_DAILY_LIMIT = as_int(load_config_value('IMAGE_GLOBAL_DAILY_LIMIT', 50), 50)  # 전역 일일 50장
+
+# 이미지 생성 기본 설정
+IMAGE_DEFAULT_WIDTH = as_int(load_config_value('IMAGE_DEFAULT_WIDTH', 1024), 1024)
+IMAGE_DEFAULT_HEIGHT = as_int(load_config_value('IMAGE_DEFAULT_HEIGHT', 1024), 1024)
+IMAGE_SAFETY_TOLERANCE = 0  # 가장 엄격한 수준 (0=strict, 5=permissive) - 절대 변경 금지
+IMAGE_GENERATION_STEPS = 50  # 품질 설정 (1-50, 높을수록 품질 향상)
+IMAGE_GUIDANCE_SCALE = 5.0  # 프롬프트 준수도 (1.5-10)
+
+
 FINNHUB_API_KEY = load_config_value('FINNHUB_API_KEY', 'YOUR_FINNHUB_API_KEY')
 KAKAO_API_KEY = load_config_value('KAKAO_API_KEY', 'YOUR_KAKAO_API_KEY')
 GO_DATA_API_KEY_KR = load_config_value('GO_DATA_API_KEY_KR', 'YOUR_GO_DATA_API_KEY_KR')

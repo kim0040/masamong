@@ -167,3 +167,104 @@ async def archive_old_conversations(db: aiosqlite.Connection):
 
     except Exception as e:
         logger.error(f"RAG 아카이빙 작업 중 DB 오류: {e}", exc_info=True)
+
+
+# ========== 이미지 생성 Rate Limiting ==========
+
+async def check_image_user_limit(db: aiosqlite.Connection, user_id: int) -> tuple[bool, int]:
+    """유저의 이미지 생성 제한을 확인합니다.
+    
+    Args:
+        db: 데이터베이스 연결
+        user_id: 유저 ID
+        
+    Returns:
+        (제한 도달 여부, 남은 이미지 수)
+    """
+    try:
+        reset_hours = getattr(config, 'IMAGE_USER_RESET_HOURS', 6)
+        user_limit = getattr(config, 'IMAGE_USER_LIMIT', 7)
+        
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=reset_hours)).isoformat()
+        api_type = f"image_gen_user_{user_id}"
+        
+        async with db.execute(
+            "SELECT COUNT(*) FROM api_call_log WHERE api_type = ? AND called_at >= ?",
+            (api_type, cutoff)
+        ) as cursor:
+            row = await cursor.fetchone()
+            count = row[0] if row else 0
+        
+        remaining = max(0, user_limit - count)
+        is_limited = count >= user_limit
+        
+        if is_limited:
+            logger.warning(f"유저 {user_id} 이미지 생성 제한 도달 ({count}/{user_limit})")
+        
+        return is_limited, remaining
+        
+    except Exception as e:
+        logger.error(f"이미지 유저 제한 확인 중 오류 (user_id={user_id}): {e}", exc_info=True)
+        return True, 0  # 오류 시 안전하게 제한
+
+
+async def check_image_global_limit(db: aiosqlite.Connection) -> tuple[bool, int]:
+    """전역 일일 이미지 생성 제한을 확인합니다.
+    
+    Returns:
+        (제한 도달 여부, 남은 이미지 수)
+    """
+    try:
+        global_limit = getattr(config, 'IMAGE_GLOBAL_DAILY_LIMIT', 50)
+        
+        now_utc = datetime.now(timezone.utc)
+        today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        
+        async with db.execute(
+            "SELECT COUNT(*) FROM api_call_log WHERE api_type = ? AND called_at >= ?",
+            ("image_gen_global", today_start)
+        ) as cursor:
+            row = await cursor.fetchone()
+            count = row[0] if row else 0
+        
+        remaining = max(0, global_limit - count)
+        is_limited = count >= global_limit
+        
+        if is_limited:
+            logger.warning(f"이미지 생성 전역 일일 제한 도달 ({count}/{global_limit})")
+        
+        return is_limited, remaining
+        
+    except Exception as e:
+        logger.error(f"이미지 전역 제한 확인 중 오류: {e}", exc_info=True)
+        return True, 0  # 오류 시 안전하게 제한
+
+
+async def log_image_generation(db: aiosqlite.Connection, user_id: int):
+    """이미지 생성을 기록합니다 (유저별 + 전역).
+    
+    Args:
+        db: 데이터베이스 연결
+        user_id: 이미지를 생성한 유저 ID
+    """
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        
+        # 유저별 기록
+        await db.execute(
+            "INSERT INTO api_call_log (api_type, called_at) VALUES (?, ?)",
+            (f"image_gen_user_{user_id}", now)
+        )
+        
+        # 전역 기록
+        await db.execute(
+            "INSERT INTO api_call_log (api_type, called_at) VALUES (?, ?)",
+            ("image_gen_global", now)
+        )
+        
+        await db.commit()
+        logger.info(f"이미지 생성 기록 완료 (user_id={user_id})")
+        
+    except Exception as e:
+        logger.error(f"이미지 생성 기록 중 오류 (user_id={user_id}): {e}", exc_info=True)
+
