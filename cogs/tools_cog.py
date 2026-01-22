@@ -10,6 +10,7 @@ import discord
 from discord.ext import commands
 import re
 import aiohttp
+import asyncio
 
 import config
 from logger_config import logger
@@ -214,12 +215,13 @@ class ToolsCog(commands.Cog):
         
         logger.info(f"이미지 생성 시작: user={user_id}, remaining={user_remaining}", extra=log_extra)
         
-        # 6. CometAPI 호출
+        # 6. CometAPI 호출 (폴링 방식)
         try:
             api_url = getattr(config, 'COMETAPI_IMAGE_API_URL', 'https://api.cometapi.com/flux/v1/flux-2-flex')
             
+            # Bearer 토큰 형식으로 Authorization 헤더 설정
             headers = {
-                "Authorization": api_key,
+                "Authorization": f"Bearer {api_key}" if not api_key.startswith("Bearer ") else api_key,
                 "Content-Type": "application/json",
                 "Accept": "*/*",
             }
@@ -227,69 +229,94 @@ class ToolsCog(commands.Cog):
             payload = {
                 "prompt": prompt,
                 "prompt_upsampling": True,
-                "width": getattr(config, 'IMAGE_DEFAULT_WIDTH', 1024),
-                "height": getattr(config, 'IMAGE_DEFAULT_HEIGHT', 1024),
-                "steps": getattr(config, 'IMAGE_GENERATION_STEPS', 50),
-                "guidance": getattr(config, 'IMAGE_GUIDANCE_SCALE', 5.0),
-                "safety_tolerance": getattr(config, 'IMAGE_SAFETY_TOLERANCE', 0),  # 가장 엄격
+                "width": getattr(config, 'IMAGE_DEFAULT_WIDTH', 768),
+                "height": getattr(config, 'IMAGE_DEFAULT_HEIGHT', 768),
+                "steps": getattr(config, 'IMAGE_GENERATION_STEPS', 28),
+                "guidance": getattr(config, 'IMAGE_GUIDANCE_SCALE', 4.5),
+                "safety_tolerance": getattr(config, 'IMAGE_SAFETY_TOLERANCE', 0),
                 "output_format": "jpeg",
             }
             
             async with aiohttp.ClientSession() as session:
+                # Step 1: 이미지 생성 요청 제출
                 async with session.post(api_url, headers=headers, json=payload, timeout=60) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        
-                        # 이미지 URL 추출 (API 응답 형식에 따라 조정 필요)
-                        image_url = data.get('result', {}).get('sample') or data.get('sample') or data.get('image_url')
-                        
-                        if not image_url:
-                            # 일부 API는 직접 URL 대신 상태/ID를 반환할 수 있음
-                            task_id = data.get('id')
-                            if task_id:
-                                # 폴링 방식의 경우 (향후 확장 가능)
-                                logger.info(f"이미지 생성 Task ID: {task_id}", extra=log_extra)
-                                image_url = f"https://api.cometapi.com/flux/v1/get_result?id={task_id}"
-                        
-                        if image_url:
-                            # 사용량 기록
-                            await db_utils.log_image_generation(self.bot.db, user_id)
-                            
-                            logger.info(f"이미지 생성 성공: {image_url[:100]}...", extra=log_extra)
-                            return {
-                                "image_url": image_url,
-                                "remaining": user_remaining - 1,
-                                "cost": data.get('cost'),
-                            }
-                        else:
-                            logger.error(f"이미지 URL을 찾을 수 없음. 응답: {data}", extra=log_extra)
-                            return {"error": "이미지가 생성됐는데 URL을 찾지 못했어. 잠시 후 다시 시도해줘!"}
-                    
-                    elif resp.status == 400:
-                        error_data = await resp.json()
-                        error_msg = error_data.get('error', {}).get('message', '잘못된 요청')
-                        logger.warning(f"CometAPI 400 에러: {error_msg}", extra=log_extra)
-                        return {"error": f"프롬프트에 문제가 있는 것 같아요: {error_msg}"}
-                    
-                    elif resp.status == 402:
-                        logger.error("CometAPI 크레딧 부족", extra=log_extra)
-                        return {"error": "이미지 생성 크레딧이 부족해요. 관리자에게 문의해줘!"}
-                    
-                    elif resp.status == 429:
-                        logger.warning("CometAPI 속도 제한", extra=log_extra)
-                        return {"error": "요청이 너무 많아요. 잠시 후 다시 시도해줘!"}
-                    
-                    else:
+                    if resp.status != 200:
                         error_text = await resp.text()
-                        logger.error(f"CometAPI 오류 ({resp.status}): {error_text[:500]}", extra=log_extra)
-                        return {"error": "이미지 생성 중 오류가 발생했어요. 잠시 후 다시 시도해줘!"}
+                        logger.error(f"CometAPI 이미지 생성 요청 실패 ({resp.status}): {error_text}", extra=log_extra)
+                        if resp.status == 402:
+                            return {"error": "이미지 생성 크레딧이 부족해요. 관리자에게 문의해줘!"}
+                        return {"error": "이미지 생성 요청에 실패했어요. 잠시 후 다시 시도해줘!"}
+                    
+                    data = await resp.json()
+                    task_id = data.get('id')
+                    
+                    if not task_id:
+                        logger.error(f"Task ID를 받지 못함: {data}", extra=log_extra)
+                        return {"error": "이미지 생성 작업 ID를 받지 못했어요."}
+                    
+                    logger.info(f"이미지 생성 Task ID: {task_id}", extra=log_extra)
+                
+                # Step 2: 결과 폴링 (최대 60초 대기)
+                result_url = f"https://api.cometapi.com/flux/v1/get_result?id={task_id}"
+                max_polls = 30  # 2초 간격으로 30회 = 60초
+                image_url = None
+                
+                for poll_count in range(max_polls):
+                    await asyncio.sleep(2)  # 2초 대기
+                    
+                    async with session.get(result_url, headers=headers, timeout=30) as poll_resp:
+                        if poll_resp.status != 200:
+                            continue
                         
-        except aiohttp.ClientTimeout:
+                        poll_data = await poll_resp.json()
+                        status = poll_data.get('status', '')
+                        
+                        if status == 'Ready':
+                            # 이미지 생성 완료
+                            image_url = poll_data.get('result', {}).get('sample')
+                            if image_url:
+                                logger.info(f"이미지 폴링 완료 ({poll_count+1}회): {image_url[:80]}...", extra=log_extra)
+                                break
+                        elif status == 'Error':
+                            error_msg = poll_data.get('result', {}).get('message', '알 수 없는 오류')
+                            logger.error(f"이미지 생성 에러: {error_msg}", extra=log_extra)
+                            return {"error": f"이미지 생성 중 오류: {error_msg}"}
+                        # Pending 상태면 계속 폴링
+                
+                if not image_url:
+                    logger.error("이미지 폴링 타임아웃", extra=log_extra)
+                    return {"error": "이미지 생성이 너무 오래 걸려요. 다시 시도해줘!"}
+                
+                # Step 3: 이미지 다운로드 (Discord 업로드용)
+                async with session.get(image_url, timeout=30) as img_resp:
+                    if img_resp.status != 200:
+                        logger.warning(f"이미지 다운로드 실패, URL 직접 반환: {img_resp.status}", extra=log_extra)
+                        # 다운로드 실패 시 URL만 반환
+                        await db_utils.log_image_generation(self.bot.db, user_id)
+                        return {
+                            "image_url": image_url,
+                            "remaining": user_remaining - 1,
+                        }
+                    
+                    image_data = await img_resp.read()
+                    
+                    # 사용량 기록
+                    await db_utils.log_image_generation(self.bot.db, user_id)
+                    
+                    logger.info(f"이미지 다운로드 완료: {len(image_data)} bytes", extra=log_extra)
+                    return {
+                        "image_data": image_data,  # 바이너리 데이터
+                        "image_url": image_url,    # 백업용 URL
+                        "remaining": user_remaining - 1,
+                    }
+                        
+        except asyncio.TimeoutError:
             logger.error("CometAPI 타임아웃", extra=log_extra)
             return {"error": "이미지 생성이 너무 오래 걸려서 취소됐어. 다시 시도해줘!"}
         except Exception as e:
             logger.error(f"이미지 생성 중 예외: {e}", exc_info=True, extra=log_extra)
             return {"error": "이미지 생성 중 예상치 못한 오류가 발생했어요."}
+
 
 async def setup(bot: commands.Bot):
     """Cog를 봇에 등록하는 함수입니다."""

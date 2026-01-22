@@ -7,6 +7,7 @@
 import discord
 from discord.ext import commands
 import os
+import io
 
 import config
 from logger_config import logger
@@ -53,7 +54,7 @@ class UserCommands(commands.Cog):
             logger.error(f"`delete_log` 명령어 처리 중 예기치 않은 오류 발생: {error}", exc_info=True, extra=log_extra)
             await ctx.send(config.MSG_CMD_ERROR)
 
-    @commands.command(name='도움', aliases=['help', '헬프', '명령어'])
+    @commands.command(name='도움', aliases=['헬프', '명령어'])
     async def help_command(self, ctx: commands.Context):
         """사용 가능한 명령어 목록을 표시합니다."""
         embed = discord.Embed(
@@ -142,21 +143,38 @@ class UserCommands(commands.Cog):
                 )
                 
                 # 3. 결과 처리
-                if result.get('image_url'):
-                    image_url = result['image_url']
+                if result.get('image_data') or result.get('image_url'):
                     remaining = result.get('remaining', 0)
                     
                     # 상태 메시지 삭제
-                    await status_msg.delete()
+                    try:
+                        await status_msg.delete()
+                    except:
+                        pass
                     
-                    embed = discord.Embed(
-                        title="🎨 이미지 생성 완료!",
-                        color=discord.Color.green()
-                    )
-                    embed.set_image(url=image_url)
-                    embed.set_footer(text=f"남은 횟수: {remaining}장 | 요청: {prompt[:50]}...")
+                    # 이미지 바이너리가 있으면 파일로 직접 업로드 (URL 만료 방지)
+                    if result.get('image_data'):
+                        image_file = discord.File(
+                            io.BytesIO(result['image_data']),
+                            filename="generated_image.jpg"
+                        )
+                        embed = discord.Embed(
+                            title="🎨 이미지 생성 완료!",
+                            color=discord.Color.green()
+                        )
+                        embed.set_image(url="attachment://generated_image.jpg")
+                        embed.set_footer(text=f"남은 횟수: {remaining}장 | 요청: {prompt[:50]}...")
+                        await ctx.send(embed=embed, file=image_file)
+                    else:
+                        # 폴백: URL로 임베드
+                        embed = discord.Embed(
+                            title="🎨 이미지 생성 완료!",
+                            color=discord.Color.green()
+                        )
+                        embed.set_image(url=result['image_url'])
+                        embed.set_footer(text=f"남은 횟수: {remaining}장 | 요청: {prompt[:50]}...")
+                        await ctx.send(embed=embed)
                     
-                    await ctx.send(embed=embed)
                     logger.info(f"이미지 생성 성공 (명령어): user={ctx.author.id}", extra=log_extra)
                     
                 elif result.get('error'):
