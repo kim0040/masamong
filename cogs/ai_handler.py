@@ -1539,10 +1539,9 @@ Generate the optimized English image prompt:"""
                         result = await self._execute_tool(tool_call, message.guild.id, user_query)
                         
                         # 이미지 생성 성공 시 바로 이미지 전송 (별도 처리)
-                        if tool_call.get('tool_to_use') == 'generate_image' and result.get('image_url'):
-                            image_url = result['image_url']
+                        if tool_call.get('tool_to_use') == 'generate_image' and (result.get('image_data') or result.get('image_url')):
                             remaining = result.get('remaining', 0)
-                            logger.info(f"이미지 생성 성공, 전송 시작: {image_url[:100]}...", extra=log_extra)
+                            logger.info(f"이미지 생성 성공, 전송 시작", extra=log_extra)
                             
                             # 상태 메시지 삭제
                             try:
@@ -1550,9 +1549,24 @@ Generate the optimized English image prompt:"""
                             except:
                                 pass
                             
-                            # 이미지 URL을 Discord에 전송
-                            response_text = f"짜잔~ 이미지 생성했어! 🎨\n{image_url}\n\n(남은 이미지 생성 횟수: {remaining}장)"
-                            await message.reply(response_text, mention_author=False)
+                            # 이미지 바이너리가 있으면 파일로 업로드 (URL 만료 방지)
+                            if result.get('image_data'):
+                                import io
+                                image_file = discord.File(
+                                    io.BytesIO(result['image_data']),
+                                    filename="generated_image.jpg"
+                                )
+                                await message.reply(
+                                    f"짜잔~ 이미지 생성했어! 🎨\n(남은 이미지 생성 횟수: {remaining}장)",
+                                    file=image_file,
+                                    mention_author=False
+                                )
+                            else:
+                                # 폴백: URL로 전송
+                                await message.reply(
+                                    f"짜잔~ 이미지 생성했어! 🎨\n{result['image_url']}\n\n(남은 이미지 생성 횟수: {remaining}장)",
+                                    mention_author=False
+                                )
                             
                             # LLM 호출 카운터 증가
                             await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
@@ -1567,7 +1581,6 @@ Generate the optimized English image prompt:"""
                                     "channel_id": message.channel.id,
                                     "trace_id": trace_id,
                                     "mode": "image_generation",
-                                    "image_url": image_url,
                                 },
                             )
                             return  # 이미지 생성 완료, 추가 처리 없이 종료
