@@ -175,6 +175,19 @@ class AIHandler(commands.Cog):
         if any(getattr(member, "id", None) == bot_user.id for member in mentions):
             return True
 
+        # 역할 멘션 확인
+        found_role_ids = set()
+        if message.content:
+            found_role_ids = set(re.findall(r'<@&(\d+)>', message.content))
+        
+        guild = getattr(message, "guild", None)
+        if found_role_ids and guild:
+            guild_me = getattr(guild, "me", None)
+            if guild_me:
+                my_role_ids = {str(r.id) for r in guild_me.roles if r.id != guild.id}
+                if not found_role_ids.isdisjoint(my_role_ids):
+                    return True
+
         content = (message.content or "").lower()
         alias_candidates: set[str] = set()
         name = getattr(bot_user, "name", None)
@@ -208,6 +221,14 @@ class AIHandler(commands.Cog):
         patterns: set[str] = set()
         patterns.add(f"<@{bot_user.id}>")
         patterns.add(f"<@!{bot_user.id}>")
+
+        # 역할 멘션 제거 패턴 추가
+        if guild:
+            guild_me = getattr(guild, "me", None)
+            if guild_me:
+                for role in guild_me.roles:
+                    if role.id != guild.id:
+                        patterns.add(f"<@&{role.id}>")
 
         for alias in (
             getattr(bot_user, "name", None),
