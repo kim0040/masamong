@@ -1533,6 +1533,8 @@ Generate the optimized English image prompt:"""
                         # generate_image 도구의 경우 user_id를 파라미터에 주입
                         if tool_call.get('tool_to_use') == 'generate_image':
                             tool_call.setdefault('parameters', {})['user_id'] = message.author.id
+                            # 생성 중 메시지 전송 (LLM 호출 없음)
+                            status_msg = await message.reply("🎨 이미지 생성 중이에요... 잠시만 기다려줘!", mention_author=False)
                         
                         result = await self._execute_tool(tool_call, message.guild.id, user_query)
                         
@@ -1541,6 +1543,12 @@ Generate the optimized English image prompt:"""
                             image_url = result['image_url']
                             remaining = result.get('remaining', 0)
                             logger.info(f"이미지 생성 성공, 전송 시작: {image_url[:100]}...", extra=log_extra)
+                            
+                            # 상태 메시지 삭제
+                            try:
+                                await status_msg.delete()
+                            except:
+                                pass
                             
                             # 이미지 URL을 Discord에 전송
                             response_text = f"짜잔~ 이미지 생성했어! 🎨\n{image_url}\n\n(남은 이미지 생성 횟수: {remaining}장)"
@@ -1564,11 +1572,14 @@ Generate the optimized English image prompt:"""
                             )
                             return  # 이미지 생성 완료, 추가 처리 없이 종료
                         
-                        # 이미지 생성 에러 시 바로 에러 메시지 전송
+                        # 이미지 생성 에러 시 상태 메시지 수정
                         if tool_call.get('tool_to_use') == 'generate_image' and result.get('error'):
                             error_msg = result['error']
                             logger.warning(f"이미지 생성 실패: {error_msg}", extra=log_extra)
-                            await message.reply(f"😅 {error_msg}", mention_author=False)
+                            try:
+                                await status_msg.edit(content=f"😅 {error_msg}")
+                            except:
+                                await message.reply(f"😅 {error_msg}", mention_author=False)
                             return  # 이미지 생성 실패, 추가 처리 없이 종료
                         
                         tool_results.append(
