@@ -716,9 +716,15 @@ Generate the optimized English image prompt:"""
                 log_extra,
             )
             
-        # CometAPI 실패 또는 비활성화 시 Gemini 폴백
+            # CometAPI 결과에 한국어가 포함되어 있으면 실패로 처리 (재시도 유도)
+            if image_prompt and any('\uac00' <= char <= '\ud7a3' for char in image_prompt):
+                logger.warning(f"CometAPI 생성 프롬프트에 한국어 포함됨, 실패 처리: {image_prompt}", extra=log_extra)
+                image_prompt = None
+            
+        # CometAPI 실패/한국어포함 또는 비활성화 시 Gemini 폴백
         if not image_prompt and self.gemini_configured and genai:
-            logger.info("CometAPI 이미지 프롬프트 생성 실패, Gemini로 시도합니다.", extra=log_extra)
+            if self.use_cometapi: # CometAPI 시도 후 실패한 경우에만 로그
+                logger.info("CometAPI 이미지 프롬프트 생성 실패(또는 한국어 포함), Gemini로 시도합니다.", extra=log_extra)
             model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME)
             response = await self._safe_generate_content(model, user_prompt, log_extra)
             image_prompt = response.text.strip() if response and response.text else None
@@ -741,10 +747,15 @@ Generate the optimized English image prompt:"""
                (image_prompt.startswith("'") and image_prompt.endswith("'")):
                 image_prompt = image_prompt[1:-1]
             
-            # 마지막 안전 검사: 혹시 한국어가 포함되어 있으면 기본 프롬프트로 대체
+            # 마지막 안전 검사: 혹시 여전히 한국어가 포함되어 있으면 한국어만 제거 시도
             if any('\uac00' <= char <= '\ud7a3' for char in image_prompt):
-                logger.warning("생성된 프롬프트에 한국어가 포함됨. 기본 프롬프트로 대체.", extra=log_extra)
-                image_prompt = "A beautiful serene landscape with mountains and a peaceful lake at sunset, golden hour lighting, photorealistic, masterpiece, best quality, highly detailed, 8k, wide angle shot"
+                logger.warning("최종 프롬프트에 한국어가 포함됨. 한국어 문자 제거 시도.", extra=log_extra)
+                # 한국어 유니코드 범위 제거 (가-힣)
+                image_prompt = re.sub(r'[\uac00-\ud7a3]+', '', image_prompt).strip()
+                # 제거 후 빈 문자열이면 기본값 사용
+                if not image_prompt:
+                    logger.warning("한국어 제거 후 프롬프트가 비어있음. 기본 프롬프트 사용.", extra=log_extra)
+                    image_prompt = "A beautiful serene landscape with mountains and a peaceful lake at sunset, golden hour lighting, photorealistic, masterpiece, best quality, highly detailed, 8k, wide angle shot"
             
             self._debug(f"[이미지 프롬프트] 생성됨: {self._truncate_for_debug(image_prompt)}", log_extra)
             return image_prompt
