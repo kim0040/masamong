@@ -349,6 +349,15 @@ class AIHandler(commands.Cog):
             )
 
             response_text = completion.choices[0].message.content
+            
+            # [Debug] 응답 내용 확인을 위한 강제 로깅
+            logger.info(f"[CometAPI Debug] Raw Response: {response_text!r}", extra=log_extra)
+            try:
+                # model_dump()가 가능한지 확인 (Pydantic v2)
+                logger.info(f"[CometAPI Debug] Message Obj: {completion.choices[0].message}", extra=log_extra)
+            except:
+                pass
+
             await db_utils.log_api_call(self.bot.db, "cometapi")
 
             if self.debug_enabled:
