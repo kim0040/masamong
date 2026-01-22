@@ -272,9 +272,9 @@ class ToolsCog(commands.Cog):
                         poll_data = await poll_resp.json()
                         status = poll_data.get('status', '')
                         
-                        # 디버그 로그: 처음 5회 또는 10회마다 상태 출력
-                        if poll_count < 5 or poll_count % 10 == 0:
-                            logger.info(f"폴링 ({poll_count+1}/{max_polls}): status={status}", extra=log_extra)
+                        # 디버그 로그: 전체 응답 구조 확인
+                        if poll_count < 3 or poll_count % 10 == 0:
+                            logger.info(f"폴링 ({poll_count+1}/{max_polls}) Raw Data: {poll_data}", extra=log_extra)
                         
                         if status == 'Ready':
                             # 이미지 생성 완료
