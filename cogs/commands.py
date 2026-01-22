@@ -121,6 +121,9 @@ class UserCommands(commands.Cog):
         
         async with ctx.typing():
             try:
+                # 생성 중 메시지 전송 (LLM 호출 없음)
+                status_msg = await ctx.send("🎨 이미지 생성 중이에요... 잠시만 기다려줘!")
+                
                 # 1. 프롬프트 생성 (LLM 1회 호출)
                 image_prompt = await ai_handler._generate_image_prompt(
                     prompt, 
@@ -129,7 +132,7 @@ class UserCommands(commands.Cog):
                 )
                 
                 if not image_prompt:
-                    await ctx.send("❌ 이미지 프롬프트 생성에 실패했어요. 다시 시도해줘!")
+                    await status_msg.edit(content="❌ 이미지 프롬프트 생성에 실패했어요. 다시 시도해줘!")
                     return
                 
                 # 2. 이미지 생성 (tools_cog 직접 호출)
@@ -143,6 +146,9 @@ class UserCommands(commands.Cog):
                     image_url = result['image_url']
                     remaining = result.get('remaining', 0)
                     
+                    # 상태 메시지 삭제
+                    await status_msg.delete()
+                    
                     embed = discord.Embed(
                         title="🎨 이미지 생성 완료!",
                         color=discord.Color.green()
@@ -154,13 +160,16 @@ class UserCommands(commands.Cog):
                     logger.info(f"이미지 생성 성공 (명령어): user={ctx.author.id}", extra=log_extra)
                     
                 elif result.get('error'):
-                    await ctx.send(f"😅 {result['error']}")
+                    await status_msg.edit(content=f"😅 {result['error']}")
                 else:
-                    await ctx.send("❌ 이미지 생성 중 알 수 없는 오류가 발생했어요.")
+                    await status_msg.edit(content="❌ 이미지 생성 중 알 수 없는 오류가 발생했어요.")
                     
             except Exception as e:
                 logger.error(f"이미지 생성 명령어 오류: {e}", exc_info=True, extra=log_extra)
-                await ctx.send("❌ 이미지 생성 중 오류가 발생했어요. 잠시 후 다시 시도해줘!")
+                try:
+                    await status_msg.edit(content="❌ 이미지 생성 중 오류가 발생했어요. 잠시 후 다시 시도해줘!")
+                except:
+                    await ctx.send("❌ 이미지 생성 중 오류가 발생했어요. 잠시 후 다시 시도해줘!")
     
     @generate_image_command.error
     async def generate_image_error(self, ctx: commands.Context, error):
