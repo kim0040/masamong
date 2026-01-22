@@ -132,6 +132,165 @@ class ToolsCog(commands.Cog):
             return f"'{query}'에 대한 이미지를 찾았지만, 유효한 URL이 없습니다."
         return f"'{query}' 이미지 검색 결과:\n" + "\n".join(urls)
 
+    # --- 이미지 생성 (CometAPI flux-2-flex) --- #
+    
+    # NSFW 차단 키워드 목록 (선정적 콘텐츠만 차단)
+    _NSFW_BLOCKED_KEYWORDS = frozenset([
+        # 영문 (핵심 선정적 키워드)
+        'nude', 'naked', 'nsfw', 'explicit', 'sexual', 'porn', 'pornographic',
+        'hentai', 'erotic', 'xxx', 'adult only', 'lewd',
+        'topless', 'bottomless', 'genitals', 'nipple',
+        'intercourse', 'orgasm', 'fetish', 'bdsm', 'bondage',
+        # 영문 (우회 시도)
+        'n*de', 'nak3d', 'nud3', 'p0rn', 'pr0n', 's3x', 'seggs',
+        'boobs', 'tits', 'titties',
+        # 한국어 (핵심)
+        '야한', '선정적', '노출', '성인', '음란', '에로', '야동', '포르노',
+        '벗은', '알몸', '나체', '누드', '성기', '성관계', '성적',
+        '19금', '18금', 'r18', 'r-18',
+    ])
+    
+    # 안전 Negative Prompt (이미지 품질 향상용)
+    _SAFETY_NEGATIVE_PROMPT = (
+        "nsfw, nude, naked, sexual, explicit, "
+        "ugly, deformed, blurry, low quality, watermark, signature, "
+        "bad anatomy, bad hands, missing fingers, extra limbs"
+    )
+
+    def _is_prompt_safe(self, prompt: str) -> tuple[bool, str | None]:
+        """프롬프트가 안전한지 확인합니다.
+        
+        Returns:
+            (안전 여부, 감지된 금지어)
+        """
+        if not prompt:
+            return False, "empty_prompt"
+        
+        prompt_lower = prompt.lower()
+        for keyword in self._NSFW_BLOCKED_KEYWORDS:
+            if keyword in prompt_lower:
+                return False, keyword
+        return True, None
+
+    async def generate_image(self, prompt: str, user_id: int) -> dict:
+        """CometAPI flux-2-flex를 사용하여 이미지를 생성합니다.
+        
+        Args:
+            prompt: 이미지 생성 프롬프트 (영문 권장)
+            user_id: 요청한 유저 ID (Rate limiting용)
+            
+        Returns:
+            {'image_url': str, 'remaining': int} 또는 {'error': str}
+        """
+        log_extra = {'user_id': user_id, 'prompt_preview': prompt[:100] if prompt else ''}
+        
+        # 1. 이미지 생성 기능 활성화 확인
+        if not getattr(config, 'COMETAPI_IMAGE_ENABLED', False):
+            logger.warning("이미지 생성 기능이 비활성화되어 있습니다.", extra=log_extra)
+            return {"error": "이미지 생성 기능이 현재 비활성화되어 있어요."}
+        
+        # 2. API 키 확인
+        api_key = getattr(config, 'COMETAPI_KEY', None)
+        if not api_key:
+            logger.error("COMETAPI_KEY가 설정되지 않았습니다.", extra=log_extra)
+            return {"error": "이미지 생성 API 키가 설정되지 않았어요."}
+        
+        # 3. 프롬프트 안전성 검사 (NSFW 차단)
+        is_safe, blocked_keyword = self._is_prompt_safe(prompt)
+        if not is_safe:
+            logger.warning(f"NSFW 프롬프트 차단: '{blocked_keyword}'", extra=log_extra)
+            return {"error": "요청한 이미지를 생성할 수 없어요. 부적절한 내용이 포함되어 있는 것 같아요."}
+        
+        # 4. 유저별 제한 확인
+        user_limited, user_remaining = await db_utils.check_image_user_limit(self.bot.db, user_id)
+        if user_limited:
+            reset_hours = getattr(config, 'IMAGE_USER_RESET_HOURS', 6)
+            return {"error": f"이미지 생성 제한에 도달했어요. {reset_hours}시간 후에 다시 시도해줘!"}
+        
+        # 5. 전역 일일 제한 확인
+        global_limited, global_remaining = await db_utils.check_image_global_limit(self.bot.db)
+        if global_limited:
+            return {"error": "오늘 마사몽이 생성할 수 있는 이미지가 다 끝났어... 내일 다시 불러줘!"}
+        
+        logger.info(f"이미지 생성 시작: user={user_id}, remaining={user_remaining}", extra=log_extra)
+        
+        # 6. CometAPI 호출
+        try:
+            api_url = getattr(config, 'COMETAPI_IMAGE_API_URL', 'https://api.cometapi.com/flux/v1/flux-2-flex')
+            
+            headers = {
+                "Authorization": api_key,
+                "Content-Type": "application/json",
+                "Accept": "*/*",
+            }
+            
+            payload = {
+                "prompt": prompt,
+                "prompt_upsampling": True,
+                "width": getattr(config, 'IMAGE_DEFAULT_WIDTH', 1024),
+                "height": getattr(config, 'IMAGE_DEFAULT_HEIGHT', 1024),
+                "steps": getattr(config, 'IMAGE_GENERATION_STEPS', 50),
+                "guidance": getattr(config, 'IMAGE_GUIDANCE_SCALE', 5.0),
+                "safety_tolerance": getattr(config, 'IMAGE_SAFETY_TOLERANCE', 0),  # 가장 엄격
+                "output_format": "jpeg",
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(api_url, headers=headers, json=payload, timeout=60) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        
+                        # 이미지 URL 추출 (API 응답 형식에 따라 조정 필요)
+                        image_url = data.get('result', {}).get('sample') or data.get('sample') or data.get('image_url')
+                        
+                        if not image_url:
+                            # 일부 API는 직접 URL 대신 상태/ID를 반환할 수 있음
+                            task_id = data.get('id')
+                            if task_id:
+                                # 폴링 방식의 경우 (향후 확장 가능)
+                                logger.info(f"이미지 생성 Task ID: {task_id}", extra=log_extra)
+                                image_url = f"https://api.cometapi.com/flux/v1/get_result?id={task_id}"
+                        
+                        if image_url:
+                            # 사용량 기록
+                            await db_utils.log_image_generation(self.bot.db, user_id)
+                            
+                            logger.info(f"이미지 생성 성공: {image_url[:100]}...", extra=log_extra)
+                            return {
+                                "image_url": image_url,
+                                "remaining": user_remaining - 1,
+                                "cost": data.get('cost'),
+                            }
+                        else:
+                            logger.error(f"이미지 URL을 찾을 수 없음. 응답: {data}", extra=log_extra)
+                            return {"error": "이미지가 생성됐는데 URL을 찾지 못했어. 잠시 후 다시 시도해줘!"}
+                    
+                    elif resp.status == 400:
+                        error_data = await resp.json()
+                        error_msg = error_data.get('error', {}).get('message', '잘못된 요청')
+                        logger.warning(f"CometAPI 400 에러: {error_msg}", extra=log_extra)
+                        return {"error": f"프롬프트에 문제가 있는 것 같아요: {error_msg}"}
+                    
+                    elif resp.status == 402:
+                        logger.error("CometAPI 크레딧 부족", extra=log_extra)
+                        return {"error": "이미지 생성 크레딧이 부족해요. 관리자에게 문의해줘!"}
+                    
+                    elif resp.status == 429:
+                        logger.warning("CometAPI 속도 제한", extra=log_extra)
+                        return {"error": "요청이 너무 많아요. 잠시 후 다시 시도해줘!"}
+                    
+                    else:
+                        error_text = await resp.text()
+                        logger.error(f"CometAPI 오류 ({resp.status}): {error_text[:500]}", extra=log_extra)
+                        return {"error": "이미지 생성 중 오류가 발생했어요. 잠시 후 다시 시도해줘!"}
+                        
+        except aiohttp.ClientTimeout:
+            logger.error("CometAPI 타임아웃", extra=log_extra)
+            return {"error": "이미지 생성이 너무 오래 걸려서 취소됐어. 다시 시도해줘!"}
+        except Exception as e:
+            logger.error(f"이미지 생성 중 예외: {e}", exc_info=True, extra=log_extra)
+            return {"error": "이미지 생성 중 예상치 못한 오류가 발생했어요."}
+
 async def setup(bot: commands.Bot):
     """Cog를 봇에 등록하는 함수입니다."""
     await bot.add_cog(ToolsCog(bot))
