@@ -715,7 +715,10 @@ Generate the optimized English image prompt:"""
                 user_prompt,
                 log_extra,
             )
-        elif self.gemini_configured and genai:
+            
+        # CometAPI 실패 또는 비활성화 시 Gemini 폴백
+        if not image_prompt and self.gemini_configured and genai:
+            logger.info("CometAPI 이미지 프롬프트 생성 실패, Gemini로 시도합니다.", extra=log_extra)
             model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME)
             response = await self._safe_generate_content(model, user_prompt, log_extra)
             image_prompt = response.text.strip() if response and response.text else None
