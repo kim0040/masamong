@@ -615,6 +615,111 @@ class AIHandler(commands.Cog):
         keywords = [w for w in words if w not in stopwords and len(w) > 1]
         return ' '.join(keywords[:5])
 
+    async def _generate_image_prompt(
+        self,
+        user_query: str,
+        log_extra: dict,
+        rag_context: str | None = None,
+    ) -> str | None:
+        """이미지 생성을 위한 최적화된 영문 프롬프트를 생성합니다.
+        
+        전문 프롬프트 엔지니어링 기법을 적용하여 고품질 이미지를 생성합니다:
+        - 주제(Subject) + 스타일(Style) + 품질 태그(Quality) + 조명(Lighting) + 구도(Composition)
+        
+        Args:
+            user_query: 사용자의 원본 요청
+            log_extra: 로깅용 추가 정보
+            rag_context: RAG 컨텍스트 (선택적, 선정적 내용 포함 시 무시됨)
+            
+        Returns:
+            영문 이미지 프롬프트 또는 None
+        """
+        # RAG 컨텍스트 안전성 검사 (선정적 내용이 있으면 무시)
+        safe_context = ""
+        if rag_context:
+            # 엄격한 필터링: NSFW 키워드가 있으면 RAG 전체 무시
+            rag_lower = rag_context.lower()
+            nsfw_keywords = [
+                '야한', '선정적', '노출', '성인', '음란', '에로', '섹시', '야동',
+                'nsfw', 'nude', 'naked', 'sexy', 'erotic', 'xxx', 'porn',
+                '벗은', '알몸', '나체', '가슴', '엉덩이', '19금', '18금'
+            ]
+            if not any(kw in rag_lower for kw in nsfw_keywords):
+                safe_context = f"\n\n[Context from previous conversations - use if relevant]:\n{rag_context[:400]}"
+        
+        # 전문 프롬프트 엔지니어링 시스템 프롬프트
+        system_prompt = """You are an expert AI image prompt engineer specializing in FLUX and Stable Diffusion models.
+Your task: Convert the user's Korean image request into a HIGH-QUALITY English prompt.
+
+## Prompt Structure (use this order):
+1. **Subject**: Main subject with specific details (who/what, appearance, pose, expression)
+2. **Environment/Background**: Setting, location, atmosphere
+3. **Style**: Art style (photorealistic, anime, oil painting, digital art, watercolor, etc.)
+4. **Lighting**: Lighting conditions (golden hour, studio lighting, dramatic shadows, soft ambient)
+5. **Quality Tags**: Add these for better results: "masterpiece, best quality, highly detailed, 8k, ultra HD"
+6. **Composition**: Camera angle, framing (close-up, wide shot, portrait, etc.)
+
+## Example Output:
+"A fluffy orange tabby cat sitting on a windowsill, looking outside at falling snow, cozy indoor lighting, photorealistic style, soft warm lighting from the window, masterpiece, best quality, highly detailed, 8k, shallow depth of field, medium shot"
+
+## CRITICAL SAFETY RULES (ABSOLUTE):
+- NEVER generate prompts containing: nudity, sexual content, gore, violence, hate symbols, real people, celebrities
+- If the request is even SLIGHTLY inappropriate, SUBSTITUTE with: "A beautiful serene landscape with mountains and a peaceful lake, golden hour lighting, photorealistic, masterpiece, best quality, 8k"
+- Do NOT explain why you substituted - just output the safe alternative
+
+## Output Rules:
+- Output ONLY the English prompt, nothing else
+- No Korean text in the output
+- No explanations, no "Prompt:" prefix, just the raw prompt
+- Length: 50-150 words optimal"""
+
+        user_prompt = f"""User's request (in Korean): {user_query}{safe_context}
+
+Generate the optimized English image prompt:"""
+
+        image_prompt = None
+        
+        if self.use_cometapi:
+            image_prompt = await self._cometapi_generate_content(
+                system_prompt,
+                user_prompt,
+                log_extra,
+            )
+        elif self.gemini_configured and genai:
+            model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME)
+            response = await self._safe_generate_content(model, user_prompt, log_extra)
+            image_prompt = response.text.strip() if response and response.text else None
+        
+        if image_prompt:
+            # 프롬프트 정리 (마크다운/설명 제거)
+            image_prompt = image_prompt.strip()
+            
+            # 접두사 제거
+            prefixes_to_remove = [
+                "Prompt:", "prompt:", "Image prompt:", "Output:", 
+                "English prompt:", "Here is", "Here's", "The prompt is:"
+            ]
+            for prefix in prefixes_to_remove:
+                if image_prompt.lower().startswith(prefix.lower()):
+                    image_prompt = image_prompt[len(prefix):].strip()
+            
+            # 따옴표 제거
+            if (image_prompt.startswith('"') and image_prompt.endswith('"')) or \
+               (image_prompt.startswith("'") and image_prompt.endswith("'")):
+                image_prompt = image_prompt[1:-1]
+            
+            # 마지막 안전 검사: 혹시 한국어가 포함되어 있으면 기본 프롬프트로 대체
+            if any('\uac00' <= char <= '\ud7a3' for char in image_prompt):
+                logger.warning("생성된 프롬프트에 한국어가 포함됨. 기본 프롬프트로 대체.", extra=log_extra)
+                image_prompt = "A beautiful serene landscape with mountains and a peaceful lake at sunset, golden hour lighting, photorealistic, masterpiece, best quality, highly detailed, 8k, wide angle shot"
+            
+            self._debug(f"[이미지 프롬프트] 생성됨: {self._truncate_for_debug(image_prompt)}", log_extra)
+            return image_prompt
+        
+        logger.warning("이미지 프롬프트 생성 실패", extra=log_extra)
+        return None
+
+
     async def _execute_web_search_with_llm(
         self,
         user_query: str,
@@ -695,6 +800,14 @@ class AIHandler(commands.Cog):
     _STOCK_GENERAL_KEYWORDS = frozenset(['주가', '주식', '시세', '종가', '시가', '상장'])
     _PLACE_KEYWORDS = frozenset(['맛집', '카페', '음식점', '식당', '추천', '근처', '주변', '가볼만한', '핫플'])
     _LOCATION_KEYWORDS = ['서울', '부산', '인천', '대구', '광주', '대전', '울산', '세종', '경기', '강원', '충북', '충남', '전북', '전남', '경북', '경남', '제주', '광양', '여수', '순천', '목포', '강남', '홍대', '이태원', '명동']
+    
+    # 이미지 생성 키워드
+    _IMAGE_GEN_KEYWORDS = frozenset([
+        '이미지 생성', '그림 그려', '사진 만들어', '이미지 만들어',
+        '그려줘', '생성해줘', '그림 생성', '이미지 그려', '사진 생성',
+        '그려줘', '만들어줘', '그림으로', '이미지로', 
+        'generate image', 'create image', 'draw', 'make an image',
+    ])
 
     def _detect_tools_by_keyword(self, query: str) -> list[dict]:
         """키워드 패턴으로 필요한 도구를 감지합니다. Lite 모델을 대체합니다."""
@@ -770,6 +883,17 @@ class AIHandler(commands.Cog):
                 'tool_to_use': 'search_for_place',
                 'tool_name': 'search_for_place',
                 'parameters': {'query': search_query}
+            })
+            return tools
+
+        # 이미지 생성 감지 (CometAPI flux-2-flex)
+        if any(kw in query_lower for kw in self._IMAGE_GEN_KEYWORDS):
+            # 이미지 생성은 특별 처리가 필요하므로 user_query를 그대로 전달
+            # AI가 프롬프트를 생성하고, generate_image 도구를 호출
+            tools.append({
+                'tool_to_use': 'generate_image',
+                'tool_name': 'generate_image',
+                'parameters': {'user_query': query}  # 프롬프트 생성 필요
             })
             return tools
 
@@ -1256,6 +1380,26 @@ class AIHandler(commands.Cog):
                 return search_result
             return {"error": search_result.get("error", "웹 검색을 통해 정보를 찾는 데 실패했습니다.")}
 
+        # generate_image는 프롬프트 생성 + CometAPI 호출 2-step 처리를 사용합니다.
+        if tool_name == 'generate_image':
+            logger.info("특별 도구 실행: generate_image (CometAPI flux-2-flex)", extra=log_extra)
+            original_query = parameters.get('user_query', user_query)
+            user_id = parameters.get('user_id')
+            
+            if user_id is None:
+                return {"error": "이미지 생성에 필요한 사용자 정보가 없습니다."}
+            
+            # LLM을 사용하여 이미지 생성 프롬프트 최적화
+            image_prompt = await self._generate_image_prompt(original_query, log_extra)
+            if not image_prompt:
+                return {"error": "이미지 프롬프트를 생성하지 못했어요. 다시 시도해줘!"}
+            
+            self._debug(f"[도구:generate_image] 최적화된 프롬프트: {self._truncate_for_debug(image_prompt)}", log_extra)
+            
+            # ToolsCog의 generate_image 도구 호출
+            result = await self.tools_cog.generate_image(prompt=image_prompt, user_id=user_id)
+            return result
+
         # 그 외 일반 도구들은 ToolsCog에서 찾아 실행합니다.
         try:
             tool_method = getattr(self.tools_cog, tool_name)
@@ -1385,7 +1529,48 @@ class AIHandler(commands.Cog):
                     self._debug(f"도구 계획: {self._truncate_for_debug(tool_plan)}", log_extra)
                     for idx, tool_call in enumerate(tool_plan, start=1):
                         logger.info(f"계획 실행 ({idx}/{len(tool_plan)}): {tool_call.get('tool_to_use')}", extra=log_extra)
+                        
+                        # generate_image 도구의 경우 user_id를 파라미터에 주입
+                        if tool_call.get('tool_to_use') == 'generate_image':
+                            tool_call.setdefault('parameters', {})['user_id'] = message.author.id
+                        
                         result = await self._execute_tool(tool_call, message.guild.id, user_query)
+                        
+                        # 이미지 생성 성공 시 바로 이미지 전송 (별도 처리)
+                        if tool_call.get('tool_to_use') == 'generate_image' and result.get('image_url'):
+                            image_url = result['image_url']
+                            remaining = result.get('remaining', 0)
+                            logger.info(f"이미지 생성 성공, 전송 시작: {image_url[:100]}...", extra=log_extra)
+                            
+                            # 이미지 URL을 Discord에 전송
+                            response_text = f"짜잔~ 이미지 생성했어! 🎨\n{image_url}\n\n(남은 이미지 생성 횟수: {remaining}장)"
+                            await message.reply(response_text, mention_author=False)
+                            
+                            # LLM 호출 카운터 증가
+                            await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
+                            await db_utils.log_api_call(self.bot.db, "llm_global")
+                            
+                            await db_utils.log_analytics(
+                                self.bot.db,
+                                "AI_INTERACTION",
+                                {
+                                    "guild_id": message.guild.id,
+                                    "user_id": message.author.id,
+                                    "channel_id": message.channel.id,
+                                    "trace_id": trace_id,
+                                    "mode": "image_generation",
+                                    "image_url": image_url,
+                                },
+                            )
+                            return  # 이미지 생성 완료, 추가 처리 없이 종료
+                        
+                        # 이미지 생성 에러 시 바로 에러 메시지 전송
+                        if tool_call.get('tool_to_use') == 'generate_image' and result.get('error'):
+                            error_msg = result['error']
+                            logger.warning(f"이미지 생성 실패: {error_msg}", extra=log_extra)
+                            await message.reply(f"😅 {error_msg}", mention_author=False)
+                            return  # 이미지 생성 실패, 추가 처리 없이 종료
+                        
                         tool_results.append(
                             {
                                 "step": idx,
