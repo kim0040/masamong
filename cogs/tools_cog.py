@@ -270,20 +270,26 @@ class ToolsCog(commands.Cog):
                             continue
                         
                         poll_data = await poll_resp.json()
-                        status = poll_data.get('status', '')
+                        # 실제 API 응답 구조: {'code': 'success', 'data': {'status': 'SUCCESS', 'data': {'sample': '...'}}}
+                        data_inner = poll_data.get('data', {})
+                        status = data_inner.get('status', '')
                         
                         # 디버그 로그: 전체 응답 구조 확인
                         if poll_count < 3 or poll_count % 10 == 0:
                             logger.info(f"폴링 ({poll_count+1}/{max_polls}) Raw Data: {poll_data}", extra=log_extra)
                         
-                        if status == 'Ready':
+                        if status == 'SUCCESS' or status == 'Ready':
                             # 이미지 생성 완료
-                            image_url = poll_data.get('result', {}).get('sample')
+                            image_url = data_inner.get('data', {}).get('sample')
+                            # 일부 API는 result 필드를 사용할 수 있음 (호환성 유지)
+                            if not image_url:
+                                image_url = data_inner.get('result', {}).get('sample')
+                                
                             if image_url:
                                 logger.info(f"이미지 폴링 완료 ({poll_count+1}회): {image_url[:80]}...", extra=log_extra)
                                 break
-                        elif status == 'Error':
-                            error_msg = poll_data.get('result', {}).get('message', '알 수 없는 오류')
+                        elif status == 'Error' or status == 'FAIL':
+                            error_msg = data_inner.get('fail_reason') or data_inner.get('result', {}).get('message', '알 수 없는 오류')
                             logger.error(f"이미지 생성 에러: {error_msg}", extra=log_extra)
                             return {"error": f"이미지 생성 중 오류: {error_msg}"}
                         # Pending/Processing 상태면 계속 폴링
