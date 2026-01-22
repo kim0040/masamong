@@ -260,14 +260,12 @@ IMAGE_USER_LIMIT = as_int(load_config_value('IMAGE_USER_LIMIT', 7), 7)  # 유저
 IMAGE_USER_RESET_HOURS = as_int(load_config_value('IMAGE_USER_RESET_HOURS', 6), 6)  # 6시간 후 리셋
 IMAGE_GLOBAL_DAILY_LIMIT = as_int(load_config_value('IMAGE_GLOBAL_DAILY_LIMIT', 50), 50)  # 전역 일일 50장
 
-# 이미지 생성 기본 설정 (비용 최적화)
-# FLUX.2 [flex] 가격: $0.06/MP
-# 512x768 = 0.39MP = ~$0.023/이미지 (기본 대비 60% 절약)
-# 1024x1024 = 1MP = $0.06/이미지
-IMAGE_DEFAULT_WIDTH = as_int(load_config_value('IMAGE_DEFAULT_WIDTH', 512), 512)
+# 이미지 생성 기본 설정
+# 1024x1024 = 1mp = $0.06/이미지
+IMAGE_DEFAULT_WIDTH = as_int(load_config_value('IMAGE_DEFAULT_WIDTH', 768), 768)
 IMAGE_DEFAULT_HEIGHT = as_int(load_config_value('IMAGE_DEFAULT_HEIGHT', 768), 768)
 IMAGE_SAFETY_TOLERANCE = 0  # 가장 엄격한 수준 (0=strict, 5=permissive) - 절대 변경 금지
-IMAGE_GENERATION_STEPS = as_int(load_config_value('IMAGE_GENERATION_STEPS', 25), 25)  # 품질 vs 비용 (max 50, 추천 25-35)
+IMAGE_GENERATION_STEPS = as_int(load_config_value('IMAGE_GENERATION_STEPS', 28), 28)  # 품질 vs 비용 (max 50, 추천 28)
 IMAGE_GUIDANCE_SCALE = 4.5  # 프롬프트 준수도 (1.5-10, 기본값 4.5)
 
 
