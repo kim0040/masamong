@@ -18,4 +18,5 @@ regex>=2024.0.0
 tqdm>=4.66.0
 pandas>=2.0.0
 
+# CometAPI (OpenAI 호환 클라이언트 - 텍스트 생성 및 이미지 생성용)
 openai>=1.0.0
