@@ -256,20 +256,25 @@ class ToolsCog(commands.Cog):
                     
                     logger.info(f"이미지 생성 Task ID: {task_id}", extra=log_extra)
                 
-                # Step 2: 결과 폴링 (최대 60초 대기)
+                # Step 2: 결과 폴링 (최대 120초 대기)
                 result_url = f"https://api.cometapi.com/flux/v1/get_result?id={task_id}"
-                max_polls = 30  # 2초 간격으로 30회 = 60초
+                max_polls = 40  # 3초 간격으로 40회 = 120초
                 image_url = None
                 
                 for poll_count in range(max_polls):
-                    await asyncio.sleep(2)  # 2초 대기
+                    await asyncio.sleep(3)  # 3초 대기
                     
                     async with session.get(result_url, headers=headers, timeout=30) as poll_resp:
                         if poll_resp.status != 200:
+                            logger.warning(f"폴링 응답 오류 ({poll_count+1}): status={poll_resp.status}", extra=log_extra)
                             continue
                         
                         poll_data = await poll_resp.json()
                         status = poll_data.get('status', '')
+                        
+                        # 디버그 로그: 처음 5회 또는 10회마다 상태 출력
+                        if poll_count < 5 or poll_count % 10 == 0:
+                            logger.info(f"폴링 ({poll_count+1}/{max_polls}): status={status}", extra=log_extra)
                         
                         if status == 'Ready':
                             # 이미지 생성 완료
@@ -281,10 +286,10 @@ class ToolsCog(commands.Cog):
                             error_msg = poll_data.get('result', {}).get('message', '알 수 없는 오류')
                             logger.error(f"이미지 생성 에러: {error_msg}", extra=log_extra)
                             return {"error": f"이미지 생성 중 오류: {error_msg}"}
-                        # Pending 상태면 계속 폴링
+                        # Pending/Processing 상태면 계속 폴링
                 
                 if not image_url:
-                    logger.error("이미지 폴링 타임아웃", extra=log_extra)
+                    logger.error(f"이미지 폴링 타임아웃 (마지막 상태: {status})", extra=log_extra)
                     return {"error": "이미지 생성이 너무 오래 걸려요. 다시 시도해줘!"}
                 
                 # Step 3: 이미지 다운로드 (Discord 업로드용)
