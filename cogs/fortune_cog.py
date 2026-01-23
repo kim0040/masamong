@@ -14,7 +14,7 @@ import re
 import config
 from logger_config import logger
 from utils import db as db_utils
-from utils.fortune import FortuneCalculator
+from utils.fortune import FortuneCalculator, get_sign_from_date
 
 # 시간 유효성 검사 정규식 (HH:MM)
 TIME_PATTERN = re.compile(r'^([01]\d|2[0-3]):([0-5]\d)$')
@@ -175,7 +175,7 @@ class FortuneCog(commands.Cog):
         # 별자리 데이터 추가
         try:
              b_year, b_month, b_day = map(int, birth_date.split('-'))
-             user_sign = db_utils.fortune.get_sign_from_date(b_month, b_day)
+             user_sign = get_sign_from_date(b_month, b_day)
              now = datetime.now(pytz.timezone('Asia/Seoul'))
              astro_chart = self.calculator._get_astrology_chart(now)
              fortune_data += f"\n[User Zodiac]: {user_sign}\n[Astro Chart]: {astro_chart}"
