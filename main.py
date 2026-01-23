@@ -136,7 +136,7 @@ class ReMasamongBot(commands.Bot):
         cog_list = [
             'weather_cog', 'tools_cog', 'events', 'commands', 'ai_handler',
             'fun_cog', 'activity_cog', 'poll_cog', 'settings_cog',
-            'maintenance_cog', 'proactive_assistant'
+            'maintenance_cog', 'proactive_assistant', 'fortune_cog'
         ]
 
         for cog_name in cog_list:

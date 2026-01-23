@@ -103,3 +103,23 @@ CREATE TABLE IF NOT EXISTS locations (
     nx INTEGER NOT NULL,
     ny INTEGER NOT NULL
 );
+
+-- [NEW] 운세 정보 저장을 위한 유저 프로필 테이블
+CREATE TABLE IF NOT EXISTS user_profiles (
+    user_id INTEGER PRIMARY KEY,
+    birth_date TEXT, -- YYYY-MM-DD
+    birth_time TEXT, -- HH:MM
+    is_lunar BOOLEAN DEFAULT 0, -- 0: 양력, 1: 음력
+    subscription_active BOOLEAN DEFAULT 1, -- 모닝 브리핑 구독 여부
+    subscription_time TEXT DEFAULT '07:30', -- 모닝 브리핑 발송 시간
+    last_fortune_sent TEXT, -- YYYY-MM-DD (중복 발송 방지)
+    created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc'))
+);
+
+-- [NEW] DM 사용량 제한을 위한 로그 테이블
+CREATE TABLE IF NOT EXISTS dm_usage_logs (
+    user_id INTEGER PRIMARY KEY,
+    usage_count INTEGER DEFAULT 0, -- 현재 윈도우 내 사용 횟수
+    window_start_at TEXT, -- 윈도우 시작 시각
+    reset_at TEXT -- 제한 해제 예정 시각 (window_start + 3H)
+);
