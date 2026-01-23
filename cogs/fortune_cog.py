@@ -39,6 +39,7 @@ class FortuneCog(commands.Cog):
                 columns = [row['name'] if isinstance(row, dict) else row[1] for row in rows]
                 
                 if 'pending_payload' not in columns:
+                    logger.info("필요한 컬럼(pending_payload)이 없어 추가합니다.")
                     await self.bot.db.execute("ALTER TABLE user_profiles ADD COLUMN pending_payload TEXT")
                     await self.bot.db.commit()
                     logger.info("Added 'pending_payload' column to user_profiles")
@@ -456,6 +457,10 @@ class FortuneCog(commands.Cog):
         1. 3분 뒤 전송해야 할 브리핑을 미리 생성 (Pre-generation)
         2. 전송 시간이 된 브리핑을 전송 (Delivery)
         """
+        await self.bot.wait_until_ready()
+        # DB 초기화 시간을 위해 약간의 딜레이 보장 (선택사항)
+        await asyncio.sleep(1) 
+        
         now = datetime.now(pytz.timezone('Asia/Seoul'))
         current_time_str = now.strftime('%H:%M')
         # 3분 뒤 시간 계산
