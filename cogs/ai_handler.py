@@ -351,6 +351,7 @@ class AIHandler(commands.Cog):
             )
 
             response_text = completion.choices[0].message.content
+            reasoning_text = getattr(completion.choices[0].message, 'reasoning_content', None)
             
             # [Debug] 응답 내용 확인을 위한 강제 로깅
             logger.info(f"[CometAPI Debug] Raw Response: {response_text!r}", extra=log_extra)
@@ -362,10 +363,16 @@ class AIHandler(commands.Cog):
 
             await db_utils.log_api_call(self.bot.db, "cometapi")
 
-            if self.debug_enabled:
-                self._debug(f"[CometAPI] 응답: {self._truncate_for_debug(response_text)}", log_extra)
+            # 만약 content가 비어있는데 reasoning_content가 있다면 그것을 반환 (Thinking 모델 대응)
+            final_response = response_text
+            if not final_response and reasoning_text:
+                logger.warning("[CometAPI] Content is empty but reasoning_content exists. Using reasoning as fallback.", extra=log_extra)
+                final_response = f"Thinking Process:\n{reasoning_text}" # 혹은 그냥 reasoning_text
 
-            return response_text.strip() if response_text else None
+            if self.debug_enabled:
+                self._debug(f"[CometAPI] 응답: {self._truncate_for_debug(final_response)}", log_extra)
+
+            return final_response.strip() if final_response else None
 
         except Exception as e:
             logger.error(f"CometAPI 응답 생성 중 오류: {e}", extra=log_extra, exc_info=True)
