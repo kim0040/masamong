@@ -328,3 +328,42 @@ async def check_dm_message_limit(db: aiosqlite.Connection, user_id: int) -> tupl
         logger.error(f"DM 제한 확인 중 오류 (user_id={user_id}): {e}", exc_info=True)
         # 오류 시 통과 (서비스 가용성 우선)
         return True, None
+
+async def check_global_dm_limit(db: aiosqlite.Connection) -> bool:
+    """
+    전체 유저의 하루 DM 사용량을 제한합니다. (API 비용 방어용)
+    하루 100회 초과 시 False 반환.
+    `system_counters` 테이블 사용.
+    """
+    try:
+        GLOBAL_DM_LIMIT = 100 # 하루 최대 DM 처리 횟수
+        
+        # 오늘 날짜 키 생성 (KST 기준)
+        today_key = f"dm_daily_global_{datetime.now(KST).strftime('%Y-%m-%d')}"
+        now_str = datetime.now(timezone.utc).isoformat()
+        
+        # 현재 값 조회
+        async with db.execute("SELECT counter_value FROM system_counters WHERE counter_name = ?", (today_key,)) as cursor:
+            row = await cursor.fetchone()
+            
+        current_count = row[0] if row else 0
+        
+        if current_count >= GLOBAL_DM_LIMIT:
+            logger.warning(f"🚨 전역 DM 일일 한도 초과! ({current_count}/{GLOBAL_DM_LIMIT})")
+            return False
+            
+        # 카운트 증가 (UPSERT)
+        await db.execute("""
+            INSERT INTO system_counters (counter_name, counter_value, last_reset_at)
+            VALUES (?, 1, ?)
+            ON CONFLICT(counter_name) DO UPDATE SET
+                counter_value = counter_value + 1,
+                last_reset_at = excluded.last_reset_at
+        """, (today_key, now_str))
+        await db.commit()
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"전역 DM 제한 확인 중 오류: {e}", exc_info=True)
+        return True # 오류 시 차단보다는 허용 (가용성)
