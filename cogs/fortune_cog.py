@@ -32,9 +32,15 @@ class FortuneCog(commands.Cog):
     @commands.group(name='사주')
     @commands.dm_only()
     async def saju(self, ctx: commands.Context):
-        """사주 관련 명령어 그룹입니다."""
+        """
+        사주 및 비서 서비스를 관리하는 명령어입니다.
+        
+        사용법:
+        - `!사주 등록`: 생년월일을 등록하고 서비스를 시작합니다.
+        - `!사주 삭제`: 등록된 정보를 삭제하고 구독을 취소합니다.
+        """
         if ctx.invoked_subcommand is None:
-            await ctx.send("사용법: `!사주 등록`, `!사주 삭제`")
+            await ctx.send("📋 사용법: `!사주 등록`, `!사주 삭제`")
 
     @saju.command(name='등록')
     async def saju_register(self, ctx: commands.Context):
@@ -101,7 +107,10 @@ class FortuneCog(commands.Cog):
 
     @saju.command(name='삭제')
     async def saju_delete(self, ctx: commands.Context):
-        """등록된 사주 정보를 삭제합니다."""
+        """
+        등록된 사주 정보와 구독 설정을 완전히 삭제합니다.
+        더 이상 모닝 브리핑을 받지 않게 됩니다.
+        """
         try:
              async with self.bot.db.execute("DELETE FROM user_profiles WHERE user_id = ?", (ctx.author.id,)):
                  await self.bot.db.commit()
@@ -114,8 +123,11 @@ class FortuneCog(commands.Cog):
     @commands.dm_only()
     async def set_subscription_time(self, ctx: commands.Context, time_str: str):
         """
-        모닝 브리핑 수신 시간을 변경합니다.
-        사용법: !구독시간 08:30
+        모닝 브리핑을 받을 시간을 변경합니다. (DM 전용)
+        
+        사용법:
+        `!구독시간 07:00`
+        `!구독시간 23:30`
         """
         if not TIME_PATTERN.match(time_str):
             await ctx.send("❌ 올바른 시간 형식이 아닙니다. `HH:MM` (24시간제)로 입력해주세요.")
