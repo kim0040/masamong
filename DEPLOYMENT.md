@@ -26,7 +26,12 @@ source .venv/bin/activate
 
 # 필수 의존성 설치
 pip install -r requirements.txt
+pip install -r requirements.txt
 ```
+
+> **참고**: `flatlib` 및 `pyswisseph` 라이브러리는 **서양 점성술** 기능에 필요하지만, 빌드 오류(컴파일러 필요 등)가 잦아 기본 의존성에서 제외되었습니다. 
+> 해당 라이브러리가 없어도 봇은 정상 작동하며, 점성술 기능만 자동으로 비활성화됩니다.
+> 만약 점성술 기능을 사용하려면 별도 설치가 필요합니다 (`pip install flatlib pyswisseph`).
 
 ### [선택사항] AI 기억(RAG) 기능 활성화
 만약 서버에서 **장기 기억(RAG)** 기능을 사용하려면 `numpy`와 `sentence-transformers`가 필요합니다.

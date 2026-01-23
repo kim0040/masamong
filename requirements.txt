@@ -12,6 +12,7 @@ aiohttp
 
 # Optional: Add these if you need Web Scraping or specific tools
 # beautifulsoup4
+# flatlib  # Python 3.13 호환성 문제로 인해 선택 사항으로 변경 (pyswisseph 빌드 실패 시 주석 처리 유지)
 
 # Optional: AI Memory & RAG (Heavy!)
 # See DEPLOYMENT.md for CPU-only installation instructions

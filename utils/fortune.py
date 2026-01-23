@@ -14,7 +14,13 @@ try:
     from flatlib.geopos import GeoPos
     from flatlib.chart import Chart
     from flatlib import const
-except ImportError:
+    FLATLIB_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    FLATLIB_AVAILABLE = False
+    class FlatDatetime: pass
+    class GeoPos: pass
+    class Chart: pass
+    const = None
     pass
 
 try:
@@ -65,6 +71,9 @@ class FortuneCalculator:
         """
         현재 시각 기준 서울 상공의 행성 배치(Transit) 정보를 요약하여 반환합니다.
         """
+        if not FLATLIB_AVAILABLE:
+            return "서양 점성술 정보 없음 (라이브러리 미설치)"
+
         try:
             # flatlib 날짜 객체 생성
             date = FlatDatetime(dt.strftime('%Y/%m/%d'), dt.strftime('%H:%M'), '+09:00')
