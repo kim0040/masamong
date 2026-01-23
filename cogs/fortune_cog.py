@@ -172,32 +172,56 @@ class FortuneCog(commands.Cog):
         MODEL_LITE = "DeepSeek-V3.2-Exp-nothinking"
         MODEL_PRO = "DeepSeek-V3.2-Exp-thinking"
 
-        if ctx.guild:
-             # 공개 채널: 간단 요약 (Lite 모델)
-             prompt_key = "fortune_summary"
-             model_name = MODEL_LITE
-        else:
-             # DM: 상세 옵션 확인
-             if option and '상세' in option:
-                 prompt_key = 'fortune_detail'
-                 model_name = MODEL_PRO
-             else:
-                 prompt_key = 'fortune_summary'
-                 model_name = MODEL_LITE
-
-        # ... (중략)
-
-        await ctx.typing()
-        
-        system_prompt = self._get_system_prompt(prompt_key)
-        user_prompt = f"{fortune_data}\n\n위 데이터를 바탕으로 오늘의 운세를 분석해줘."
-        
+        # 별자리 데이터 추가
         try:
-             # 모델 라우팅
+             b_year, b_month, b_day = map(int, birth_date.split('-'))
+             user_sign = db_utils.fortune.get_sign_from_date(b_month, b_day)
+             now = datetime.now(pytz.timezone('Asia/Seoul'))
+             astro_chart = self.calculator._get_astrology_chart(now)
+             fortune_data += f"\n[User Zodiac]: {user_sign}\n[Astro Chart]: {astro_chart}"
+        except Exception as e:
+             logger.error(f"Zodiac integration error: {e}")
+             user_sign = "알 수 없음"
+
+        # 프롬프트 설정 (통합)
+        if option and '상세' in option:
+            prompt_key = 'fortune_detail_combined'
+            model_name = MODEL_PRO
+            system_prompt = (
+                "너는 전문 점성가이자 명리하자인 '마사몽'이야. "
+                "사용자의 사주와 별자리 정보를 깊이 있게 분석해서 상세한 운세를 제공해줘. "
+                "각 관점(동양/서양)에서 보이는 특징을 설명하고, 이를 종합한 결론을 내려줘."
+            )
+            user_prompt = (
+                f"{fortune_data}\n\n"
+                f"위 데이터를 바탕으로 {user_sign} 사용자({birth_date})의 오늘 운세를 아주 상세하게 분석해줘.\n"
+                f"항목: [총평], [재물운], [연애/인간관계], [건강운], [마사몽의 심층 조언]"
+            )
+        else:
+            prompt_key = 'fortune_summary_combined'
+            model_name = MODEL_LITE
+            system_prompt = (
+                "너는 '마사몽'이야. 사용자의 사주(일진)와 별자리 운세를 종합해서 오늘의 운세를 알려줘. "
+                "일반 사용자는 사주와 별자리를 잘 구별하지 못하므로, 두 가지 관점을 자연스럽게 섞어서 설명해줘. "
+                "내용은 너무 짧지 않게, 하지만 가독성 있게 작성해. "
+                "말투는 친근하고 다정한 존댓말을 써."
+            )
+            user_prompt = (
+                f"{fortune_data}\n\n"
+                f"위 데이터를 바탕으로 {user_sign} 사용자({birth_date})의 오늘 운세를 종합적으로 분석해줘.\n"
+                f"다음 항목을 포함해줘:\n"
+                f"1. 🌟 오늘의 흐름 (사주와 별자리의 공통적인 기운)\n"
+                f"2. 💬 조언 (주의할 점이나 추천 행동)\n"
+                f"3. 🍀 행운의 팁\n"
+                f"내용은 너무 어렵지 않게, 적당한 길이로 작성해."
+            )
+
+        # 모델 라우팅
+        try:
              response = await ai_handler._cometapi_generate_content(
                  system_prompt, 
                  user_prompt, 
-                 log_extra={'user_id': user_id, 'mode': 'fortune'},
+                 log_extra={'user_id': user_id, 'mode': 'fortune_combined'},
                  model=model_name
              )
              
