@@ -129,6 +129,41 @@ class MaintenanceCog(commands.Cog):
         else:
             self._last_conversation_ts = datetime.now(timezone.utc)
 
+    @commands.group(name="debug", hidden=True)
+    @commands.is_owner()
+    async def debug(self, ctx: commands.Context):
+        """디버깅용 명령어 그룹입니다. (관리자 전용)"""
+        if ctx.invoked_subcommand is None:
+            await ctx.send("사용법: `!debug status`, `!debug reset_dm <user_id>`")
+
+    @debug.command(name="status")
+    async def debug_status(self, ctx: commands.Context):
+        """봇의 현재 상태(메모리, 업타임 등)를 확인합니다."""
+        import psutil
+        process = psutil.Process()
+        mem_info = process.memory_info()
+        uptime = datetime.now(timezone.utc) - datetime.fromtimestamp(process.create_time(), tz=timezone.utc)
+        
+        status_msg = (
+            f"📊 **System Status**\n"
+            f"- **Uptime**: {uptime}\n"
+            f"- **Memory**: {mem_info.rss / 1024 / 1024:.2f} MB\n"
+            f"- **Tasks**: Archive={self.archive_loop.is_running()}, BM25={self.bm25_rebuild_loop.is_running()}\n"
+            f"- **Guilds**: {len(self.bot.guilds)}\n"
+            f"- **Latency**: {self.bot.latency * 1000:.2f} ms"
+        )
+        await ctx.send(status_msg)
+
+    @debug.command(name="reset_dm")
+    async def debug_reset_dm(self, ctx: commands.Context, user_id: int):
+        """특정 유저의 DM 제한을 리셋합니다."""
+        try:
+             await self.bot.db.execute("DELETE FROM dm_usage_logs WHERE user_id = ?", (user_id,))
+             await self.bot.db.commit()
+             await ctx.send(f"✅ 유저 {user_id}의 DM 제한 로그를 초기화했습니다.")
+        except Exception as e:
+             await ctx.send(f"❌ 초기화 실패: {e}")
+
 async def setup(bot: commands.Bot):
     """Cog를 봇에 등록하는 함수입니다."""
     await bot.add_cog(MaintenanceCog(bot))

@@ -82,6 +82,19 @@ def migrate_database(cursor):
             cursor.execute("ALTER TABLE guild_settings ADD COLUMN persona_text TEXT")
             print("INFO: 컬럼 추가 완료.")
 
+        # [Safety Check] Ensure new tables exist (redundant but safe)
+        tables_to_check = ['user_profiles', 'dm_usage_logs']
+        for table in tables_to_check:
+            cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'")
+            if not cursor.fetchone():
+                print(f"INFO: '{table}' 테이블이 누락되어 생성을 시도합니다.")
+                # schema.sql이 이미 실행되었으므로 여기로 올 확률은 낮지만,
+                # 만약의 경우를 대비해 스키마 파일 다시 읽어서 실행하면 중복될 수 있으므로
+                # 여기서는 로그만 남기고 schema.sql 실행에 의존하거나, 
+                # 또는 직접 CREATE 문을 실행할 수도 있음. 
+                # 여기서는 schema.sql이 앞서 실행되므로 Pass.
+                print(f"WARNING: schema.sql 실행에도 불구하고 '{table}' 테이블이 없습니다. DB 파일을 확인하세요.")
+
         # --- 향후 필요한 마이그레이션 로직을 여기에 추가 --- #
 
         print("INFO: 데이터베이스 마이그레이션 확인이 완료되었습니다.")

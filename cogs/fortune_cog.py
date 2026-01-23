@@ -264,7 +264,8 @@ class FortuneCog(commands.Cog):
                     
                     # AI 요청
                     system_prompt = self._get_system_prompt("fortune_morning")
-                    user_prompt = f"{fortune_data}\n\n오늘자 모닝 브리핑을 작성해줘."
+                    # Personalization: Inject user's display name
+                    user_prompt = f"{fortune_data}\n\n사용자 닉네임: {user.display_name}\n\n오늘자 모닝 브리핑을 작성해줘. 닉네임을 부르며 친근하게 시작해."
                     
                     briefing = await ai_handler._cometapi_generate_content(
                         system_prompt,
