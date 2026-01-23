@@ -38,6 +38,34 @@ def get_zodiac_sign(lon_deg: float) -> str:
     index = int(lon_deg / 30)
     return signs[index % 12]
 
+def get_sign_from_date(month: int, day: int) -> str:
+    """월/일을 입력받아 별자리를 반환합니다."""
+    # 별자리 날짜 기준 (일반적인 트로피컬 기준)
+    dates = [
+        (1, 20, "염소자리"), (2, 19, "물병자리"), (3, 20, "물고기자리"), 
+        (4, 20, "양자리"), (5, 21, "황소자리"), (6, 21, "쌍둥이자리"), 
+        (7, 22, "게자리"), (8, 22, "사자자리"), (9, 23, "처녀자리"), 
+        (10, 23, "천칭자리"), (11, 22, "전갈자리"), (12, 21, "사수자리"), 
+        (12, 31, "염소자리")
+    ]
+    for m, d, sign in dates:
+        if (month == m and day <= d) or (month == m - 1 and day > dates[m-2][1]): # Simple check isn't easy with list.
+            pass
+    
+    # Easier logic:
+    if (month == 1 and day >= 20) or (month == 2 and day <= 18): return "물병자리"
+    if (month == 2 and day >= 19) or (month == 3 and day <= 20): return "물고기자리"
+    if (month == 3 and day >= 21) or (month == 4 and day <= 19): return "양자리"
+    if (month == 4 and day >= 20) or (month == 5 and day <= 20): return "황소자리"
+    if (month == 5 and day >= 21) or (month == 6 and day <= 21): return "쌍둥이자리"
+    if (month == 6 and day >= 22) or (month == 7 and day <= 22): return "게자리"
+    if (month == 7 and day >= 23) or (month == 8 and day <= 22): return "사자자리"
+    if (month == 8 and day >= 23) or (month == 9 and day <= 23): return "처녀자리"
+    if (month == 9 and day >= 24) or (month == 10 and day <= 22): return "천칭자리"
+    if (month == 10 and day >= 23) or (month == 11 and day <= 22): return "전갈자리"
+    if (month == 11 and day >= 23) or (month == 12 and day <= 24): return "사수자리"
+    return "염소자리"
+
 class FortuneCalculator:
     """운세 계산 및 데이터 생성을 담당하는 클래스"""
 
