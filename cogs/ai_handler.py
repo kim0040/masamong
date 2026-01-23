@@ -318,6 +318,7 @@ class AIHandler(commands.Cog):
         system_prompt: str,
         user_prompt: str,
         log_extra: dict,
+        model: str | None = None,
     ) -> str | None:
         """CometAPI(OpenAI 호환)를 통해 응답을 생성합니다.
 
@@ -325,6 +326,7 @@ class AIHandler(commands.Cog):
             system_prompt: 시스템 프롬프트
             user_prompt: 사용자 프롬프트 (RAG 컨텍스트 포함)
             log_extra: 로깅용 추가 정보
+            model: 사용할 모델명 (None이면 기본값 사용)
 
         Returns:
             생성된 응답 텍스트, 실패 시 None
@@ -339,12 +341,12 @@ class AIHandler(commands.Cog):
                 self._debug(f"[CometAPI] user={self._truncate_for_debug(user_prompt)}", log_extra)
 
             completion = await self.cometapi_client.chat.completions.create(
-                model=config.COMETAPI_MODEL,
+                model=model or config.COMETAPI_MODEL,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                max_tokens=1024,
+                max_tokens=2048, # 약간 늘림
                 temperature=0.7,
             )
 
@@ -1262,7 +1264,12 @@ Generate the optimized English image prompt:"""
     def _get_channel_system_prompt(self, channel_id: int | None) -> str:
         """채널별 페르소나와 규칙을 가져와 시스템 프롬프트를 구성합니다."""
         if not channel_id:
-            return ""
+            # DM인 경우 비서 페르소나 사용
+            return (
+                "너는 사용자의 개인 비서이자 친구인 '마사몽'이야. "
+                "항상 친절하고 도움이 되는 태도로 대화해. "
+                "반말과 존댓말을 섞어서 친근하게 대해줘."
+            )
         channel_config = config.CHANNEL_AI_CONFIG.get(channel_id, {})
         persona = (channel_config.get('persona') or config.DEFAULT_TSUNDERE_PERSONA).strip()
         rules = (channel_config.get('rules') or config.DEFAULT_TSUNDERE_RULES).strip()
@@ -1524,6 +1531,16 @@ Generate the optimized English image prompt:"""
         user_query = self._prepare_user_query(message, base_log_extra)
         if not user_query:
             return
+
+        # 5. DM Rate Limiting Check (New)
+        if not message.guild:
+            allowed, reset_time = await db_utils.check_dm_message_limit(self.bot.db, user_id)
+            if not allowed:
+                 await message.reply(
+                     f"⛔ 일일 대화량이 초과되었습니다.\n마사몽과의 1:1 대화는 3시간당 5회로 제한됩니다.\n🕒 해제 예정 시각: {reset_time}",
+                     mention_author=False
+                 )
+                 return
 
         trace_id = uuid.uuid4().hex[:8]
         log_extra = dict(base_log_extra)

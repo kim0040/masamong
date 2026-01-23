@@ -1,0 +1,297 @@
+# -*- coding: utf-8 -*-
+"""
+사용자 개인 운세 및 비서 서비스를 담당하는 Cog입니다.
+명령어 처리와 모닝 브리핑 자동 발송 스케줄러를 포함합니다.
+"""
+
+import discord
+from discord.ext import commands, tasks
+import asyncio
+from datetime import datetime, timedelta
+import pytz
+import re
+
+import config
+from logger_config import logger
+from utils import db as db_utils
+from utils.fortune import FortuneCalculator
+
+# 시간 유효성 검사 정규식 (HH:MM)
+TIME_PATTERN = re.compile(r'^([01]\d|2[0-3]):([0-5]\d)$')
+
+class FortuneCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.calculator = FortuneCalculator()
+        self.morning_briefing_task.start()
+        logger.info("FortuneCog가 성공적으로 초기화되었습니다.")
+
+    def cog_unload(self):
+        self.morning_briefing_task.cancel()
+
+    @commands.group(name='사주')
+    @commands.dm_only()
+    async def saju(self, ctx: commands.Context):
+        """사주 관련 명령어 그룹입니다."""
+        if ctx.invoked_subcommand is None:
+            await ctx.send("사용법: `!사주 등록`, `!사주 삭제`")
+
+    @saju.command(name='등록')
+    async def saju_register(self, ctx: commands.Context):
+        """
+        사용자의 생년월일 정보를 대화형으로 입력받아 등록합니다. (DM 전용)
+        이미 등록된 경우 덮어쓸지 묻습니다.
+        """
+        try:
+            # 1. 생년월일 입력
+            await ctx.send("📝 비서 서비스를 위해 생년월일을 입력해주세요. (예: 1990-01-01)")
+            
+            def check(m):
+                return m.author == ctx.author and m.channel == ctx.channel
+
+            try:
+                msg = await self.bot.wait_for('message', check=check, timeout=60.0)
+                birth_date = msg.content.strip()
+                # 날짜 형식 검증
+                datetime.strptime(birth_date, '%Y-%m-%d')
+            except ValueError:
+                await ctx.send("❌ 형식이 올바르지 않아요. `YYYY-MM-DD` 형식으로 다시 시도해주세요.")
+                return
+            except asyncio.TimeoutError:
+                await ctx.send("⏰ 시간이 초과되었어요. 다시 명령어를 입력해주세요.")
+                return
+
+            # 2. 태어난 시간 입력
+            await ctx.send("🕒 태어난 시간도 알려주세요. 모르면 `모름`이라고 입력해주세요. (예: 14:30)")
+            try:
+                msg = await self.bot.wait_for('message', check=check, timeout=60.0)
+                birth_time_input = msg.content.strip()
+                if birth_time_input in ['모름', '몰라', 'unknown']:
+                    birth_time = "12:00"
+                else:
+                    if not TIME_PATTERN.match(birth_time_input):
+                         await ctx.send("❌ 시간 형식이 올바르지 않아요. `HH:MM` 형식으로 입력하거나 `모름`이라고 해주세요.")
+                         return
+                    birth_time = birth_time_input
+            except asyncio.TimeoutError:
+                 await ctx.send("⏰ 시간이 초과되었어요. 다시 명령어를 입력해주세요.")
+                 return
+
+            # 3. 양력/음력 확인 (간소화를 위해 일단 양력 기본, 추후 확장 가능)
+            # await ctx.send("📅 양력인가요? (예/아니오)") ... (생략)
+
+            # DB 저장
+            await self._save_user_profile(ctx.author.id, birth_date, birth_time)
+            await ctx.send(f"✅ 등록이 완료되었습니다!\n이제 매일 아침 설정된 시간(기본 07:30)에 브리핑을 보내드릴게요.\n`!운세` 명령어로 언제든 확인 가능합니다.")
+            
+        except Exception as e:
+            logger.error(f"사주 등록 중 오류: {e}", exc_info=True)
+            await ctx.send("❌ 등록 중 오류가 발생했습니다.")
+
+    async def _save_user_profile(self, user_id, birth_date, birth_time):
+        """DB에 사용자 프로필 저장/업데이트"""
+        async with self.bot.db.execute(
+            """
+            INSERT OR REPLACE INTO user_profiles (user_id, birth_date, birth_time, created_at)
+            VALUES (?, ?, ?, datetime('now'))
+            """,
+            (user_id, birth_date, birth_time)
+        ):
+            await self.bot.db.commit()
+
+    @saju.command(name='삭제')
+    async def saju_delete(self, ctx: commands.Context):
+        """등록된 사주 정보를 삭제합니다."""
+        try:
+             async with self.bot.db.execute("DELETE FROM user_profiles WHERE user_id = ?", (ctx.author.id,)):
+                 await self.bot.db.commit()
+             await ctx.send("🗑️ 모든 개인 정보와 구독 설정이 삭제되었습니다.")
+        except Exception as e:
+             logger.error(f"사주 삭제 중 오류: {e}", exc_info=True)
+             await ctx.send("❌ 삭제 중 오류가 발생했습니다.")
+
+    @commands.command(name='구독시간', aliases=['알림시간'])
+    @commands.dm_only()
+    async def set_subscription_time(self, ctx: commands.Context, time_str: str):
+        """
+        모닝 브리핑 수신 시간을 변경합니다.
+        사용법: !구독시간 08:30
+        """
+        if not TIME_PATTERN.match(time_str):
+            await ctx.send("❌ 올바른 시간 형식이 아닙니다. `HH:MM` (24시간제)로 입력해주세요.")
+            return
+        
+        try:
+             # 프로필 존재 여부 확인
+             cursor = await self.bot.db.execute("SELECT 1 FROM user_profiles WHERE user_id = ?", (ctx.author.id,))
+             if not await cursor.fetchone():
+                 await ctx.send("⚠️ 먼저 `!사주 등록`으로 정보를 등록해주세요.")
+                 return
+             
+             await self.bot.db.execute(
+                 "UPDATE user_profiles SET subscription_time = ? WHERE user_id = ?",
+                 (time_str, ctx.author.id)
+             )
+             await self.bot.db.commit()
+             await ctx.send(f"✅ 매일 아침 `{time_str}`에 브리핑을 보내드릴게요!")
+        except Exception as e:
+             logger.error(f"구독 시간 변경 중 오류: {e}", exc_info=True)
+             await ctx.send("❌ 설정 변경 중 오류가 발생했습니다.")
+
+    @commands.command(name='운세')
+    async def check_fortune(self, ctx: commands.Context, *, option: str = None):
+        """
+        오늘의 운세를 확인합니다.
+        옵션: `상세` 를 붙이면 더 자세한(Thinking 모델) 분석을 제공합니다.
+        """
+        user_id = ctx.author.id
+        
+        # 1. 프로필 조회
+        cursor = await self.bot.db.execute("SELECT birth_date, birth_time FROM user_profiles WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        
+        if not row:
+            if ctx.guild: # 서버에서는 안내만
+                 await ctx.reply("🔮 개인 운세를 보려면 DM으로 `!사주 등록`을 먼저 해주세요!", mention_author=True)
+            else: # DM에서는 바로 유도
+                 await ctx.send("🔮 아직 정보가 없네요. `!사주 등록`으로 생년월일을 알려주세요!")
+            return
+
+        birth_date, birth_time = row
+        
+        # 2. 운세 데이터 생성
+        fortune_data = self.calculator.get_comprehensive_info(birth_date, birth_time)
+        
+        # 3. AI 핸들러 호출
+        ai_handler = self.bot.get_cog('AIHandler')
+        if not ai_handler:
+            await ctx.send("AI 모듈을 불러올 수 없습니다.")
+            return
+        
+        # 모델명 매핑
+        MODEL_LITE = "DeepSeek-V3.2-Exp-nothinking"
+        MODEL_PRO = "DeepSeek-V3.2-Exp-thinking"
+
+        if ctx.guild:
+             # 공개 채널: 간단 요약 (Lite 모델)
+             prompt_key = "fortune_summary"
+             model_name = MODEL_LITE
+        else:
+             # DM: 상세 옵션 확인
+             if option and '상세' in option:
+                 prompt_key = 'fortune_detail'
+                 model_name = MODEL_PRO
+             else:
+                 prompt_key = 'fortune_summary'
+                 model_name = MODEL_LITE
+
+        # ... (중략)
+
+        await ctx.typing()
+        
+        system_prompt = self._get_system_prompt(prompt_key)
+        user_prompt = f"{fortune_data}\n\n위 데이터를 바탕으로 오늘의 운세를 분석해줘."
+        
+        try:
+             # 모델 라우팅
+             response = await ai_handler._cometapi_generate_content(
+                 system_prompt, 
+                 user_prompt, 
+                 log_extra={'user_id': user_id, 'mode': 'fortune'},
+                 model=model_name
+             )
+             
+             if response:
+                 await ctx.send(response)
+             else:
+                 await ctx.send("운세 분석에 실패했습니다. (AI 응답 없음)")
+                 
+        except Exception as e:
+             logger.error(f"운세 요청 처리 중 오류: {e}", exc_info=True)
+             await ctx.send("운세 시스템에 문제가 발생했습니다.")
+
+
+    def _get_system_prompt(self, key: str) -> str:
+        """프롬프트 템플릿 반환 (추후 prompts.json 연동 가능)"""
+        prompts = {
+            "fortune_summary": "너는 사용자의 친구이자 개인 비서인 '마사몽'이야. 제공된 운세 데이터를 바탕으로, 오늘의 핵심 운세를 3문장 이내로 밝고 희망차게 요약해줘. 이모지를 적절히 사용해.",
+            "fortune_detail": "너는 전문 점성가이자 사주 분석가 '마사몽'이야. 제공된 데이터를 깊이 있게 분석해서 [총평], [재물운], [연애/대인관계], [오늘의 조언] 항목으로 나누어 자세히 설명해줘. 말투는 정중하면서도 친근한 존댓말을 써.",
+            "fortune_morning": "너는 사용자의 아침을 여는 든든한 비서 '마사몽'이야. 오늘 하루의 흐름을 예측하고, 주의할 점과 행운의 포인트를 짚어줘. 활기찬 아침 인사를 포함해."
+        }
+        return prompts.get(key, prompts['fortune_summary'])
+
+
+    @tasks.loop(minutes=1)
+    async def morning_briefing_task(self):
+        """매분 실행되어 발송 시간이 된 유저에게 브리핑을 보냅니다."""
+        now = datetime.now(pytz.timezone('Asia/Seoul'))
+        current_time_str = now.strftime('%H:%M')
+        today_str = now.strftime('%Y-%m-%d')
+        
+        try:
+            # 1. 대상자 조회 (구독 중, 시간 일치, 오늘 아직 안 받은 사람)
+            cursor = await self.bot.db.execute(
+                """
+                SELECT user_id, birth_date, birth_time 
+                FROM user_profiles 
+                WHERE subscription_active = 1 
+                  AND subscription_time = ? 
+                  AND (last_fortune_sent IS NULL OR last_fortune_sent != ?)
+                """,
+                (current_time_str, today_str)
+            )
+            users = await cursor.fetchall()
+            
+            if not users:
+                return
+
+            ai_handler = self.bot.get_cog('AIHandler')
+            if not ai_handler: return
+
+            for user_id, birth_date, birth_time in users:
+                try:
+                    # 유저 찾기
+                    user = self.bot.get_user(user_id)
+                    if not user:
+                         # 캐시에 없으면 fetch 시도
+                        try:
+                            user = await self.bot.fetch_user(user_id)
+                        except:
+                            continue
+
+                    # 운세 데이터 생성
+                    fortune_data = self.calculator.get_comprehensive_info(birth_date, birth_time)
+                    
+                    # AI 요청
+                    system_prompt = self._get_system_prompt("fortune_morning")
+                    user_prompt = f"{fortune_data}\n\n오늘자 모닝 브리핑을 작성해줘."
+                    
+                    briefing = await ai_handler._cometapi_generate_content(
+                        system_prompt,
+                        user_prompt,
+                        log_extra={'user_id': user_id, 'mode': 'morning_briefing'}
+                    )
+                    
+                    if briefing:
+                        await user.send(f"🌞 **좋은 아침이에요! 오늘의 모닝 브리핑**\n\n{briefing}")
+                        
+                        # 전송 완료 기록 업데이트
+                        await self.bot.db.execute(
+                            "UPDATE user_profiles SET last_fortune_sent = ? WHERE user_id = ?",
+                            (today_str, user_id)
+                        )
+                        await self.bot.db.commit()
+                        logger.info(f"모닝 브리핑 전송 완료: user={user_id}")
+                        
+                except Exception as ue:
+                    logger.error(f"유저({user_id}) 브리핑 전송 실패: {ue}")
+                    
+        except Exception as e:
+            logger.error(f"모닝 브리핑 태스크 에러: {e}", exc_info=True)
+
+    @morning_briefing_task.before_loop
+    async def before_morning_briefing(self):
+        await self.bot.wait_until_ready()
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(FortuneCog(bot))
