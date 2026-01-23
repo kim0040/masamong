@@ -54,46 +54,7 @@ class UserCommands(commands.Cog):
             logger.error(f"`delete_log` 명령어 처리 중 예기치 않은 오류 발생: {error}", exc_info=True, extra=log_extra)
             await ctx.send(config.MSG_CMD_ERROR)
 
-    @commands.command(name='도움', aliases=['헬프', '명령어'])
-    async def help_command(self, ctx: commands.Context):
-        """사용 가능한 명령어 목록을 표시합니다."""
-        embed = discord.Embed(
-            title="📚 마사몽 명령어 도움말",
-            description="사용 가능한 명령어 목록이에요!",
-            color=discord.Color.blue()
-        )
-        
-        # 이미지 생성
-        embed.add_field(
-            name="🎨 이미지 생성",
-            value=(
-                "`!이미지 <설명>` - AI가 이미지를 생성해줘요\n"
-                "예시: `!이미지 귀여운 고양이`\n"
-                f"⏱️ 제한: {config.IMAGE_USER_LIMIT}장/{config.IMAGE_USER_RESET_HOURS}시간"
-            ),
-            inline=False
-        )
-        
-        # AI 대화
-        embed.add_field(
-            name="💬 AI 대화",
-            value=(
-                "`@마사몽 <질문>` - 마사몽에게 물어봐요\n"
-                "예시: `@마사몽 오늘 날씨 어때?`"
-            ),
-            inline=False
-        )
-        
-        # 관리자 명령어
-        embed.add_field(
-            name="⚙️ 관리자 전용",
-            value="`!로그삭제` - 로그 파일 삭제 (관리자)",
-            inline=False
-        )
-        
-        embed.set_footer(text="💡 이미지 생성은 선정적인 내용이 필터링됩니다.")
-        
-        await ctx.send(embed=embed)
+
     
     @commands.command(name='이미지', aliases=['image', 'img', '그림', '생성'])
     @commands.guild_only()
