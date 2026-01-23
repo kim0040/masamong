@@ -40,31 +40,32 @@ class FunCog(commands.Cog):
 
     # --- 핵심 실행 로직 ---
 
-    async def execute_fortune(self, channel: discord.TextChannel, author: discord.User):
-        """
-        AI를 호출하여 오늘의 운세를 생성하고 채널에 전송하는 핵심 로직입니다.
-        `!운세` 명령어 또는 키워드 트리거에 의해 호출됩니다.
-        """
-        if not self.ai_handler or not self.ai_handler.is_ready:
-            await channel.send("죄송합니다, AI 운세 기능이 현재 준비되지 않았습니다.")
-            return
+    # async def execute_fortune(self, channel: discord.TextChannel, author: discord.User):
+    #     """
+    #     AI를 호출하여 오늘의 운세를 생성하고 채널에 전송하는 핵심 로직입니다.
+    #     `!운세` 명령어 또는 키워드 트리거에 의해 호출됩니다.
+    #     (fortune_cog.py로 이전됨)
+    #     """
+    #     if not self.ai_handler or not self.ai_handler.is_ready:
+    #         await channel.send("죄송합니다, AI 운세 기능이 현재 준비되지 않았습니다.")
+    #         return
 
-        async with channel.typing():
-            try:
-                response_text = await self.ai_handler.generate_creative_text(
-                    channel=channel,
-                    author=author,
-                    prompt_key='fortune',
-                    context={'user_name': author.display_name}
-                )
-                # AI 응답 생성 실패 시 기본 메시지 전송
-                if not response_text or response_text in [config.MSG_AI_ERROR, config.MSG_CMD_ERROR]:
-                    await channel.send(response_text or "운세를 보다가 깜빡 졸았네요. 다시 물어봐 주세요.")
-                else:
-                    await channel.send(response_text)
-            except Exception as e:
-                logger.error(f"운세 기능 실행 중 오류: {e}", exc_info=True, extra={'guild_id': channel.guild.id})
-                await channel.send(config.MSG_CMD_ERROR)
+    #     async with channel.typing():
+    #         try:
+    #             response_text = await self.ai_handler.generate_creative_text(
+    #                 channel=channel,
+    #                 author=author,
+    #                 prompt_key='fortune',
+    #                 context={'user_name': author.display_name}
+    #             )
+    #             # AI 응답 생성 실패 시 기본 메시지 전송
+    #             if not response_text or response_text in [config.MSG_AI_ERROR, config.MSG_CMD_ERROR]:
+    #                 await channel.send(response_text or "운세를 보다가 깜빡 졸았네요. 다시 물어봐 주세요.")
+    #             else:
+    #                 await channel.send(response_text)
+    #         except Exception as e:
+    #             logger.error(f"운세 기능 실행 중 오류: {e}", exc_info=True, extra={'guild_id': channel.guild.id})
+    #             await channel.send(config.MSG_CMD_ERROR)
 
     async def execute_summarize(self, channel: discord.TextChannel, author: discord.User):
         """
@@ -102,10 +103,11 @@ class FunCog(commands.Cog):
 
     # --- 명령어 정의 ---
 
-    @commands.command(name='운세', aliases=['fortune'])
-    async def fortune(self, ctx: commands.Context):
-        """'마사몽' 페르소나로 오늘의 운세를 알려줍니다."""
-        await self.execute_fortune(ctx.channel, ctx.author)
+    # @commands.command(name='운세', aliases=['fortune'])
+    # async def fortune(self, ctx: commands.Context):
+    #     """'마사몽' 페르소나로 오늘의 운세를 알려줍니다. (fortune_cog.py로 이전됨)"""
+    #     # await self.execute_fortune(ctx.channel, ctx.author)
+    #     pass
 
     @commands.command(name='요약', aliases=['summarize', 'summary'])
     async def summarize(self, ctx: commands.Context):
