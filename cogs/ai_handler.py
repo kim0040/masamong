@@ -24,7 +24,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     AsyncOpenAI = None
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import asyncio
 import pytz
 from collections import deque
