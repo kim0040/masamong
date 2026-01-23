@@ -23,6 +23,7 @@ class FortuneCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.calculator = FortuneCalculator()
+        self._ready = False
         # 비동기 초기화 작업을 위해 별도 태스크로 실행
         self.bot.loop.create_task(self._ensure_db_schema())
         self.morning_briefing_task.start()
@@ -45,6 +46,8 @@ class FortuneCog(commands.Cog):
                     logger.info("Added 'pending_payload' column to user_profiles")
         except Exception as e:
             logger.error(f"Failed to check/add column: {e}")
+        finally:
+            self._ready = True
 
     def cog_unload(self):
         self.morning_briefing_task.cancel()
@@ -458,9 +461,10 @@ class FortuneCog(commands.Cog):
         2. 전송 시간이 된 브리핑을 전송 (Delivery)
         """
         await self.bot.wait_until_ready()
-        # DB 초기화 시간을 위해 약간의 딜레이 보장 (선택사항)
-        await asyncio.sleep(1) 
-        
+        # DB 컬럼 추가 등 초기화가 완료될 때까지 대기
+        while not self._ready:
+            await asyncio.sleep(1)
+            
         now = datetime.now(pytz.timezone('Asia/Seoul'))
         current_time_str = now.strftime('%H:%M')
         # 3분 뒤 시간 계산
