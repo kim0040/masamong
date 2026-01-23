@@ -1545,6 +1545,7 @@ Generate the optimized English image prompt:"""
 
         # 5. DM Rate Limiting Check (New)
         if not message.guild:
+            # 5-1. 사용자별 1:1 제한 (3시간 5회)
             allowed, reset_time = await db_utils.check_dm_message_limit(self.bot.db, user_id)
             if not allowed:
                  await message.reply(
@@ -1552,6 +1553,14 @@ Generate the optimized English image prompt:"""
                      mention_author=False
                  )
                  return
+            
+            # 5-2. 전역 일일 DM 제한 (하루 100회 - API 보호)
+            if not await db_utils.check_global_dm_limit(self.bot.db):
+                await message.reply(
+                    "⛔ 죄송합니다. 오늘 마사몽이 처리할 수 있는 DM 총량을 초과했습니다.\n내일 다시 이용해 주세요! (서버 채널에서는 계속 이용 가능합니다)",
+                    mention_author=False
+                )
+                return
 
         trace_id = uuid.uuid4().hex[:8]
         log_extra = dict(base_log_extra)
