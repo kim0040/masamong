@@ -52,28 +52,29 @@ class FortuneCog(commands.Cog):
     def cog_unload(self):
         self.morning_briefing_task.cancel()
 
-    @commands.group(name='사주')
-    @commands.dm_only()
-    async def saju(self, ctx: commands.Context):
+    @commands.group(name='운세', invoke_without_command=True)
+    async def fortune(self, ctx: commands.Context, *, option: str = None):
         """
-        사주 및 비서 서비스를 관리하는 명령어입니다.
-        
-        사용법:
-        - `!사주 등록`: 생년월일을 등록하고 서비스를 시작합니다.
-        - `!사주 삭제`: 등록된 정보를 삭제하고 구독을 취소합니다.
+        운세 관련 기능을 제공합니다.
+        - `!운세`: 오늘의 종합 운세를 확인합니다.
+        - `!운세 등록`: 생년월일 정보를 등록합니다. (DM 전용)
+        - `!운세 구독 [시간]`: 모닝 브리핑을 구독합니다. (예: !운세 구독 07:30)
+        - `!운세 구독취소`: 브리핑 구독을 중단합니다.
+        - `!운세 삭제`: 모든 정보를 삭제하고 서비스를 종료합니다.
         """
         if ctx.invoked_subcommand is None:
-            await ctx.send("📋 사용법: `!사주 등록`, `!사주 삭제`")
+            # 기존 !운세 (check_fortune) 로직 호출
+            await self._check_fortune_logic(ctx, option)
 
-    @saju.command(name='등록')
-    async def saju_register(self, ctx: commands.Context):
+    @fortune.command(name='등록')
+    @commands.dm_only()
+    async def fortune_register(self, ctx: commands.Context):
         """
         사용자의 생년월일 정보를 대화형으로 입력받아 등록합니다. (DM 전용)
-        이미 등록된 경우 덮어쓸지 묻습니다.
         """
         try:
             # 1. 생년월일 입력
-            await ctx.send("📝 비서 서비스를 위해 생년월일을 입력해주세요. (예: 1990-01-01)")
+            await ctx.send("📝 운세 서비스를 위해 생년월일을 입력해주세요. (예: 1990-01-01)")
             
             def check(m):
                 return m.author == ctx.author and m.channel == ctx.channel
@@ -106,15 +107,16 @@ class FortuneCog(commands.Cog):
                  await ctx.send("⏰ 시간이 초과되었어요. 다시 명령어를 입력해주세요.")
                  return
 
-            # 3. 양력/음력 확인 (간소화를 위해 일단 양력 기본, 추후 확장 가능)
-            # await ctx.send("📅 양력인가요? (예/아니오)") ... (생략)
-
-            # DB 저장
+            # DB 저장 (기본적으로 구독은 비활성화 상태로 저장)
             await self._save_user_profile(ctx.author.id, birth_date, birth_time)
-            await ctx.send(f"✅ 등록이 완료되었습니다!\n이제 매일 아침 설정된 시간(기본 07:30)에 브리핑을 보내드릴게요.\n`!운세` 명령어로 언제든 확인 가능합니다.")
+            await ctx.send(
+                f"✅ 정보 등록이 완료되었습니다!\n"
+                f"이제 언제든 `!운세` 명령어로 오늘의 운세를 확인하실 수 있습니다.\n\n"
+                f"🔔 **매일 아침 운세 브리핑**을 받고 싶다면 `!운세 구독 [시간]` (예: `!운세 구독 07:30`)을 입력해주세요!"
+            )
             
         except Exception as e:
-            logger.error(f"사주 등록 중 오류: {e}", exc_info=True)
+            logger.error(f"운세 등록 중 오류: {e}", exc_info=True)
             await ctx.send("❌ 등록 중 오류가 발생했습니다.")
 
     async def _save_user_profile(self, user_id, birth_date, birth_time):
@@ -128,11 +130,10 @@ class FortuneCog(commands.Cog):
         ):
             await self.bot.db.commit()
 
-    @saju.command(name='삭제')
-    async def saju_delete(self, ctx: commands.Context):
+    @fortune.command(name='삭제')
+    async def fortune_delete(self, ctx: commands.Context):
         """
-        등록된 사주 정보와 구독 설정을 완전히 삭제합니다.
-        더 이상 모닝 브리핑을 받지 않게 됩니다.
+        등록된 모든 개인 정보와 구독 설정을 삭제합니다. (DM 전용)
         """
         # DM 체크
         if ctx.guild:
@@ -142,23 +143,20 @@ class FortuneCog(commands.Cog):
         try:
              async with self.bot.db.execute("DELETE FROM user_profiles WHERE user_id = ?", (ctx.author.id,)):
                  await self.bot.db.commit()
-             await ctx.send("🗑️ 모든 개인 정보와 구독 설정이 삭제되었습니다.")
+             await ctx.send("🗑️ 모든 개인 정보와 운세 구독 설정이 삭제되었습니다.")
         except Exception as e:
-             logger.error(f"사주 삭제 중 오류: {e}", exc_info=True)
+             logger.error(f"운세 정보 삭제 중 오류: {e}", exc_info=True)
              await ctx.send("❌ 삭제 중 오류가 발생했습니다.")
 
-    @commands.command(name='구독', aliases=['구독시간', '알림시간'])
-    async def set_subscription_time(self, ctx: commands.Context, time_str: str):
+    @fortune.command(name='구독', aliases=['구독시간', '알림시간'])
+    async def fortune_subscribe(self, ctx: commands.Context, time_str: str):
         """
-        모닝 브리핑 수신 설정을 관리합니다. (DM 전용)
-        
-        사용법:
-        - `!구독 07:00`: 매일 오전 7시에 브리핑을 받습니다.
-        - `!사주 삭제`: 구독을 취소하고 정보를 삭제합니다.
+        매일 아침 오늘의 운세 브리핑 구독을 설정합니다. (DM 전용)
+        사용법: !운세 구독 07:30
         """
         # DM 체크
         if ctx.guild:
-            await ctx.reply("⚠️ 알림 시간 설정은 DM에서만 가능합니다.")
+            await ctx.reply("⚠️ 구독 설정은 DM에서만 가능합니다.")
             return
 
         if not TIME_PATTERN.match(time_str):
@@ -169,7 +167,6 @@ class FortuneCog(commands.Cog):
         now = datetime.now(pytz.timezone('Asia/Seoul'))
         try:
              target_time = datetime.strptime(time_str, '%H:%M').replace(year=now.year, month=now.month, day=now.day, tzinfo=now.tzinfo)
-             # 만약 설정 시간이 이미 지났다면 내일로 계산
              if target_time <= now:
                  target_time += timedelta(days=1)
                  
@@ -184,25 +181,42 @@ class FortuneCog(commands.Cog):
              # 프로필 존재 여부 확인
              cursor = await self.bot.db.execute("SELECT 1 FROM user_profiles WHERE user_id = ?", (ctx.author.id,))
              if not await cursor.fetchone():
-                 await ctx.send("⚠️ 먼저 `!사주 등록`으로 정보를 등록해주세요.")
+                 await ctx.send("⚠️ 먼저 `!운세 등록`으로 정보를 등록해주세요.")
                  return
              
              await self.bot.db.execute(
-                 "UPDATE user_profiles SET subscription_time = ? WHERE user_id = ?",
+                 "UPDATE user_profiles SET subscription_time = ?, subscription_active = 1 WHERE user_id = ?",
                  (time_str, ctx.author.id)
              )
              await self.bot.db.commit()
-             await ctx.send(f"✅ 매일 아침 `{time_str}`에 브리핑을 보내드릴게요!")
+             await ctx.send(f"✅ 구독이 활성화되었습니다! 매일 아침 `{time_str}`에 브리핑을 보내드릴게요.")
         except Exception as e:
-             logger.error(f"구독 시간 변경 중 오류: {e}", exc_info=True)
+             logger.error(f"구독 설정 중 오류: {e}", exc_info=True)
              await ctx.send("❌ 설정 변경 중 오류가 발생했습니다.")
 
-    @commands.command(name='운세')
-    async def check_fortune(self, ctx: commands.Context, *, option: str = None):
+    @fortune.command(name='구독취소')
+    async def fortune_unsubscribe(self, ctx: commands.Context):
         """
-        오늘의 운세를 확인합니다.
-        옵션: `상세` 를 붙이면 더 자세한(Thinking 모델) 분석을 제공합니다.
+        운세 브리핑 구독을 중단합니다. (정보는 유지됨)
         """
+        try:
+             await self.bot.db.execute(
+                 "UPDATE user_profiles SET subscription_active = 0 WHERE user_id = ?",
+                 (ctx.author.id,)
+             )
+             await self.bot.db.commit()
+             await ctx.send("🔕 오늘의 운세 브리핑 구독이 취소되었습니다. (등록된 정보는 유지됩니다.)")
+        except Exception as e:
+             logger.error(f"구독 취소 중 오류: {e}", exc_info=True)
+             await ctx.send("❌ 구독 취소 중 오류가 발생했습니다.")
+
+    @commands.command(name='구독', aliases=['구독시간', '알림시간'])
+    async def global_subscribe(self, ctx: commands.Context, time_str: str):
+        """운세 브리핑 구독 전용 명령어입니다. (DM 전용)"""
+        await self.fortune_subscribe(ctx, time_str)
+
+    async def _check_fortune_logic(self, ctx: commands.Context, option: str = None):
+        """오늘의 운세를 분석하여 출력하는 핵심 로직"""
         user_id = ctx.author.id
         
         # 1. 프로필 조회
@@ -211,9 +225,9 @@ class FortuneCog(commands.Cog):
         
         if not row:
             if ctx.guild: # 서버에서는 안내만
-                 await ctx.reply("🔮 개인 운세를 보려면 DM으로 `!사주 등록`을 먼저 해주세요!", mention_author=True)
+                 await ctx.reply("🔮 개인 운세를 보려면 DM으로 `!운세 등록`을 먼저 해주세요!", mention_author=True)
             else: # DM에서는 바로 유도
-                 await ctx.send("🔮 아직 정보가 없네요. `!사주 등록`으로 생년월일을 알려주세요!")
+                 await ctx.send("🔮 아직 정보가 없네요. `!운세 등록`으로 생년월일을 알려주세요!")
             return
 
         birth_date, birth_time = row
@@ -245,14 +259,12 @@ class FortuneCog(commands.Cog):
                  user_sign = "알 수 없음"
 
             # 프롬프트 설정 (통합)
-            # 프롬프트 설정 (통합)
             display_name = ctx.author.display_name
             if option and '상세' in option:
-                prompt_key = 'fortune_detail_combined'
                 model_name = MODEL_PRO
                 system_prompt = (
                     "너는 전문 점성가이자 명리하자인 '마사몽'이야. "
-                    "사용자의 사주와 별자리 정보를 깊이 있게 분석해서 상세한 운세를 제공해줘. "
+                    "사용자의 운세와 별자리 정보를 깊이 있게 분석해서 상세한 답변을 제공해줘. "
                     "각 관점(동양/서양)에서 보이는 특징을 설명하고, 이를 종합한 결론을 내려줘. "
                     "출력 형식은 가독성 좋은 마크다운(Markdown)을 사용해. (## 소제목, **강조**, - 리스트 등)"
                 )
@@ -263,10 +275,9 @@ class FortuneCog(commands.Cog):
                     f"항목: [총평], [재물운], [연애/인간관계], [건강운], [마사몽의 심층 조언]"
                 )
             else:
-                prompt_key = 'fortune_summary_combined'
                 model_name = MODEL_LITE
                 system_prompt = (
-                    "너는 '마사몽'이야. 사용자의 사주(일진)와 별자리 운세를 종합해서 오늘의 운세를 알려줘. "
+                    "너는 '마사몽'이야. 사용자의 운세(일진)와 별자리 운세를 종합해서 오늘의 운세를 알려줘. "
                     "일반 사용자는 사주와 별자리를 잘 구별하지 못하므로, 두 가지 관점을 자연스럽게 섞어서 설명해줘. "
                     "내용은 너무 짧지 않게, 하지만 가독성 있게 작성해. "
                     "말투는 친근하고 다정한 존댓말을 써. "
@@ -278,7 +289,7 @@ class FortuneCog(commands.Cog):
                     f"위 데이터를 바탕으로 {user_sign} 사용자({birth_date})의 오늘 운세를 종합적으로 분석해줘. "
                     f"닉네임을 부르며 대답해줘.\n"
                     f"다음 항목을 포함해줘:\n"
-                    f"1. 🌟 오늘의 흐름 (사주와 별자리의 공통적인 기운)\n"
+                    f"1. 🌟 오늘의 흐름 (운세와 별자리의 공통적인 기운)\n"
                     f"2. 💬 조언 (주의할 점이나 추천 행동)\n"
                     f"3. 🍀 행운의 팁\n"
                     f"내용은 너무 어렵지 않게, 적당한 길이로 작성해."
@@ -440,14 +451,14 @@ class FortuneCog(commands.Cog):
                 "오늘의 핵심 운세를 요약해줘. 마크다운(**)을 사용해. 이모지를 적절히 사용해."
             ),
             "fortune_detail": (
-                "너는 전문 점성가이자 사주 분석가 '마사몽'이야. 제공된 데이터를 깊이 있게 분석해서 "
+                "너는 전문 점성가이자 명리하자인 '마사몽'이야. 제공된 데이터를 깊이 있게 분석해서 "
                 "[총평], [재물운], [연애/대인관계], [오늘의 조언] 항목으로 나누어 자세히 설명해줘. "
                 "마크다운(##, **)을 사용하여 가독성 있게 작성해."
             ),
             "fortune_morning": (
                 "너는 사용자의 아침을 여는 든든한 비서 '마사몽'이야. 오늘 하루의 흐름을 예측하고, "
                 "주의할 점과 행운의 포인트를 짚어줘. 닉네임을 꼭 부르며 다정하게 인사해.\n"
-                "중요: '행운의 시간'을 추천할 때는 7시 30분에 집착하지 말고, 천체 배치나 사주 기운에 맞춰 매번 다르게 추천해줘. "
+                "중요: '행운의 시간'을 추천할 때는 7시 30분에 집착하지 말고, 천체 배치나 운세 기운에 맞춰 매번 다르게 추천해줘. "
                 "마크다운을 활용해 예쁘게 작성해."
             )
         }

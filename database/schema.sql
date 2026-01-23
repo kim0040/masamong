@@ -110,7 +110,7 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     birth_date TEXT, -- YYYY-MM-DD
     birth_time TEXT, -- HH:MM
     is_lunar BOOLEAN DEFAULT 0, -- 0: 양력, 1: 음력
-    subscription_active BOOLEAN DEFAULT 1, -- 모닝 브리핑 구독 여부
+    subscription_active BOOLEAN DEFAULT 0, -- 모닝 브리핑 구독 여부 (0: 비활성, 1: 활성)
     subscription_time TEXT DEFAULT '07:30', -- 모닝 브리핑 발송 시간
     pending_payload TEXT, -- [NEW] 미리 생성된 브리핑 내용
     last_fortune_sent TEXT, -- YYYY-MM-DD (중복 발송 방지)
