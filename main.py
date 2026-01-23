@@ -211,8 +211,8 @@ class ReMasamongBot(commands.Bot):
                 # DM은 대화 기록에 저장하지 않거나 별도 처리 (현재 AIHandler는 DM일 경우 0으로 처리하는 로직 등이 있는지 확인 필요하지만, 
                 # 여기서 에러만 안나면 됨. 보통 add_message_to_history 내부에서 guild.id 접근시 에러날 수 있음.)
                 # 일단 add_message_to_history는 guild가 있어야 동작하는 것이 일반적이므로 DM이면 스킵
-                if message.guild:
-                    await ai_handler.add_message_to_history(message)
+                # DM도 대화 기록에 저장 (AIHandler 내부에서 guild_id=0 등으로 처리)
+                await ai_handler.add_message_to_history(message)
             except Exception as exc:  # pragma: no cover
                 logger.error(
                     "대화 기록 저장 중 오류: %s",

@@ -211,6 +211,88 @@ class FortuneCog(commands.Cog):
              await ctx.send("운세 시스템에 문제가 발생했습니다.")
 
 
+    @commands.group(name='별자리', aliases=['운세전체'])
+    async def zodiac(self, ctx: commands.Context):
+        """별자리 운세 관련 명령어 그룹입니다."""
+        if ctx.invoked_subcommand is None:
+            # 1. 서브커맨드 없이 호출 시: 전체 요약해줄지, 특정 별자리 알려줄지 안내
+            # 혹은 인자가 있으면 그것을 별자리 이름으로 간주하고 처리
+            params = ctx.message.content.split()
+            if len(params) > 1:
+                target_sign = params[1]
+                await self._show_zodiac_fortune(ctx, target_sign)
+            else:
+                embed = discord.Embed(
+                    title="🌌 오늘의 별자리 운세",
+                    description="특정 별자리의 운세를 보고 싶다면 `!별자리 <이름>`을 입력해주세요!\n예: `!별자리 물병자리`, `!별자리 사자`\n\n**12별자리 목록**\n양, 황소, 쌍둥이, 게, 사자, 처녀\n천칭, 전갈, 사수, 염소, 물병, 물고기",
+                    color=0x6a0dad
+                )
+                await ctx.send(embed=embed)
+
+    async def _show_zodiac_fortune(self, ctx: commands.Context, sign_name: str):
+        """특정 별자리의 오늘의 운세를 풍부하게 출력합니다."""
+        # 1. 별자리 이름 정규화
+        normalized_sign = self._normalize_zodiac_name(sign_name)
+        if not normalized_sign:
+            await ctx.send(f"🤔 '{sign_name}'은(는) 올바른 별자리 이름이 아니에요. (예: 물병자리, 사자자리)")
+            return
+
+        # 2. 현재 천체 배치 가져오기 (Context)
+        now = datetime.now(pytz.timezone('Asia/Seoul'))
+        astro_chart = self.calculator._get_astrology_chart(now)
+
+        # 3. AI 프롬프트 구성
+        system_prompt = (
+            "당신은 신비롭고 지혜로운 '대점성술사 마사몽'입니다. "
+            "현재 천체 배치(Transit)를 바탕으로 특정 별자리의 오늘 운세를 아주 풍부하고 디테일하게 해석해줍니다. "
+            "말투는 신비롭지만 친절하게, 비유와 은유를 적절히 섞어서 문학적으로 표현하세요. "
+            "단순한 '좋다/나쁘다'가 아니라, 구체적인 상황(직업, 사랑, 재물 등)을 묘사하고 행운의 조언을 덧붙이세요."
+        )
+        
+        user_prompt = (
+            f"[현재 천체 배치]\n{astro_chart}\n\n"
+            f"[타겟 별자리]: {normalized_sign}\n\n"
+            f"오늘 {normalized_sign} 사람들을 위한 상세한 운세를 작성해주세요. "
+            f"다음 항목을 포함하세요:\n"
+            f"1. 오늘의 기운 (총평)\n"
+            f"2. 사랑과 인간관계\n"
+            f"3. 일과 금전\n"
+            f"4. 마사몽의 행운 팁"
+        )
+
+        async with ctx.typing():
+            ai_handler = self.bot.get_cog('AIHandler')
+            if ai_handler:
+                response = await ai_handler._cometapi_generate_content(
+                    system_prompt,
+                    user_prompt,
+                    log_extra={'user_id': ctx.author.id, 'mode': 'zodiac_fortune', 'sign': normalized_sign}
+                )
+            else:
+                response = None
+
+            if response:
+                embed = discord.Embed(
+                    title=f"✨ {normalized_sign}의 오늘 운세",
+                    description=response,
+                    color=0x9b59b6
+                )
+                embed.set_footer(text=f"기준 시각: {now.strftime('%Y-%m-%d %H:%M')}")
+                await ctx.send(embed=embed)
+            else:
+                await ctx.send("별들의 목소리가 오늘따라 희미하네요... 잠시 후 다시 시도해주세요.")
+
+    def _normalize_zodiac_name(self, name: str) -> str | None:
+        """사용자 입력을 표준 별자리 이름으로 변환합니다."""
+        name = name.replace("자리", "").strip()
+        mapping = {
+            "양": "양자리", "황소": "황소자리", "쌍둥이": "쌍둥이자리", "게": "게자리",
+            "사자": "사자자리", "처녀": "처녀자리", "천칭": "천칭자리", "전갈": "전갈자리",
+            "사수": "사수자리", "염소": "염소자리", "물병": "물병자리", "물고기": "물고기자리",
+            "궁수": "사수자리", "물염소": "염소자리" # 이명 처리
+        }
+        return mapping.get(name)
+
     def _get_system_prompt(self, key: str) -> str:
         """프롬프트 템플릿 반환 (추후 prompts.json 연동 가능)"""
         prompts = {
