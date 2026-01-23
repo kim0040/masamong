@@ -143,14 +143,14 @@ class FortuneCog(commands.Cog):
              logger.error(f"사주 삭제 중 오류: {e}", exc_info=True)
              await ctx.send("❌ 삭제 중 오류가 발생했습니다.")
 
-    @commands.command(name='구독시간', aliases=['알림시간', '구독'])
+    @commands.command(name='구독', aliases=['구독시간', '알림시간'])
     async def set_subscription_time(self, ctx: commands.Context, time_str: str):
         """
-        모닝 브리핑을 받을 시간을 변경합니다. (DM 전용)
+        모닝 브리핑 수신 설정을 관리합니다. (DM 전용)
         
         사용법:
-        `!구독시간 07:00`
-        `!구독시간 23:30`
+        - `!구독 07:00`: 매일 오전 7시에 브리핑을 받습니다.
+        - `!사주 삭제`: 구독을 취소하고 정보를 삭제합니다.
         """
         # DM 체크
         if ctx.guild:
@@ -332,13 +332,13 @@ class FortuneCog(commands.Cog):
         system_prompt = (
             "너는 점성술사 '마사몽'이야. 현재 천체 배치를 분석해서 12별자리의 오늘의 운세 순위를 매겨줘. "
             "1위부터 12위까지 순위를 매기고, 각 별자리에 대해 한 줄 코멘트를 달아줘. "
-            "출력 형식은 마크다운을 사용해 깔끔하게 보여줘."
+            "출력 형식은 마크다운(##, **)을 사용하여 매우 깔끔하고 보기 좋게 보여줘."
         )
         user_prompt = (
             f"[현재 천체 배치]\n{astro_chart}\n\n"
             f"오늘의 12별자리 운세 순위를 알려줘. "
-            f"상위권(1~3위)은 🌟, 중위권(4~9위)은 😐, 하위권(10~12위)은 ☁️ 이모지를 사용해 분류해줘. "
-            f"각 별자리마다 행운의 팁(색상, 숫자)도 간단히 덧붙여줘."
+            f"상위권(1~3위)은 🌟, 중위권(4~9위)은 😐, 하위권(10~12위)은 ☁️ 이모지를 사용하여 리스트 형식으로 분류해줘. "
+            f"각 별자리마다 행운의 팁(색상, 숫자)도 포함해줘."
         )
 
         async with ctx.typing():
@@ -383,9 +383,11 @@ class FortuneCog(commands.Cog):
         
         user_prompt = (
             f"[현재 천체 배치]\n{astro_chart}\n\n"
-            f"[타겟 별자리]: {normalized_sign}\n\n"
+            f"[타겟 별자리]: {normalized_sign}\n"
+            f"[사용자 이름]: {ctx.author.display_name}\n\n"
             f"오늘 {normalized_sign} 사람들을 위한 상세한 운세를 작성해주세요. "
-            f"가독성을 위해 각 항목은 짧고 명료하게 작성하고, 중요한 키워드는 강조하세요. "
+            f"사용자 이름을 자연스럽게 불러주세요.\n"
+            f"가독성을 위해 마크다운(##, **, -)을 적극 활용하고, 중요한 키워드는 강조하세요. "
             f"다음 항목을 포함하세요:\n"
             f"1. 🌟 오늘의 기운 (총평)\n"
             f"2. 💘 사랑과 인간관계\n"
@@ -429,9 +431,21 @@ class FortuneCog(commands.Cog):
     def _get_system_prompt(self, key: str) -> str:
         """프롬프트 템플릿 반환 (추후 prompts.json 연동 가능)"""
         prompts = {
-            "fortune_summary": "너는 사용자의 친구이자 개인 비서인 '마사몽'이야. 제공된 운세 데이터를 바탕으로, 오늘의 핵심 운세를 3문장 이내로 밝고 희망차게 요약해줘. 이모지를 적절히 사용해.",
-            "fortune_detail": "너는 전문 점성가이자 사주 분석가 '마사몽'이야. 제공된 데이터를 깊이 있게 분석해서 [총평], [재물운], [연애/대인관계], [오늘의 조언] 항목으로 나누어 자세히 설명해줘. 말투는 정중하면서도 친근한 존댓말을 써.",
-            "fortune_morning": "너는 사용자의 아침을 여는 든든한 비서 '마사몽'이야. 오늘 하루의 흐름을 예측하고, 주의할 점과 행운의 포인트를 짚어줘. 활기찬 아침 인사를 포함해."
+            "fortune_summary": (
+                "너는 사용자의 친구이자 개인 비서인 '마사몽'이야. 제공된 운세 데이터를 바탕으로, "
+                "오늘의 핵심 운세를 요약해줘. 마크다운(**)을 사용해. 이모지를 적절히 사용해."
+            ),
+            "fortune_detail": (
+                "너는 전문 점성가이자 사주 분석가 '마사몽'이야. 제공된 데이터를 깊이 있게 분석해서 "
+                "[총평], [재물운], [연애/대인관계], [오늘의 조언] 항목으로 나누어 자세히 설명해줘. "
+                "마크다운(##, **)을 사용하여 가독성 있게 작성해."
+            ),
+            "fortune_morning": (
+                "너는 사용자의 아침을 여는 든든한 비서 '마사몽'이야. 오늘 하루의 흐름을 예측하고, "
+                "주의할 점과 행운의 포인트를 짚어줘. 닉네임을 꼭 부르며 다정하게 인사해.\n"
+                "중요: '행운의 시간'을 추천할 때는 7시 30분에 집착하지 말고, 천체 배치나 사주 기운에 맞춰 매번 다르게 추천해줘. "
+                "마크다운을 활용해 예쁘게 작성해."
+            )
         }
         return prompts.get(key, prompts['fortune_summary'])
 
@@ -476,7 +490,12 @@ class FortuneCog(commands.Cog):
                         # 운세 데이터 생성
                         fortune_data = self.calculator.get_comprehensive_info(birth_date, birth_time)
                         system_prompt = self._get_system_prompt("fortune_morning")
-                        user_prompt = f"{fortune_data}\n\n사용자 닉네임: {display_name}\n\n오늘자 모닝 브리핑을 작성해줘. 닉네임을 부르며 친근하게 시작해."
+                        user_prompt = (
+                            f"{fortune_data}\n\n"
+                            f"사용자 닉네임: {display_name}\n\n"
+                            f"오늘자 모닝 브리핑을 작성해줘. 첫머리에 '{display_name}님, 좋은 아침이에요!'와 같은 인사를 꼭 포함해줘. "
+                            f"데이터를 바탕으로 구체적이고 다정한 조언을 해줘. 마크다운 스타일을 적용해줘."
+                        )
                         
                         briefing = await ai_handler._cometapi_generate_content(
                             system_prompt,
@@ -530,7 +549,12 @@ class FortuneCog(commands.Cog):
                         # ... (동일한 생성 로직 fallback)
                         fortune_data = self.calculator.get_comprehensive_info(birth_date, birth_time)
                         system_prompt = self._get_system_prompt("fortune_morning")
-                        user_prompt = f"{fortune_data}\n\n사용자 닉네임: {user.display_name}\n\n오늘자 모닝 브리핑을 작성해줘. 닉네임을 부르며 친근하게 시작해."
+                        user_prompt = (
+                            f"{fortune_data}\n\n"
+                            f"사용자 닉네임: {user.display_name}\n\n"
+                            f"오늘자 모닝 브리핑을 작성해줘. 첫머리에 '{user.display_name}님, 좋은 아침이에요!'와 같은 인사를 꼭 포함해줘. "
+                            f"데이터를 바탕으로 구체적이고 다정한 조언을 해줘. 마크다운 스타일을 적용해줘."
+                        )
                         final_msg = await ai_handler._cometapi_generate_content(
                             system_prompt,
                             user_prompt,
