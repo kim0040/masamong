@@ -393,16 +393,24 @@ class AIHandler(commands.Cog):
         Notes:
             메시지가 충분히 길면 임베딩 생성을 비동기 태스크로 예약합니다.
         """
-        if not self.is_ready or not config.AI_MEMORY_ENABLED or not message.guild: return
-        try:
-            channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
-            if not channel_config.get("allowed", False): return
+        if not self.is_ready or not config.AI_MEMORY_ENABLED: return
 
+        guild_id = message.guild.id if message.guild else 0
+        
+        # Guild인 경우에만 채널 화이트리스트 체크
+        if message.guild:
+            try:
+                channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
+                if not channel_config.get("allowed", False): return
+            except AttributeError:
+                pass # message.channel has no id? rare.
+
+        try:
             await self.bot.db.execute(
                 "INSERT INTO conversation_history (message_id, guild_id, channel_id, user_id, user_name, content, is_bot, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     message.id,
-                    message.guild.id,
+                    guild_id,
                     message.channel.id,
                     message.author.id,
                     message.author.display_name,
@@ -417,7 +425,7 @@ class AIHandler(commands.Cog):
             # if not message.author.bot and message.content.strip():
             #     asyncio.create_task(self._create_and_save_embedding(message))
         except Exception as e:
-            logger.error(f"대화 기록 저장 중 DB 오류: {e}", exc_info=True, extra={'guild_id': message.guild.id})
+            logger.error(f"대화 기록 저장 중 DB 오류: {e}", exc_info=True, extra={'guild_id': guild_id})
 
     async def _create_window_embedding(self, guild_id: int, channel_id: int, payload: list[dict[str, Any]]):
         """대화 윈도우(청크)를 임베딩하여 로컬 DB에 저장합니다 (E5 passage prefix 적용)."""
@@ -486,12 +494,13 @@ class AIHandler(commands.Cog):
 
     async def _update_conversation_windows(self, message: discord.Message) -> None:
         """대화 슬라이딩 윈도우(6개, stride=3)를 누적해 별도 테이블에 저장합니다."""
-        if not message.guild or self.bot.db is None:
+        if self.bot.db is None:
             return
 
+        guild_id = message.guild.id if message.guild else 0
         window_size = max(1, getattr(config, "CONVERSATION_WINDOW_SIZE", 6))
         stride = max(1, getattr(config, "CONVERSATION_WINDOW_STRIDE", 3))
-        key = (message.guild.id, message.channel.id)
+        key = (guild_id, message.channel.id)
 
         # 채널별 슬라이딩 버퍼에 메시지를 누적한다.
         buffer = self._window_buffers.setdefault(key, deque(maxlen=window_size))
@@ -525,7 +534,7 @@ class AIHandler(commands.Cog):
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    message.guild.id,
+                    guild_id,
                     message.channel.id,
                     payload[0]["message_id"],
                     payload[-1]["message_id"],
@@ -536,13 +545,13 @@ class AIHandler(commands.Cog):
             )
             # 윈도우가 저장될 때 해당 윈도우에 대한 임베딩도 생성 (비동기 처리)
             asyncio.create_task(
-                self._create_window_embedding(message.guild.id, message.channel.id, payload)
+                self._create_window_embedding(guild_id, message.channel.id, payload)
             )
         except Exception as exc:  # pragma: no cover - 방어적 로깅
             logger.error(
                 "대화 윈도우 저장 중 DB 오류: %s",
                 exc,
-                extra={"guild_id": message.guild.id, "channel_id": message.channel.id},
+                extra={"guild_id": guild_id, "channel_id": message.channel.id},
                 exc_info=True,
             )
 
@@ -1571,8 +1580,9 @@ Generate the optimized English image prompt:"""
         async with message.channel.typing():
             try:
                 recent_search_messages = await self._collect_recent_search_messages(message)
+                guild_id_safe = message.guild.id if message.guild else 0
                 rag_prompt, rag_entries, rag_top_score, rag_blocks = await self._get_rag_context(
-                    message.guild.id,
+                    guild_id_safe,
                     message.channel.id,
                     message.author.id,
                     user_query,
@@ -1618,7 +1628,7 @@ Generate the optimized English image prompt:"""
                             # 생성 중 메시지 전송 (LLM 호출 없음)
                             status_msg = await message.reply("🎨 이미지 생성 중이에요... 잠시만 기다려줘!", mention_author=False)
                         
-                        result = await self._execute_tool(tool_call, message.guild.id, user_query)
+                        result = await self._execute_tool(tool_call, guild_id_safe, user_query)
                         
                         # 이미지 생성 성공 시 바로 이미지 전송 (별도 처리)
                         if tool_call.get('tool_to_use') == 'generate_image' and (result.get('image_data') or result.get('image_url')):
@@ -1658,7 +1668,7 @@ Generate the optimized English image prompt:"""
                                 self.bot.db,
                                 "AI_INTERACTION",
                                 {
-                                    "guild_id": message.guild.id,
+                                    "guild_id": guild_id_safe,
                                     "user_id": message.author.id,
                                     "channel_id": message.channel.id,
                                     "trace_id": trace_id,
@@ -1706,7 +1716,7 @@ Generate the optimized English image prompt:"""
                                 self.bot.db,
                                 "AI_INTERACTION",
                                 {
-                                    "guild_id": message.guild.id,
+                                    "guild_id": guild_id_safe,
                                     "user_id": message.author.id,
                                     "channel_id": message.channel.id,
                                     "trace_id": trace_id,
@@ -1746,7 +1756,7 @@ Generate the optimized English image prompt:"""
                     logger.info("하나 이상의 도구 실행에 실패하여 웹 검색으로 대체합니다.", extra=log_extra)
                     web_result = await self._execute_tool(
                         {"tool_to_use": "web_search", "parameters": {"query": user_query}},
-                        message.guild.id,
+                        guild_id_safe,
                         user_query,
                     )
                     tool_results = [res for res in tool_results if res.get("tool_name") == "local_rag"]
