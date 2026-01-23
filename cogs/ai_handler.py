@@ -1501,6 +1501,17 @@ Generate the optimized English image prompt:"""
             if (now - spam_cache[user_msg_key]).total_seconds() < config.SPAM_PREVENTION_SECONDS:
                 logger.warning(f"스팸 감지: 사용자 {user_id}가 동일 메시지 반복", extra=base_log_extra)
                 return
+        
+        # [Safety] DM Loop Prevention: Detect rapid self-responses or bot-loops
+        if not message.guild:
+             # Check if the channel has very recent messages from THIS bot
+             async for hist_msg in message.channel.history(limit=5):
+                 if hist_msg.author.id == self.bot.user.id:
+                     if (now.replace(tzinfo=timezone.utc) - hist_msg.created_at.replace(tzinfo=timezone.utc)).total_seconds() < 2.0:
+                         logger.warning("DM Loop Detected: Bot replied too recently.", extra=base_log_extra)
+                         return
+                     break # Only check the most recent bot message
+
         spam_cache[user_msg_key] = now
         # 오래된 캐시 정리 (100개 초과 시)
         if len(spam_cache) > 100:

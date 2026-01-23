@@ -117,13 +117,13 @@ class FortuneCalculator:
             # 3. 사용자 정보 요약
             user_info_str = f"사용자 생시: {birth_date} {birth_time}"
             
-            # 종합 데이터 문자열 구성
+            # 종합 데이터 문자열 구성 (Token Efficient Format)
             raw_data = (
-                f"[운세 분석용 데이터]\n"
-                f"기준 시각: {now_kst.strftime('%Y-%m-%d %H:%M')}\n"
-                f"{user_info_str}\n"
-                f"오늘의 동양 사주(만세력): {saju_info}\n"
-                f"현재 천체 배치(Western Transit): {astro_info}\n"
+                f"[Feature: Fortune]\n"
+                f"Time: {now_kst.strftime('%Y-%m-%d %H:%M')}\n"
+                f"UserBirth: {birth_date} {birth_time}\n"
+                f"Saju: {saju_info}\n"
+                f"Astro: {astro_info}\n"
             )
             
             return raw_data
