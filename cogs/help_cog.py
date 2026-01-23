@@ -94,6 +94,7 @@ class MasamongHelpCommand(commands.HelpCommand):
 class HelpCog(commands.Cog):
     """도움말 기능을 담당하는 Cog입니다."""
     def __init__(self, bot):
+        self.bot = bot
         self._original_help_command = bot.help_command
         bot.help_command = MasamongHelpCommand()
         bot.help_command.cog = self
