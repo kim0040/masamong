@@ -136,7 +136,7 @@ class ReMasamongBot(commands.Bot):
         cog_list = [
             'weather_cog', 'tools_cog', 'events', 'commands', 'ai_handler',
             'fun_cog', 'activity_cog', 'poll_cog', 'settings_cog',
-            'maintenance_cog', 'proactive_assistant', 'fortune_cog'
+            'maintenance_cog', 'proactive_assistant', 'fortune_cog', 'help_cog'
         ]
 
         for cog_name in cog_list:
@@ -171,22 +171,26 @@ class ReMasamongBot(commands.Bot):
             - 명령 프리픽스가 감지되면 `process_commands`로 위임합니다.
             - 활동 기록과 AI 핸들러는 예외 발생 시에도 독립적으로 로깅하여 서로 영향을 주지 않습니다.
         """
-        # 봇 자신의 메시지, DM, 다른 봇의 메시지는 무시합니다.
-        if message.author.bot or not message.guild:
+        # 봇 자신의 메시지는 무시합니다. (DM 허용을 위해 message.guild 체크 제거)
+        if message.author.bot:
             return
 
-        logger.info(f"[DEBUG] Message received from {message.author} ({message.author.id}): {message.content}")
+        # 기본 로깅 컨텍스트 (DM일 경우, 길드/채널 ID 등은 'DM' 등으로 처리)
+        guild_id = message.guild.id if message.guild else "DM"
+        channel_id = message.channel.id
+        
+        logger.info(f"[DEBUG] Message received from {message.author} ({message.author.id}) in {guild_id}/{channel_id}: {message.content}")
 
         activity_cog = self.get_cog('ActivityCog')
         if activity_cog:
             try:
-                await activity_cog.record_message(message)  # 사용자 활동 기록
-            except Exception as exc:  # pragma: no cover - 방어적 로깅
+                await activity_cog.record_message(message)  # 사용자 활동 기록 (ActivityCog 내부에서 DM 무시 처리함)
+            except Exception as exc:  # pragma: no cover
                 logger.error(
                     "활동 기록 처리 중 오류: %s",
                     exc,
                     exc_info=True,
-                    extra={'guild_id': message.guild.id, 'channel_id': message.channel.id}
+                    extra={'guild_id': guild_id, 'channel_id': channel_id}
                 )
 
         message_content = message.content or ""
@@ -204,49 +208,62 @@ class ReMasamongBot(commands.Bot):
         ai_handler = self.get_cog('AIHandler')
         if ai_handler:
             try:
-                await ai_handler.add_message_to_history(message)  # 대화 기록에 추가
-            except Exception as exc:  # pragma: no cover - 방어적 로깅
+                # DM은 대화 기록에 저장하지 않거나 별도 처리 (현재 AIHandler는 DM일 경우 0으로 처리하는 로직 등이 있는지 확인 필요하지만, 
+                # 여기서 에러만 안나면 됨. 보통 add_message_to_history 내부에서 guild.id 접근시 에러날 수 있음.)
+                # 일단 add_message_to_history는 guild가 있어야 동작하는 것이 일반적이므로 DM이면 스킵
+                if message.guild:
+                    await ai_handler.add_message_to_history(message)
+            except Exception as exc:  # pragma: no cover
                 logger.error(
                     "대화 기록 저장 중 오류: %s",
                     exc,
                     exc_info=True,
-                    extra={'guild_id': message.guild.id, 'channel_id': message.channel.id}
+                    extra={'guild_id': guild_id, 'channel_id': channel_id}
                 )
 
         events_cog = self.get_cog('EventListeners')
         if events_cog:
             try:
+                # 키워드 트리거도 DM에서는 굳이 동작할 필요 없거나, 내부에서 체크할 것임.
                 if await events_cog._handle_keyword_triggers(message):
                     return
-            except Exception as exc:  # pragma: no cover - 방어적 로깅
+            except Exception as exc:  # pragma: no cover
                 logger.error(
                     "키워드 트리거 처리 중 오류: %s",
                     exc,
                     exc_info=True,
-                    extra={'guild_id': message.guild.id, 'channel_id': message.channel.id}
+                    extra={'guild_id': guild_id, 'channel_id': channel_id}
                 )
 
         ai_ready = ai_handler and ai_handler.is_ready
         if not ai_ready:
             return
 
-        channel_conf = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
-        ai_enabled_channel = channel_conf.get('allowed', False)
-        if not ai_enabled_channel:
-            return
+        # 채널 화이트리스트 체크 (DM은 무조건 통과, 채널은 화이트리스트)
+        if message.guild:
+            channel_conf = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
+            ai_enabled_channel = channel_conf.get('allowed', False)
+            if not ai_enabled_channel:
+                return
+        else:
+            # DM인 경우: 화이트리스트 체크 스킵 (DM은 기본 허용, Rate Limit 등은 AIHandler에서 처리)
+            pass
 
         if not ai_handler._message_has_valid_mention(message):
-            logger.info(f"[DEBUG] Message ignored (No valid mention): {message.content}")
-            return
+            # DM에서는 멘션 없어도 대화 가능하게 할지? -> 보통 DM은 1:1이므로 멘션 없이도 대화함.
+            if message.guild:
+                logger.info(f"[DEBUG] Message ignored (No valid mention): {message.content}")
+                return
+            # DM은 멘션 체크 패스
 
         try:
             await ai_handler.process_agent_message(message)
-        except Exception as exc:  # pragma: no cover - 방어적 로깅
+        except Exception as exc:  # pragma: no cover
             logger.error(
                 "AI 메시지 처리 중 오류: %s",
                 exc,
                 exc_info=True,
-                extra={'guild_id': message.guild.id, 'channel_id': message.channel.id}
+                extra={'guild_id': guild_id, 'channel_id': channel_id}
             )
 
     async def close(self):
