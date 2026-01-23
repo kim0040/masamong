@@ -174,7 +174,7 @@ class ToolsCog(commands.Cog):
         return True, None
 
     async def generate_image(self, prompt: str, user_id: int) -> dict:
-        """CometAPI flux-2-flex를 사용하여 이미지를 생성합니다.
+        """Gemini Native API(CometAPI)를 사용하여 이미지를 생성합니다.
         
         Args:
             prompt: 이미지 생성 프롬프트 (영문 권장)
@@ -196,7 +196,7 @@ class ToolsCog(commands.Cog):
             logger.error("COMETAPI_KEY가 설정되지 않았습니다.", extra=log_extra)
             return {"error": "이미지 생성 API 키가 설정되지 않았어요."}
         
-        # 3. 프롬프트 안전성 검사 (NSFW 차단)
+        # 3. 프롬프트 안전성 검사 (NSFW 차단) - 로컬 필터 유지
         is_safe, blocked_keyword = self._is_prompt_safe(prompt)
         if not is_safe:
             logger.warning(f"NSFW 프롬프트 차단: '{blocked_keyword}'", extra=log_extra)
@@ -213,116 +213,89 @@ class ToolsCog(commands.Cog):
         if global_limited:
             return {"error": "오늘 마사몽이 생성할 수 있는 이미지가 다 끝났어... 내일 다시 불러줘!"}
         
-        logger.info(f"이미지 생성 시작: user={user_id}, remaining={user_remaining}", extra=log_extra)
+        logger.info(f"이미지 생성 시작 (Gemini): user={user_id}, remaining={user_remaining}", extra=log_extra)
         
-        # 6. CometAPI 호출 (폴링 방식)
+        # 6. CometAPI 호출 (Gemini Native Endpoint)
         try:
-            api_url = getattr(config, 'COMETAPI_IMAGE_API_URL', 'https://api.cometapi.com/flux/v1/flux-2-flex')
+            model_name = getattr(config, 'GEMINI_IMAGE_MODEL', 'gemini-2.5-flash-image')
+            # URL 포맷팅: {model} 부분을 실제 모델명으로 치환
+            api_url = getattr(config, 'COMETAPI_IMAGE_API_URL', 'https://api.cometapi.com/v1beta/models/{model}:generateContent')
+            if "{model}" in api_url:
+                api_url = api_url.replace("{model}", model_name)
             
-            # Bearer 토큰 형식으로 Authorization 헤더 설정
+            # 헤더 설정
             headers = {
-                "Authorization": f"Bearer {api_key}" if not api_key.startswith("Bearer ") else api_key,
+                "x-goog-api-key": api_key,  # Gemini API 스타일 인증
                 "Content-Type": "application/json",
-                "Accept": "*/*",
             }
             
+            # 페이로드 구성
             payload = {
-                "prompt": prompt,
-                "prompt_upsampling": True,
-                "width": getattr(config, 'IMAGE_DEFAULT_WIDTH', 768),
-                "height": getattr(config, 'IMAGE_DEFAULT_HEIGHT', 768),
-                "steps": getattr(config, 'IMAGE_GENERATION_STEPS', 28),
-                "guidance": getattr(config, 'IMAGE_GUIDANCE_SCALE', 4.5),
-                "safety_tolerance": getattr(config, 'IMAGE_SAFETY_TOLERANCE', 0),
-                "output_format": "jpeg",
+                "contents": [{
+                    "parts": [{"text": prompt}]
+                }],
+                "generationConfig": {
+                    "responseModalities": ["IMAGE"], # 강제로 이미지만 생성
+                    "imageConfig": {
+                        "aspectRatio": getattr(config, 'GEMINI_IMAGE_ASPECT_RATIO', '1:1'),
+                    }
+                }
             }
+            
+            # Gemini 3 Pro 전용 옵션 추가
+            if "gemini-3-pro" in model_name:
+                size_opt = getattr(config, 'GEMINI_IMAGE_SIZE', '1K')
+                if size_opt in ['1K', '2K', '4K']:
+                     payload["generationConfig"]["imageConfig"]["imageSize"] = size_opt
+
             
             async with aiohttp.ClientSession() as session:
-                # Step 1: 이미지 생성 요청 제출
-                async with session.post(api_url, headers=headers, json=payload, timeout=60) as resp:
+                async with session.post(api_url, headers=headers, json=payload, timeout=90) as resp:
                     if resp.status != 200:
                         error_text = await resp.text()
-                        logger.error(f"CometAPI 이미지 생성 요청 실패 ({resp.status}): {error_text}", extra=log_extra)
-                        if resp.status == 402:
-                            return {"error": "이미지 생성 크레딧이 부족해요. 관리자에게 문의해줘!"}
-                        return {"error": "이미지 생성 요청에 실패했어요. 잠시 후 다시 시도해줘!"}
+                        logger.error(f"Gemini 이미지 생성 실패 ({resp.status}): {error_text}", extra=log_extra)
+                        if resp.status == 429:
+                           return {"error": "이미지 생성 요청이 너무 많아요. 잠시 후에 다시 시도해줘!"}
+                        return {"error": f"이미지 생성 요청 실패: {resp.status}"}
                     
                     data = await resp.json()
-                    task_id = data.get('id')
                     
-                    if not task_id:
-                        logger.error(f"Task ID를 받지 못함: {data}", extra=log_extra)
-                        return {"error": "이미지 생성 작업 ID를 받지 못했어요."}
+                    # 응답 파싱 (Google GenAI 형식)
+                    candidates = data.get('candidates', [])
+                    if not candidates:
+                         # 안전성 문제 등으로 차단된 경우
+                        prompt_feedback = data.get('promptFeedback', {})
+                        logger.warning(f"이미지 생성 차단됨: {prompt_feedback}", extra=log_extra)
+                        return {"error": "이미지가 안전 정책에 의해 생성되지 않았어요."}
+
+                    # 첫 번째 candidate의 parts 확인
+                    parts = candidates[0].get('content', {}).get('parts', [])
+                    image_data_b64 = None
                     
-                    logger.info(f"이미지 생성 Task ID: {task_id}", extra=log_extra)
-                
-                # Step 2: 결과 폴링 (최대 120초 대기)
-                result_url = f"https://api.cometapi.com/flux/v1/get_result?id={task_id}"
-                max_polls = 40  # 3초 간격으로 40회 = 120초
-                image_url = None
-                
-                for poll_count in range(max_polls):
-                    await asyncio.sleep(3)  # 3초 대기
+                    for part in parts:
+                        inline_data = part.get('inlineData')
+                        if inline_data:
+                            image_data_b64 = inline_data.get('data')
+                            break
                     
-                    async with session.get(result_url, headers=headers, timeout=30) as poll_resp:
-                        if poll_resp.status != 200:
-                            logger.warning(f"폴링 응답 오류 ({poll_count+1}): status={poll_resp.status}", extra=log_extra)
-                            continue
-                        
-                        poll_data = await poll_resp.json()
-                        # 실제 API 응답 구조: {'code': 'success', 'data': {'status': 'SUCCESS', 'data': {'sample': '...'}}}
-                        data_inner = poll_data.get('data', {})
-                        status = data_inner.get('status', '')
-                        
-                        # 디버그 로그: 전체 응답 구조 확인
-                        if poll_count < 3 or poll_count % 10 == 0:
-                            logger.info(f"폴링 ({poll_count+1}/{max_polls}) Raw Data: {poll_data}", extra=log_extra)
-                        
-                        if status == 'SUCCESS' or status == 'Ready':
-                            # 이미지 생성 완료
-                            image_url = data_inner.get('data', {}).get('sample')
-                            # 일부 API는 result 필드를 사용할 수 있음 (호환성 유지)
-                            if not image_url:
-                                image_url = data_inner.get('result', {}).get('sample')
-                                
-                            if image_url:
-                                logger.info(f"이미지 폴링 완료 ({poll_count+1}회): {image_url[:80]}...", extra=log_extra)
-                                break
-                        elif status == 'Error' or status == 'FAIL':
-                            error_msg = data_inner.get('fail_reason') or data_inner.get('result', {}).get('message', '알 수 없는 오류')
-                            logger.error(f"이미지 생성 에러: {error_msg}", extra=log_extra)
-                            return {"error": f"이미지 생성 중 오류: {error_msg}"}
-                        # Pending/Processing 상태면 계속 폴링
-                
-                if not image_url:
-                    logger.error(f"이미지 폴링 타임아웃 (마지막 상태: {status})", extra=log_extra)
-                    return {"error": "이미지 생성이 너무 오래 걸려요. 다시 시도해줘!"}
-                
-                # Step 3: 이미지 다운로드 (Discord 업로드용)
-                async with session.get(image_url, timeout=30) as img_resp:
-                    if img_resp.status != 200:
-                        logger.warning(f"이미지 다운로드 실패, URL 직접 반환: {img_resp.status}", extra=log_extra)
-                        # 다운로드 실패 시 URL만 반환
-                        await db_utils.log_image_generation(self.bot.db, user_id)
-                        return {
-                            "image_url": image_url,
-                            "remaining": user_remaining - 1,
-                        }
+                    if not image_data_b64:
+                        logger.error(f"이미지 데이터를 찾을 수 없음: {data}", extra=log_extra)
+                        return {"error": "이미지 데이터를 받지 못했어요."}
                     
-                    image_data = await img_resp.read()
+                    import base64
+                    image_binary = base64.b64decode(image_data_b64)
                     
                     # 사용량 기록
                     await db_utils.log_image_generation(self.bot.db, user_id)
                     
-                    logger.info(f"이미지 다운로드 완료: {len(image_data)} bytes", extra=log_extra)
+                    logger.info(f"이미지 디코딩 완료: {len(image_binary)} bytes", extra=log_extra)
                     return {
-                        "image_data": image_data,  # 바이너리 데이터
-                        "image_url": image_url,    # 백업용 URL
+                        "image_data": image_binary,
                         "remaining": user_remaining - 1,
                     }
-                        
+
         except asyncio.TimeoutError:
-            logger.error("CometAPI 타임아웃", extra=log_extra)
+            logger.error("Gemini API 타임아웃", extra=log_extra)
             return {"error": "이미지 생성이 너무 오래 걸려서 취소됐어. 다시 시도해줘!"}
         except Exception as e:
             logger.error(f"이미지 생성 중 예외: {e}", exc_info=True, extra=log_extra)

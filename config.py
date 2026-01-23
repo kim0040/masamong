@@ -250,10 +250,15 @@ COMETAPI_BASE_URL = load_config_value('COMETAPI_BASE_URL', 'https://api.cometapi
 COMETAPI_MODEL = load_config_value('COMETAPI_MODEL', 'DeepSeek-V3.2-Exp-nothinking')
 USE_COMETAPI = as_bool(load_config_value('USE_COMETAPI', 'true'))  # CometAPI 우선 사용
 
-# CometAPI 이미지 생성 설정 (flux-2-flex 모델)
+# CometAPI 이미지 생성 설정 (Gemini Native via CometAPI)
 COMETAPI_IMAGE_ENABLED = as_bool(load_config_value('COMETAPI_IMAGE_ENABLED', 'true'))
-COMETAPI_IMAGE_API_URL = "https://api.cometapi.com/flux/v1/flux-2-flex"
-COMETAPI_IMAGE_MODEL = "flux-2-flex"
+COMETAPI_IMAGE_API_URL = "https://api.cometapi.com/v1beta/models/{model}:generateContent"
+# 사용 가능한 모델: 'gemini-2.5-flash-image', 'gemini-3-pro-image-preview'
+GEMINI_IMAGE_MODEL = load_config_value('GEMINI_IMAGE_MODEL', 'gemini-2.5-flash-image')
+# 'gemini-3-pro-image-preview' 사용 시에만 적용됨 (1K, 2K, 4K)
+GEMINI_IMAGE_SIZE = load_config_value('GEMINI_IMAGE_SIZE', '1K')
+# 화면 비율: "1:1", "16:9", "4:3" 등
+GEMINI_IMAGE_ASPECT_RATIO = load_config_value('GEMINI_IMAGE_ASPECT_RATIO', '1:1')
 
 # 이미지 생성 사용량 제한
 IMAGE_USER_LIMIT = as_int(load_config_value('IMAGE_USER_LIMIT', 5), 5)  # 유저당 12시간 내 최대 5장
@@ -261,9 +266,9 @@ IMAGE_USER_RESET_HOURS = as_int(load_config_value('IMAGE_USER_RESET_HOURS', 12),
 IMAGE_GLOBAL_DAILY_LIMIT = as_int(load_config_value('IMAGE_GLOBAL_DAILY_LIMIT', 50), 50)  # 전역 일일 50장
 
 # 이미지 생성 기본 설정
-# 1024x1024 = 1mp = $0.06/이미지
-IMAGE_DEFAULT_WIDTH = as_int(load_config_value('IMAGE_DEFAULT_WIDTH', 768), 768)
-IMAGE_DEFAULT_HEIGHT = as_int(load_config_value('IMAGE_DEFAULT_HEIGHT', 768), 768)
+# 1024x1024 = 1mp = $0.06/이미지 (Flash 기준 1290 토큰)
+IMAGE_DEFAULT_WIDTH = as_int(load_config_value('IMAGE_DEFAULT_WIDTH', 768), 768) # Deprecated for Gemini
+IMAGE_DEFAULT_HEIGHT = as_int(load_config_value('IMAGE_DEFAULT_HEIGHT', 768), 768) # Deprecated for Gemini
 IMAGE_SAFETY_TOLERANCE = 0  # 가장 엄격한 수준 (0=strict, 5=permissive) - 절대 변경 금지
 IMAGE_GENERATION_STEPS = as_int(load_config_value('IMAGE_GENERATION_STEPS', 28), 28)  # 품질 vs 비용 (max 50, 추천 28)
 IMAGE_GUIDANCE_SCALE = 4.5  # 프롬프트 준수도 (1.5-10, 기본값 4.5)
