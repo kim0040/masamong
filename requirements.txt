@@ -3,7 +3,6 @@ discord.py>=2.0.0
 aiosqlite
 python-dotenv
 google-generativeai
-flatlib
 korean-lunar-calendar
 psutil
 pytz
