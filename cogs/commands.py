@@ -158,22 +158,17 @@ class UserCommands(commands.Cog):
                             io.BytesIO(result['image_data']),
                             filename="generated_image.jpg"
                         )
-                        embed = discord.Embed(
-                            title="🎨 이미지 생성 완료!",
-                            color=discord.Color.green()
+                        await ctx.reply(
+                            f"짜잔~ 이미지 생성했어! 🎨\n(남은 이미지 생성 횟수: {remaining}장)",
+                            file=image_file,
+                            mention_author=False
                         )
-                        embed.set_image(url="attachment://generated_image.jpg")
-                        embed.set_footer(text=f"남은 횟수: {remaining}장 | 요청: {prompt[:50]}...")
-                        await ctx.send(embed=embed, file=image_file)
                     else:
-                        # 폴백: URL로 임베드
-                        embed = discord.Embed(
-                            title="🎨 이미지 생성 완료!",
-                            color=discord.Color.green()
+                        # 폴백: URL로 전송
+                        await ctx.reply(
+                            f"짜잔~ 이미지 생성했어! 🎨\n{result['image_url']}\n\n(남은 이미지 생성 횟수: {remaining}장)",
+                            mention_author=False
                         )
-                        embed.set_image(url=result['image_url'])
-                        embed.set_footer(text=f"남은 횟수: {remaining}장 | 요청: {prompt[:50]}...")
-                        await ctx.send(embed=embed)
                     
                     logger.info(f"이미지 생성 성공 (명령어): user={ctx.author.id}", extra=log_extra)
                     

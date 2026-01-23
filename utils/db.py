@@ -268,3 +268,63 @@ async def log_image_generation(db: aiosqlite.Connection, user_id: int):
     except Exception as e:
         logger.error(f"이미지 생성 기록 중 오류 (user_id={user_id}): {e}", exc_info=True)
 
+
+# ========== DM Rate Limiting (New) ==========
+
+async def check_dm_message_limit(db: aiosqlite.Connection, user_id: int) -> tuple[bool, str]:
+    """DM 1:1 대화 제한을 확인합니다. (3시간당 5회)
+    
+    Returns:
+        (허용 여부, 안내 메시지용 리셋 시간 문자열 or None)
+    """
+    try:
+        LIMIT_WINDOW_HOURS = 3
+        LIMIT_COUNT = 5
+        
+        now = datetime.now(timezone.utc)
+        now_str = now.isoformat()
+        
+        async with db.execute("SELECT usage_count, window_start_at, reset_at FROM dm_usage_logs WHERE user_id = ?", (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            
+        if not row:
+            # 기록 없음 -> 초기화
+            reset_at = (now + timedelta(hours=LIMIT_WINDOW_HOURS)).isoformat()
+            await db.execute(
+                "INSERT INTO dm_usage_logs (user_id, usage_count, window_start_at, reset_at) VALUES (?, 1, ?, ?)",
+                (user_id, now_str, reset_at)
+            )
+            await db.commit()
+            return True, None
+            
+        usage_count, window_start_at, reset_at_str = row
+        reset_at_dt = datetime.fromisoformat(reset_at_str)
+        
+        if now > reset_at_dt:
+            # 윈도우 지남 -> 초기화
+            reset_at = (now + timedelta(hours=LIMIT_WINDOW_HOURS)).isoformat()
+            await db.execute(
+                "UPDATE dm_usage_logs SET usage_count = 1, window_start_at = ?, reset_at = ? WHERE user_id = ?",
+                (now_str, reset_at, user_id)
+            )
+            await db.commit()
+            return True, None
+        
+        # 윈도우 내 사용
+        if usage_count < LIMIT_COUNT:
+            # 카운트 증가
+            await db.execute(
+                "UPDATE dm_usage_logs SET usage_count = usage_count + 1 WHERE user_id = ?",
+                (user_id,)
+            )
+            await db.commit()
+            return True, None
+        
+        # 제한 도달
+        reset_kst = reset_at_dt.astimezone(KST).strftime('%H:%M')
+        return False, reset_kst
+            
+    except Exception as e:
+        logger.error(f"DM 제한 확인 중 오류 (user_id={user_id}): {e}", exc_info=True)
+        # 오류 시 통과 (서비스 가용성 우선)
+        return True, None
