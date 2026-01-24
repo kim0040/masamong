@@ -132,9 +132,9 @@ class MaintenanceCog(commands.Cog):
     @commands.group(name="debug", hidden=True)
     @commands.is_owner()
     async def debug(self, ctx: commands.Context):
-        """디버깅용 명령어 그룹입니다. (관리자 전용)"""
+        """(관리자 전용) 디버깅 명령어"""
         if ctx.invoked_subcommand is None:
-            await ctx.send("사용법: `!debug status`, `!debug reset_dm <user_id>`")
+            await ctx.send("🛠 **Debug Commands**\n`!debug status`\n`!debug reset_dm <user_id>`")
 
     @debug.command(name="status")
     async def debug_status(self, ctx: commands.Context):
