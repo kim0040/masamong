@@ -198,8 +198,12 @@ class FortuneCog(commands.Cog):
             await ctx.reply("⚠️ 구독 설정은 DM에서만 가능합니다.")
             return
 
+        if time_str in ["취소", "해제", "off", "cancel", "중단", "비활성", "비활성화"]:
+            await self.fortune_unsubscribe(ctx)
+            return
+
         if not TIME_PATTERN.match(time_str):
-            await ctx.send("❌ 올바른 시간 형식이 아닙니다. `HH:MM` (24시간제)로 입력해주세요.")
+            await ctx.send("❌ 올바른 시간 형식이 아닙니다. `HH:MM` (24시간제)로 입력해주세요.\n혹시 구독을 취소하시려면 `!구독 취소`라고 입력해주세요.")
             return
         
         # 5분 여유 확인
