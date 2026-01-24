@@ -132,6 +132,22 @@ class FortuneCog(commands.Cog):
                      await ctx.send("⏰ 입력 시간이 초과되었어요. `!운세 등록`을 처음부터 다시 시도해주세요.")
                      return
 
+
+
+            # 3. 성별 입력
+            gender = None
+            while gender is None:
+                await ctx.send("⚧ 성별을 알려주세요. (입력: `남성` 또는 `여성`)")
+                try:
+                    msg = await self.bot.wait_for('message', check=check, timeout=60.0)
+                    gender_input = msg.content.strip()
+                    if gender_input in ['남', '남자', '남성', 'M', 'Male']:
+                        gender = 'M'
+                    elif gender_input in ['여', '여자', '여성', 'F', 'Female']:
+                        gender = 'F'
+                    else:
+                        await ctx.send("❌ 성별을 정확히 입력해주세요. (`남성` 또는 `여성` 으로만 대답해주세요)")
+                        continue
                 except asyncio.TimeoutError:
                      await ctx.send("⏰ 입력 시간이 초과되었어요. `!운세 등록`을 처음부터 다시 시도해주세요.")
                      return
