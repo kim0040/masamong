@@ -367,3 +367,40 @@ async def check_global_dm_limit(db: aiosqlite.Connection) -> bool:
     except Exception as e:
         logger.error(f"전역 DM 제한 확인 중 오류: {e}", exc_info=True)
         return True # 오류 시 차단보다는 허용 (가용성)
+
+async def check_fortune_daily_limit(db: aiosqlite.Connection, user_id: int) -> tuple[bool, int]:
+    """
+    유저의 일일 운세 상세/월년 운세 조회 횟수를 제한합니다. (하루 3회)
+    Returns: (제한 도달 여부, 남은 횟수)
+    """
+    try:
+        LIMIT = 3
+        now_kst = datetime.now(KST)
+        today_key = f"fortune_limit_{user_id}_{now_kst.strftime('%Y-%m-%d')}"
+        
+        # 24시간 후 만료되는 키로 관리하거나, 간단히 로그 테이블 사용
+        # 여기서는 api_call_log 재활용 (type prefixed)
+        api_type = f"fortune_detail_{user_id}"
+        today_start_utc = now_kst.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
+        
+        async with db.execute(
+            "SELECT COUNT(*) FROM api_call_log WHERE api_type = ? AND called_at >= ?",
+            (api_type, today_start_utc)
+        ) as cursor:
+            row = await cursor.fetchone()
+            count = row[0] if row else 0
+            
+        remaining = max(0, LIMIT - count)
+        return (count >= LIMIT), remaining
+
+    except Exception as e:
+        logger.error(f"운세 제한 확인 중 오류: {e}", exc_info=True)
+        return False, 3
+
+async def log_fortune_usage(db: aiosqlite.Connection, user_id: int):
+    """운세 상세 조회 사용을 기록합니다."""
+    try:
+        api_type = f"fortune_detail_{user_id}"
+        await log_api_call(db, api_type)
+    except Exception as e:
+        logger.error(f"운세 사용 기록 실패: {e}")
