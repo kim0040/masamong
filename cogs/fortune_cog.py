@@ -339,8 +339,14 @@ class FortuneCog(commands.Cog):
                 period_str = "오늘"
                 prompt_focus = "오늘의 구체적인 운세 흐름을 알려줘."
 
-            # 채널 vs DM 분기 처리
-            if not is_dm and mode == 'day': # 서버 채널에서 오늘의 운세 요청 시 (간략 버전)
+            # 채널 vs DM 및 상세 옵션 처리
+            # 1. 서버 채널: 무조건 3줄 요약
+            # 2. DM (기본): 적당한 요약 (Moderate Summary)
+            # 3. DM (상세): 풀버전 상세 분석 (Full Detail)
+            
+            is_detail_request = (option and option.strip() in ['상세', 'detail'])
+            
+            if not is_dm and mode == 'day': # [Case 1] 서버 채널
                 model_name = MODEL_LITE
                 system_prompt = (
                     "너는 '마사몽'이야. 채널(공개된 공간)에서 사용자의 운세를 3줄로 핵심만 요약해서 알려줘. "
@@ -350,9 +356,24 @@ class FortuneCog(commands.Cog):
                     f"{fortune_data}\n\n"
                     f"사용자: {display_name} ({gender})\n"
                     f"이 사용자의 오늘의 운세를 **3줄 요약**해줘.\n"
-                    f"마지막 줄에는 반드시 '✨ 더 자세한 운세는 저에게 DM으로 `!운세`라고 보내주세요!' 라고 덧붙여줘."
+                    f"마지막 줄에는 반드시 '✨ 더 자세한 운세는 저에게 DM으로 `!운세 상세`라고 보내주세요!' 라고 덧붙여줘."
                 )
-            else: # DM 또는 상세 요청
+            
+            elif is_dm and not is_detail_request and mode == 'day': # [Case 2] DM 기본 (적당한 요약)
+                model_name = MODEL_LITE # 또는 PRO 사용하되 프롬프트로 조절
+                system_prompt = (
+                    "너는 사용자의 친구이자 개인 비서인 '마사몽'이야. "
+                    "오늘의 운세를 5~6문장 내외로 핵심만 짚어서 브리핑해줘. "
+                    "너무 길지 않게, 하지만 다정하고 명확하게 전달해."
+                )
+                user_prompt = (
+                    f"{fortune_data}\n\n"
+                    f"사용자: {display_name} ({gender})\n"
+                    f"오늘의 운세 핵심만 브리핑해줘. (총평, 주의할 점, 행운 요소 위주)\n"
+                    f"마지막 줄에 '✨ 아주 상세한 전체 분석을 보고 싶다면 `!운세 상세`를 입력해주세요!' 라고 안내해줘."
+                )
+
+            else: # [Case 3] DM 상세 or 월/년 운세
                 model_name = MODEL_PRO
                 system_prompt = (
                     "너는 전문 점성가이자 명리하자인 '마사몽'이야. "
@@ -381,7 +402,7 @@ class FortuneCog(commands.Cog):
                  if response:
                      await self._send_split_message(ctx, response)
                      # DM이고 상세 운세(오늘)인 경우 컨텍스트 저장
-                     if is_dm and mode == 'day':
+                     if is_dm and mode == 'day' and is_detail_request:
                          await self._update_last_fortune_context(user_id, response)
                  else:
                      await ctx.send("운세 분석에 실패했습니다. (AI 응답 없음)")
@@ -589,12 +610,12 @@ class FortuneCog(commands.Cog):
         }
         return prompts.get(key, prompts['fortune_summary'])
 
-    async def _send_split_message(self, ctx: commands.Context, text: str):
-        """2000자 초과 메시지 분할 전송"""
+    async def _send_split_message(self, destination, text: str):
+        """2000자 초과 메시지 분할 전송 (destination: ctx or user or channel)"""
         if not text: return
         chunk_size = 1900
         for i in range(0, len(text), chunk_size):
-            await ctx.send(text[i:i + chunk_size])
+            await destination.send(text[i:i + chunk_size])
             await asyncio.sleep(0.5)
 
 
@@ -717,7 +738,9 @@ class FortuneCog(commands.Cog):
                         )
 
                     if final_msg:
-                        await user.send(f"🌞 **좋은 아침이에요! 오늘의 모닝 브리핑**\n\n{final_msg}")
+                        message_header = f"🌞 **좋은 아침이에요! 오늘의 모닝 브리핑**\n\n"
+                        full_message = message_header + final_msg
+                        await self._send_split_message(user, full_message)
                         
                         # 전송 완료 처리 및 pending 초기화
                         await self.bot.db.execute(
