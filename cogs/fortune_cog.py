@@ -379,7 +379,7 @@ class FortuneCog(commands.Cog):
                  )
                  
                  if response:
-                     await ctx.send(response)
+                     await self._send_split_message(ctx, response)
                      # DM이고 상세 운세(오늘)인 경우 컨텍스트 저장
                      if is_dm and mode == 'day':
                          await self._update_last_fortune_context(user_id, response)
@@ -550,7 +550,10 @@ class FortuneCog(commands.Cog):
                     color=0x9b59b6
                 )
                 embed.set_footer(text=f"기준 시각: {now.strftime('%Y-%m-%d %H:%M')}")
-                await ctx.send(embed=embed)
+                if len(response) > 4000: # 임베드 제한 초과 시 분할 텍스트로 보냄
+                     await self._send_split_message(ctx, response)
+                else:
+                     await ctx.send(embed=embed)
             else:
                 await ctx.send("별들의 목소리가 오늘따라 희미하네요... 잠시 후 다시 시도해주세요.")
 
@@ -585,6 +588,14 @@ class FortuneCog(commands.Cog):
             )
         }
         return prompts.get(key, prompts['fortune_summary'])
+
+    async def _send_split_message(self, ctx: commands.Context, text: str):
+        """2000자 초과 메시지 분할 전송"""
+        if not text: return
+        chunk_size = 1900
+        for i in range(0, len(text), chunk_size):
+            await ctx.send(text[i:i + chunk_size])
+            await asyncio.sleep(0.5)
 
 
     @tasks.loop(minutes=1)

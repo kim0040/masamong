@@ -1421,6 +1421,34 @@ Generate the optimized English image prompt:"""
 
         return "\n".join(lines) if lines else "도구 실행 결과 없음"
 
+    async def _send_split_message(self, message: discord.Message, text: str):
+        """
+        2000자가 넘는 메시지를 안전하게 나누어 전송합니다.
+        Discord의 메시지 길이 제한(2000자)을 준수합니다.
+        """
+        if not text:
+            return
+
+        # 1900자로 여유 있게 설정 (기타 포맷팅 고려)
+        chunk_size = 1900
+        
+        # 텍스트가 짧으면 바로 전송
+        if len(text) <= chunk_size:
+            await message.reply(text, mention_author=False)
+            return
+
+        # 긴 텍스트 분할 전송
+        chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
+        
+        for i, chunk in enumerate(chunks):
+            # 첫 번째 메시지는 reply로, 나머지는 일반 메시지로 전송하여 스레드처럼 보이게 함
+            if i == 0:
+                await message.reply(chunk, mention_author=False)
+            else:
+                await message.channel.send(chunk)
+            # 순서 보장을 위한 짧은 텀
+            await asyncio.sleep(0.5)
+
     @staticmethod
     def _build_rag_debug_block(entries: list[dict]) -> str:
         """RAG 후보를 로그로 남기기 위한 포맷터."""
@@ -1871,7 +1899,7 @@ Generate the optimized English image prompt:"""
                     final_response_text = re.sub(r'^@masamong\s*', '', final_response_text, flags=re.IGNORECASE)
                     final_response_text = re.sub(r'^<@!?[0-9]+>\s*', '', final_response_text)
                     
-                    await message.reply(final_response_text, mention_author=False)
+                    await self._send_split_message(message, final_response_text)
                     await db_utils.log_analytics(
                         self.bot.db,
                         "AI_INTERACTION",
