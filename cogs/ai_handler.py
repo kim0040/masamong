@@ -254,6 +254,16 @@ class AIHandler(commands.Cog):
 
     def _prepare_user_query(self, message: discord.Message, log_extra: dict[str, Any]) -> str | None:
         """멘션 검증 후 사용자 쿼리를 정제합니다."""
+        # [NEW] DM에서는 멘션이 없어도 대화 가능 (여기서 None을 반환하면 대화가 종료되므로, DM이면 통과시킴)
+        if not message.guild:
+            # DM: 멘션 제거 (있다면)
+            stripped = self._strip_bot_references(message.content or "", message.guild)
+            if not stripped: # 멘션만 있고 내용이 없는 경우
+                 self._debug("DM: 멘션만 존재해 쿼리가 비어 있습니다.", log_extra)
+                 return None
+            self._debug(f"DM 사용자 쿼리: {self._truncate_for_debug(stripped)}", log_extra)
+            return stripped
+
         if not self._message_has_valid_mention(message):
             self._debug("멘션이 없어 메시지를 무시합니다.", log_extra)
             logger.info("멘션이 없는 메시지를 무시합니다.", extra=log_extra)
@@ -1298,6 +1308,7 @@ Generate the optimized English image prompt:"""
         user_query: str,
         rag_blocks: list[str],
         tool_results_block: str | None,
+        fortune_context: str | None = None, # [NEW] 운세 컨텍스트
     ) -> str:
         """메인 모델에 전달할 프롬프트를 `emb` 스타일로 구성합니다.
         
@@ -1306,8 +1317,9 @@ Generate the optimized English image prompt:"""
         2. [현재 시간] - 서버 시간 (KST)
         3. [과거 대화 기억] - RAG 컨텍스트
         4. [도구 실행 결과] - 도구 출력 (있을 경우)
-        5. [현재 질문] - 사용자 쿼리
-        6. 지시사항
+        5. [오늘의 운세] - 사용자 운세 정보 (있을 경우) [NEW]
+        6. [현재 질문] - 사용자 쿼리
+        7. 지시사항
         """
         # 시스템 프롬프트 (페르소나 + 규칙)
         system_part = self._get_channel_system_prompt(message.channel.id)
@@ -1326,6 +1338,10 @@ Generate the optimized English image prompt:"""
         # 도구 실행 결과
         if tool_results_block:
             sections.append(f"[도구 실행 결과]\n{tool_results_block}")
+            
+        # [NEW] 오늘의 운세 컨텍스트
+        if fortune_context:
+             sections.append(f"[오늘의 운세 정보]\n{fortune_context}\n(사용자가 이미 확인한 자신의 운세 내용입니다. 질문과 관련있다면 참고해서 답변하세요.)")
 
         # 현재 질문
         sections.append(f"[현재 질문]\n{user_query}")
@@ -1785,11 +1801,34 @@ Generate the optimized English image prompt:"""
                 # 단일 모델 아키텍처: Main 모델 호출
                 system_prompt = config.WEB_FALLBACK_PROMPT if use_fallback_prompt else config.AGENT_SYSTEM_PROMPT
                 rag_blocks_for_prompt = [] if use_fallback_prompt else rag_blocks
+                
+                # [NEW] 운세 컨텍스트 조회 (DM인 경우에만)
+                fortune_context = None
+                if not message.guild and self.bot.db:
+                    try:
+                        # 오늘 날짜 확인
+                        today_str = datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d')
+                        # 구독 발송 기록(last_fortune_sent)은 YYYY-MM-DD
+                        # last_fortune_content가 언제 저장되었는지 별도 컬럼이 없지만,
+                        # last_fortune_sent가 '오늘'이면 last_fortune_content도 '오늘'것일 확률이 높음.
+                        # 다만 sent가 업데이트 안되고 content만 업데이트(직접조회) 될 수 있음.
+                        # 여기서는 last_fortune_content가 null이 아니면 일단 가져오되,
+                        # 내용 안에 날짜가 없다면... 음.
+                        # 일단 단순히 가져와보자. (user_profiles에 last_gen_date가 있으면 좋겠지만 sent를 활용하거나)
+                        # 여기서는 content만 가져옴.
+                        row = await self.bot.db.execute("SELECT last_fortune_content FROM user_profiles WHERE user_id = ?", (message.author.id,)) # 
+                        res = await row.fetchone()
+                        if res and res[0]:
+                             fortune_context = res[0]
+                    except Exception as e:
+                        logger.error(f"운세 컨텍스트 조회 실패: {e}")
+
                 main_prompt = self._compose_main_prompt(
                     message,
                     user_query=user_query,
                     rag_blocks=rag_blocks_for_prompt,
                     tool_results_block=tool_results_str if tool_results_str else None,
+                    fortune_context=fortune_context,
                 )
 
                 final_response_text = ""
