@@ -56,6 +56,12 @@ class FortuneCog(commands.Cog):
                     await self.bot.db.execute("ALTER TABLE user_profiles ADD COLUMN last_fortune_content TEXT")
                     await self.bot.db.commit()
                     logger.info("Added 'last_fortune_content' column to user_profiles")
+
+                if 'birth_place' not in columns:
+                    logger.info("필요한 컬럼(birth_place)이 없어 추가합니다.")
+                    await self.bot.db.execute("ALTER TABLE user_profiles ADD COLUMN birth_place TEXT")
+                    await self.bot.db.commit()
+                    logger.info("Added 'birth_place' column to user_profiles")
         except Exception as e:
             logger.error(f"Failed to check/add column: {e}")
         finally:
@@ -126,26 +132,27 @@ class FortuneCog(commands.Cog):
                      await ctx.send("⏰ 입력 시간이 초과되었어요. `!운세 등록`을 처음부터 다시 시도해주세요.")
                      return
 
-            # 3. 성별 입력
-            gender = None
-            while gender is None:
-                await ctx.send("⚧ 성별을 알려주세요. (입력: `남성` 또는 `여성`)")
+                except asyncio.TimeoutError:
+                     await ctx.send("⏰ 입력 시간이 초과되었어요. `!운세 등록`을 처음부터 다시 시도해주세요.")
+                     return
+
+            # 4. 태어난 지역 (New)
+            birth_place = None
+            while birth_place is None:
+                await ctx.send("🌍 태어난 지역도 알려주세요. (예: `서울`, `부산`, `뉴욕`, `도쿄`)\n동/읍/면 단위가 아닌 **시/군** 단위로 적어주시면 충분합니다!")
                 try:
                     msg = await self.bot.wait_for('message', check=check, timeout=60.0)
-                    gender_input = msg.content.strip()
-                    if gender_input in ['남', '남자', '남성', 'M', 'Male']:
-                        gender = 'M'
-                    elif gender_input in ['여', '여자', '여성', 'F', 'Female']:
-                        gender = 'F'
-                    else:
-                        await ctx.send("❌ 성별을 정확히 입력해주세요. (`남성` 또는 `여성` 으로만 대답해주세요)")
+                    place_input = msg.content.strip()
+                    if len(place_input) < 2:
+                        await ctx.send("❌ 지역 이름이 너무 짧아요. 다시 입력해주세요.")
                         continue
+                    birth_place = place_input
                 except asyncio.TimeoutError:
                      await ctx.send("⏰ 입력 시간이 초과되었어요. `!운세 등록`을 처음부터 다시 시도해주세요.")
                      return
 
             # DB 저장 (기본적으로 구독은 비활성화 상태로 저장)
-            await self._save_user_profile(ctx.author.id, birth_date, birth_time, gender)
+            await self._save_user_profile(ctx.author.id, birth_date, birth_time, gender, birth_place)
             await ctx.send(
                 f"✅ 정보 등록이 완료되었습니다!\n"
                 f"이제 언제든 `!운세` 명령어로 오늘의 운세를 확인하실 수 있습니다.\n\n"
@@ -159,14 +166,14 @@ class FortuneCog(commands.Cog):
             # [Safety Lock Release] 작업 종료 후 반드시 잠금 해제
             self.bot.locked_users.discard(ctx.author.id)
 
-    async def _save_user_profile(self, user_id, birth_date, birth_time, gender):
+    async def _save_user_profile(self, user_id, birth_date, birth_time, gender, birth_place):
         """DB에 사용자 프로필 저장/업데이트"""
         async with self.bot.db.execute(
             """
-            INSERT OR REPLACE INTO user_profiles (user_id, birth_date, birth_time, gender, created_at)
-            VALUES (?, ?, ?, ?, datetime('now'))
+            INSERT OR REPLACE INTO user_profiles (user_id, birth_date, birth_time, gender, birth_place, created_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'))
             """,
-            (user_id, birth_date, birth_time, gender)
+            (user_id, birth_date, birth_time, gender, birth_place)
         ):
             await self.bot.db.commit()
 
@@ -270,14 +277,22 @@ class FortuneCog(commands.Cog):
         """운세 브리핑 구독 전용 명령어입니다. (DM 전용)"""
         await self.fortune_subscribe(ctx, time_str)
     
-    @commands.command(name='이번달운세')
-    async def monthly_fortune(self, ctx: commands.Context):
-        """이번 달의 운세를 확인합니다."""
+    @commands.command(name='이번달운세', aliases=['이번달'])
+    @commands.dm_only()
+    async def monthly_fortune(self, ctx: commands.Context, arg: str = None):
+        """이번 달의 운세를 확인합니다. (하루 3회 제한)"""
+        # !이번달 운세 <- 이렇게 띄어쓰기 한 경우 처리
+        if arg and arg not in ['운세']:
+             return # 다른 명령어일 수 있음
         await self._check_fortune_logic(ctx, mode='month')
 
-    @commands.command(name='올해운세')
-    async def yearly_fortune(self, ctx: commands.Context):
-        """올해의 운세를 확인합니다."""
+    @commands.command(name='올해운세', aliases=['올해', '신년운세'])
+    @commands.dm_only()
+    async def yearly_fortune(self, ctx: commands.Context, arg: str = None):
+        """올해의 운세를 확인합니다. (하루 3회 제한)"""
+        # !올해 운세 <- 띄어쓰기 대응
+        if arg and arg not in ['운세']:
+             return
         await self._check_fortune_logic(ctx, mode='year')
 
     async def _check_fortune_logic(self, ctx: commands.Context, option: str = None, mode: str = 'day'):
@@ -285,8 +300,18 @@ class FortuneCog(commands.Cog):
         user_id = ctx.author.id
         is_dm = isinstance(ctx.channel, discord.DMChannel)
         
-        # 1. 프로필 조회
-        cursor = await self.bot.db.execute("SELECT birth_date, birth_time, gender FROM user_profiles WHERE user_id = ?", (user_id,))
+        # 1. 운세 상세 / 월 / 년 조회 시 제한 체크
+        is_detail_request = (option and option.strip() in ['상세', 'detail'])
+        usage_check_needed = (mode in ['month', 'year']) or (is_dm and is_detail_request)
+        
+        if usage_check_needed:
+            is_limited, remaining = await db_utils.check_fortune_daily_limit(self.bot.db, user_id)
+            if is_limited:
+                await ctx.send(f"⛔ **일일 운세 조회 한도 초과!**\n상세 운세(월/년/상세)는 하루 3회까지만 가능해요.\n내일 다시 찾아와주세요! 🌙")
+                return
+
+        # 2. 프로필 조회
+        cursor = await self.bot.db.execute("SELECT birth_date, birth_time, gender, birth_place FROM user_profiles WHERE user_id = ?", (user_id,))
         row = await cursor.fetchone()
         
         if not row:
@@ -296,14 +321,16 @@ class FortuneCog(commands.Cog):
                  await ctx.send("🔮 아직 정보가 없네요. `!운세 등록`으로 생년월일을 알려주세요!")
             return
 
-        birth_date, birth_time, gender = row
-        # gender fallback for old records
+        birth_date, birth_time, gender, birth_place = row
+        # gender/place fallback for old records
         gender = gender or 'M' 
+        birth_place = birth_place or "대한민국" 
         
         # Typing indicator (작성 중 표시)
         async with ctx.typing():
-            # 2. 운세 데이터 생성
+            # 운세 데이터 생성
             fortune_data = self.calculator.get_comprehensive_info(birth_date, birth_time)
+            fortune_data += f"\n[Birth Place]: {birth_place}"
             
             # 3. AI 핸들러 호출
             ai_handler = self.bot.get_cog('AIHandler')
@@ -404,6 +431,11 @@ class FortuneCog(commands.Cog):
                      # DM이고 상세 운세(오늘)인 경우 컨텍스트 저장
                      if is_dm and mode == 'day' and is_detail_request:
                          await self._update_last_fortune_context(user_id, response)
+                     
+                     # 상세/월/년 운세 성공 시 카운트 증가
+                     if usage_check_needed:
+                         await db_utils.log_fortune_usage(self.bot.db, user_id)
+                         await ctx.send(f"💡 남은 일일 조회 횟수: {remaining - 1}회")
                  else:
                      await ctx.send("운세 분석에 실패했습니다. (AI 응답 없음)")
                      
