@@ -1876,7 +1876,7 @@ Generate the optimized English image prompt:"""
                         self.bot.db,
                         "AI_INTERACTION",
                         {
-                            "guild_id": message.guild.id,
+                            "guild_id": message.guild.id if message.guild else "DM",
                             "user_id": message.author.id,
                             "channel_id": message.channel.id,
                             "trace_id": trace_id,
