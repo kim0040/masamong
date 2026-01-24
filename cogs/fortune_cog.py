@@ -85,9 +85,12 @@ class FortuneCog(commands.Cog):
         """
         사용자의 생년월일 정보를 대화형으로 입력받아 등록합니다. (DM 전용)
         """
+        # [Safety Lock] 다른 명령어/AI 응답 방지
+        self.bot.locked_users.add(ctx.author.id)
+        
         try:
             # 1. 생년월일 입력
-            await ctx.send("📝 운세 서비스를 위해 생년월일을 입력해주세요. (예: 1990-01-01)")
+            await ctx.send("📝 운세 서비스를 위해 생년월일을 입력해주세요.\n(예: `1990-01-01` - 연드-월-일 순서, 하이픈 필수!)")
             
             def check(m):
                 return m.author == ctx.author and m.channel == ctx.channel
@@ -98,14 +101,14 @@ class FortuneCog(commands.Cog):
                 # 날짜 형식 검증
                 datetime.strptime(birth_date, '%Y-%m-%d')
             except ValueError:
-                await ctx.send("❌ 형식이 올바르지 않아요. `YYYY-MM-DD` 형식으로 다시 시도해주세요.")
+                await ctx.send("❌ 날짜 형식이 올바르지 않아요!\n**올바른 예시**: `1999-12-25` (반드시 하이픈 `-`을 넣어주세요)")
                 return
             except asyncio.TimeoutError:
-                await ctx.send("⏰ 시간이 초과되었어요. 다시 명령어를 입력해주세요.")
+                await ctx.send("⏰ 입력 시간이 초과되었어요. `!운세 등록`을 다시 입력해주세요.")
                 return
 
             # 2. 태어난 시간 입력
-            await ctx.send("🕒 태어난 시간도 알려주세요. 모르면 `모름`이라고 입력해주세요. (예: 14:30)")
+            await ctx.send("🕒 태어난 시간도 알려주세요. (예: `14:30` - 오후 2시 30분)\n정확히 모르면 `모름`이라고 입력해주세요.")
             try:
                 msg = await self.bot.wait_for('message', check=check, timeout=60.0)
                 birth_time_input = msg.content.strip()
@@ -113,15 +116,15 @@ class FortuneCog(commands.Cog):
                     birth_time = "12:00"
                 else:
                     if not TIME_PATTERN.match(birth_time_input):
-                         await ctx.send("❌ 시간 형식이 올바르지 않아요. `HH:MM` 형식으로 입력하거나 `모름`이라고 해주세요.")
+                         await ctx.send("❌ 시간 형식이 올바르지 않아요!\n**올바른 예시**: `09:30` (오전 9시 반), `23:00` (밤 11시)\n혹은 `모름`이라고 입력해주세요.")
                          return
                     birth_time = birth_time_input
             except asyncio.TimeoutError:
-                 await ctx.send("⏰ 시간이 초과되었어요. 다시 명령어를 입력해주세요.")
+                 await ctx.send("⏰ 입력 시간이 초과되었어요. `!운세 등록`을 다시 입력해주세요.")
                  return
 
-            # 3. 성별 입력 [NEW]
-            await ctx.send("⚧ 성별을 알려주세요. (입력: `남성` 또는 `여성`)\n(정확한 사주 분석을 위해 필요합니다!)")
+            # 3. 성별 입력
+            await ctx.send("⚧ 성별을 알려주세요. (입력: `남성` 또는 `여성`)")
             try:
                 msg = await self.bot.wait_for('message', check=check, timeout=60.0)
                 gender_input = msg.content.strip()
@@ -130,10 +133,10 @@ class FortuneCog(commands.Cog):
                 elif gender_input in ['여', '여자', '여성', 'F', 'Female']:
                     gender = 'F'
                 else:
-                    await ctx.send("❌ 정확한 성별을 입력해주세요. (남성/여성)")
+                    await ctx.send("❌ 성별을 정확히 입력해주세요. (`남성` 또는 `여성` 으로만 대답해주세요)")
                     return
             except asyncio.TimeoutError:
-                 await ctx.send("⏰ 시간이 초과되었어요. 다시 명령어를 입력해주세요.")
+                 await ctx.send("⏰ 입력 시간이 초과되었어요. `!운세 등록`을 다시 입력해주세요.")
                  return
 
             # DB 저장 (기본적으로 구독은 비활성화 상태로 저장)
@@ -147,6 +150,9 @@ class FortuneCog(commands.Cog):
         except Exception as e:
             logger.error(f"운세 등록 중 오류: {e}", exc_info=True)
             await ctx.send("❌ 등록 중 오류가 발생했습니다.")
+        finally:
+            # [Safety Lock Release] 작업 종료 후 반드시 잠금 해제
+            self.bot.locked_users.discard(ctx.author.id)
 
     async def _save_user_profile(self, user_id, birth_date, birth_time, gender):
         """DB에 사용자 프로필 저장/업데이트"""
