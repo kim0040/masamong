@@ -109,11 +109,13 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     user_id INTEGER PRIMARY KEY,
     birth_date TEXT, -- YYYY-MM-DD
     birth_time TEXT, -- HH:MM
+    gender TEXT, -- [NEW] 성별 (M/F)
     is_lunar BOOLEAN DEFAULT 0, -- 0: 양력, 1: 음력
     subscription_active BOOLEAN DEFAULT 0, -- 모닝 브리핑 구독 여부 (0: 비활성, 1: 활성)
     subscription_time TEXT DEFAULT '07:30', -- 모닝 브리핑 발송 시간
     pending_payload TEXT, -- [NEW] 미리 생성된 브리핑 내용
     last_fortune_sent TEXT, -- YYYY-MM-DD (중복 발송 방지)
+    last_fortune_content TEXT, -- [NEW] 마지막으로 조회한 운세 내용 (컨텍스트용)
     created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc'))
 );
 

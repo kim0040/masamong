@@ -44,6 +44,18 @@ class FortuneCog(commands.Cog):
                     await self.bot.db.execute("ALTER TABLE user_profiles ADD COLUMN pending_payload TEXT")
                     await self.bot.db.commit()
                     logger.info("Added 'pending_payload' column to user_profiles")
+
+                if 'gender' not in columns:
+                    logger.info("필요한 컬럼(gender)이 없어 추가합니다.")
+                    await self.bot.db.execute("ALTER TABLE user_profiles ADD COLUMN gender TEXT")
+                    await self.bot.db.commit()
+                    logger.info("Added 'gender' column to user_profiles")
+
+                if 'last_fortune_content' not in columns:
+                    logger.info("필요한 컬럼(last_fortune_content)이 없어 추가합니다.")
+                    await self.bot.db.execute("ALTER TABLE user_profiles ADD COLUMN last_fortune_content TEXT")
+                    await self.bot.db.commit()
+                    logger.info("Added 'last_fortune_content' column to user_profiles")
         except Exception as e:
             logger.error(f"Failed to check/add column: {e}")
         finally:
@@ -107,8 +119,24 @@ class FortuneCog(commands.Cog):
                  await ctx.send("⏰ 시간이 초과되었어요. 다시 명령어를 입력해주세요.")
                  return
 
+            # 3. 성별 입력 [NEW]
+            await ctx.send("⚧ 성별을 알려주세요. (입력: `남성` 또는 `여성`)\n(정확한 사주 분석을 위해 필요합니다!)")
+            try:
+                msg = await self.bot.wait_for('message', check=check, timeout=60.0)
+                gender_input = msg.content.strip()
+                if gender_input in ['남', '남자', '남성', 'M', 'Male']:
+                    gender = 'M'
+                elif gender_input in ['여', '여자', '여성', 'F', 'Female']:
+                    gender = 'F'
+                else:
+                    await ctx.send("❌ 정확한 성별을 입력해주세요. (남성/여성)")
+                    return
+            except asyncio.TimeoutError:
+                 await ctx.send("⏰ 시간이 초과되었어요. 다시 명령어를 입력해주세요.")
+                 return
+
             # DB 저장 (기본적으로 구독은 비활성화 상태로 저장)
-            await self._save_user_profile(ctx.author.id, birth_date, birth_time)
+            await self._save_user_profile(ctx.author.id, birth_date, birth_time, gender)
             await ctx.send(
                 f"✅ 정보 등록이 완료되었습니다!\n"
                 f"이제 언제든 `!운세` 명령어로 오늘의 운세를 확인하실 수 있습니다.\n\n"
@@ -119,16 +147,27 @@ class FortuneCog(commands.Cog):
             logger.error(f"운세 등록 중 오류: {e}", exc_info=True)
             await ctx.send("❌ 등록 중 오류가 발생했습니다.")
 
-    async def _save_user_profile(self, user_id, birth_date, birth_time):
+    async def _save_user_profile(self, user_id, birth_date, birth_time, gender):
         """DB에 사용자 프로필 저장/업데이트"""
         async with self.bot.db.execute(
             """
-            INSERT OR REPLACE INTO user_profiles (user_id, birth_date, birth_time, created_at)
-            VALUES (?, ?, ?, datetime('now'))
+            INSERT OR REPLACE INTO user_profiles (user_id, birth_date, birth_time, gender, created_at)
+            VALUES (?, ?, ?, ?, datetime('now'))
             """,
-            (user_id, birth_date, birth_time)
+            (user_id, birth_date, birth_time, gender)
         ):
             await self.bot.db.commit()
+
+    async def _update_last_fortune_context(self, user_id: int, content: str):
+        """사용자가 마지막으로 받은 운세 내용을 DB에 저장하여 컨텍스트로 활용"""
+        try:
+             await self.bot.db.execute(
+                "UPDATE user_profiles SET last_fortune_content = ? WHERE user_id = ?",
+                (content, user_id)
+            )
+             await self.bot.db.commit()
+        except Exception as e:
+            logger.error(f"운세 컨텍스트 저장 실패: {e}")
 
     @fortune.command(name='삭제')
     async def fortune_delete(self, ctx: commands.Context):
@@ -214,13 +253,24 @@ class FortuneCog(commands.Cog):
     async def global_subscribe(self, ctx: commands.Context, time_str: str):
         """운세 브리핑 구독 전용 명령어입니다. (DM 전용)"""
         await self.fortune_subscribe(ctx, time_str)
+    
+    @commands.command(name='이번달운세')
+    async def monthly_fortune(self, ctx: commands.Context):
+        """이번 달의 운세를 확인합니다."""
+        await self._check_fortune_logic(ctx, mode='month')
 
-    async def _check_fortune_logic(self, ctx: commands.Context, option: str = None):
+    @commands.command(name='올해운세')
+    async def yearly_fortune(self, ctx: commands.Context):
+        """올해의 운세를 확인합니다."""
+        await self._check_fortune_logic(ctx, mode='year')
+
+    async def _check_fortune_logic(self, ctx: commands.Context, option: str = None, mode: str = 'day'):
         """오늘의 운세를 분석하여 출력하는 핵심 로직"""
         user_id = ctx.author.id
+        is_dm = isinstance(ctx.channel, discord.DMChannel)
         
         # 1. 프로필 조회
-        cursor = await self.bot.db.execute("SELECT birth_date, birth_time FROM user_profiles WHERE user_id = ?", (user_id,))
+        cursor = await self.bot.db.execute("SELECT birth_date, birth_time, gender FROM user_profiles WHERE user_id = ?", (user_id,))
         row = await cursor.fetchone()
         
         if not row:
@@ -230,7 +280,9 @@ class FortuneCog(commands.Cog):
                  await ctx.send("🔮 아직 정보가 없네요. `!운세 등록`으로 생년월일을 알려주세요!")
             return
 
-        birth_date, birth_time = row
+        birth_date, birth_time, gender = row
+        # gender fallback for old records
+        gender = gender or 'M' 
         
         # Typing indicator (작성 중 표시)
         async with ctx.typing():
@@ -253,46 +305,52 @@ class FortuneCog(commands.Cog):
                  user_sign = get_sign_from_date(b_month, b_day)
                  now = datetime.now(pytz.timezone('Asia/Seoul'))
                  astro_chart = self.calculator._get_astrology_chart(now)
-                 fortune_data += f"\n[User Zodiac]: {user_sign}\n[Astro Chart]: {astro_chart}"
+                 fortune_data += f"\n[User Zodiac]: {user_sign}\n[Gender]: {gender}\n[Astro Chart]: {astro_chart}"
             except Exception as e:
                  logger.error(f"Zodiac integration error: {e}")
                  user_sign = "알 수 없음"
 
             # 프롬프트 설정 (통합)
             display_name = ctx.author.display_name
-            if option and '상세' in option:
+            
+            if mode == 'month':
+                period_str = "이번 달"
+                prompt_focus = "이번 달의 전반적인 흐름과 주의사항을 알려줘."
+            elif mode == 'year':
+                period_str = "올해"
+                prompt_focus = "올해의 총운과 월별 흐름을 간략히 포함해줘."
+            else:
+                period_str = "오늘"
+                prompt_focus = "오늘의 구체적인 운세 흐름을 알려줘."
+
+            # 채널 vs DM 분기 처리
+            if not is_dm and mode == 'day': # 서버 채널에서 오늘의 운세 요청 시 (간략 버전)
+                model_name = MODEL_LITE
+                system_prompt = (
+                    "너는 '마사몽'이야. 채널(공개된 공간)에서 사용자의 운세를 3줄로 핵심만 요약해서 알려줘. "
+                    "구체적인 내용은 DM으로 확인하라고 안내해야 해."
+                )
+                user_prompt = (
+                    f"{fortune_data}\n\n"
+                    f"사용자: {display_name} ({gender})\n"
+                    f"이 사용자의 오늘의 운세를 **3줄 요약**해줘.\n"
+                    f"마지막 줄에는 반드시 '✨ 더 자세한 운세는 저에게 DM으로 `!운세`라고 보내주세요!' 라고 덧붙여줘."
+                )
+            else: # DM 또는 상세 요청
                 model_name = MODEL_PRO
                 system_prompt = (
                     "너는 전문 점성가이자 명리하자인 '마사몽'이야. "
                     "사용자의 운세와 별자리 정보를 깊이 있게 분석해서 상세한 답변을 제공해줘. "
-                    "각 관점(동양/서양)에서 보이는 특징을 설명하고, 이를 종합한 결론을 내려줘. "
-                    "출력 형식은 가독성 좋은 마크다운(Markdown)을 사용해. (## 소제목, **강조**, - 리스트 등)"
+                    "동양(사주)과 서양(별자리) 관점을 종합하고, 성별을 고려하여 섬세하게 조언해줘. "
+                    "출력 형식은 가독성 좋은 마크다운(Markdown)을 사용해."
                 )
                 user_prompt = (
                     f"{fortune_data}\n\n"
                     f"사용자 닉네임: {display_name}\n"
-                    f"위 데이터를 바탕으로 {user_sign} 사용자({birth_date})의 오늘 운세를 아주 상세하게 분석해줘.\n"
-                    f"항목: [총평], [재물운], [연애/인간관계], [건강운], [마사몽의 심층 조언]"
-                )
-            else:
-                model_name = MODEL_LITE
-                system_prompt = (
-                    "너는 '마사몽'이야. 사용자의 운세(일진)와 별자리 운세를 종합해서 오늘의 운세를 알려줘. "
-                    "일반 사용자는 사주와 별자리를 잘 구별하지 못하므로, 두 가지 관점을 자연스럽게 섞어서 설명해줘. "
-                    "내용은 너무 짧지 않게, 하지만 가독성 있게 작성해. "
-                    "말투는 친근하고 다정한 존댓말을 써. "
-                    "출력 형식은 마크다운(Markdown)을 꼭 지켜줘."
-                )
-                user_prompt = (
-                    f"{fortune_data}\n\n"
-                    f"사용자 닉네임: {display_name}\n"
-                    f"위 데이터를 바탕으로 {user_sign} 사용자({birth_date})의 오늘 운세를 종합적으로 분석해줘. "
-                    f"닉네임을 부르며 대답해줘.\n"
-                    f"다음 항목을 포함해줘:\n"
-                    f"1. 🌟 오늘의 흐름 (운세와 별자리의 공통적인 기운)\n"
-                    f"2. 💬 조언 (주의할 점이나 추천 행동)\n"
-                    f"3. 🍀 행운의 팁\n"
-                    f"내용은 너무 어렵지 않게, 적당한 길이로 작성해."
+                    f"성별: {gender}\n"
+                    f"위 데이터를 바탕으로 {user_sign} 사용자({birth_date})의 {period_str} 운세를 아주 상세하게 분석해줘.\n"
+                    f"{prompt_focus}\n"
+                    f"항목: [총평], [재물운], [연애/인간관계], [건강운], [마사몽의 행운 팁]"
                 )
 
             # 모델 라우팅
@@ -300,18 +358,22 @@ class FortuneCog(commands.Cog):
                  response = await ai_handler._cometapi_generate_content(
                      system_prompt, 
                      user_prompt, 
-                     log_extra={'user_id': user_id, 'mode': 'fortune_combined'},
+                     log_extra={'user_id': user_id, 'mode': f'fortune_{mode}'},
                      model=model_name
                  )
                  
                  if response:
                      await ctx.send(response)
+                     # DM이고 상세 운세(오늘)인 경우 컨텍스트 저장
+                     if is_dm and mode == 'day':
+                         await self._update_last_fortune_context(user_id, response)
                  else:
                      await ctx.send("운세 분석에 실패했습니다. (AI 응답 없음)")
                      
             except Exception as e:
                  logger.error(f"운세 요청 처리 중 오류: {e}", exc_info=True)
                  await ctx.send("운세 시스템에 문제가 발생했습니다.")
+
 
 
     @commands.group(name='별자리', aliases=['운세전체'])
@@ -487,7 +549,7 @@ class FortuneCog(commands.Cog):
             # 구독 시간이 pre_gen_time_str이고, 오늘 아직 안 보냈고, pending 데이터가 없는 사람
             cursor = await self.bot.db.execute(
                 """
-                SELECT user_id, birth_date, birth_time 
+                SELECT user_id, birth_date, birth_time, gender
                 FROM user_profiles 
                 WHERE subscription_active = 1 
                   AND subscription_time = ? 
@@ -501,18 +563,19 @@ class FortuneCog(commands.Cog):
             ai_handler = self.bot.get_cog('AIHandler')
 
             if pre_gen_users and ai_handler:
-                for user_id, birth_date, birth_time in pre_gen_users:
+                for user_id, birth_date, birth_time, gender in pre_gen_users:
                     try:
                         # 유저 정보 가져오기 (닉네임용)
                         user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
                         display_name = user.display_name if user else "사용자"
+                        gender = gender or 'M'
 
                         # 운세 데이터 생성
                         fortune_data = self.calculator.get_comprehensive_info(birth_date, birth_time)
                         system_prompt = self._get_system_prompt("fortune_morning")
                         user_prompt = (
                             f"{fortune_data}\n\n"
-                            f"사용자 닉네임: {display_name}\n\n"
+                            f"사용자: {display_name} ({gender})\n\n"
                             f"오늘자 모닝 브리핑을 작성해줘. 첫머리에 '{display_name}님, 좋은 아침이에요!'와 같은 인사를 꼭 포함해줘. "
                             f"데이터를 바탕으로 구체적이고 다정한 조언을 해줘. 마크다운 스타일을 적용해줘."
                         )
@@ -539,7 +602,7 @@ class FortuneCog(commands.Cog):
             # 구독 시간이 current_time_str이고, 오늘 아직 안 보낸 사람
             cursor = await self.bot.db.execute(
                  """
-                SELECT user_id, birth_date, birth_time, pending_payload
+                SELECT user_id, birth_date, birth_time, gender, pending_payload
                 FROM user_profiles 
                 WHERE subscription_active = 1 
                   AND subscription_time = ? 
@@ -552,7 +615,7 @@ class FortuneCog(commands.Cog):
             if not delivery_users:
                 return
 
-            for user_id, birth_date, birth_time, pending_payload in delivery_users:
+            for user_id, birth_date, birth_time, gender, pending_payload in delivery_users:
                 try:
                     user = self.bot.get_user(user_id)
                     if not user:
@@ -567,11 +630,12 @@ class FortuneCog(commands.Cog):
                     # 만약 미리 생성된 게 없다면(갑자기 시간을 바꿨거나 생성이 실패한 경우) 지금 생성
                     if not final_msg and ai_handler:
                         # ... (동일한 생성 로직 fallback)
+                        gender = gender or 'M'
                         fortune_data = self.calculator.get_comprehensive_info(birth_date, birth_time)
                         system_prompt = self._get_system_prompt("fortune_morning")
                         user_prompt = (
                             f"{fortune_data}\n\n"
-                            f"사용자 닉네임: {user.display_name}\n\n"
+                            f"사용자: {user.display_name} ({gender})\n\n"
                             f"오늘자 모닝 브리핑을 작성해줘. 첫머리에 '{user.display_name}님, 좋은 아침이에요!'와 같은 인사를 꼭 포함해줘. "
                             f"데이터를 바탕으로 구체적이고 다정한 조언을 해줘. 마크다운 스타일을 적용해줘."
                         )
@@ -589,6 +653,9 @@ class FortuneCog(commands.Cog):
                             "UPDATE user_profiles SET last_fortune_sent = ?, pending_payload = NULL WHERE user_id = ?",
                             (today_str, user_id)
                         )
+                        # 컨텍스트 업데이트 [NEW]
+                        await self._update_last_fortune_context(user_id, final_msg)
+                        
                         await self.bot.db.commit()
                         logger.info(f"모닝 브리핑 전송 완료: user={user_id}, time={current_time_str}")
 
