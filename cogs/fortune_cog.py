@@ -67,12 +67,13 @@ class FortuneCog(commands.Cog):
     @commands.group(name='운세', invoke_without_command=True)
     async def fortune(self, ctx: commands.Context, *, option: str = None):
         """
-        운세 관련 기능을 제공합니다.
-        - `!운세`: 오늘의 종합 운세를 확인합니다.
-        - `!운세 등록`: 생년월일 정보를 등록합니다. (DM 전용)
-        - `!운세 구독 [시간]`: 모닝 브리핑을 구독합니다. (예: !운세 구독 07:30)
-        - `!운세 구독취소`: 브리핑 구독을 중단합니다.
-        - `!운세 삭제`: 모든 정보를 삭제하고 서비스를 종료합니다.
+        운세 관련 종합 기능을 제공합니다. 🔮
+        
+        사용법:
+        - `!운세`: 오늘의 운세를 확인합니다. (채널:요약, DM:상세)
+        - `!운세 구독 [시간]`: 매일 아침 브리핑을 받아요.
+        - `!운세 구독취소`: 알림을 끕니다.
+        - `!운세 등록`: 생년월일을 등록/수정하세요.
         """
         if ctx.invoked_subcommand is None:
             # 기존 !운세 (check_fortune) 로직 호출
