@@ -17,20 +17,34 @@ class PollCog(commands.Cog):
 
     @commands.command(name='투표', aliases=['poll'])
     @commands.guild_only()
-    async def poll(self, ctx: commands.Context, question: str, *choices: str):
+    async def poll(self, ctx: commands.Context, question: str = None, *choices: str):
         """
-        주어진 질문과 선택지로 투표를 생성합니다.
+        간단한 찬반 투표나 다중 선택 투표를 만듭니다. 📊
 
-        사용법: `!투표 "질문" "항목1" "항목2" ...`
-        - 질문과 각 항목은 큰따옴표("")로 묶어야 합니다.
-        - 선택 항목은 최대 10개까지 가능합니다.
+        사용법: 
+        1. **찬반 투표**: `!투표 "점심으로 햄버거 어때?"`
+        2. **선택 투표**: `!투표 "점심 메뉴 추천" "햄버거" "피자" "치킨"`
+        (주의: 질문과 항목은 큰따옴표 `"`로 묶거나 공백으로 구분해주세요)
         """
+        if not question:
+            await ctx.send('🚫 투표 주제가 없어요!\n**사용법**: `!투표 "주제" "항목1" "항목2"`\n(예: `!투표 "회식 장소" "삼겹살" "횟집"`)')
+            return
+
+        # 선택지가 없으면 자동으로 찬반 투표 생성
         if not choices:
-            await ctx.send('투표를 만들려면 질문과 최소 하나 이상의 선택 항목이 필요해요. `!투표 "질문" "항목1"` 형식으로 다시 써주세요.')
+            embed = discord.Embed(
+                title=f"🗳️ {question}",
+                description="찬성(⭕) 혹은 반대(❌)를 눌러주세요!",
+                color=discord.Color.green()
+            )
+            embed.set_footer(text=f"{ctx.author.display_name}님이 주최함")
+            poll_msg = await ctx.send(embed=embed)
+            await poll_msg.add_reaction("⭕")
+            await poll_msg.add_reaction("❌")
             return
 
         if len(choices) > 10:
-            await ctx.send('선택 항목은 최대 10개까지만 만들 수 있어요.')
+            await ctx.send('😅 선택 항목은 최대 10개까지만 만들 수 있어요.')
             return
 
         # 숫자 이모지를 순서대로 사용하여 선택 항목을 표시합니다.
@@ -43,10 +57,10 @@ class PollCog(commands.Cog):
         # 투표 내용을 담을 임베드를 생성합니다.
         embed = discord.Embed(
             title=f"🗳️ {question}",
-            description="\n".join(description),
+            description="\n\n".join(description),
             color=discord.Color.blue()
         )
-        embed.set_footer(text=f"{ctx.author.display_name}님이 시작한 투표")
+        embed.set_footer(text=f"{ctx.author.display_name}님이 주최함")
 
         try:
             # 임베드를 전송하고, 선택 항목 수만큼 반응 이모지를 추가합니다.
@@ -54,8 +68,8 @@ class PollCog(commands.Cog):
             for i in range(len(choices)):
                 await poll_message.add_reaction(number_emojis[i])
         except Exception as e:
-            logger.error(f"투표 생성 중 오류 발생: {e}", exc_info=True, extra={{'guild_id': ctx.guild.id}})
-            await ctx.send("투표를 만드는 데 실패했어요. 다시 시도해주세요.")
+            logger.error(f"투표 생성 중 오류 발생: {e}", exc_info=True, extra={'guild_id': ctx.guild.id})
+            await ctx.send("🚫 투표를 생성하다가 문제가 생겼어요. 다시 시도해주세요.")
 
 async def setup(bot: commands.Bot):
     """Cog를 봇에 등록하는 함수입니다."""

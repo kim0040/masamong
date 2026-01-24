@@ -109,9 +109,12 @@ class FunCog(commands.Cog):
     #     # await self.execute_fortune(ctx.channel, ctx.author)
     #     pass
 
-    @commands.command(name='요약', aliases=['summarize', 'summary'])
+    @commands.command(name='요약', aliases=['summarize', 'summary', '3줄요약', 'sum'])
     async def summarize(self, ctx: commands.Context):
-        """현재 채널의 최근 대화를 요약합니다."""
+        """
+        현재 채널의 최근 대화(20개)를 분석하여 마사몽 스타일로 요약해줍니다.
+        바쁜 당신을 위해 핵심 내용만 쏙쏙 뽑아드릴게요! 📝
+        """
         await self.execute_summarize(ctx.channel, ctx.author)
 
 async def setup(bot: commands.Bot):
