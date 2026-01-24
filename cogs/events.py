@@ -138,8 +138,15 @@ class EventListeners(commands.Cog):
             return
 
         if isinstance(error, commands.CheckFailure):
-            # 권한 부족, DM 전용 등 체크 실패는 보통 각 커맨드에서 처리하거나, 여기서 조용히 넘어갑니다.
-            # 하지만 명확한 피드백을 위해 간단히 로그만 남깁니다.
+            # DM 전용 명령어 체크 실패 시 안내
+            if isinstance(error, commands.PrivateMessageOnly):
+                await ctx.reply("🔒 개인 정보 보호를 위해 **DM(다이렉트 메시지)**에서만 사용할 수 있는 명령어입니다.")
+                return
+            if isinstance(error, commands.NoPrivateMessage):
+                await ctx.reply("📢 이 명령어는 **서버 채널**에서만 사용할 수 있어요.")
+                return
+            
+            # 기타 권한 부족 등은 로그만 남김
             logger.debug(f"CheckFailure: {error} by {ctx.author}")
             return
             
