@@ -383,14 +383,19 @@ class FortuneCog(commands.Cog):
 
     @commands.group(name='별자리', aliases=['운세전체'])
     async def zodiac(self, ctx: commands.Context):
-        """별자리 운세 관련 명령어 그룹입니다."""
+        """
+        별자리 운세를 확인합니다. 🌌
+        
+        사용법:
+        - `!별자리`: (등록된 경우) 내 별자리 운세를 확인합니다.
+        - `!별자리 <이름>`: 특정 별자리 운세를 확인합니다. (예: `!별자리 물병`)
+        - `!별자리 순위`: 오늘의 12별자리 운세 랭킹을 봅니다.
+        """
         if ctx.invoked_subcommand is None:
-            # 1. 서브커맨드 없이 호출 시: 전체 요약해줄지, 특정 별자리 알려줄지 안내
-            # 혹은 인자가 있으면 그것을 별자리 이름으로 간주하고 처리
             content = ctx.message.content.strip()
-            # 명령어 부분 제외하고 파라미터 확인
             params = content.split()
             
+            # 1. 인자가 있는 경우 (기존 로직 유지)
             if len(params) > 1:
                 arg = params[1]
                 if arg in ['순위', '랭킹', 'ranking']:
@@ -398,13 +403,40 @@ class FortuneCog(commands.Cog):
                 else:
                     target_sign = arg
                     await self._show_zodiac_fortune(ctx, target_sign)
-            else:
-                embed = discord.Embed(
-                    title="🌌 오늘의 별자리 운세",
-                    description="특정 별자리의 운세를 보고 싶다면 `!별자리 <이름>`을 입력해주세요!\n예: `!별자리 물병`, `!별자리 순위`\n\n**12별자리 목록**\n양, 황소, 쌍둥이, 게, 사자, 처녀\n천칭, 전갈, 사수, 염소, 물병, 물고기",
-                    color=0x6a0dad
-                )
-                await ctx.send(embed=embed)
+                return
+
+            # 2. 인자가 없는 경우 -> DB 확인
+            target_sign = None
+            
+            # DB에서 생년월일 조회
+            cursor = await self.bot.db.execute("SELECT birth_date FROM user_profiles WHERE user_id = ?", (ctx.author.id,))
+            row = await cursor.fetchone()
+            
+            if row and row[0]:
+                try:
+                    b_year, b_month, b_day = map(int, row[0].split('-'))
+                    target_sign = get_sign_from_date(b_month, b_day)
+                    # 등록된 정보로 바로 운세 출력
+                    await self._show_zodiac_fortune(ctx, target_sign)
+                    return
+                except Exception as e:
+                    logger.error(f"별자리 자동 조회 실패: {e}")
+            
+            # 3. 등록된 정보도 없고 인자도 없는 경우 -> 안내 메시지
+            embed = discord.Embed(
+                title="🌌 오늘의 별자리 운세",
+                description=(
+                    "**내 별자리 운세를 보고 싶다면?**\n"
+                    "👉 `!운세 등록` 으로 생년월일을 알려주세요! (자동으로 인식됩니다)\n\n"
+                    "**특정 별자리를 보고 싶다면?**\n"
+                    "👉 `!별자리 <이름>` (예: `!별자리 물병자리`)\n\n"
+                    "**12별자리 순위가 궁금하다면?**\n"
+                    "👉 `!별자리 순위`\n\n"
+                    "**목록**: 양, 황소, 쌍둥이, 게, 사자, 처녀\n천칭, 전갈, 사수, 염소, 물병, 물고기"
+                ),
+                color=0x6a0dad
+            )
+            await ctx.send(embed=embed)
 
     async def _show_zodiac_ranking(self, ctx: commands.Context):
         """12별자리 운세 순위를 보여줍니다."""
@@ -450,32 +482,44 @@ class FortuneCog(commands.Cog):
             await ctx.send(f"🤔 '{sign_name}'은(는) 올바른 별자리 이름이 아니에요. (예: 물병자리, 사자자리)")
             return
 
-        # 2. 현재 천체 배치 가져오기 (Context)
+        is_dm = isinstance(ctx.channel, discord.DMChannel)
         now = datetime.now(pytz.timezone('Asia/Seoul'))
         astro_chart = self.calculator._get_astrology_chart(now)
 
-        # 3. AI 프롬프트 구성
-        system_prompt = (
-            "당신은 친절하고 통찰력 있는 '점성술사 마사몽'입니다. "
-            "현재 천체 배치(Transit)를 바탕으로 특정 별자리의 오늘 운세를 분석해줍니다. "
-            "너무 추상적이거나 난해한 표현은 피하고, 누구나 이해하기 쉽게 명확하고 구체적으로 설명하세요. "
-            "비유보다는 실질적인 조언 위주로 작성하되, 다정하고 희망찬 어조를 유지하세요. "
-            "출력은 마크다운 형식을 사용하여 가독성을 높이세요."
-        )
-        
-        user_prompt = (
-            f"[현재 천체 배치]\n{astro_chart}\n\n"
-            f"[타겟 별자리]: {normalized_sign}\n"
-            f"[사용자 이름]: {ctx.author.display_name}\n\n"
-            f"오늘 {normalized_sign} 사람들을 위한 상세한 운세를 작성해주세요. "
-            f"사용자 이름을 자연스럽게 불러주세요.\n"
-            f"가독성을 위해 마크다운(##, **, -)을 적극 활용하고, 중요한 키워드는 강조하세요. "
-            f"다음 항목을 포함하세요:\n"
-            f"1. 🌟 오늘의 기운 (총평)\n"
-            f"2. 💘 사랑과 인간관계\n"
-            f"3. 💰 일과 금전\n"
-            f"4. 🍀 마사몽의 행운 팁 (행운의 색, 물건 등)"
-        )
+        # 2. 채널 vs DM 분기 (프롬프트 차별화)
+        if not is_dm:
+            # [Channel] 요약 버전
+            system_prompt = (
+                "너는 '마사몽'이야. 공개된 채널에서는 별자리 운세를 **3줄로 핵심만 요약**해서 알려줘. "
+                "구체적인 내용은 DM으로 확인하라고 안내해."
+            )
+            user_prompt = (
+                f"[현재 천체 배치]\n{astro_chart}\n\n"
+                f"[타겟 별자리]: {normalized_sign}\n"
+                f"[사용자 이름]: {ctx.author.display_name}\n\n"
+                f"오늘 {normalized_sign}의 운세를 3줄로 요약해줘.\n"
+                f"마지막에는 '✨ 더 자세한 별자리 분석은 DM으로 `!별자리 {normalized_sign}`을 입력해보세요!' 라고 덧붙여줘."
+            )
+        else:
+            # [DM] 상세 버전
+            system_prompt = (
+                "당신은 친절하고 통찰력 있는 '점성술사 마사몽'입니다. "
+                "현재 천체 배치(Transit)를 바탕으로 특정 별자리의 오늘 운세를 상세히 분석해줍니다. "
+                "추상적인 표현보다는 실질적인 조언 위주로, 다정하고 희망찬 어조를 유지하세요. "
+                "출력은 마크다운 형식을 사용하여 가독성을 높이세요."
+            )
+            user_prompt = (
+                f"[현재 천체 배치]\n{astro_chart}\n\n"
+                f"[타겟 별자리]: {normalized_sign}\n"
+                f"[사용자 이름]: {ctx.author.display_name}\n\n"
+                f"오늘 {normalized_sign} 사람들을 위한 상세한 운세를 작성해주세요. "
+                f"사용자 이름을 자연스럽게 불러주세요.\n"
+                f"가독성을 위해 마크다운(##, **, -)을 적극 활용하고, 다음 항목을 포함하세요:\n"
+                f"1. 🌟 오늘의 기운 (총평)\n"
+                f"2. 💘 사랑과 인간관계\n"
+                f"3. 💰 일과 금전\n"
+                f"4. 🍀 마사몽의 행운 팁 (행운의 색, 물건 등)"
+            )
 
         async with ctx.typing():
             ai_handler = self.bot.get_cog('AIHandler')
@@ -490,7 +534,7 @@ class FortuneCog(commands.Cog):
 
             if response:
                 embed = discord.Embed(
-                    title=f"✨ {normalized_sign}의 오늘 운세",
+                    title=f"✨ {normalized_sign}의 오늘 운세 ({'요약' if not is_dm else '상세'})",
                     description=response,
                     color=0x9b59b6
                 )
