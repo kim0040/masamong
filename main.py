@@ -60,6 +60,8 @@ class ReMasamongBot(commands.Bot):
         super().__init__(*args, **kwargs)
         self.db: aiosqlite.Connection = None
         self.db_path = config.DATABASE_FILE
+        # 대화형 커맨드(예: !운세 등록) 진행 중인 사용자를 추적하여 AI 자동응답을 방지합니다.
+        self.locked_users = set()
 
     async def _migrate_db(self):
         """데이터베이스 스키마를 확인하고 좌표 데이터를 보강합니다.
@@ -255,6 +257,11 @@ class ReMasamongBot(commands.Bot):
                 logger.info(f"[DEBUG] Message ignored (No valid mention): {message.content}")
                 return
             # DM은 멘션 체크 패스
+
+        # [Safety Lock] 사용자가 대화형 커맨드(예: !운세 등록)를 진행 중이면 AI 응답을 막습니다.
+        if message.author.id in self.locked_users:
+            logger.info(f"User {message.author.id} is locked (in command flow). AI response skipped.")
+            return
 
         try:
             await ai_handler.process_agent_message(message)
