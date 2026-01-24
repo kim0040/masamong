@@ -114,18 +114,38 @@ class EventListeners(commands.Cog):
 
     @commands.Cog.listener()
     async def on_command_error(self, ctx: commands.Context, error: commands.CommandError):
-        """명령어 실행 중 오류가 발생했을 때 호출되어, 오류 정보를 기록합니다."""
-        if not ctx.guild:
+        """명령어 실행 중 오류가 발생했을 때 호출되어, 오류 정보를 기록하고 사용자에게 안내합니다."""
+        if not ctx.guild and not isinstance(ctx.channel, discord.DMChannel):
             return
 
-        # 무시할 수 있는 일반적인 오류들 (예: 존재하지 않는 명령어, 권한 부족)
-        ignored_errors = (commands.CommandNotFound, commands.CheckFailure, commands.MissingRequiredArgument)
-        if isinstance(error, ignored_errors):
-            logger.debug(f"무시된 명령어 오류: {type(error).__name__} - {error}")
+        # 1. 아예 무시할 오류 (명령어 없음 등)
+        # CommandNotFound는 반응하지 않아야 채팅 스팸을 방지할 수 있습니다.
+        if isinstance(error, commands.CommandNotFound):
+            return
+        
+        # 2. 사용자에게 안내가 필요한 오류 (잘못된 사용)
+        if isinstance(error, commands.MissingRequiredArgument):
+            # 필수 인자 누락
+            cmd_name = ctx.command.qualified_name if ctx.command else "명령어"
+            signature = ctx.command.signature if ctx.command else ""
+            usage = f"!{cmd_name} {signature}"
+            await ctx.send(f"⚠️ 명령어를 완성하지 못했어요!\n**올바른 사용법**: `{usage}`\n(도움말이 필요하면 `!도움 {cmd_name}`을 입력해보세요)")
             return
 
+        if isinstance(error, commands.BadArgument):
+            # 인자 변환 실패 (예: 숫자가 필요한데 문자 입력)
+            await ctx.send("⚠️ 잘못된 형식의 입력입니다. 입력값을 확인해주세요.")
+            return
+
+        if isinstance(error, commands.CheckFailure):
+            # 권한 부족, DM 전용 등 체크 실패는 보통 각 커맨드에서 처리하거나, 여기서 조용히 넘어갑니다.
+            # 하지만 명확한 피드백을 위해 간단히 로그만 남깁니다.
+            logger.debug(f"CheckFailure: {error} by {ctx.author}")
+            return
+            
+        # 3. 기타 예기치 않은 오류 로그 및 기록
         details = {
-            "guild_id": ctx.guild.id,
+            "guild_id": ctx.guild.id if ctx.guild else "DM",
             "user_id": ctx.author.id,
             "command": ctx.command.qualified_name if ctx.command else "unknown",
             "channel_id": ctx.channel.id,
@@ -134,8 +154,12 @@ class EventListeners(commands.Cog):
             "error": type(error).__name__,
             "error_message": str(error)
         }
-        await db_utils.log_analytics(self.bot.db, "COMMAND_USAGE", details)
-        logger.error(f"명령어 오류 발생: `!{details['command']}` by `{ctx.author}`. Error: {details['error']}", exc_info=error, extra={'guild_id': ctx.guild.id})
+        
+        # DB 로깅 (에러 발생 시만)
+        if self.bot.db:
+             await db_utils.log_analytics(self.bot.db, "COMMAND_USAGE", details)
+             
+        logger.error(f"명령어 오류 발생: `!{details['command']}` by `{ctx.author}`. Error: {details['error']}", exc_info=error, extra={'guild_id': details['guild_id']})
 
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message):
