@@ -78,13 +78,13 @@ class WeatherCog(commands.Cog):
                 current_weather_str = weather_utils.format_current_weather(current_weather_data)
                 short_term_data = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
                 formatted_forecast = weather_utils.format_short_term_forecast(short_term_data, day_name, target_day_offset=0)
-                return f"현재 {current_weather_str}\n{formatted_forecast}".strip(), None
+                return f"[{location_name} 날씨 정보]\n현재 {current_weather_str}\n{formatted_forecast}".strip(), None
             else:
                 forecast_data = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
                 if isinstance(forecast_data, dict) and forecast_data.get("error"): return None, forecast_data.get("message", config.MSG_WEATHER_FETCH_ERROR)
                 if forecast_data is None: return None, config.MSG_WEATHER_FETCH_ERROR
                 formatted_forecast = weather_utils.format_short_term_forecast(forecast_data, day_name, target_day_offset=day_offset)
-                return f"{location_name} {formatted_forecast}", None
+                return f"[{location_name} 날씨 정보] {formatted_forecast}", None
         except Exception as e:
             logger.error(f"날씨 정보 포맷팅 중 오류: {e}", exc_info=True)
             return None, config.MSG_WEATHER_FETCH_ERROR
