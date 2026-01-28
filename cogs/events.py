@@ -81,6 +81,10 @@ class EventListeners(commands.Cog):
         msg_content = message.content.lower()
         for trigger_type, keywords in config.FUN_KEYWORD_TRIGGERS.get("triggers", {}).items():
             if any(keyword in msg_content for keyword in keywords):
+                # [Fix] '운세' 키워드는 봇 멘션이 있을 때만 트리거 (일상 대화 오작동 방지)
+                if trigger_type == "fortune" and self.bot.user not in message.mentions:
+                    continue
+
                 logger.info(f"FunCog 키워드 '{trigger_type}'가 감지되었습니다.", extra={'guild_id': message.guild.id})
                 self.fun_cog.update_cooldown(message.channel.id)
                 
