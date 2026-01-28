@@ -120,6 +120,34 @@ sequenceDiagram
 
 ---
 
+## 🧠 Advanced RAG 가이드 (데이터 업그레이드)
+
+더 똑똑한 기억력을 위해 **세션 요약 기반 임베딩(Session Summary Embedding)** 방식을 도입했습니다.
+대화 내용을 그대로 자르는 대신, 1시간 단위로 세션을 나누고 LLM 요약본을 검색에 활용합니다.
+
+### 1. 카카오톡 데이터 임베딩 생성 (V2)
+Gemini Flash 모델을 사용해 대화 내용을 요약하고 임베딩을 생성합니다.
+
+```bash
+# 가상환경 활성화 (필요시)
+source emb/venv/bin/activate
+
+# 스크립트 실행 (API 키 환경변수 설정 필수)
+export GEMINI_API_KEY="your_api_key_here"
+python scripts/generate_kakao_embeddings_v2.py \
+  --input "data/kakao_raw/your_chat_log.csv" \
+  --output "data/kakao_store_v2"
+```
+
+실행이 완료되면 `data/kakao_store_v2` 폴더에 `vectors.npy`와 `metadata.json`이 생성됩니다.
+이 파일들을 서버(또는 로컬 봇)의 데이터 폴더로 이동시키면 적용됩니다.
+
+### 2. 디스코드 메모리 작동 원리
+*   **단기 기억**: 최근 대화(약 6~12개 메시지)는 RAG 검색 없이 곧바로 프롬프트에 주입되어 즉각적인 문맥을 파악합니다.
+*   **장기 기억**: 대화가 쌓이면 백그라운드에서 자동으로 요약된 후 로컬 DB(`database/discord_embeddings.db`)에 저장됩니다.
+
+---
+
 ## RAG 시스템 상세
 
 마사몽의 RAG(Retrieval-Augmented Generation) 시스템은 **BM25 키워드 검색**과 **E5 임베딩 유사도 검색**을 결합한 하이브리드 방식입니다.
