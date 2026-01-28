@@ -290,7 +290,7 @@ class AIHandler(commands.Cog):
             GenerateContentResponse | None: 성공 시 Gemini 응답, 실패 또는 속도 제한 시 None.
         """
         if generation_config is None:
-            generation_config = genai.types.GenerationConfig(temperature=config.AI_TEMPERATURE)
+            generation_config = genai.types.GenerationConfig(temperature=0.0)
 
         try:
             limit_key = 'gemini_intent' if config.AI_INTENT_MODEL_NAME in model.model_name else 'gemini_response'
@@ -2020,7 +2020,12 @@ Generate the optimized English image prompt:"""
                             tool_results_block=tool_results_str if tool_results_str else None,
                         )
                         self._debug(f"[Main Retry] user_prompt={self._truncate_for_debug(main_prompt_retry)}", log_extra)
-                        retry_response = await self._safe_generate_content(main_model, main_prompt_retry, log_extra)
+                        retry_response = await self._safe_generate_content(
+                            main_model, 
+                            main_prompt_retry, 
+                            log_extra,
+                            generation_config=genai.types.GenerationConfig(temperature=config.AI_TEMPERATURE)
+                        )
                         
                         retry_text = ""
                         if retry_response and retry_response.parts:
@@ -2161,7 +2166,12 @@ Generate the optimized English image prompt:"""
                 model_name=config.AI_RESPONSE_MODEL_NAME,
                 system_instruction=system_prompt,
             )
-            response = await self._safe_generate_content(model, user_prompt, log_extra)
+            response = await self._safe_generate_content(
+                model, 
+                user_prompt, 
+                log_extra, 
+                generation_config=genai.types.GenerationConfig(temperature=config.AI_TEMPERATURE)
+            )
             if response and response.text:
                 alert_message = response.text.strip()
                 if len(alert_message) > config.AI_RESPONSE_LENGTH_LIMIT:
@@ -2191,7 +2201,12 @@ Generate the optimized English image prompt:"""
             system_prompt = f"{config.CHANNEL_AI_CONFIG.get(channel.id, {}).get('persona', '')}\n\n{config.CHANNEL_AI_CONFIG.get(channel.id, {}).get('rules', '')}"
 
             model = genai.GenerativeModel(model_name=config.AI_RESPONSE_MODEL_NAME, system_instruction=system_prompt)
-            response = await self._safe_generate_content(model, user_prompt, log_extra)
+            response = await self._safe_generate_content(
+                model, 
+                user_prompt, 
+                log_extra,
+                generation_config=genai.types.GenerationConfig(temperature=config.AI_TEMPERATURE)
+            )
 
             return response.text.strip() if response and response.text else config.MSG_AI_ERROR
         except KeyError as e:
