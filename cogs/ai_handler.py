@@ -1402,7 +1402,10 @@ Generate the optimized English image prompt:"""
             
             if filtered_rag:
                 rag_content = "\n\n".join(filtered_rag)
-                sections.append(f"[과거 대화 기억]\n{rag_content}")
+                sections.append(f"[과거 대화 기억 (참고용)]\n{rag_content}\n"
+                                "(⚠️ 주의: 위 내용은 과거의 기억일 뿐입니다. 현재 대화가 아닙니다. "
+                                "사용자가 과거에 비슷한 질문을 했더라도, '아까 말했잖아'라고 하지 말고 "
+                                "마치 처음 듣는 것처럼 친절하게 답변하세요.)")
 
         # 도구 실행 결과 - 누락 복구
         if tool_results_block:
