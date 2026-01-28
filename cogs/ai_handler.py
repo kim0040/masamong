@@ -290,7 +290,7 @@ class AIHandler(commands.Cog):
             GenerateContentResponse | None: 성공 시 Gemini 응답, 실패 또는 속도 제한 시 None.
         """
         if generation_config is None:
-            generation_config = genai.types.GenerationConfig(temperature=0.0)
+            generation_config = genai.types.GenerationConfig(temperature=config.AI_TEMPERATURE)
 
         try:
             limit_key = 'gemini_intent' if config.AI_INTENT_MODEL_NAME in model.model_name else 'gemini_response'
@@ -357,7 +357,9 @@ class AIHandler(commands.Cog):
                     {"role": "user", "content": user_prompt},
                 ],
                 max_tokens=2048, # 약간 늘림
-                temperature=0.7,
+                temperature=config.AI_TEMPERATURE,
+                frequency_penalty=config.AI_FREQUENCY_PENALTY,
+                presence_penalty=config.AI_PRESENCE_PENALTY,
             )
 
             response_text = completion.choices[0].message.content
