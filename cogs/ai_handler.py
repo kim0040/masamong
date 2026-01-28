@@ -1444,9 +1444,11 @@ Generate the optimized English image prompt:"""
                                 "마치 처음 듣는 것처럼 친절하게 답변하세요.)")
 
         # 도구 실행 결과 - 누락 복구
+        # 도구 실행 결과 - 누락 복구
         if tool_results_block:
             sections.append(f"[도구 실행 결과]\n{tool_results_block}")
-            sections.append("(⚠️ 중요: 위 [도구 실행 결과]는 실시간 팩트입니다. 엉뚱한 말을 지어내지 말고, 반드시 도구 결과를 기반으로 답변하세요.)")
+            sections.append("(⚠️ 중요: 위 [도구 실행 결과]는 실시간 팩트입니다. 엉뚱한 말을 지어내지 말고, 반드시 도구 결과를 기반으로 답변하세요. "
+                            "특히 기온, 강수확률 등 **숫자 데이터**는 요약하지 말고 그대로 포함해서 말해줘야 해.)")
 
 
         # 현재 질문
