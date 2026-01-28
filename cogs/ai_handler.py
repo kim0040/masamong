@@ -126,6 +126,9 @@ class AIHandler(commands.Cog):
             else:
                 logger.warning("openai 패키지가 설치되지 않아 CometAPI를 사용할 수 없습니다.")
                 self.use_cometapi = False
+        
+        # [NEW] Location Cache from DB
+        self.location_cache: set[str] = set()
 
     @property
     def is_ready(self) -> bool:
@@ -161,6 +164,24 @@ class AIHandler(commands.Cog):
         except Exception:
             rendered = repr(prompt)
         return self._truncate_for_debug(rendered)
+
+    async def _load_location_cache(self):
+        """DB에서 지역명 데이터를 로드하여 캐싱합니다."""
+        if self.location_cache:
+            return
+
+        if not self.bot.db:
+            return
+
+        try:
+            # 2글자 이상인 지역명만 로드 (1글자는 오탐지 가능성 높음)
+            async with self.bot.db.execute("SELECT name FROM locations WHERE LENGTH(name) >= 2") as cursor:
+                rows = await cursor.fetchall()
+                if rows:
+                    self.location_cache = {row['name'] for row in rows}
+                    logger.info(f"DB에서 지역명 데이터 {len(self.location_cache)}개를 로드했습니다.")
+        except Exception as e:
+            logger.error(f"지역명 캐시 로드 중 오류: {e}")
 
     def _message_has_valid_mention(self, message: discord.Message) -> bool:
         """메시지에 봇 멘션이 존재하는지 확인합니다."""
@@ -913,7 +934,7 @@ Generate the optimized English image prompt:"""
     _STOCK_KR_KEYWORDS = frozenset(['삼성전자', '현대차', 'sk하이닉스', '네이버', '카카오', 'lg에너지', '셀트리온', '삼성바이오', '기아', '포스코'])
     _STOCK_GENERAL_KEYWORDS = frozenset(['주가', '주식', '시세', '종가', '시가', '상장'])
     _PLACE_KEYWORDS = frozenset(['맛집', '카페', '음식점', '식당', '추천', '근처', '주변', '가볼만한', '핫플'])
-    _LOCATION_KEYWORDS = ['서울', '부산', '인천', '대구', '광주', '대전', '울산', '세종', '경기', '강원', '충북', '충남', '전북', '전남', '경북', '경남', '제주', '광양', '여수', '순천', '목포', '강남', '홍대', '이태원', '명동', '전주', '창원', '수원', '성남', '고양', '용인', '부천', '안산', '청주', '천안']
+    _LOCATION_KEYWORDS = [] # Deprecated: 사용하지 않음 (DB 캐시로 대체)
     
     # 이미지 생성 키워드
     _IMAGE_GEN_KEYWORDS = frozenset([
@@ -1015,11 +1036,26 @@ Generate the optimized English image prompt:"""
         return tools
 
     def _extract_location_from_query(self, query: str) -> str | None:
-        """쿼리에서 지역명을 추출합니다."""
-        for location in self._LOCATION_KEYWORDS:
+        """쿼리에서 지역명을 추출합니다 (DB 캐시 사용)."""
+        # 캐시가 비어있으면 로드 시도 (동기 메서드라 await 불가하지만, process_agent에서 미리 로드됨을 가정)
+        # 만약 로드 안 된 상태라면 어쩔 수 없이 pass
+        
+        # 긴 이름부터 매칭하여 오탐지 방지 (예: '나주시' vs '나주')
+        # 매번 정렬하면 느리므로, 캐시가 클 경우 최적화 필요. 일단은 단순 순회.
+        # 성능을 위해 쿼리에 있는 단어만 필터링하는 방식이 좋음.
+        
+        if not self.location_cache:
+             return None
+
+        # 쿼리가 짧으면 그냥 순회
+        # 매칭된 것 중 가장 긴 것을 선택
+        best_match = None
+        for location in self.location_cache:
             if location in query:
-                return location
-        return None
+                if best_match is None or len(location) > len(best_match):
+                    best_match = location
+        
+        return best_match
 
     def _extract_us_stock_symbol(self, query_lower: str) -> str | None:
         """쿼리에서 미국 주식 심볼을 추출합니다."""
@@ -1729,6 +1765,9 @@ Generate the optimized English image prompt:"""
 
         async with message.channel.typing():
             try:
+                # [NEW] 지역명 캐시 로드 (필요 시)
+                await self._load_location_cache()
+
                 recent_search_messages = await self._collect_recent_search_messages(message)
                 guild_id_safe = message.guild.id if message.guild else 0
                 rag_prompt, rag_entries, rag_top_score, rag_blocks = await self._get_rag_context(
