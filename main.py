@@ -81,26 +81,34 @@ class ReMasamongBot(commands.Bot):
                 await self.db.commit()
             else:
                 logger.error("database/schema.sql 파일을 찾을 수 없습니다.")
-            # locations 테이블이 비어있을 경우, 초기 좌표 데이터를 삽입합니다.
+            # locations 테이블이 비어있거나 구형 데이터(예: 2만개 미만 또는 주요 별칭 누락)일 경우 재시딩합니다.
             async with self.db.execute("SELECT COUNT(*) FROM locations") as cursor:
                 existing_count = (await cursor.fetchone())[0]
-                if existing_count < 100:
-                    if existing_count:
-                        logger.info("'locations' 테이블에 기존 데이터(%d개)가 부족하여 재시딩합니다.", existing_count)
-                        await self.db.execute("DELETE FROM locations")
-                        await self.db.commit()
-                    else:
-                        logger.info("'locations' 테이블이 비어있어 초기 데이터를 시딩합니다.")
-                    locations_to_seed = initial_data.load_locations_from_csv()
-                    if not locations_to_seed:
-                        locations_to_seed = initial_data.LOCATION_DATA
-                    if locations_to_seed:
-                        await self.db.executemany(
-                            "INSERT OR IGNORE INTO locations (name, nx, ny) VALUES (?, ?, ?)",
-                            [(loc['name'], loc['nx'], loc['ny']) for loc in locations_to_seed]
-                        )
-                        await self.db.commit()
-                        logger.info(f"{len(locations_to_seed)}개의 위치 정보 시딩 완료.")
+            
+            # [NEW] 특정 별칭(예: '청주')이 있는지 확인하여 구형 데이터인지 판별합니다.
+            async with self.db.execute("SELECT 1 FROM locations WHERE name = '청주' LIMIT 1") as cursor:
+                has_short_alias = await cursor.fetchone()
+
+            if existing_count < 100 or not has_short_alias:
+                if existing_count:
+                    logger.info("'locations' 테이블의 데이터가 구형이거나 부족하여 재시딩합니다. (현재: %d개, 별칭누락: %s)", 
+                                existing_count, not has_short_alias)
+                    await self.db.execute("DELETE FROM locations")
+                    await self.db.commit()
+                else:
+                    logger.info("'locations' 테이블이 비어있어 초기 데이터를 시딩합니다.")
+                
+                locations_to_seed = initial_data.load_locations_from_csv()
+                if not locations_to_seed:
+                    locations_to_seed = initial_data.LOCATION_DATA
+                
+                if locations_to_seed:
+                    await self.db.executemany(
+                        "INSERT OR IGNORE INTO locations (name, nx, ny) VALUES (?, ?, ?)",
+                        [(loc['name'], loc['nx'], loc['ny']) for loc in locations_to_seed]
+                    )
+                    await self.db.commit()
+                    logger.info(f"{len(locations_to_seed)}개의 위치 정보 시딩 완료 (별칭 포함).")
 
         except aiosqlite.OperationalError as e:
             # 테이블이 아직 존재하지 않는 경우 등

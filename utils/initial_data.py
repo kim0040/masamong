@@ -72,6 +72,22 @@ def _expand_level_aliases(level: str) -> Iterable[str]:
         aliases.append(level[:-1])
     elif level.endswith('군') and len(level) > 1:
         aliases.append(level[:-1])
+    elif level.endswith('구') and len(level) > 1:
+        aliases.append(level[:-1])
+    
+    # [NEW] '청주시상당구' -> '청주', '청주시', '상당구', '상당' 등 분리 추출
+    if '시' in level and '구' in level:
+        # '시' 기준으로 앞부분 추출 (예: 청주시상당구 -> 청주, 청주시)
+        city_part = level.split('시')[0]
+        aliases.append(city_part)
+        aliases.append(city_part + '시')
+        # '구' 부분도 별도로 추가 (예: 상당구, 상당)
+        if '시' in level:
+            district_part = level.split('시')[1]
+            if district_part:
+                aliases.append(district_part)
+                if district_part.endswith('구'):
+                    aliases.append(district_part[:-1])
     return aliases
 
 
