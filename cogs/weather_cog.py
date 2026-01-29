@@ -9,6 +9,7 @@
 - 지정된 시간에 날씨 정보를 포함한 아침/저녁 인사를 보냅니다.
 """
 
+from __future__ import annotations
 import discord
 from discord.ext import commands, tasks
 from datetime import datetime, timedelta, time as dt_time
@@ -33,6 +34,7 @@ class WeatherCog(commands.Cog):
         self.bot = bot
         self.ai_handler: AIHandler | None = None
         self.notified_rain_event_starts = set()
+        self.last_earthquake_time = datetime.now(KST) - timedelta(hours=1) # Only alert recent ones
         logger.info("WeatherCog가 성공적으로 초기화되었습니다.")
 
     def setup_and_start_loops(self):
@@ -48,12 +50,35 @@ class WeatherCog(commands.Cog):
             logger.info("아침/저녁 인사 알림 루프를 시작합니다.")
             self.morning_greeting_loop.start()
             self.evening_greeting_loop.start()
+        
+        # Earthquake Alert Loop (Always active if notification channel exists)
+        if config.RAIN_NOTIFICATION_CHANNEL_ID: # Reuse rain channel for disasters
+            logger.info("지진 알림 모니터링 루프를 시작합니다.")
+            self.earthquake_alert_loop.start()
 
     def cog_unload(self):
         """Cog가 언로드될 때, 실행 중인 모든 루프를 안전하게 취소합니다."""
         self.rain_notification_loop.cancel()
         self.morning_greeting_loop.cancel()
         self.evening_greeting_loop.cancel()
+        self.earthquake_alert_loop.cancel()
+
+    async def get_mid_term_weather(self, day_offset: int, location_name: str) -> str:
+        """중기예보를 조회합니다."""
+        try:
+            # Simple mapping for now (Todo: dynamic mapping)
+            # 11B00000: Seoul/Incheon/Gyeonggi
+            # 11F20000: Jeonnam (Gwangyang)
+            # For now, default to Seoul (11B00000) or check if '광양' in location
+            region_code = "11B00000"
+            if "광양" in location_name or "전남" in location_name:
+                 region_code = "11F20000"
+            
+            res = await weather_utils.get_mid_term_forecast_v2(self.bot.db, region_code)
+            return res if res else "중기예보 데이터를 불러올 수 없습니다."
+        except Exception as e:
+            logger.error(f"중기예보 조회 실패: {e}", exc_info=True)
+            return config.MSG_WEATHER_FETCH_ERROR
 
     async def get_formatted_weather_string(self, day_offset: int, location_name: str, nx: str, ny: str) -> tuple[str | None, str | None]:
         """기상청 자료를 조회해 사용자에게 보여줄 문자열을 생성합니다.
@@ -78,7 +103,47 @@ class WeatherCog(commands.Cog):
                 current_weather_str = weather_utils.format_current_weather(current_weather_data)
                 short_term_data = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
                 formatted_forecast = weather_utils.format_short_term_forecast(short_term_data, day_name, target_day_offset=0)
-                return f"[{location_name} 날씨 정보]\n현재 {current_weather_str}\n{formatted_forecast}".strip(), None
+                current_weather_str = weather_utils.format_current_weather(current_weather_data)
+                short_term_data = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
+                formatted_forecast = weather_utils.format_short_term_forecast(short_term_data, day_name, target_day_offset=0)
+                
+                # Extended Info (Overview & Typhoon & Warnings & Impact)
+                # "Smart Decision": Always fetch urgent alerts. Fetch mid-term if needed.
+                
+                parts = [f"[{location_name} 상세 날씨 정보 Context]"]
+                
+                # 1. Overview (Situation)
+                overview = await weather_utils.get_weather_overview(self.bot.db)
+                if overview: parts.append(f"📢 **기상 개황**: {overview}")
+                
+                # 2. Special Warnings (Critical)
+                warnings = await weather_utils.get_active_warnings(self.bot.db)
+                if warnings: parts.append(f"🚨 **기상 특보**: {warnings}")
+                
+                # 3. Impact Forecast (Health/Safety)
+                impact = await weather_utils.get_impact_forecast(self.bot.db)
+                if impact: parts.append(f"⚠️ **영향 예보**: {impact}")
+                
+                # 4. Typhoon
+                typhoons = await weather_utils.get_typhoons(self.bot.db)
+                if typhoons: parts.append(f"🌀 **태풍 정보**: {typhoons}")
+                
+                # 5. Core Weather (Current + Short-term)
+                parts.append(f"🌡️ **현재 날씨**: {current_weather_str}")
+                parts.append(f"📅 **단기 예보**: {formatted_forecast}")
+                
+                # 6. Mid-term (If explicitly relevant, or just append distinct note)
+                # Since day_offset is 0 here (default logic), mid-term might be redundant unless user asked "future".
+                # But providing it as context for "outlook" queries helps.
+                if day_offset >= 3:
+                     # Fetch V2 Mid-term (Land Code needed... e.g., 11B00000)
+                     # Mapping logic needed. For now use default Seoul area 11B00000 or derive from coords?
+                     # Simplified: Just fetch context if available key allows it.
+                     pass 
+                
+                final_context = "\n".join(parts)
+                # Show user what Masamong sees (as requested)
+                return final_context.strip(), None
             else:
                 forecast_data = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
                 if isinstance(forecast_data, dict) and forecast_data.get("error"): return None, forecast_data.get("message", config.MSG_WEATHER_FETCH_ERROR)
@@ -271,6 +336,54 @@ class WeatherCog(commands.Cog):
     async def evening_greeting_loop(self):
         """매일 저녁 지정된 시간에 날씨 정보와 함께 인사말을 보냅니다."""
         await self._send_greeting_notification("저녁")
+
+    @tasks.loop(minutes=1)
+    async def earthquake_alert_loop(self):
+        """1분마다 최근 지진 정보를 확인하고 새로운 지진 발생 시 알립니다."""
+        await self.bot.wait_until_ready()
+        if not weather_utils.get_kma_api_key(): return
+        
+        alert_channel_id = config.RAIN_NOTIFICATION_CHANNEL_ID
+        if not alert_channel_id: return
+        alert_channel = self.bot.get_channel(alert_channel_id)
+        if not alert_channel: return
+        
+        earthquakes = await weather_utils.get_recent_earthquakes(self.bot.db)
+        if not earthquakes: return
+        
+        # Sort by time ascending
+        try:
+           earthquakes.sort(key=lambda x: str(x.get('tmEqk')))
+        except: pass
+        
+        new_last_time = self.last_earthquake_time
+        
+        for eqk in earthquakes:
+            try:
+                tm_str = str(eqk.get('tmEqk'))
+                eqk_dt = datetime.strptime(tm_str, "%Y%m%d%H%M%S") if len(tm_str) == 14 else datetime.strptime(tm_str, "%Y%m%d%H%M")
+                eqk_dt = KST.localize(eqk_dt) if eqk_dt.tzinfo is None else eqk_dt
+                
+                # If newer than last checked time
+                if eqk_dt > self.last_earthquake_time:
+                    # Alert!
+                    formatted_msg = weather_utils.format_earthquake_alert(eqk)
+                    
+                    self.ai_handler = self.bot.get_cog('AIHandler')
+                    ai_msg = await self.ai_handler.generate_system_alert_message(
+                        alert_channel.id, 
+                        formatted_msg, 
+                        "지진 발생 알림"
+                    ) if self.ai_handler and self.ai_handler.is_ready else None
+                    
+                    await alert_channel.send(ai_msg or f"🚨 **긴급: 지진 발생**\n{formatted_msg}")
+                    
+                    if eqk_dt > new_last_time:
+                        new_last_time = eqk_dt
+            except Exception as e:
+                logger.error(f"지진 정보 처리 오류: {e}")
+                
+        self.last_earthquake_time = new_last_time
 
 async def setup(bot: commands.Bot):
     """Cog를 봇에 등록하는 함수입니다."""

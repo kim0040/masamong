@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+
 import discord
 from discord.ext import commands
 try:
@@ -929,7 +930,7 @@ Generate the optimized English image prompt:"""
 
     # ========== 키워드 기반 도구 감지 (Lite 모델 대체) ==========
 
-    _WEATHER_KEYWORDS = frozenset(['날씨', '기온', '온도', '비', '눈', '맑', '흐림', '우산', '강수', '일기예보'])
+    _WEATHER_KEYWORDS = frozenset(['날씨', '기온', '온도', '비', '눈', '맑', '흐림', '우산', '강수', '일기예보', '체감', '덥', '춥', '쌀쌀', '따뜻', '폭염', '한파', '태풍'])
     _STOCK_US_KEYWORDS = frozenset(['애플', 'apple', 'aapl', '테슬라', 'tesla', 'tsla', '구글', 'google', 'googl', '엔비디아', 'nvidia', 'nvda', '마이크로소프트', 'microsoft', 'msft', '아마존', 'amazon', 'amzn', '맥도날드', '스타벅스', '코카콜라', '펩시', '넷플릭스', '메타', '페이스북', '디즈니', '인텔', 'amd', '나이키', '코스트코', '버크셔'])
     _STOCK_KR_KEYWORDS = frozenset(['삼성전자', '현대차', 'sk하이닉스', '네이버', '카카오', 'lg에너지', '셀트리온', '삼성바이오', '기아', '포스코'])
     _STOCK_GENERAL_KEYWORDS = frozenset(['주가', '주식', '시세', '종가', '시가', '상장'])
@@ -958,6 +959,10 @@ Generate the optimized English image prompt:"""
                 day_offset = 1
             elif "모레" in query:
                 day_offset = 2
+            elif "글피" in query:
+                day_offset = 3
+            elif any(kw in query for kw in ["다음주", "이번주", "주말", "일주일"]):
+                day_offset = 3 # Start of mid-term forecast
 
             tools.append({
                 'tool_to_use': 'get_weather_forecast',

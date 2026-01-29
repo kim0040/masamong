@@ -6,6 +6,9 @@ AI 에이전트가 외부 세계와 상호작용하기 위해 사용하는 '도�
 (예: 날씨 조회, 주식 검색, 카카오 기반 웹/이미지 검색 등)
 """
 
+
+from __future__ import annotations
+
 import discord
 from discord.ext import commands
 import re
@@ -43,6 +46,11 @@ class ToolsCog(commands.Cog):
         if not self.weather_cog:
             return "날씨 정보 모듈이 준비되지 않았습니다."
         location_name = location or config.DEFAULT_LOCATION_NAME
+        
+        # Mid-term Forecast (3 ~ 10 days) - V2 (typ01)
+        if day_offset >= 3:
+            return await self.weather_cog.get_mid_term_weather(day_offset, location_name)
+
         coords = await coords_utils.get_coords_from_db(self.bot.db, location_name)
         if not coords:
             return f"'{location_name}' 지역의 날씨 정보는 아직 알 수 없습니다."

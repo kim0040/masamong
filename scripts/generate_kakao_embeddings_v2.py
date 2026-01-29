@@ -329,9 +329,25 @@ class KakaoSessionEmbedder:
                 try:
                     with open(v2_meta_path, 'r', encoding='utf-8') as f:
                         summarized_sessions = json.load(f)
+                    
+                    
+                    # Check if metadata actually has 'original_text' (needed for chunking)
                     if summarized_sessions:
-                        loaded = True
-                        logger.info("✅ Loaded from metadata.json")
+                        sample = summarized_sessions[0]
+                        if 'original_text' not in sample and 'text' in sample:
+                            logger.info("⚠️ 'original_text' missing but 'text' found. Mapping 'text' -> 'original_text' (Legacy Format)")
+                            for s in summarized_sessions:
+                                s['original_text'] = s['text']
+                                s['summary'] = "요약 정보 없음" # Fallback summary
+                            loaded = True
+                            
+                        elif 'original_text' not in sample:
+                            logger.warning("⚠️ metadata.json exists but lacks 'original_text' and 'text'. Ignoring it.")
+                            summarized_sessions = []
+                            loaded = False
+                        else:
+                             loaded = True
+                             logger.info("✅ Loaded from metadata.json")
                 except Exception:
                     logger.warning("Failed to load metadata.json")
 
