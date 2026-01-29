@@ -133,6 +133,10 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
                                  }
                              }
                          
+                         # Log data count
+                         count = len(items) if isinstance(items, list) else 1
+                         logger.info(f"🌦️ [KMA API] {endpoint} ({api_type}) -> {count} items fetched.")
+                         
                          if data.get('response', {}).get('header', {}).get('resultCode') != '00':
                              error_msg = data.get('response', {}).get('header', {}).get('resultMsg', 'Unknown API Error')
                              logger.error(f"기상청 API 오류: {error_msg}")
