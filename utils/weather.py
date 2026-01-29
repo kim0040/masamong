@@ -91,7 +91,7 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
     param_key = 'authKey' if 'apihub.kma.go.kr' in base_url else 'serviceKey'
     base_params[param_key] = api_key
     base_params.update(params)
-    full_url = f"{base_url}/{endpoint}"
+    full_url = f"{base_url}/{endpoint}" if endpoint else base_url
 
     session = http.get_modern_tls_session()
     max_retries = max(1, getattr(config, 'KMA_API_MAX_RETRIES', 3))
@@ -100,29 +100,40 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
     try:
         for attempt in range(1, max_retries + 1):
             try:
-                response = await asyncio.to_thread(session.get, full_url, params=base_params, timeout=15, verify=True)
+                response = await asyncio.to_thread(session.get, full_url, params=base_params, timeout=10)
                 response.raise_for_status()
-                await db_utils.log_api_call(db, 'kma_daily')
 
-                response.raise_for_status()
-                await db_utils.log_api_call(db, 'kma_daily')
+                # API Hub Typ01 often returns text/plain, handle header manually
+                content_type = response.headers.get('Content-Type', '')
+                if 'application/json' in content_type or (api_type not in ['typhoon', 'mid', 'warning', 'impact', 'alert'] and api_type != 'overview'):
+                     try:
+                         data = response.json()
+                         # Normalize API Hub V2 flat format {"item": [...]} to standard KMA structure
+                         if isinstance(data, dict) and "item" in data and "response" not in data:
+                             items = data["item"]
+                             data = {
+                                 "response": {
+                                     "header": {"resultCode": "00", "resultMsg": "NORMAL_SERVICE"},
+                                     "body": {
+                                         "items": {"item": items},
+                                         "numOfRows": len(items) if isinstance(items, list) else 1,
+                                         "pageNo": 1,
+                                         "totalCount": len(items) if isinstance(items, list) else 1
+                                     }
+                                 }
+                             }
+                         
+                         if data.get('response', {}).get('header', {}).get('resultCode') != '00':
+                             error_msg = data.get('response', {}).get('header', {}).get('resultMsg', 'Unknown API Error')
+                             logger.error(f"기상청 API 오류: {error_msg}")
+                             return {"error": True, "message": error_msg}
 
-                if api_type in ('alert', 'typhoon', 'warning', 'impact', 'mid'):
-                    return response.text
-
-                # forecast (JSON) 처리
-                try:
-                    data = response.json()
-                except ValueError as exc:
-                    logger.error(f"기상청 API가 JSON을 반환하지 않았습니다: {exc} | 응답: {response.text}")
-                    return {"error": True, "message": config.MSG_WEATHER_FETCH_ERROR}
-
-                if data.get('response', {}).get('header', {}).get('resultCode') != '00':
-                    error_msg = data.get('response', {}).get('header', {}).get('resultMsg', 'Unknown API Error')
-                    logger.error(f"기상청 API 오류: {error_msg}")
-                    return {"error": True, "message": error_msg}
-
-                return data.get('response', {}).get('body', {}).get('items')
+                         return data.get('response', {}).get('body', {}).get('items')
+                     except ValueError:
+                         # JSON parsing failed, likely text response
+                         pass
+                
+                return response.text
 
             except requests.exceptions.Timeout:
                 if attempt >= max_retries:
