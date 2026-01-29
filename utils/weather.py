@@ -134,7 +134,10 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
                              }
                          
                          # Log data count
-                         count = len(items) if isinstance(items, list) else 1
+                         res_body = data.get('response', {}).get('body', {})
+                         items_data = res_body.get('items', {}).get('item', []) if isinstance(res_body.get('items'), dict) else res_body.get('items', [])
+                         count = len(items_data) if isinstance(items_data, list) else (1 if items_data else 0)
+                         
                          logger.info(f"🌦️ [KMA API] {endpoint} ({api_type}) -> {count} items fetched.")
                          
                          if data.get('response', {}).get('header', {}).get('resultCode') != '00':
