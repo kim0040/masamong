@@ -151,6 +151,21 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
                     return {"error": True, "message": config.MSG_WEATHER_TIMEOUT}
                 logger.warning(f"기상청 API 요청이 시간 초과되었습니다. 재시도합니다... (시도 {attempt}/{max_retries})")
                 if retry_delay: await asyncio.sleep(retry_delay * attempt)
+            except requests.exceptions.HTTPError as e:
+                # 5xx Errors (Server Side) -> Optional features can just skip without loud errors
+                if 500 <= e.response.status_code < 600 and api_type in ['typhoon', 'mid', 'warning', 'impact', 'alert']:
+                    logger.warning(f"기상청 부가 서비스 일시적 장애 ({e.response.status_code}): {api_type} - {e}")
+                    return None # Return None to silently fail for optional data
+                
+                logger.error(f"기상청 API 요청 오류: {e}", exc_info=True)
+                return {"error": True, "message": config.MSG_WEATHER_FETCH_ERROR}
+
+            except requests.exceptions.Timeout:
+                if attempt >= max_retries:
+                    logger.error("기상청 API 요청이 재시도 후에도 시간 초과되었습니다.", exc_info=True)
+                    return {"error": True, "message": config.MSG_WEATHER_TIMEOUT}
+                logger.warning(f"기상청 API 요청이 시간 초과되었습니다. 재시도합니다... (시도 {attempt}/{max_retries})")
+                if retry_delay: await asyncio.sleep(retry_delay * attempt)
             except requests.exceptions.RequestException as e:
                 logger.error(f"기상청 API 요청 오류: {e}", exc_info=True)
                 return {"error": True, "message": config.MSG_WEATHER_FETCH_ERROR}
