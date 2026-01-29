@@ -93,7 +93,8 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
     base_params.update(params)
     full_url = f"{base_url}/{endpoint}" if endpoint else base_url
 
-    session = http.get_modern_tls_session()
+    # KMA API works best with TLS 1.2 on some servers (approx 30x faster than Modern TLS)
+    session = http.get_tlsv12_session()
     max_retries = max(1, getattr(config, 'KMA_API_MAX_RETRIES', 3))
     retry_delay = max(0, getattr(config, 'KMA_API_RETRY_DELAY_SECONDS', 2))
 
@@ -101,7 +102,15 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
         for attempt in range(1, max_retries + 1):
             try:
                 timeout_seconds = getattr(config, 'KMA_API_TIMEOUT', 30)
+                
+                req_start = datetime.now()
                 response = await asyncio.to_thread(session.get, full_url, params=base_params, timeout=timeout_seconds)
+                req_duration = (datetime.now() - req_start).total_seconds()
+                
+                # Performance Monitoring
+                if req_duration > 2.0:
+                    logger.warning(f"KMA API 요청이 느립니다 ({req_duration:.2f}s): {endpoint} (Type: {api_type})")
+                    
                 response.raise_for_status()
 
                 # API Hub Typ01 often returns text/plain, handle header manually
