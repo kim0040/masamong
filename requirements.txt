@@ -18,3 +18,4 @@ ephem
 # See DEPLOYMENT.md for CPU-only installation instructions
 # numpy
 # sentence-transformers
+openai
