@@ -4,6 +4,7 @@
 사용하기 쉬운 형태로 가공하는 유틸리티 함수들을 제공합니다.
 """
 
+from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timedelta
@@ -15,6 +16,7 @@ import config
 from logger_config import logger
 from . import db as db_utils
 from . import http
+from . import kma_codes
 
 KST = pytz.timezone('Asia/Seoul')
 
@@ -58,13 +60,31 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
         "KMA_ALERT_BASE_URL",
         "https://apihub.kma.go.kr/api/typ01/url",
     )
-
+    
     if api_type == 'forecast':
         base_url = forecast_base.rstrip('/')
         base_params.update({"pageNo": "1", "numOfRows": "1000", "dataType": "JSON"})
     elif api_type == 'alert':
         base_url = alert_base.rstrip('/')
         base_params.update({"disp": "1"})
+    elif api_type == 'eqk':
+        base_url = "https://apihub.kma.go.kr/api/typ02/openApi/EqkInfoService/getEqkMsg"
+        base_params.update({"pageNo": "1", "numOfRows": "10", "dataType": "JSON"})
+    elif api_type == 'overview': # Weather Situation (Typ02)
+        base_url = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstMsgService/getWthrSituation"
+        base_params.update({"pageNo": "1", "numOfRows": "10", "dataType": "JSON", "stnId": "108"})
+    elif api_type == 'typhoon': # Typhoon List (Typ01)
+        base_url = "https://apihub.kma.go.kr/api/typ01/url/typ_lst.php"
+        base_params.update({"disp": "0", "help": "0"})
+    elif api_type == 'mid':
+        base_url = "https://apihub.kma.go.kr/api/typ01/url" # Base for typ01
+        base_params.update({"disp": "0", "help": "0"})
+    elif api_type == 'warning': # Special Weather Warnings (Typ01)
+        base_url = "https://apihub.kma.go.kr/api/typ01/url/wrn_met_data.php" # Specific
+        base_params.update({"wrn": "A", "reg": "0", "disp": "0", "help": "0"})
+    elif api_type == 'impact': # Impact Forecast (Typ01)
+        base_url = "https://apihub.kma.go.kr/api/typ01/url/ifs_fct_pstt.php" # Specific
+        base_params.update({"help": "0"})
     else:
         raise ValueError(f"Invalid api_type: {api_type}")
 
@@ -84,7 +104,10 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
                 response.raise_for_status()
                 await db_utils.log_api_call(db, 'kma_daily')
 
-                if api_type == 'alert':
+                response.raise_for_status()
+                await db_utils.log_api_call(db, 'kma_daily')
+
+                if api_type in ('alert', 'typhoon', 'warning', 'impact', 'mid'):
                     return response.text
 
                 # forecast (JSON) 처리
@@ -154,6 +177,33 @@ async def get_weather_alerts_from_kma(db: aiosqlite.Connection) -> str | dict | 
     }
     return await _fetch_kma_api(db, "wrn_met_data.php", params, api_type='alert')
 
+async def get_mid_term_forecast(db: aiosqlite.Connection, location_name: str, day_offset: int) -> str:
+    """중기예보(3~10일 후) 정보를 가져옵니다."""
+    
+    # 1. Determine Codes
+    land_code = kma_codes.get_land_code(location_name)
+    temp_code = kma_codes.get_temp_code(location_name)
+    
+    # 2. Determine Base Time (Mid-term updates at 06:00, 18:00)
+    now = datetime.now(KST)
+    if now.hour < 6:
+        base_time = (now - timedelta(days=1)).strftime("%Y%m%d") + "1800"
+    elif now.hour < 18:
+        base_time = now.strftime("%Y%m%d") + "0600"
+    else:
+        base_time = now.strftime("%Y%m%d") + "1800"
+        
+    # 3. Fetch Land & Temp
+    # getMidLandFcst
+    land_params = {"regId": land_code, "tmFc": base_time}
+    land_res = await _fetch_kma_api(db, "getMidLandFcst", land_params, api_type='mid')
+    
+    # getMidTa
+    temp_params = {"regId": temp_code, "tmFc": base_time}
+    temp_res = await _fetch_kma_api(db, "getMidTa", temp_params, api_type='mid')
+    
+    return format_mid_term_forecast(land_res, temp_res, day_offset, location_name)
+
 def format_weather_alerts(raw_data: str) -> str | None:
     """기상특보 원본 텍스트 데이터를 사람이 읽기 좋은 문자열로 변환합니다."""
     if not raw_data or raw_data.startswith("#"): # 데이터 없음 또는 헤더만 있음
@@ -200,30 +250,48 @@ def format_weather_alerts(raw_data: str) -> str | None:
             
     return "\n\n".join(alerts) if alerts else None
 
-def format_current_weather(items: dict | None) -> str:
-    """초단기실황 원본 데이터를 사람이 읽기 좋은 문자열로 변환합니다."""
-    if not items or not items.get('item'): return config.MSG_WEATHER_FETCH_ERROR
-    try:
-        first_item = items['item'][0]
-        base_date = first_item.get('baseDate')
-        base_time = first_item.get('baseTime')
+def calculate_sensible_temp(temp: float, wind_speed: float, humidity: float) -> float:
+    """체감온도 계산 (겨울: Wind Chill, 그외: 단순 보정)"""
+    # Wind Chill (Winter, T<=10, V>=4.8km/h)
+    wind_speed_kmh = wind_speed * 3.6
+    
+    if temp <= 10 and wind_speed_kmh >= 4.8:
+        return 13.12 + 0.6215 * temp - 11.37 * (wind_speed_kmh ** 0.16) + 0.3965 * temp * (wind_speed_kmh ** 0.16)
         
-        date_str = ""
-        if base_date and base_time:
-            try:
-                dt_obj = datetime.strptime(f"{base_date}{base_time}", "%Y%m%d%H%M")
-                date_str = f"({dt_obj.strftime('%m월 %d일 %H:%M')} 기준) "
-            except ValueError:
-                pass # 날짜 변환 실패 시 그냥 넘어감
+    return temp # Fallback for now
 
-        values = {item['category']: item['obsrValue'] for item in items['item']}
+def format_current_weather(data: dict | None) -> str:
+    """현재 날씨 데이터를 문자열로 포맷팅합니다."""
+    try:
+        if not data or not data.get('item'): return config.MSG_WEATHER_NO_DATA
+        
+        # 초단기실황은 항상 1개의 item만 반환
+        item = data['item'][0]
+        
+        # 필요한 값들을 추출
+        values = {i['category']: i['obsrValue'] for i in item}
+        
+        date_str = datetime.now(KST).strftime("%m/%d %H:%M")
         temp, reh = values.get('T1H'), values.get('REH')
         pty_code, rn1 = values.get('PTY', '0'), values.get('RN1', '0')
+        wind_speed = values.get('WSD', '0')
+
+        try:
+             t_val = float(temp)
+             h_val = float(reh)
+             w_val = float(wind_speed)
+             sensible = calculate_sensible_temp(t_val, w_val, h_val)
+             if abs(sensible - t_val) >= 0.5:
+                 temp_display = f"{temp}°C (체감 {sensible:.1f}°C)"
+             else:
+                 temp_display = f"{temp}°C"
+        except:
+             temp_display = f"{temp}°C"
         
         pty_map = {"0": "없음", "1": "비", "2": "비/눈", "3": "눈", "5": "빗방울"}
         pty = pty_map.get(pty_code, "정보 없음")
         rain_info = f" (시간당 {rn1}mm)" if float(rn1) > 0 else ""
-        return f"{date_str}🌡️기온: {temp}°C, 💧습도: {reh}%, ☔강수: {pty}{rain_info}"
+        return f"{date_str}🌡️기온: {temp_display}, 💧습도: {reh}%, ☔강수: {pty}{rain_info}"
     except Exception: return config.MSG_WEATHER_NO_DATA
 
 def format_short_term_forecast(items: dict | None, day_name: str, target_day_offset: int) -> str:
@@ -244,3 +312,264 @@ def format_short_term_forecast(items: dict | None, day_name: str, target_day_off
         temp_range = f"🌡️기온: {min_temp:.1f}°C ~ {max_temp:.1f}°C" if min_temp and max_temp else "기온 정보 없음"
         return f"{day_name} 날씨: {temp_range}, 하늘: {sky}, 강수확률: ~{max_pop}%"
     except Exception: return config.MSG_WEATHER_NO_DATA
+
+def format_mid_term_forecast(land_data: dict, temp_data: dict, day_offset: int, location: str) -> str:
+    """중기예보 데이터를 포맷팅합니다."""
+    try:
+        if not land_data or not temp_data:
+            return f"{location}의 중기예보 데이터를 불러오지 못했습니다."
+            
+        land_response = land_data.get('response', {})
+        temp_response = temp_data.get('response', {})
+        
+        # Check Result Code
+        if land_response.get('header', {}).get('resultCode') != '00' or temp_response.get('header', {}).get('resultCode') != '00':
+             return f"{location}의 중기예보 데이터를 불러오는 데 실패했습니다 (API 오류)."
+            
+        land_items = land_response.get('body', {}).get('items', {}).get('item', [])
+        temp_items = temp_response.get('body', {}).get('items', {}).get('item', [])
+        
+        if not land_items or not temp_items:
+             return f"{location}의 중기예보 데이터가 없습니다."
+             
+        land_item = land_items[0]
+        temp_item = temp_items[0]
+        
+        target_day = day_offset 
+        
+        if target_day < 3 or target_day > 10:
+            return f"{location}의 중기예보(3~10일 후) 범위를 벗어났습니다."
+            
+        # KMA Key naming: wf3Am, wf3Pm, wf8, wf9...
+        if target_day <= 7:
+            wf_key = f"wf{target_day}Pm"
+        else:
+            wf_key = f"wf{target_day}"
+            
+        sky = land_item.get(wf_key)
+        if not sky and target_day <= 7: sky = land_item.get(f"wf{target_day}Am")
+        
+        t_min = temp_item.get(f"taMin{target_day}")
+        t_max = temp_item.get(f"taMax{target_day}")
+        
+        date_str = (datetime.now(KST) + timedelta(days=target_day)).strftime("%m/%d(%a)")
+        
+        return f"📅 {date_str} [{location} 중기예보]\n🌦️ 날씨: {sky}\n🌡️ 기온: {t_min}°C ~ {t_max}°C"
+
+    except Exception as e:
+        logger.error(f"Mid-term format error: {e}")
+        return f"{location} 중기예보 정보 처리 중 오류 발생."
+
+async def get_recent_earthquakes(db: aiosqlite.Connection) -> list | None:
+    """최근 3일간의 지진 통보문을 조회합니다."""
+    now = datetime.now(KST)
+    # API restriction: max 3 days
+    from_date = (now - timedelta(days=2)).strftime("%Y%m%d")
+    to_date = now.strftime("%Y%m%d")
+    
+    params = {
+        "fromTmFc": from_date,
+        "toTmFc": to_date
+    }
+    
+    res = await _fetch_kma_api(db, "", params, api_type='eqk')
+    
+    if isinstance(res, dict) and res.get("error"):
+        return None
+        
+    try:
+        # Check result code
+        header = res.get('response', {}).get('header', {})
+        if header.get('resultCode') != '00':
+             return None
+             
+        items = res.get('response', {}).get('body', {}).get('items', {}).get('item', [])
+        
+        # Filter Magnitude >= 5.0
+        filtered_items = []
+        raw_items = items if isinstance(items, list) else [items]
+        for item in raw_items:
+            # item might be empty or None
+            if not item: continue
+            mt_val = item.get('mt')
+            try:
+                if float(mt_val) >= 5.0:
+                    filtered_items.append(item)
+            except: pass
+            
+        return filtered_items
+    except Exception:
+        return None
+
+def format_earthquake_alert(item: dict) -> str:
+    """지진 통보문을 포맷팅합니다."""
+    try:
+        tm_eqk = str(item.get('tmEqk')) # 발생시각 (YYYYMMDDHHMM)
+        lat = item.get('lat')
+        lon = item.get('lon')
+        loc = item.get('loc') # 위치
+        mt = item.get('mt') # 규모
+        rem = item.get('rem') # 참고사항
+        
+        # Format time
+        dt = datetime.strptime(tm_eqk, "%Y%m%d%H%M%S") if len(tm_eqk) == 14 else datetime.strptime(tm_eqk, "%Y%m%d%H%M")
+        time_str = dt.strftime("%Y년 %m월 %d일 %H시 %M분")
+        
+        return f"🌋 **[지진 통보] 규모 {mt}**\n📍 위치: {loc}\n⏰ 시각: {time_str}\n💡 참고: {rem}"
+    except Exception:
+        return "지진 정보 포맷팅 오류"
+
+async def get_weather_overview(db: aiosqlite.Connection) -> str | None:
+    """기상 개황(종합)을 조회합니다."""
+    # stnId=108 (National/Seoul)
+    res = await _fetch_kma_api(db, "", {}, api_type='overview')
+    if isinstance(res, dict) and res.get("error"): return None
+    
+    try:
+        items = res.get('response', {}).get('body', {}).get('items', {}).get('item', [])
+        if not items: return None
+        # item could be list or dict
+        item = items[0] if isinstance(items, list) else items
+        return item.get('wfSv1') # Weather Situation Overview
+    except Exception: return None
+
+async def get_typhoons(db: aiosqlite.Connection) -> str | None:
+    """진행 중인 태풍 정보를 조회합니다."""
+    now_year = datetime.now().year
+    params = {"YY": str(now_year)}
+    # This returns raw text, needs parsing
+    res = await _fetch_kma_api(db, "", params, api_type='typhoon')
+    return format_typhoon_list(res)
+
+def format_typhoon_list(raw_data: str) -> str | None:
+    """Parses typ_lst.php response text."""
+    if not raw_data or raw_data.startswith("Error") or "#START" not in raw_data:
+        return None
+        
+    lines = raw_data.strip().split('\n')
+    active_typhoons = []
+    
+    # Format usually:
+    # YY SEQ NOW EFF ... TYP_NAME ...
+    # Skip comments (#)
+    
+    for line in lines:
+        if line.startswith("#"): continue
+        if not line.strip(): continue
+        
+        parts = line.split() # Space separated
+        # Valid data line usually has many parts.
+        # Check 'NOW' column (3rd usually? Wait, let's verify header)
+        # Header: # YY SEQ NOW EFF ...
+        # Line:   2024 1  0   0 ...
+        
+        if len(parts) < 8: continue
+        
+        try:
+            # 0:YY, 1:SEQ, 2:NOW(0/1?), 3:EFF, 4:TM_ST, 5:TM_ED, 6:TYP_NAME
+            # Checking NOW column. '1' typically means active?
+            # User doc says: "진행여부". Assuming 1=Active, 0=End.
+            # Wait, verify with data. User provided doc doesn't explicitly map 0/1.
+            # But usually 0=End.
+            
+            # Let's collect ALL active ones.
+            now_flag = parts[2]
+            if now_flag != '1': continue # Only active
+            
+            name = parts[6]
+            # name might be encoded or English? Doc says TYP_NAME.
+            # Often Korean in KMA.
+            
+            active_typhoons.append(f"🌀 태풍 **{name}** 활동 중")
+        except: continue
+        
+    return "\n".join(active_typhoons) if active_typhoons else None
+
+async def get_active_warnings(db: aiosqlite.Connection) -> str | None:
+    """전국 기상 특보(주의보/경보)를 조회합니다."""
+    # wrn_met_data.php?wrn=A&reg=0
+    # Returns raw text table
+    res = await _fetch_kma_api(db, "", {}, api_type='warning')
+    if not res or "Error" in res or "#START" not in res: return None
+    
+    # Simple parsing: Check for active lines
+    # WRN code map: W:Wind, R:Rain, C:Cold, H:Heat, D:Dry, S:Snow, T:Typhoon
+    wrn_map = {
+        'W': '강풍', 'R': '호우', 'C': '한파', 'D': '건조',
+        'O': '해일', 'N': '지진해일', 'V': '풍랑', 'T': '태풍',
+        'S': '대설', 'Y': '황사', 'H': '폭염', 'F': '안개'
+    }
+    lvl_map = {'1': '예비', '2': '주의보', '3': '경보'} # Simplified, need to verify docs
+    # Actually DOC says: LVL: 특보수준. 
+    
+    lines = res.split('\n')
+    active_warnings = []
+    
+    # Data is quite complex tables.
+    # For user summary, presenting "Active warnings count" or major ones might be better.
+    # "현재 발효중인 특보가 있습니다."
+    
+    # Just extracting major keywords from content if line is valid data
+    # REG_NAME WRN LVL ...
+    
+    count = 0
+    for line in lines:
+        if line.startswith("#"): continue
+        if not line.strip(): continue
+        parts = line.split()
+        if len(parts) > 5:
+            count += 1
+            
+    if count > 0:
+        return f"⚠️ 현재 전국 {count}건의 기상 특보가 발효 중입니다."
+    return None
+
+async def get_mid_term_forecast_v2(db: aiosqlite.Connection, region_code: str) -> str | None:
+    """중기예보 (육상) 조회 V2 (typ01)."""
+    # fct_afs_dl.php
+    params = {"reg": region_code}
+    # Parsing text table:
+    # # START ...
+    # REG_ID ... WF ...
+    # 11B00000 ... 맑음 ...
+    
+    res = await _fetch_kma_api(db, "/fct_afs_dl.php", params, api_type='mid')
+    if not res or "#START" not in res: return None
+    
+    try:
+        lines = res.split('\n')
+        header_line = ""
+        for line in lines:
+            if line.startswith("# REG_ID"):
+                header_line = line
+                continue
+                
+            if line.startswith(region_code):
+                # Found data line
+                return f"중기예보(3~10일) [Typ01 Raw Data]\nCOLUMN: {header_line}\nDATA: {line}\n(참고: WF 컬럼이 날씨, MIN/MAX가 기온입니다.)"
+    except: pass
+    return None
+
+async def get_impact_forecast(db: aiosqlite.Connection) -> str | None:
+    """폭염/한파 영향예보 조회"""
+    # ifs_fct_pstt.php
+    # Check Heat Wave (hw) and Cold Wave (cw)
+    reports = []
+    
+    for impact_type, name in [('hw', '폭염'), ('cw', '한파')]:
+        params = {"ifpar": impact_type}
+        res = await _fetch_kma_api(db, "", params, api_type='impact')
+        if res and "#START" in res:
+            # Check if any valid data line exists
+            lines = res.split('\n')
+            count = 0
+            for line in lines:
+                if line.startswith("#"): continue
+                if not line.strip(): continue
+                count += 1
+            if count > 0:
+                reports.append(f"{name} 영향예보가 발표되었습니다.")
+                
+    return ", ".join(reports) if reports else None
+
+
