@@ -118,11 +118,11 @@ class WeatherCog(commands.Cog):
                         # logger.warning(f"Optional weather fetch failed ({name}): {e}")
                         return None
 
-                # Parallel execution
-                overview_task = fetch_optional(weather_utils.get_weather_overview(self.bot.db), "overview")
-                warnings_task = fetch_optional(weather_utils.get_active_warnings(self.bot.db), "warnings")
-                impact_task = fetch_optional(weather_utils.get_impact_forecast(self.bot.db), "impact")
-                typhoons_task = fetch_optional(weather_utils.get_typhoons(self.bot.db), "typhoons")
+                # Parallel execution with short timeout for optional data
+                overview_task = fetch_optional(weather_utils.get_weather_overview(self.bot.db, timeout=5.0), "overview")
+                warnings_task = fetch_optional(weather_utils.get_active_warnings(self.bot.db, timeout=5.0), "warnings")
+                impact_task = fetch_optional(weather_utils.get_impact_forecast(self.bot.db, timeout=5.0), "impact")
+                typhoons_task = fetch_optional(weather_utils.get_typhoons(self.bot.db, timeout=5.0), "typhoons")
                 
                 results = await asyncio.gather(overview_task, warnings_task, impact_task, typhoons_task)
                 overview, warnings, impact, typhoons = results
