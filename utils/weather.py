@@ -455,10 +455,10 @@ def format_earthquake_alert(item: dict) -> str:
     except Exception:
         return "지진 정보 포맷팅 오류"
 
-async def get_weather_overview(db: aiosqlite.Connection) -> str | None:
+async def get_weather_overview(db: aiosqlite.Connection, timeout: float | None = None) -> str | None:
     """기상 개황(종합)을 조회합니다."""
     # stnId=108 (National/Seoul)
-    res = await _fetch_kma_api(db, "", {}, api_type='overview')
+    res = await _fetch_kma_api(db, "", {}, api_type='overview', timeout=timeout)
     if isinstance(res, dict) and res.get("error"): return None
     
     try:
@@ -469,12 +469,12 @@ async def get_weather_overview(db: aiosqlite.Connection) -> str | None:
         return item.get('wfSv1') # Weather Situation Overview
     except Exception: return None
 
-async def get_typhoons(db: aiosqlite.Connection) -> str | None:
+async def get_typhoons(db: aiosqlite.Connection, timeout: float | None = None) -> str | None:
     """진행 중인 태풍 정보를 조회합니다."""
     now_year = datetime.now().year
     params = {"YY": str(now_year)}
     # This returns raw text, needs parsing
-    res = await _fetch_kma_api(db, "", params, api_type='typhoon')
+    res = await _fetch_kma_api(db, "", params, api_type='typhoon', timeout=timeout)
     return format_typhoon_list(res)
 
 def format_typhoon_list(raw_data: str) -> str | None:
@@ -521,11 +521,11 @@ def format_typhoon_list(raw_data: str) -> str | None:
         
     return "\n".join(active_typhoons) if active_typhoons else None
 
-async def get_active_warnings(db: aiosqlite.Connection) -> str | None:
+async def get_active_warnings(db: aiosqlite.Connection, timeout: float | None = None) -> str | None:
     """전국 기상 특보(주의보/경보)를 조회합니다."""
     # wrn_met_data.php?wrn=A&reg=0
     # Returns raw text table
-    res = await _fetch_kma_api(db, "", {}, api_type='warning')
+    res = await _fetch_kma_api(db, "", {}, api_type='warning', timeout=timeout)
     if not res or "Error" in res or "#START" not in res: return None
     
     # Simple parsing: Check for active lines
@@ -586,7 +586,7 @@ async def get_mid_term_forecast_v2(db: aiosqlite.Connection, region_code: str) -
     except: pass
     return None
 
-async def get_impact_forecast(db: aiosqlite.Connection) -> str | None:
+async def get_impact_forecast(db: aiosqlite.Connection, timeout: float | None = None) -> str | None:
     """폭염/한파 영향예보 조회"""
     # ifs_fct_pstt.php
     # Check Heat Wave (hw) and Cold Wave (cw)
@@ -594,7 +594,7 @@ async def get_impact_forecast(db: aiosqlite.Connection) -> str | None:
     
     for impact_type, name in [('hw', '폭염'), ('cw', '한파')]:
         params = {"ifpar": impact_type}
-        res = await _fetch_kma_api(db, "", params, api_type='impact')
+        res = await _fetch_kma_api(db, "", params, api_type='impact', timeout=timeout)
         if res and "#START" in res:
             # Check if any valid data line exists
             lines = res.split('\n')
