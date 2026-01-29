@@ -108,24 +108,29 @@ class WeatherCog(commands.Cog):
                 formatted_forecast = weather_utils.format_short_term_forecast(short_term_data, day_name, target_day_offset=0)
                 
                 # Extended Info (Overview & Typhoon & Warnings & Impact)
-                # "Smart Decision": Always fetch urgent alerts. Fetch mid-term if needed.
+                # "Smart Decision": Fetch urgently in parallel to avoid blocking core weather.
+                
+                async def fetch_optional(coro, name):
+                    try:
+                        return await coro
+                    except Exception as e:
+                        # logger.warning(f"Optional weather fetch failed ({name}): {e}")
+                        return None
+
+                # Parallel execution
+                overview_task = fetch_optional(weather_utils.get_weather_overview(self.bot.db), "overview")
+                warnings_task = fetch_optional(weather_utils.get_active_warnings(self.bot.db), "warnings")
+                impact_task = fetch_optional(weather_utils.get_impact_forecast(self.bot.db), "impact")
+                typhoons_task = fetch_optional(weather_utils.get_typhoons(self.bot.db), "typhoons")
+                
+                results = await asyncio.gather(overview_task, warnings_task, impact_task, typhoons_task)
+                overview, warnings, impact, typhoons = results
                 
                 parts = [f"[{location_name} 상세 날씨 정보 Context]"]
                 
-                # 1. Overview (Situation)
-                overview = await weather_utils.get_weather_overview(self.bot.db)
                 if overview: parts.append(f"📢 **기상 개황**: {overview}")
-                
-                # 2. Special Warnings (Critical)
-                warnings = await weather_utils.get_active_warnings(self.bot.db)
                 if warnings: parts.append(f"🚨 **기상 특보**: {warnings}")
-                
-                # 3. Impact Forecast (Health/Safety)
-                impact = await weather_utils.get_impact_forecast(self.bot.db)
                 if impact: parts.append(f"⚠️ **영향 예보**: {impact}")
-                
-                # 4. Typhoon
-                typhoons = await weather_utils.get_typhoons(self.bot.db)
                 if typhoons: parts.append(f"🌀 **태풍 정보**: {typhoons}")
                 
                 # 5. Core Weather (Current + Short-term)
