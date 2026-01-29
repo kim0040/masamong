@@ -308,11 +308,9 @@ def format_current_weather(data: dict | None) -> str:
     try:
         if not data or not data.get('item'): return config.MSG_WEATHER_NO_DATA
         
-        # 초단기실황은 항상 1개의 item만 반환
-        item = data['item'][0]
-        
-        # 필요한 값들을 추출
-        values = {i['category']: i['obsrValue'] for i in item}
+        # 초단기실황 데이터 추출 (각 카테고리별 아이템 리스트)
+        items = data['item']
+        values = {i['category']: i['obsrValue'] for i in items if 'category' in i and 'obsrValue' in i}
         
         date_str = datetime.now(KST).strftime("%m/%d %H:%M")
         temp, reh = values.get('T1H'), values.get('REH')
@@ -343,10 +341,28 @@ def format_short_term_forecast(items: dict | None, day_name: str, target_day_off
     try:
         target_date = (datetime.now(KST) + timedelta(days=target_day_offset)).strftime("%Y%m%d")
         day_items = [item for item in items['item'] if item.get('fcstDate') == target_date]
+        
+        # Late night fallback: If today has no data left, show tomorrow's data
+        if not day_items and target_day_offset == 0:
+            all_dates = sorted(list(set(item.get('fcstDate') for item in items['item'] if item.get('fcstDate'))))
+            if all_dates:
+                target_date = all_dates[0]
+                day_items = [item for item in items['item'] if item.get('fcstDate') == target_date]
+                day_name = f"내일({target_date[4:6]}/{target_date[6:8]})"
+        
         if not day_items: return f"{day_name} 날씨: 예보 데이터 없음"
 
+        # Check for min/max temp (TMN/TMX)
         min_temp = next((float(i['fcstValue']) for i in day_items if i['category'] == 'TMN'), None)
         max_temp = next((float(i['fcstValue']) for i in day_items if i['category'] == 'TMX'), None)
+        
+        # If TMN/TMX is missing (often for today late), try to find from all forecast items for that date
+        if min_temp is None:
+            temps = [float(i['fcstValue']) for i in day_items if i['category'] in ['TMP', 'T1H']]
+            if temps: min_temp = min(temps)
+        if max_temp is None:
+            temps = [float(i['fcstValue']) for i in day_items if i['category'] in ['TMP', 'T1H']]
+            if temps: max_temp = max(temps)
         noon_sky_item = next((i for i in day_items if i['category'] == 'SKY' and i['fcstTime'] == '1200'), None)
         sky_map = {"1": "맑음☀️", "3": "구름많음☁️", "4": "흐림🌥️"}
         sky = sky_map.get(noon_sky_item['fcstValue']) if noon_sky_item else "정보없음"
