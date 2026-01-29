@@ -100,7 +100,8 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
     try:
         for attempt in range(1, max_retries + 1):
             try:
-                response = await asyncio.to_thread(session.get, full_url, params=base_params, timeout=10)
+                timeout_seconds = getattr(config, 'KMA_API_TIMEOUT', 30)
+                response = await asyncio.to_thread(session.get, full_url, params=base_params, timeout=timeout_seconds)
                 response.raise_for_status()
 
                 # API Hub Typ01 often returns text/plain, handle header manually
