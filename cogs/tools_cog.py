@@ -20,6 +20,7 @@ from logger_config import logger
 from utils.api_handlers import exchange_rate, finnhub, kakao, krx
 from utils import db as db_utils
 from utils import coords as coords_utils
+from utils import weather as weather_utils
 from .weather_cog import WeatherCog
 
 def is_korean(text: str) -> bool:
@@ -54,8 +55,28 @@ class ToolsCog(commands.Cog):
         coords = await coords_utils.get_coords_from_db(self.bot.db, location_name)
         if not coords:
             return f"'{location_name}' 지역의 날씨 정보는 아직 알 수 없습니다."
-        weather_data, error_msg = await self.weather_cog.get_formatted_weather_string(day_offset, location_name, str(coords["nx"]), str(coords["ny"]))
-        return weather_data if weather_data else error_msg
+        
+        nx, ny = str(coords["nx"]), str(coords["ny"])
+        
+        # [Refactor] Return Dict for AI Prompt Optimization
+        # 1. Current Weather
+        current_data = await weather_utils.get_current_weather_from_kma(self.bot.db, nx, ny)
+        current_str = weather_utils.format_current_weather(current_data) if current_data else "정보 없음"
+        
+        # 2. Short-term Forecast
+        forecast_data = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
+        items_list = []
+        if forecast_data and 'item' in forecast_data:
+            items_list = forecast_data['item']
+        
+        # Return structured data
+        return {
+            "location": location_name,
+            "current_weather": current_str,
+            "forecast_items": items_list,
+            # Fallback string for legacy handlers (optional, but AI handler looks for dict)
+            "summary": f"{location_name} 현재: {current_str}"
+        }
 
     async def get_stock_price(self, stock_name: str) -> str:
         """주식명을 기반으로 국내/해외 주식 시세를 조회합니다. 한글 포함 여부로 국내/해외를 구분합니다."""
