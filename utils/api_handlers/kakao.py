@@ -100,3 +100,57 @@ async def search_image(query: str, page_size: int = 1) -> list | None:
     except Exception as e:
         logger.error(f"카카오 이미지 검색 API('{query}') 처리 중 예기치 않은 오류: {e}", exc_info=True)
         return None
+
+async def search_blog(query: str, page_size: int = 3) -> list | None:
+    """
+    카카오 블로그 검색 API로 블로그 글을 검색합니다. (리뷰, 후기 등)
+    """
+    if not config.KAKAO_API_KEY or config.KAKAO_API_KEY == 'YOUR_KAKAO_API_KEY':
+        return None
+
+    headers = {
+        "Authorization": f"KakaoAK {config.KAKAO_API_KEY}",
+        "User-Agent": "Masamong/2.0"
+    }
+    params = {"query": query, "size": page_size, "sort": "accuracy"}
+    url = "https://dapi.kakao.com/v2/search/blog"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, params=params, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get('documents')
+                else:
+                    logger.error(f"카카오 블로그 검색 API 오류 (상태: {resp.status}): {await resp.text()}")
+                    return None
+    except Exception as e:
+        logger.error(f"카카오 블로그 검색 API('{query}') 처리 중 예기치 않은 오류: {e}", exc_info=True)
+        return None
+
+async def search_vclip(query: str, page_size: int = 3) -> list | None:
+    """
+    카카오 동영상 검색 API로 동영상을 검색합니다.
+    """
+    if not config.KAKAO_API_KEY or config.KAKAO_API_KEY == 'YOUR_KAKAO_API_KEY':
+        return None
+
+    headers = {
+        "Authorization": f"KakaoAK {config.KAKAO_API_KEY}",
+        "User-Agent": "Masamong/2.0"
+    }
+    params = {"query": query, "size": page_size, "sort": "accuracy"}
+    url = "https://dapi.kakao.com/v2/search/vclip"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, params=params, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get('documents')
+                else:
+                    logger.error(f"카카오 동영상 검색 API 오류 (상태: {resp.status}): {await resp.text()}")
+                    return None
+    except Exception as e:
+        logger.error(f"카카오 동영상 검색 API('{query}') 처리 중 예기치 않은 오류: {e}", exc_info=True)
+        return None
