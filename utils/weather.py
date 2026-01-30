@@ -420,7 +420,7 @@ def format_mid_term_forecast(land_data: dict, temp_data: dict, day_offset: int, 
         return f"{location} 중기예보 정보 처리 중 오류 발생."
 
 async def get_recent_earthquakes(db: aiosqlite.Connection) -> list | None:
-    """최근 3일간의 지진 통보문을 조회합니다."""
+    """최근 3일간의 지진 통보문을 조회합니다. (국내 영향권 한정)"""
     now = datetime.now(KST)
     # API restriction: max 3 days
     from_date = (now - timedelta(days=2)).strftime("%Y%m%d")
@@ -444,15 +444,24 @@ async def get_recent_earthquakes(db: aiosqlite.Connection) -> list | None:
              
         items = res.get('response', {}).get('body', {}).get('items', {}).get('item', [])
         
-        # Filter Magnitude >= 5.0
+        # Filter Magnitude >= 2.0 (Domestic) and domestic check
         filtered_items = []
         raw_items = items if isinstance(items, list) else [items]
         for item in raw_items:
             # item might be empty or None
             if not item: continue
+            
             mt_val = item.get('mt')
+            rem_val = item.get('rem', '')
+            loc_val = item.get('loc', '')
+            
+            # 1. '국내영향없음' 필터링 (해외 지진 제외)
+            if "국내영향없음" in rem_val:
+                continue
+                
+            # 2. 국내 지진 규모 필터 (사용자 요청: 규모 4.0 이상 통보)
             try:
-                if float(mt_val) >= 5.0:
+                if float(mt_val) >= 4.0:
                     filtered_items.append(item)
             except: pass
             
@@ -460,12 +469,24 @@ async def get_recent_earthquakes(db: aiosqlite.Connection) -> list | None:
     except Exception:
         return None
 
+def get_earthquake_safety_tips(magnitude: float) -> str:
+    """지진 규모별 행동 요령을 반환합니다."""
+    common_tips = """
+**[행동 요령]**
+1. **튼튼한 탁자 아래**로 들어가 몸을 보호하세요.
+2. 가스와 전기를 차단하고 **문을 열어 출구**를 확보하세요.
+3. **엘리베이터를 사용하지 마세요.** (계단 이용)
+4. 떨어지는 물건(유리창, 간판 등)에 주의하며 **머리를 보호**하세요.
+"""
+    if magnitude >= 6.0:
+        return common_tips + "5. **즉시 안전한 공터나 넓은 곳으로 대피**하십시오. (건물 붕괴 위험)\n6. 라디오나 공공기관의 안내 방송에 귀를 기울이세요."
+    else:
+        return common_tips + "5. 흔들림이 멈추면 침착하게 밖으로 대피하십시오."
+
 def format_earthquake_alert(item: dict) -> str:
-    """지진 통보문을 포맷팅합니다."""
+    """지진 통보문을 포맷팅합니다. (긴급 재난 문자 스타일 + 행동요령)"""
     try:
         tm_eqk = str(item.get('tmEqk')) # 발생시각 (YYYYMMDDHHMM)
-        lat = item.get('lat')
-        lon = item.get('lon')
         loc = item.get('loc') # 위치
         mt = item.get('mt') # 규모
         rem = item.get('rem') # 참고사항
@@ -474,9 +495,31 @@ def format_earthquake_alert(item: dict) -> str:
         dt = datetime.strptime(tm_eqk, "%Y%m%d%H%M%S") if len(tm_eqk) == 14 else datetime.strptime(tm_eqk, "%Y%m%d%H%M")
         time_str = dt.strftime("%Y년 %m월 %d일 %H시 %M분")
         
-        return f"🌋 **[지진 통보] 규모 {mt}**\n📍 위치: {loc}\n⏰ 시각: {time_str}\n💡 참고: {rem}"
+        # 국내 지진 규모별 색상/헤더 구분
+        try:
+            mag = float(mt)
+        except:
+            mag = 0.0
+            
+        if mag >= 6.0:
+            header = "# 🚨 긴급: 대규모 지진 발생 (대피 요망)"
+            emoji = "🔴"
+        else: # 4.0 ~ 5.9
+            header = "## 📢 경고: 지진 발생 알림 (주의)"
+            emoji = "🟡"
+        
+        safety_tips = get_earthquake_safety_tips(mag)
+            
+        return f"""{header}
+### {emoji} 규모 {mt} 지진 감지
+**📍 위치**: {loc}
+**⏰ 시각**: {time_str}
+> 💡 {rem if rem else '추가 정보 없음'}
+
+---
+{safety_tips}"""
     except Exception:
-        return "지진 정보 포맷팅 오류"
+        return "⚠️ 지진 정보 포맷팅 오류"
 
 async def get_weather_overview(db: aiosqlite.Connection, timeout: float | None = None) -> str | None:
     """기상 개황(종합)을 조회합니다."""
