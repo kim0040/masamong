@@ -78,11 +78,22 @@ class ToolsCog(commands.Cog):
             "summary": f"{location_name} 현재: {current_str}"
         }
 
-    async def get_stock_price(self, symbol: str) -> str:
+    async def get_stock_price(self, symbol: str = None, stock_name: str = None) -> str:
         """
         주식 시세, 기업 정보, 뉴스, 추천 트렌드를 종합적으로 조회합니다. 
         한글 포함 시 KRX(국내), 영문 시 Finnhub(해외)를 호출합니다.
+        
+        Args:
+            symbol (str): 종목명 또는 티커 (예: "삼성전자", "AAPL", "NVDA")
+            stock_name (str): symbol의 별칭 (LLM 호환성용)
         """
+        # [Robust Parameter Handling] Support both 'symbol' and 'stock_name'
+        target_symbol = symbol or stock_name
+        if not target_symbol:
+            return "❌ 오류: 조회할 주식 이름이나 티커가 제공되지 않았습니다."
+
+        symbol = target_symbol # Normalize variable name
+        
         logger.info(f"주식 정보 조회 실행: '{symbol}'")
 
         # 1. 국내 주식 (KRX)
