@@ -278,8 +278,8 @@ async def check_dm_message_limit(db: aiosqlite.Connection, user_id: int) -> tupl
         (허용 여부, 안내 메시지용 리셋 시간 문자열 or None)
     """
     try:
-        LIMIT_WINDOW_HOURS = 3
-        LIMIT_COUNT = 5
+        LIMIT_WINDOW_HOURS = 5
+        LIMIT_COUNT = 30
         
         now = datetime.now(timezone.utc)
         now_str = now.isoformat()
