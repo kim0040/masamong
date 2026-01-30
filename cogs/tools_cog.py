@@ -100,14 +100,38 @@ class ToolsCog(commands.Cog):
         return await kakao.search_place_by_keyword(query, page_size=page_size)
 
     async def kakao_web_search(self, query: str) -> str:
-        """(폴백용) Kakao API로 웹을 검색하고 결과를 요약하여 반환합니다."""
-        logger.info(f"Kakao 웹 검색 실행: '{query}'")
-        search_results = await kakao.search_web(query, page_size=3)
-        if not search_results:
-            return f"'{query}'에 대한 웹 검색 결과가 없습니다."
+        """(폴백용) Kakao API로 웹/블로그/동영상을 검색하고 결과를 요약하여 반환합니다."""
+        logger.info(f"Kakao 통합 검색 실행: '{query}'")
         
-        formatted = [f"{i}. {r.get('title', '제목 없음').replace('<b>','').replace('</b>','')}\n   - {r.get('contents', '내용 없음').replace('<b>','').replace('</b>','')[:250]}..." for i, r in enumerate(search_results, 1)]
-        return f"'{query}'에 대한 웹 검색 결과 요약:\n" + "\n".join(formatted)
+        # [Rich Context] 웹, 블로그, 동영상을 병렬로 검색
+        web_task = kakao.search_web(query, page_size=5) # 늘어난 limit
+        blog_task = kakao.search_blog(query, page_size=3)
+        vclip_task = kakao.search_vclip(query, page_size=3)
+        
+        results = await asyncio.gather(web_task, blog_task, vclip_task, return_exceptions=True)
+        web_res, blog_res, vclip_res = results
+        
+        output_parts = []
+
+        # 1. Web Results
+        if isinstance(web_res, list) and web_res:
+            formatted = [f"{i}. {r.get('title', '제목 없음').replace('<b>','').replace('</b>','')}\n   - {r.get('contents', '내용 없음').replace('<b>','').replace('</b>','')[:200]}..." for i, r in enumerate(web_res, 1)]
+            output_parts.append(f"## 🌐 웹 검색 결과:\n" + "\n".join(formatted))
+        
+        # 2. Blog Results (Review/Experience)
+        if isinstance(blog_res, list) and blog_res:
+            formatted = [f"{i}. [블로그] {r.get('title', '').replace('<b>','').replace('</b>','')}\n   - {r.get('blogname', '')}: {r.get('contents', '').replace('<b>','').replace('</b>','')[:200]}..." for i, r in enumerate(blog_res, 1)]
+            output_parts.append(f"## 📝 블로그/후기 검색 결과:\n" + "\n".join(formatted))
+
+        # 3. Video Results
+        if isinstance(vclip_res, list) and vclip_res:
+            formatted = [f"{i}. [영상] {r.get('title', '').replace('<b>','').replace('</b>','')}\n   - {r.get('author', '저자')}: {r.get('url')}" for i, r in enumerate(vclip_res, 1)]
+            output_parts.append(f"## 🎬 동영상 검색 결과:\n" + "\n".join(formatted))
+
+        if not output_parts:
+            return f"'{query}'에 대한 카카오 검색 결과가 없습니다."
+            
+        return f"'{query}'에 대한 통합 검색 결과 (Kakao):\n\n" + "\n\n".join(output_parts)
 
     async def web_search(self, query: str) -> str:
         """
