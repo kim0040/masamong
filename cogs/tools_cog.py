@@ -78,14 +78,52 @@ class ToolsCog(commands.Cog):
             "summary": f"{location_name} 현재: {current_str}"
         }
 
-    async def get_stock_price(self, stock_name: str) -> str:
-        """주식명을 기반으로 국내/해외 주식 시세를 조회합니다. 한글 포함 여부로 국내/해외를 구분합니다."""
-        if is_korean(stock_name):
-            logger.info(f"'{stock_name}'은(는) 한글명이므로 KRX API를 호출합니다.")
-            return await krx.get_stock_price(stock_name)
-        else:
-            logger.info(f"'{stock_name}'은(는) Ticker이므로 Finnhub API를 호출합니다.")
-            return await finnhub.get_stock_quote(stock_name)
+    async def get_stock_price(self, symbol: str) -> str:
+        """
+        주식 시세, 기업 정보, 뉴스, 추천 트렌드를 종합적으로 조회합니다. 
+        한글 포함 시 KRX(국내), 영문 시 Finnhub(해외)를 호출합니다.
+        """
+        logger.info(f"주식 정보 조회 실행: '{symbol}'")
+
+        # 1. 국내 주식 (KRX)
+        if is_korean(symbol):
+             logger.info(f"'{symbol}'은(는) 한글명이므로 KRX API를 호출합니다.")
+             return await krx.get_stock_price(symbol)
+        
+        # 2. 해외 주식 (Finnhub) - Rich Context
+        # [Rich Context] 4가지 정보를 병렬로 조회
+        price_task = finnhub.get_stock_quote(symbol)
+        profile_task = finnhub.get_company_profile(symbol)
+        news_task = finnhub.get_company_news(symbol, count=3)
+        reco_task = finnhub.get_recommendation_trends(symbol)
+        
+        results = await asyncio.gather(price_task, profile_task, news_task, reco_task, return_exceptions=True)
+        price_res, profile_res, news_res, reco_res = results
+        
+        # Price (필수)
+        if isinstance(price_res, str) and "찾을 수 없습니다" in price_res:
+             return price_res # 시세조차 없으면 종료
+        
+        output_parts = [f"## 💰 시세 정보:\n{price_res}"]
+
+        # Company Profile
+        if isinstance(profile_res, dict):
+            mcap = f"{profile_res.get('market_cap', 0):,.0f}" if profile_res.get('market_cap') else "N/A"
+            profile_str = (f"- 기업명: {profile_res.get('name')}\n"
+                           f"- 산업: {profile_res.get('industry')}\n"
+                           f"- 시가총액: ${mcap} Million\n"
+                           f"- 웹사이트: {profile_res.get('website')}")
+            output_parts.append(f"## 🏢 기업 개요:\n{profile_str}")
+
+        # Recommendation Trends
+        if isinstance(reco_res, str) and "실패" not in reco_res:
+            output_parts.append(f"## 📊 애널리스트 투자의견:\n{reco_res}")
+
+        # News
+        if isinstance(news_res, str) and "찾을 수 없습니다" not in news_res:
+            output_parts.append(f"## 📰 관련 뉴스:\n{news_res}")
+            
+        return f"'{symbol}'에 대한 종합 주식 리포트 (Finnhub):\n\n" + "\n\n".join(output_parts)
 
     async def get_company_news(self, stock_name: str, count: int = 3) -> str:
         """특정 종목(Ticker Symbol)에 대한 최신 뉴스를 조회합니다."""
