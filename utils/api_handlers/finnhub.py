@@ -229,3 +229,71 @@ async def get_company_news(symbol: str, count: int = 3) -> str:
     except Exception as e:
         logger.error(f"Finnhub 뉴스 API('{normalized_symbol}') 처리 중 예기치 않은 오류: {e}", exc_info=True)
         return "뉴스 조회 중 알 수 없는 오류가 발생했습니다."
+
+async def get_company_profile(symbol: str) -> dict | None:
+    """
+    Finnhub API로 기업 프로필(업종, 시총, 웹사이트 등)을 조회합니다.
+    URL: /stock/profile2
+    """
+    params = _get_client()
+    if not params:
+        return None
+    
+    normalized_symbol = ALIAS_TO_TICKER.get(symbol.lower(), symbol).upper()
+    params['symbol'] = normalized_symbol
+
+    try:
+        session = http.get_modern_tls_session()
+        response = await asyncio.to_thread(session.get, f"{BASE_URL}/stock/profile2", params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        if not data:
+            return None
+            
+        return {
+            "name": data.get("name"),
+            "industry": data.get("finnhubIndustry"),
+            "market_cap": data.get("marketCapitalization"), # Million USD
+            "website": data.get("weburl"),
+            "logo": data.get("logo")
+        }
+    except Exception as e:
+        logger.error(f"Finnhub Profile API('{normalized_symbol}') 오류: {e}")
+        return None
+
+async def get_recommendation_trends(symbol: str) -> str:
+    """
+    Finnhub API로 애널리스트 추천 트렌드(Buy/Sell/Hold)를 조회합니다.
+    URL: /stock/recommendation
+    """
+    params = _get_client()
+    if not params:
+        return ""
+    
+    normalized_symbol = ALIAS_TO_TICKER.get(symbol.lower(), symbol).upper()
+    params['symbol'] = normalized_symbol
+
+    try:
+        session = http.get_modern_tls_session()
+        response = await asyncio.to_thread(session.get, f"{BASE_URL}/stock/recommendation", params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json() # List of dicts
+        
+        if not data or not isinstance(data, list):
+            return "추천 트렌드 데이터가 없습니다."
+            
+        # 최신 데이터 (보통 첫번째가 최신이지만 날짜 확인 필요)
+        latest = data[0] # period 기준 정렬되어 있다고 가정
+        period = latest.get("period", "N/A")
+        strong_buy = latest.get("strongBuy", 0)
+        buy = latest.get("buy", 0)
+        hold = latest.get("hold", 0)
+        sell = latest.get("sell", 0)
+        strong_sell = latest.get("strongSell", 0)
+        
+        return (f"[{period} 기준] 강력매수:{strong_buy}, 매수:{buy}, "
+                f"중립:{hold}, 매도:{sell}, 강력매도:{strong_sell}")
+
+    except Exception as e:
+        logger.error(f"Finnhub Recommendation API('{normalized_symbol}') 오류: {e}")
+        return "추천 트렌드 조회 실패"
