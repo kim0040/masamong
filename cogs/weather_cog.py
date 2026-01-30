@@ -65,18 +65,42 @@ class WeatherCog(commands.Cog):
         self.earthquake_alert_loop.cancel()
 
     async def get_mid_term_weather(self, day_offset: int, location_name: str) -> str:
-        """중기예보를 조회합니다."""
+        """중기예보를 조회합니다. (V2 실패 시 V1 Fallback)"""
         try:
-            # Simple mapping for now (Todo: dynamic mapping)
-            # 11B00000: Seoul/Incheon/Gyeonggi
-            # 11F20000: Jeonnam (Gwangyang)
-            # For now, default to Seoul (11B00000) or check if '광양' in location
-            region_code = "11B00000"
-            if "광양" in location_name or "전남" in location_name:
-                 region_code = "11F20000"
+            # 1. Try V2 (Flat file)
+            # Simple mapping for V2
+            v2_code = "11B00000" # Seoul/Incheon/Gyeonggi
+            if "광양" in location_name or "전남" in location_name or "광주" in location_name:
+                 v2_code = "11F20000" # Jeonnam
+            elif "부산" in location_name or "경남" in location_name:
+                 v2_code = "11H20000" # Busan/Gyeongnam
+            elif "대구" in location_name or "경북" in location_name:
+                 v2_code = "11H10000" # Daegu/Gyeongbuk
             
-            res = await weather_utils.get_mid_term_forecast_v2(self.bot.db, region_code)
-            return res if res else "중기예보 데이터를 불러올 수 없습니다."
+            res = await weather_utils.get_mid_term_forecast_v2(self.bot.db, v2_code)
+            if res: return res
+
+            # 2. Fallback to V1 (API)
+            # Mappings for V1 (Land, Temp)
+            # Land: Wide area code (same as V2 usually)
+            # Temp: Specific city code
+            v1_land_code = v2_code 
+            v1_temp_code = "11B10101" # Seoul Default
+            
+            if "광양" in location_name or "전남" in location_name:
+                v1_land_code = "11F20000" # Jeonnam
+                v1_temp_code = "11F20501" # Gwangju (Best proxy if Gwangyang specific unavailable)
+                # Note: Known Gwangyang code might be 11F20403 but Gwangju is safer for API availability
+            elif "부산" in location_name:
+                v1_land_code = "11H20000"
+                v1_temp_code = "11H20201" # Busan
+            elif "대구" in location_name:
+                v1_land_code = "11H10000"
+                v1_temp_code = "11H10701" # Daegu
+                
+            res_v1 = await weather_utils.get_mid_term_forecast(self.bot.db, v1_temp_code, v1_land_code, day_offset, location_name)
+            return res_v1 if res_v1 else "중기예보 데이터를 불러올 수 없습니다."
+            
         except Exception as e:
             logger.error(f"중기예보 조회 실패: {e}", exc_info=True)
             return config.MSG_WEATHER_FETCH_ERROR
@@ -224,19 +248,31 @@ class WeatherCog(commands.Cog):
         coords = await coords_utils.get_coords_from_db(self.bot.db, user_original_query.lower())
         if coords: location_name, nx, ny = coords['name'], str(coords['nx']), str(coords['ny'])
         
-        # [NEW] Weekly Weather Logic
+        # [NEW] Weekly Weather Logic (Short-term + Mid-term)
         if "이번주" in user_original_query or "주간" in user_original_query:
+            # 1. Short-term (+1, +2 days)
+            short_term_data = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
+            short_term_summary = ""
+            if short_term_data and not short_term_data.get("error"):
+                 tomorrow_summary = weather_utils.format_short_term_forecast(short_term_data, "내일", 1)
+                 dayafter_summary = weather_utils.format_short_term_forecast(short_term_data, "모레", 2)
+                 short_term_summary = f"{tomorrow_summary}\n{dayafter_summary}"
+            
+            # 2. Mid-term (+3 ~ +10 days)
             mid_term_data = await self.get_mid_term_weather(3, location_name)
-            # Send directly or via AI
+            
+            full_weekly_data = f"--- [단기 예보 (내일/모레)] ---\n{short_term_summary}\n\n--- [중기 예보 (3일 후 ~ 10일 후)] ---\n{mid_term_data}"
+
+            # Send via AI for summarization
             self.ai_handler = self.bot.get_cog('AIHandler')
             is_ai_channel = self.ai_handler and self.ai_handler.is_ready and config.CHANNEL_AI_CONFIG.get(ctx.channel.id, {}).get("allowed", False)
             
             if is_ai_channel:
-                 context = {"location_name": location_name, "weather_data": mid_term_data}
-                 ai_response = await self.ai_handler.generate_creative_text(ctx.channel, ctx.author, "answer_weather", context)
+                 context = {"location_name": location_name, "weather_data": full_weekly_data}
+                 ai_response = await self.ai_handler.generate_creative_text(ctx.channel, ctx.author, "answer_weather_weekly", context)
                  await ctx.reply(ai_response or config.MSG_AI_ERROR, mention_author=False)
             else:
-                 await ctx.reply(f"📅 **{location_name} 이번 주 날씨**\n{mid_term_data}", mention_author=False)
+                 await ctx.reply(f"📅 **{location_name} 이번 주 날씨 종합**\n{full_weekly_data}", mention_author=False)
             return
 
         day_offset = 1 if "내일" in user_original_query else 2 if "모레" in user_original_query else 0

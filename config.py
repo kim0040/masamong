@@ -408,7 +408,8 @@ AI_CREATIVE_PROMPTS = {
     "summarize": "다음 대화 내용을 분석해서, 핵심 내용을 3가지 항목으로 요약해줘.\n--- 대화 내용 ---\n{conversation}",
     "ranking": "다음 서버 활동 랭킹을 보고, 1등을 축하하고 다른 사람들을 독려하는 발표 멘트를 작성해줘.\n--- 활동 랭킹 ---\n{ranking_list}",
     "answer_time": "현재 시간은 '{current_time}'입니다. 이 정보를 사용하여 사용자에게 현재 시간을 알려주세요.",
-    "answer_weather": "'{location_name}'의 날씨 정보는 다음과 같습니다: {weather_data}. 이 정보를 바탕으로 사용자에게 날씨를 설명해주세요."
+    "answer_weather": "'{location_name}'의 날씨 정보는 다음과 같습니다: {weather_data}. 이 정보를 바탕으로 사용자에게 날씨를 설명해주세요.",
+    "answer_weather_weekly": "'{location_name}'의 이번 주 주간 날씨 데이터(단기+중기)는 다음과 같습니다:\n{weather_data}\n\n이 데이터를 바탕으로 사용자가 이번 주 날씨 흐름(요일별 변화 등)을 한눈에 알 수 있도록 요약해서 설명해주세요. 날짜별 날씨, 기온 변화 등을 자연스럽게 언급하세요."
 }
 FUN_KEYWORD_TRIGGERS = { "enabled": True, "cooldown_seconds": 60, "triggers": { "fortune": ["운세", "오늘 운", "운세 좀"], "summarize": ["요약해줘", "무슨 얘기했어", "무슨 얘기함", "요약 좀", "지금까지 뭔 얘기"] } }
 AI_DEBUG_ENABLED = as_bool(load_config_value('AI_DEBUG_ENABLED', False))
