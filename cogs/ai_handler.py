@@ -1532,18 +1532,28 @@ Generate the optimized English image prompt:"""
 
             # [Optimization] 날씨 도구 결과 최적화
             if name == "get_weather_forecast" and isinstance(result, dict):
-                # 복잡한 JSON 대신 자연어로 요약
-                items = result.get("items", [])
-                formatted_wx = []
-                for item in items[:5]: # 5개 예보만 사용
-                    time_str = item.get("fcstTime", "")
-                    temp = item.get("TMP", "?")
-                    sky = item.get("SKY", "?") 
-                    rain = item.get("POP", "?")
-                    formatted_wx.append(f"{time_str}시: {temp}도, 강수{rain}%, {sky}")
-                
-                result_text = " | ".join(formatted_wx)
-                lines.append(f"[{name}] {result_text}")
+                # 1. Location & Current Weather
+                location = result.get("location", "")
+                current = result.get("current_weather", "")
+                if location or current:
+                    lines.append(f"[{name}] {location} 현재 날씨: {current}")
+
+                # 2. Short-term Forecast Items
+                items = result.get("forecast_items") or result.get("items", [])
+                if items:
+                    formatted_wx = []
+                    for item in items[:5]: # 5개 예보만 사용 (가장 가까운 미래)
+                        time_str = item.get("fcstTime", "")
+                        temp = item.get("TMP", "?")
+                        sky = item.get("SKY", "?") 
+                        rain = item.get("POP", "?")
+                        formatted_wx.append(f"{time_str}시: {temp}도, 강수{rain}%, {sky}")
+                    
+                    result_text = " | ".join(formatted_wx)
+                    lines.append(f"[{name}] 단기 예보: {result_text}")
+                elif not current:
+                    # Fallback if both empty but dict exists (legacy or error?)
+                    lines.append(f"[{name}] {str(result)}")
                 continue
 
             # [Optimization] 주식 도구 결과 최적화
