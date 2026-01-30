@@ -225,15 +225,20 @@ class WeatherCog(commands.Cog):
                 final_response_str = f"{formatted_alerts}\n\n---\n\n{weather_data_str}"
 
             # 4. AI 또는 일반 응답 생성
+            # 4. AI 또는 일반 응답 생성
             self.ai_handler = self.bot.get_cog('AIHandler')
             is_ai_channel_and_enabled = self.ai_handler and self.ai_handler.is_ready and config.CHANNEL_AI_CONFIG.get(original_message.channel.id, {}).get("allowed", False)
             
+            # [Refactor] Data First, then AI Briefing
+            data_msg = await original_message.reply(f"📍 **{location_name}**\n{final_response_str}", mention_author=False)
+
             if is_ai_channel_and_enabled:
                 context = {"location_name": location_name, "weather_data": final_response_str}
-                ai_response = await self.ai_handler.generate_creative_text(original_message.channel, original_message.author, "answer_weather", context)
-                await original_message.reply(ai_response or config.MSG_AI_ERROR, mention_author=False)
-            else:
-                await original_message.reply(f"📍 **{location_name}**\n{final_response_str}", mention_author=False)
+                # AI Briefing as follow-up
+                async with original_message.channel.typing():
+                    ai_response = await self.ai_handler.generate_creative_text(original_message.channel, original_message.author, "answer_weather", context)
+                    if ai_response and ai_response != config.MSG_AI_ERROR:
+                        await data_msg.reply(ai_response, mention_author=False)
 
     @commands.command(name="날씨", aliases=["weather", "현재날씨", "오늘날씨"])
     async def weather_command(self, ctx: commands.Context, *, location_query: str = ""):
@@ -263,16 +268,19 @@ class WeatherCog(commands.Cog):
             
             full_weekly_data = f"--- [단기 예보 (내일/모레)] ---\n{short_term_summary}\n\n--- [중기 예보 (3일 후 ~ 10일 후)] ---\n{mid_term_data}"
 
+            # [Refactor] Data First, then AI Briefing
+            data_msg = await ctx.reply(f"📅 **{location_name} 이번 주 날씨 종합**\n{full_weekly_data}", mention_author=False)
+
             # Send via AI for summarization
             self.ai_handler = self.bot.get_cog('AIHandler')
             is_ai_channel = self.ai_handler and self.ai_handler.is_ready and config.CHANNEL_AI_CONFIG.get(ctx.channel.id, {}).get("allowed", False)
             
             if is_ai_channel:
                  context = {"location_name": location_name, "weather_data": full_weekly_data}
-                 ai_response = await self.ai_handler.generate_creative_text(ctx.channel, ctx.author, "answer_weather_weekly", context)
-                 await ctx.reply(ai_response or config.MSG_AI_ERROR, mention_author=False)
-            else:
-                 await ctx.reply(f"📅 **{location_name} 이번 주 날씨 종합**\n{full_weekly_data}", mention_author=False)
+                 async with ctx.channel.typing():
+                     ai_response = await self.ai_handler.generate_creative_text(ctx.channel, ctx.author, "answer_weather_weekly", context)
+                     if ai_response and ai_response != config.MSG_AI_ERROR:
+                         await data_msg.reply(ai_response, mention_author=False)
             return
 
         day_offset = 1 if "내일" in user_original_query else 2 if "모레" in user_original_query else 0
