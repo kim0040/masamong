@@ -912,7 +912,7 @@ Generate the optimized English image prompt:"""
         summarize_prompt = f"""사용자 질문: '{user_query}'
 
 검색 결과:
-{search_result[:2500]}
+{search_result[:6000]}
 
 답변 가이드:
 1. 검색된 정보의 핵심을 정확히 전달해.
