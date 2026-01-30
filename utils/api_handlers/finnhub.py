@@ -140,6 +140,88 @@ async def get_raw_stock_quote(symbol: str) -> dict | None:
             return data
         return None
 
+    import re
+    from .. import http
+    # Lazily import kakao to avoid potential circular import issues at module level if any
+    from . import kakao 
+
+    async def _find_ticker_via_web(query: str) -> str | None:
+        """
+        Finnhub 검색 실패 시, 카카오 웹 검색을 통해 티커를 추론합니다.
+        예: '스타벅스 주식' -> 검색 결과 '...스타벅스(SBUX)...' -> 'SBUX' 추출
+        """
+        search_query = f"{query} 주식 티커"
+        logger.info(f"Finnhub: '{query}'에 대한 티커를 웹 검색으로 찾습니다... ({search_query})")
+        
+        results = await kakao.search_web(search_query, page_size=3)
+        if not results:
+            return None
+            
+        # Regex patterns to find ticker
+        # 1. (SBUX) or (U) - Parentheses (High confidence)
+        # 2. Ticker: SBUX - Explicit label
+        # 3. SBUX (스타벅스) - Uppercase followed by query in parens
+        patterns = [
+            re.compile(r'\(([A-Z]{1,5})\)'), # (SBUX), (U)
+            re.compile(r'Ticker\s*[:\-]?\s*([A-Z]{1,5})', re.IGNORECASE), # Ticker: SBUX
+            re.compile(r'Symbol\s*[:\-]?\s*([A-Z]{1,5})', re.IGNORECASE), # Symbol: SBUX
+            re.compile(r'티커\s*[:\-는은]?\s*([A-Z]{1,5})'), # 티커는 SBUX
+            re.compile(r'종목코드\s*[:\-는은]?\s*([A-Z]{1,5})'), # 종목코드 SBUX
+            re.compile(r'심볼\s*[:\-는은]?\s*([A-Z]{1,5})'), # 심볼 SBUX
+            re.compile(r'([A-Z]{2,5})\s*\('), # SBUX ( - Requires 2+ chars
+        ]
+        
+        # Stopwords to avoid false positives
+        STOPWORDS = {
+            "NASDAQ", "NYSE", "ETF", "USA", "KRX", "KOSPI", "KOSDAQ", 
+            "CEO", "IPO", "TOP", "BEST", "NEW", "USD", "WEB", "APP",
+            "THE", "AND", "FOR", "INC", "CORP", "LTD", "PLC", "AG",
+            "EST", "GMT", "PST", "CST", "JST", "KST",
+            "OTT", "IT", "AI", "PER", "PBR", "ROE", "ROA", "EPS", 
+            "EBITDA", "EV", "BPS", "DIV", "YTD", "QQQ", "SPY"
+        }
+
+        for item in results:
+            title = item.get('title', '').replace('<b>', '').replace('</b>', '')
+            content = item.get('contents', '').replace('<b>', '').replace('</b>', '')
+            logger.debug(f"Finnhub Ticker Search: Checking Title: {title} / Content: {content}")
+            
+            # [Relevance Check] The result MUST contain the original query string (e.g. "스타벅스")
+            # to be considered a valid source for that company's ticker.
+            if query not in title and query not in content:
+                 logger.debug(f"Finnhub Web Fallback: 검색 결과에 '{query}'가 없어 건너뜁니다.")
+                 continue
+
+            # Combine title and content for search
+            text = f"{title} {content}"
+            
+            # Try patterns
+            candidates = []
+            for p in patterns:
+                matches = p.findall(text)
+                for m in matches:
+                     if m and m not in STOPWORDS:
+                         candidates.append(m)
+            
+            # If candidates found, pick the most frequent or first valid one
+            if candidates:
+                # Prioritize Pattern 1 (Parentheses) if possible.
+                p1_match = re.search(r'\(([A-Z]{2,5})\)', text)
+                if p1_match:
+                     found = p1_match.group(1)
+                     if found not in STOPWORDS:
+                         logger.info(f"Finnhub Web Fallback: 패턴 1로 티커 '{found}' 발견!")
+                         return found
+                
+                # If no parens match, take the first reasonable uppercase word
+                for c in candidates:
+                     logger.info(f"Finnhub Web Fallback: 후보 '{c}' 발견!")
+                     return c
+        
+        return None
+        
+        return None
+
     try:
         quote_data = await _get_quote_for_symbol(normalized_symbol)
 
@@ -147,6 +229,11 @@ async def get_raw_stock_quote(symbol: str) -> dict | None:
         if not quote_data:
             logger.info(f"Finnhub API에서 '{normalized_symbol}' 종목 정보를 찾지 못했습니다. 검색을 시도합니다.")
             searched_symbol = await _search_symbol(symbol)
+            
+            # [Dynamic Fallback] Finnhub 검색도 실패하면 웹 검색 시도
+            if not searched_symbol:
+                 searched_symbol = await _find_ticker_via_web(symbol)
+
             if searched_symbol and searched_symbol.lower() != normalized_symbol.lower():
                 logger.info(f"Finnhub: 검색된 Ticker '{searched_symbol}'(으)로 재시도합니다.")
                 quote_data = await _get_quote_for_symbol(searched_symbol)
