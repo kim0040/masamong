@@ -87,18 +87,11 @@ class WeatherCog(commands.Cog):
             v1_land_code = v2_code 
             v1_temp_code = "11B10101" # Seoul Default
             
-            if "광양" in location_name or "전남" in location_name:
-                v1_land_code = "11F20000" # Jeonnam
-                v1_temp_code = "11F20501" # Gwangju (Best proxy if Gwangyang specific unavailable)
-                # Note: Known Gwangyang code might be 11F20403 but Gwangju is safer for API availability
-            elif "부산" in location_name:
-                v1_land_code = "11H20000"
-                v1_temp_code = "11H20201" # Busan
-            elif "대구" in location_name:
-                v1_land_code = "11H10000"
-                v1_temp_code = "11H10701" # Daegu
-                
-            res_v1 = await weather_utils.get_mid_term_forecast(self.bot.db, v1_temp_code, v1_land_code, day_offset, location_name)
+            # [Fix] utils/weather.py handles code lookup internally.
+            # Passing redundant args caused TypeError.
+            # Removed manual code lookup block (lines 90-100).
+            
+            res_v1 = await weather_utils.get_mid_term_forecast(self.bot.db, location_name, day_offset)
             return res_v1 if res_v1 else "중기예보 데이터를 불러올 수 없습니다."
             
         except Exception as e:
