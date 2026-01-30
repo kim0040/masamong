@@ -357,9 +357,9 @@ BM25_AUTO_REBUILD_CONFIG = {
         15,
     ),
 }
-CONVERSATION_WINDOW_SIZE = as_int(load_config_value('CONVERSATION_WINDOW_SIZE', 12)) # 윈도우 크기 (메시지 개수)
-CONVERSATION_WINDOW_STRIDE = as_int(load_config_value('CONVERSATION_WINDOW_STRIDE', 6)) # 윈도우 이동 간격
-CONVERSATION_WINDOW_MAX_CHARS = as_int(load_config_value('CONVERSATION_WINDOW_MAX_CHARS', 3000)) # 윈도우 최대 문자열 길이 (토큰 제한 대응)
+CONVERSATION_WINDOW_SIZE = as_int(load_config_value('CONVERSATION_WINDOW_SIZE'), 12) # 윈도우 크기 (메시지 개수)
+CONVERSATION_WINDOW_STRIDE = as_int(load_config_value('CONVERSATION_WINDOW_STRIDE'), 6) # 윈도우 이동 간격
+CONVERSATION_WINDOW_MAX_CHARS = as_int(load_config_value('CONVERSATION_WINDOW_MAX_CHARS'), 3000) # 윈도우 최대 문자열 길이 (토큰 제한 대응)
 CONVERSATION_NEIGHBOR_RADIUS = max(1, as_int(load_config_value('CONVERSATION_NEIGHBOR_RADIUS', EMBED_CONFIG.get("conversation_neighbor_radius", 3)), 3))
 
 AI_INTENT_MODEL_NAME = "gemini-2.5-flash-lite"
