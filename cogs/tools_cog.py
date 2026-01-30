@@ -88,9 +88,17 @@ class ToolsCog(commands.Cog):
         # 1. 국내 주식 (KRX)
         if is_korean(symbol):
              logger.info(f"'{symbol}'은(는) 한글명이므로 KRX API를 호출합니다.")
-             return await krx.get_stock_price(symbol)
+             krx_result = await krx.get_stock_price(symbol)
+             
+             # KRX 성공 판단: 에러 메시지가 없어야 함
+             # "찾을 수 없습니다", "API 키 미설정", "오류" 등이 포함되면 실패로 간주
+             failure_keywords = ["찾을 수 없습니다", "API 키", "오류", "설정되지 않았습니다"]
+             if not any(k in krx_result for k in failure_keywords):
+                 return krx_result
+             
+             logger.info(f"KRX에서 '{symbol}' 조회 실패({krx_result}). 해외 주식(Finnhub) 검색으로 전환합니다.")
         
-        # 2. 해외 주식 (Finnhub) - Rich Context
+        # 2. 해외 주식 (Finnhub) - Rich Context (or Fallback from KRX)
         # [Rich Context] 4가지 정보를 병렬로 조회
         price_task = finnhub.get_stock_quote(symbol)
         profile_task = finnhub.get_company_profile(symbol)
@@ -102,6 +110,9 @@ class ToolsCog(commands.Cog):
         
         # Price (필수)
         if isinstance(price_res, str) and "찾을 수 없습니다" in price_res:
+             # 만약 KRX에서도 실패했고 Finnhub에서도 실패했다면
+             if is_korean(symbol):
+                 return f"'{symbol}'에 대한 정보를 국내(KRX) 및 해외(Finnhub) 시장 모두에서 찾을 수 없습니다."
              return price_res # 시세조차 없으면 종료
         
         output_parts = [f"## 💰 시세 정보:\n{price_res}"]
