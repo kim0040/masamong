@@ -223,6 +223,22 @@ class WeatherCog(commands.Cog):
         location_name, nx, ny = config.DEFAULT_LOCATION_NAME, config.DEFAULT_NX, config.DEFAULT_NY
         coords = await coords_utils.get_coords_from_db(self.bot.db, user_original_query.lower())
         if coords: location_name, nx, ny = coords['name'], str(coords['nx']), str(coords['ny'])
+        
+        # [NEW] Weekly Weather Logic
+        if "이번주" in user_original_query or "주간" in user_original_query:
+            mid_term_data = await self.get_mid_term_weather(3, location_name)
+            # Send directly or via AI
+            self.ai_handler = self.bot.get_cog('AIHandler')
+            is_ai_channel = self.ai_handler and self.ai_handler.is_ready and config.CHANNEL_AI_CONFIG.get(ctx.channel.id, {}).get("allowed", False)
+            
+            if is_ai_channel:
+                 context = {"location_name": location_name, "weather_data": mid_term_data}
+                 ai_response = await self.ai_handler.generate_creative_text(ctx.channel, ctx.author, "answer_weather", context)
+                 await ctx.reply(ai_response or config.MSG_AI_ERROR, mention_author=False)
+            else:
+                 await ctx.reply(f"📅 **{location_name} 이번 주 날씨**\n{mid_term_data}", mention_author=False)
+            return
+
         day_offset = 1 if "내일" in user_original_query else 2 if "모레" in user_original_query else 0
         await self.prepare_weather_response_for_ai(ctx.message, day_offset, location_name, nx, ny, user_original_query)
 

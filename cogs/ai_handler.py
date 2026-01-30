@@ -2255,6 +2255,10 @@ Generate the optimized English image prompt:"""
             user_prompt = prompt_template.format(**context)
             system_prompt = f"{config.CHANNEL_AI_CONFIG.get(channel.id, {}).get('persona', '')}\n\n{config.CHANNEL_AI_CONFIG.get(channel.id, {}).get('rules', '')}"
 
+            # [FIX] 명령어로 호출된 경우 멘션 정책 무시 (가드 제거)
+            if config.MENTION_GUARD_SNIPPET in system_prompt:
+                system_prompt = system_prompt.replace(config.MENTION_GUARD_SNIPPET, "")
+
             model = genai.GenerativeModel(model_name=config.AI_RESPONSE_MODEL_NAME, system_instruction=system_prompt)
             response = await self._safe_generate_content(
                 model, 
