@@ -598,11 +598,25 @@ class AIHandler(commands.Cog):
         counter = self._window_counts.get(key, 0) + 1
         self._window_counts[key] = counter
 
-        if len(buffer) < window_size:
+        # [Feature] 메시지 길이 합계를 계산하여 토큰 제한에 대비한다.
+        total_chars = sum(len(item["content"]) for item in buffer)
+        max_chars = getattr(config, "CONVERSATION_WINDOW_MAX_CHARS", 3000)
+
+        # 윈도우가 가득 찼거나, 문자열 길이가 제한을 초과하면 저장을 시도한다.
+        is_full = len(buffer) >= window_size
+        is_heavy = total_chars >= max_chars
+        
+        if not is_full and not is_heavy:
             return
+
         # stride 간격에 맞춰 윈도우를 저장한다.
-        if (counter - window_size) % stride != 0:
+        # 단, is_heavy(용량 초과)인 경우에는 stride와 무관하게 즉시 저장하여 컨텍스트 누락을 방지한다.
+        if not is_heavy and (counter - window_size) % stride != 0:
             return
+        
+        # [Log] 용량 초과로 인한 강제 저장 알림
+        if is_heavy and not is_full:
+            logger.info(f"대화 윈도우 용량 초과({total_chars}자)로 즉시 저장: {message.channel.id}", extra={'guild_id': guild_id})
 
         try:
             payload = list(buffer)
