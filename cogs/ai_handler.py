@@ -1121,12 +1121,16 @@ Generate the optimized English image prompt:"""
             logger.warning("하이브리드 검색 엔진이 초기화되지 않았습니다.", extra=log_extra)
             return "", [], 0.0, []
 
+        # [NEW] DM(길드 없음)인 경우, 봇의 답변도 기억하기 위해 user_id 필터를 해제(None)합니다.
+        # DM은 channel_id가 사용자별로 고유하므로, 채널 ID만으로도 데이터 격리가 보장됩니다.
+        search_user_id = user_id if guild_id else None
+
         try:
             result = await engine.search(
                 query,
                 guild_id=guild_id,
                 channel_id=channel_id,
-                user_id=user_id,
+                user_id=search_user_id,
                 recent_messages=recent_messages,
             )
         except Exception as exc:
