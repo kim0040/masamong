@@ -471,30 +471,40 @@ class AIHandler(commands.Cog):
             logger.error(f"대화 기록 저장 중 DB 오류: {e}", exc_info=True, extra={'guild_id': guild_id})
 
     async def _summarize_content(self, text: str) -> str:
-        """긴 텍스트를 임베딩용으로 요약합니다. DeepSeek 모델을 사용하여 비용 효율적으로 처리합니다."""
+        """긴 텍스트를 임베딩용으로 요약합니다. DeepSeek 모델을 사용하여 검색 품질을 최적화합니다."""
+        # [Optimization] 텍스트가 짧으면(400자 미만) 요약하지 않고 원본 그대로 사용
+        # (E5 모델의 512 토큰 제한을 고려하여 안전한 길이로 설정)
+        if len(text) < 400:
+            return text
+
         if not self.use_cometapi:
-            # CometAPI가 꺼져있다면 원본 반환 (혹은 Gemini 폴백, 여기선 CometAPI 우선)
+            # CometAPI가 꺼져있다면 원본 반환
             return text
         
         # [Optimization] 입력 텍스트가 너무 길면 잘라서 토큰 절약
         safe_text = text[:4000] 
         
         try:
-            # [Optimization] 시스템 프롬프트 간소화
-            system_prompt = "다음 대화를 1줄로 요약해. 날짜/장소/주제 키워드 포함, 300자 이내."
-            user_prompt = safe_text
+            # [Optimization] 검색(RAG) 품질을 위한 상세 요약 프롬프트
+            # E5 임베딩 한계(512토큰) 내에 중요 정보가 다 들어가도록 500자 제한 둠
+            system_prompt = (
+                "너는 대화 내용을 나중에 검색하기 좋게 정리하는 '기억 관리자'야.\n"
+                "주어진 대화 내용을 바탕으로 다음 형식에 맞춰 요약해.\n\n"
+                "1. **상황 설명**: 어떤 주제로 누가 무슨 말을 했는지 자연스럽게 서술 (분량은 충실하되 500자 이내)\n"
+                "2. **분위기**: 대화가 즐거웠는지, 진지했는지, 화가 났는지 등 감정 상태 기록\n"
+                "3. **핵심 키워드**: 날짜, 시간, 장소, URL, 주식 종목, 사람 이름 등 검색에 걸려야 할 단어들을 빠짐없이 나열\n"
+                "4. **제약**: 전체 요약 길이는 약 500자를 넘지 않도록 조정해 (임베딩 용량 최적화)"
+            )
+            user_prompt = f"--- 대화 내용 ---\n{safe_text}"
             
-            # max_tokens 제한으로 과금 방지 (100토큰)
-            # _cometapi_generate_content 내부적으로 파라미터를 받을 수 있는지 확인 필요하지만, 
-            # 현재 구현상 별도 kwargs가 없다면 system_prompt에 '짧게' 조건을 넣었으니 괜찮음.
+            # max_tokens 설정
             summary = await self._cometapi_generate_content(
                 system_prompt, 
                 user_prompt, 
-                log_extra={'mode': 'summarize'}
+                log_extra={'mode': 'rag_summary'}
             )
             
             if summary:
-                # [Optimization] 불필요한 Keyword Context 제거 - 요약만 반환
                 return summary.strip()
             return text
         except Exception:
@@ -1556,11 +1566,19 @@ Generate the optimized English image prompt:"""
                 continue
 
             # [Optimization] 주식 도구 결과 최적화
-            if name == "get_stock_price" and isinstance(result, dict):
-                curr = result.get("c" if "c" in result else "ItemPrice", "?") # Finnhub vs KRX
-                change = result.get("d" if "d" in result else "FluctuationRate", "?")
-                lines.append(f"[{name}] 현재가: {curr}, 등락: {change}")
-                continue
+            # [Optimization] 주식 도구 결과 최적화
+            if name == "get_stock_price":
+                # yfinance 모드는 이미 포맷된 Markdown 문자열을 반환함
+                if isinstance(result, str):
+                    # 문자열이면 그대로 출력 (트렁케이션 없이 중요 정보 보존)
+                    lines.append(f"[{name}] (결과 데이터)\n{result}")
+                    continue
+                elif isinstance(result, dict):
+                     # Legacy (Finnhub/KRX) dict return
+                    curr = result.get("c" if "c" in result else "ItemPrice", "?") 
+                    change = result.get("d" if "d" in result else "FluctuationRate", "?")
+                    lines.append(f"[{name}] 현재가: {curr}, 등락: {change}")
+                    continue
             
             # [Optimization] 나머지 도구는 문자열 길이 제한
             if isinstance(result, dict):
