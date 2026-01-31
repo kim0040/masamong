@@ -76,6 +76,11 @@ class FunCog(commands.Cog):
             await channel.send("죄송합니다, 대화 요약 기능이 현재 준비되지 않았습니다.")
             return
 
+        # [Safety] DM Support Check
+        if not channel.guild:
+            await channel.send("이 명령어는 개인 메시지(DM)에서는 사용할 수 없어요! 서버(채널)에서 사용해주세요.")
+            return
+
         async with channel.typing():
             try:
                 # AI 핸들러를 통해 DB에서 최근 대화 기록을 가져옵니다.
@@ -98,7 +103,9 @@ class FunCog(commands.Cog):
                 else:
                     await channel.send(f"**📈 최근 대화 요약 (마사몽 ver.)**\n{response_text}")
             except Exception as e:
-                logger.error(f"요약 기능 실행 중 오류: {e}", exc_info=True, extra={'guild_id': channel.guild.id})
+                # [Fix] Handle logs safely even if guild is None (though we return early above, good for safety)
+                guild_id = channel.guild.id if channel.guild else 'DM'
+                logger.error(f"요약 기능 실행 중 오류: {e}", exc_info=True, extra={'guild_id': guild_id})
                 await channel.send(config.MSG_CMD_ERROR)
 
     # --- 명령어 정의 ---
