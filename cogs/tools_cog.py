@@ -21,6 +21,7 @@ from utils.api_handlers import exchange_rate, finnhub, kakao, krx
 from utils import db as db_utils
 from utils import coords as coords_utils
 from utils import weather as weather_utils
+from utils.api_handlers import yfinance_handler  # [NEW]
 from .weather_cog import WeatherCog
 
 def is_korean(text: str) -> bool:
@@ -50,7 +51,24 @@ class ToolsCog(commands.Cog):
         
         # Mid-term Forecast (3 ~ 10 days) - V2 (typ01)
         if day_offset >= 3:
-            return await self.weather_cog.get_mid_term_weather(day_offset, location_name)
+            # [NEW] Weekly Weather Logic (Short-term + Mid-term)
+            # 1. Short-term (+1, +2 days)
+            coords = await coords_utils.get_coords_from_db(self.bot.db, location_name)
+            nx, ny = config.DEFAULT_NX, config.DEFAULT_NY
+            if coords: 
+                nx, ny = str(coords["nx"]), str(coords["ny"])
+                
+            short_term_data = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
+            short_term_summary = ""
+            if short_term_data and not short_term_data.get("error"):
+                 tomorrow_summary = weather_utils.format_short_term_forecast(short_term_data, "내일", 1)
+                 dayafter_summary = weather_utils.format_short_term_forecast(short_term_data, "모레", 2)
+                 short_term_summary = f"{tomorrow_summary}\n{dayafter_summary}"
+            
+            # 2. Mid-term (+3 ~ +10 days)
+            mid_term_data = await self.weather_cog.get_mid_term_weather(day_offset, location_name)
+            
+            return f"--- [단기 예보 (내일/모레)] ---\n{short_term_summary}\n\n--- [중기 예보 (3일 후 ~ 10일 후)] ---\n{mid_term_data}"
 
         coords = await coords_utils.get_coords_from_db(self.bot.db, location_name)
         if not coords:
@@ -78,16 +96,76 @@ class ToolsCog(commands.Cog):
             "summary": f"{location_name} 현재: {current_str}"
         }
 
-    async def get_stock_price(self, symbol: str = None, stock_name: str = None) -> str:
+    async def get_stock_price(self, symbol: str = None, stock_name: str = None, user_query: str = None) -> str:
         """
-        주식 시세, 기업 정보, 뉴스, 추천 트렌드를 종합적으로 조회합니다. 
-        한글 포함 시 KRX(국내), 영문 시 Finnhub(해외)를 호출합니다.
+        주식 시세, 기업 정보, 뉴스, 추천 트렌드를 조회합니다. 
+        yfinance가 활성화된 경우 이를 우선 사용합니다.
         
         Args:
-            symbol (str): 종목명 또는 티커 (예: "삼성전자", "AAPL", "NVDA")
-            stock_name (str): symbol의 별칭 (LLM 호환성용)
+            symbol (str): (Legacy) 종목명 또는 티커 (예: "삼성전자", "AAPL", "NVDA")
+            stock_name (str): (Legacy) symbol의 별칭
+            user_query (str): (New) 사용자의 자연어 질문 (yfinance 모드에서 티커 추출에 사용)
         """
-        # [Robust Parameter Handling] Support both 'symbol' and 'stock_name'
+        # [NEW] yfinance Integration
+        if getattr(config, 'USE_YFINANCE', False):
+            # 1. Extract Ticker from LLM (using AIHandler)
+            # AIHandler is needed. Since ToolsCog is initialized in AIHandler, we might need a reference or pass logic.
+            # But ToolsCog doesn't have reference to ai_handler by default.
+            # However, main.py injects ai_handler into FunCog. Let's assume we can get it via bot or pass it.
+            # Actually, AIHandler calls this tool.
+            
+            # Since AIHandler calls this method, we can't easily call back AIHandler methods without circular dependency or injection.
+            # But wait, we can just use the provided symbol/stock_name if extraction happened outside, OR 
+            # if user_query is provided, we need extraction here.
+            
+            # Solution: We will inject `ai_handler` reference into ToolsCog during setup in main.py, similar to FunCog.
+            # OR, we perform extraction here if we have access.
+            
+            ai_handler = self.bot.get_cog('AIHandler')
+            ticker = None
+            
+            if user_query and ai_handler:
+                logger.info(f"yfinance 모드: '{user_query}'에서 티커 추출 시도...")
+                ticker = await ai_handler.extract_ticker_with_llm(user_query)
+            elif symbol or stock_name:
+                # If direct symbol passed (legacy path), assume it might be a ticker or need extraction check
+                # Ideally, extract_ticker_with_llm can handle "삼성전자" too.
+                # But for safety, let's treat it as query if it's not a clear ticker.
+                candidate = symbol or stock_name
+                if ai_handler:
+                    ticker = await ai_handler.extract_ticker_with_llm(candidate)
+            
+            if ticker:
+                logger.info(f"yfinance 티커 확정: {ticker}")
+                data = await yfinance_handler.get_stock_info(ticker)
+                
+                if "error" in data:
+                    return f"'{ticker}' 조회 실패: {data['error']}"
+                
+                # Format Output
+                currency = data.get('currency', 'USD')
+                price = data.get('price')
+                change_p = data.get('change_percent')
+                
+                change_str = f"({change_p:+.2f}%)" if change_p is not None else ""
+                price_str = f"{price:,.2f} {currency}" if price else "N/A"
+                
+                summary = data.get('summary', '')[:300] + "..." if data.get('summary') else "정보 없음"
+                
+                return (
+                    f"## 📈 {data.get('name')} ({data.get('symbol')})\n"
+                    f"- **현재가**: {price_str} {change_str}\n"
+                    f"- **시가총액**: {data.get('market_cap'):,} (추정)\n"
+                    f"- **산업**: {data.get('industry')}\n"
+                    f"- **개요**: {summary}\n"
+                    f"- [더 보기]({data.get('website')})"
+                )
+            else:
+                return "주식 정보를 찾으시는 것 같은데, 정확한 종목을 파악하지 못했어요. '삼성전자 주가 알려줘' 처럼 다시 물어봐주시겠어요?"
+
+
+        # [Legacy Logic] Finnhub / KRX
+        # ... (Existing implementation below)
         target_symbol = symbol or stock_name
         if not target_symbol:
             return "❌ 오류: 조회할 주식 이름이나 티커가 제공되지 않았습니다."

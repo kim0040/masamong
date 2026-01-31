@@ -54,7 +54,9 @@ from utils.embeddings import (
 )
 from database.bm25_index import BM25IndexManager
 from utils.hybrid_search import HybridSearchEngine
+from utils.hybrid_search import HybridSearchEngine
 from utils.reranker import Reranker, RerankerConfig
+from utils.api_handlers.finnhub import ALIAS_TO_TICKER  # [NEW] Import for robust stock detection
 
 KST = pytz.timezone('Asia/Seoul')
 
@@ -985,47 +987,27 @@ Generate the optimized English image prompt:"""
             })
             return tools  # 날씨 요청은 단일 도구로 처리
 
-        # 주식 감지 (미국/한국/일반 통합)
+        # [Refactor] Unified Stock Detection (yfinance + LLM Extraction)
+        # 키워드가 있거나, "주가", "얼마" 등의 표현이 있으면 시도
         stock_triggers = self._STOCK_US_KEYWORDS | self._STOCK_KR_KEYWORDS | self._STOCK_GENERAL_KEYWORDS
-        if any(kw in query_lower for kw in stock_triggers):
-            # 1. 매핑된 종목 우선 확인 (미국)
-            symbol = self._extract_us_stock_symbol(query_lower)
-            if symbol:
-                tools.append({
-                    'tool_to_use': 'get_stock_price',
-                    'tool_name': 'get_stock_price',
-                    'parameters': {'stock_name': symbol}
-                })
-                return tools
-
-            # 2. 매핑된 종목 우선 확인 (한국)
-            ticker = self._extract_kr_stock_ticker(query_lower)
-            if ticker:
-                tools.append({
-                    'tool_to_use': 'get_stock_price',
-                    'tool_name': 'get_stock_price',
-                    'parameters': {'stock_name': ticker}
-                })
-                return tools
-
-            # 3. 매핑 안 된 종목 추출 (일반 키워드가 있을 경우에만 시도)
-            # 예: "astx 주가", "P&G 주가 어때" -> astx, P&G 추출
-            if any(kw in query_lower for kw in self._STOCK_GENERAL_KEYWORDS):
-                # 영문/숫자/특수문자(&)가 포함된 단어 추출 (최소 2글자)
-                # '주가' 같은 한글 키워드는 제외됨
-                potential_symbols = re.findall(r'[a-zA-Z0-9&]{2,}', query)
-                
-                # 불용어 필터링 (혹시 모를 영어 불용어)
-                ignore_list = {'stock', 'price', 'info'} 
-                
-                for sym in potential_symbols:
-                    if sym.lower() not in ignore_list:
-                        tools.append({
-                            'tool_to_use': 'get_stock_price',
-                            'tool_name': 'get_stock_price',
-                            'parameters': {'stock_name': sym}
-                        })
-                        return tools
+        if any(kw in query_lower for kw in stock_triggers) or "주가" in query_lower or "주식" in query_lower or "시세" in query_lower:
+             # LLM을 통해 티커 추출 시도 (강력한 추출기)
+             # 기존 로직 대신 바로 LLM에 의존하여 유연성 확보
+             logger.info(f"주식 관련 질문 감지: '{query}' -> 티커 추출 시도")
+             
+             # 도구 호출 계획에는 'user_query'만 넘기고, 실제 실행 시점에 extract_ticker_with_llm 호출하도록 변경할 수도 있으나,
+             # 여기선 도구 파라미터가 명확해야 하므로, tool execution 단계에서 extraction을 수행하도록 
+             # 'get_stock_price' 도구에 쿼리 자체를 넘기는 방식으로 변경 제안.
+             # ToolsCog.get_stock_price가 (stock_name=...) 대신 (query=...)를 받아서 내부적으로 처리하거나,
+             # 아니면 여기서 추출해서 넘겨야 함. 
+             # 실행 속도를 위해 여기서 추출하지 않고 ToolsCog에서 처리하도록 'query'를 파라미터로 전달.
+             
+             tools.append({
+                'tool_to_use': 'get_stock_price',
+                'tool_name': 'get_stock_price',
+                'parameters': {'user_query': query} # stock_name 대신 user_query 전달
+             })
+             return tools
 
         # 장소 검색 감지
         if any(kw in query_lower for kw in self._PLACE_KEYWORDS):
@@ -1779,7 +1761,7 @@ Generate the optimized English image prompt:"""
             allowed, reset_time = await db_utils.check_dm_message_limit(self.bot.db, user_id)
             if not allowed:
                  await message.reply(
-                     f"⛔ 일일 대화량이 초과되었습니다.\n마사몽과의 1:1 대화는 3시간당 5회로 제한됩니다.\n🕒 해제 예정 시각: {reset_time}",
+                     f"⛔ 일일 대화량이 초과되었습니다.\n마사몽과의 1:1 대화는 5시간당 30회로 제한됩니다.\n🕒 해제 예정 시각: {reset_time}",
                      mention_author=False
                  )
                  return
@@ -2241,21 +2223,32 @@ Generate the optimized English image prompt:"""
                 "공지 문구는 마사몽의 말투를 유지해 주고, 너무 장황하지 않게 작성해줘."
             )
 
-            model = genai.GenerativeModel(
-                model_name=config.AI_RESPONSE_MODEL_NAME,
-                system_instruction=system_prompt,
-            )
-            response = await self._safe_generate_content(
-                model, 
-                user_prompt, 
-                log_extra, 
-                generation_config=genai.types.GenerationConfig(temperature=config.AI_TEMPERATURE)
-            )
-            if response and response.text:
-                alert_message = response.text.strip()
-                if len(alert_message) > config.AI_RESPONSE_LENGTH_LIMIT:
-                    alert_message = alert_message[:config.AI_RESPONSE_LENGTH_LIMIT].rstrip()
-                return alert_message
+            # 1. CometAPI 우선 사용
+            if self.use_cometapi:
+                alert_message = await self._cometapi_generate_content(
+                    system_prompt, 
+                    user_prompt, 
+                    log_extra
+                )
+            
+            # 2. 실패 시 Gemini 폴백
+            if not alert_message and self.gemini_configured and genai:
+                model = genai.GenerativeModel(
+                    model_name=config.AI_RESPONSE_MODEL_NAME,
+                    system_instruction=system_prompt,
+                )
+                response = await self._safe_generate_content(
+                    model, 
+                    user_prompt, 
+                    log_extra, 
+                    generation_config=genai.types.GenerationConfig(temperature=config.AI_TEMPERATURE)
+                )
+                if response and response.text:
+                    alert_message = response.text.strip()
+
+            if alert_message and len(alert_message) > config.AI_RESPONSE_LENGTH_LIMIT:
+                alert_message = alert_message[:config.AI_RESPONSE_LENGTH_LIMIT].rstrip()
+            return alert_message
 
         except Exception as e:
             logger.error(
@@ -2283,21 +2276,75 @@ Generate the optimized English image prompt:"""
             if config.MENTION_GUARD_SNIPPET in system_prompt:
                 system_prompt = system_prompt.replace(config.MENTION_GUARD_SNIPPET, "")
 
-            model = genai.GenerativeModel(model_name=config.AI_RESPONSE_MODEL_NAME, system_instruction=system_prompt)
-            response = await self._safe_generate_content(
-                model, 
-                user_prompt, 
-                log_extra,
-                generation_config=genai.types.GenerationConfig(temperature=config.AI_TEMPERATURE)
-            )
+            response_text = None
 
-            return response.text.strip() if response and response.text else config.MSG_AI_ERROR
+            # 1. CometAPI 우선 사용
+            if self.use_cometapi:
+                response_text = await self._cometapi_generate_content(
+                    system_prompt,
+                    user_prompt,
+                    log_extra
+                )
+
+            # 2. 실패 시 Gemini 폴백
+            if not response_text and self.gemini_configured and genai:
+                 model = genai.GenerativeModel(model_name=config.AI_RESPONSE_MODEL_NAME, system_instruction=system_prompt)
+                 response = await self._safe_generate_content(
+                     model, 
+                     user_prompt, 
+                     log_extra,
+                     generation_config=genai.types.GenerationConfig(temperature=config.AI_TEMPERATURE)
+                 )
+                 if response and response.text:
+                      response_text = response.text.strip()
+
+            return response_text if response_text else config.MSG_AI_ERROR
         except KeyError as e:
             logger.error(f"프롬프트 포맷팅 중 키 오류: '{prompt_key}' 프롬프트에 필요한 컨텍스트({e})가 없습니다.", extra=log_extra)
             return config.MSG_CMD_ERROR
         except Exception as e:
             logger.error(f"Creative text 생성 중 최상위 오류: {e}", exc_info=True, extra=log_extra)
             return config.MSG_AI_ERROR
+
+    async def extract_ticker_with_llm(self, query: str) -> str | None:
+        """
+        사용자 자연어 쿼리에서 Yahoo Finance 호환 티커만 추출합니다.
+        예: "비트코인 얼마야?" -> "BTC-USD"
+            "삼성전자 주가" -> "005930.KS"
+            "애플 시세" -> "AAPL"
+        """
+        if not self.use_cometapi:
+             # CometAPI 없으면 사용 불가 (혹은 Gemini 폴백 가능하지만 생략)
+             return None
+
+        system_prompt = (
+            "You are a specialized assistant that extracts stock/crypto ticker symbols from user queries.\n"
+            "The user will ask about a stock price in Korean or English.\n"
+            "You must identify the correct Yahoo Finance compatible ticker symbol.\n"
+            "Rules:\n"
+            "1. Return ONLY the ticker symbol. Do not write any other text.\n"
+            "2. For Korean stocks, append '.KS' (KOSPI) or '.KQ' (KOSDAQ). e.g., Samsung -> 005930.KS\n"
+            "3. For US stocks, use the standard ticker. e.g., Apple -> AAPL\n"
+            "4. For Crypto, use common pairs. e.g., Bitcoin -> BTC-USD, Ethereum -> ETH-USD\n"
+            "5. If the company is not found or ambiguous, return 'NONE'."
+        )
+        
+        user_prompt = f"Query: {query}\nTicker:"
+        
+        try:
+            ticker = await self._cometapi_generate_content(
+                system_prompt,
+                user_prompt,
+                log_extra={'mode': 'ticker_extraction'}
+            )
+            if ticker and "NONE" not in ticker:
+                clean_ticker = ticker.strip().replace("'", "").replace('"', '').upper()
+                return clean_ticker
+            return None
+        except Exception as e:
+            logger.error(f"Ticker extraction failed: {e}")
+            return None
+
 
 async def setup(bot: commands.Bot):
     """Cog를 봇에 등록하는 함수"""
