@@ -56,8 +56,10 @@ async def get_stock_info(ticker: str) -> Dict[str, Any]:
         data = await asyncio.to_thread(_fetch)
         
         if data['price'] is None:
+            logger.warning(f"yfinance 조회 실패 (Price None): {ticker}")
             return {"error": f"'{ticker}'에 대한 시세 정보를 가져올 수 없습니다."}
             
+        logger.info(f"yfinance 조회 성공: {ticker} -> {data.get('price')}")
         return data
 
     except Exception as e:

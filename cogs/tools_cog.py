@@ -152,7 +152,7 @@ class ToolsCog(commands.Cog):
                 
                 summary = data.get('summary', '')[:300] + "..." if data.get('summary') else "정보 없음"
                 
-                return (
+                result_str = (
                     f"## 📈 {data.get('name')} ({data.get('symbol')})\n"
                     f"- **현재가**: {price_str} {change_str}\n"
                     f"- **시가총액**: {data.get('market_cap'):,} (추정)\n"
@@ -160,6 +160,8 @@ class ToolsCog(commands.Cog):
                     f"- **개요**: {summary}\n"
                     f"- [더 보기]({data.get('website')})"
                 )
+                logger.info(f"get_stock_price 결과 생성 완료: {result_str[:50]}...")
+                return result_str
             else:
                 return "주식 정보를 찾으시는 것 같은데, 정확한 종목을 파악하지 못했어요. '삼성전자 주가 알려줘' 처럼 다시 물어봐주시겠어요?"
 
