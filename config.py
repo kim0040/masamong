@@ -13,6 +13,16 @@ except ModuleNotFoundError:  # pragma: no cover - yaml is optional
 
 load_dotenv()
 
+# [NEW] Stock Config (yfinance)
+USE_YFINANCE = True
+YFINANCE_CACHE_TTL = 600 # 10분 캐시
+
+# [NEW] KRX Public Data API
+# Use os.environ.get to ensure .env is respected, with fallback to hardcoded (or just use env)
+KRX_API_KEY = os.environ.get("KRX_API_KEY", "6c011e7e46e49805aba48c467a835c79b8cd2236fb5ca9a4711b668cd3ef671a")
+# Base URL might differ depending on service status. Trying HTTPS.
+KRX_BASE_URL = "https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService"
+
 def load_config_value(key, default=None):
     """환경 변수 → `config.json` 순으로 값을 조회하고, 없으면 기본값을 반환합니다.
 
