@@ -8,6 +8,7 @@ psutil
 pytz
 requests
 aiohttp
+yfinance
 
 # Optional: Add these if you need Web Scraping or specific tools
 # Optional: Add these if you need Web Scraping or specific tools
