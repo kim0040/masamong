@@ -95,8 +95,8 @@ async def get_embedding(text: str, prefix: str = "") -> np.ndarray | None:
     final_text = f"{prefix}{text}"
 
     def _sync_encode() -> np.ndarray:
-        # [Safe] Truncation 활성화하여 모델 입력 한계(512 토큰 등) 초과 시 안전하게 자름
-        vector = model.encode(final_text, normalize_embeddings=normalize, truncation=True)
+        # [Safe] Truncation 인자를 제거 (모델이 지원하지 않음, 기본값에 맡김)
+        vector = model.encode(final_text, normalize_embeddings=normalize)
         if not isinstance(vector, np.ndarray):
             vector = np.asarray(vector)
         return vector.astype(np.float32)
