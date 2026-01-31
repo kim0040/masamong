@@ -14,6 +14,7 @@ import discord
 from discord.ext import commands, tasks
 import asyncio
 from datetime import datetime, timedelta, time as dt_time
+import json
 import pytz
 
 import config
@@ -352,8 +353,11 @@ class WeatherCog(commands.Cog):
         """
         await self.bot.wait_until_ready()
         if not weather_utils.get_kma_api_key(): return
-        alert_channel = self.bot.get_channel(config.RAIN_NOTIFICATION_CHANNEL_ID)
-        if not alert_channel: return
+        rain_channel_id = getattr(config, "RAIN_NOTIFICATION_CHANNEL_ID", 0)
+        greeting_channel_id = getattr(config, "GREETING_NOTIFICATION_CHANNEL_ID", 0)
+        greeting_enabled = getattr(config, "ENABLE_GREETING_NOTIFICATION", False) and greeting_channel_id
+        if not rain_channel_id and not greeting_enabled:
+            return
         forecast = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, config.DEFAULT_NX, config.DEFAULT_NY)
         if not forecast or isinstance(forecast, dict) and forecast.get("error"): return
         self.notified_rain_event_starts = {k for k in self.notified_rain_event_starts if KST.localize(datetime.strptime(f"{k[0]}{k[1]}","%Y%m%d%H%M")) >= datetime.now(KST) - timedelta(days=1)}
@@ -364,8 +368,22 @@ class WeatherCog(commands.Cog):
                 precip_type = "눈❄️" if period["type"] == "눈" else "비☔"
                 alert_info = f"{config.DEFAULT_LOCATION_NAME}에 '{start_display}'부터 '{end_display}'까지 {precip_type}가 올 것으로 예상됩니다. 최대 확률은 {period['max_pop']}%입니다."
                 self.ai_handler = self.bot.get_cog('AIHandler')
-                ai_msg = await self.ai_handler.generate_system_alert_message(alert_channel.id, alert_info, f"{precip_type} 예보") if self.ai_handler and self.ai_handler.is_ready else None
-                await alert_channel.send(ai_msg or f"{precip_type} **{config.DEFAULT_LOCATION_NAME} {precip_type} 예보** {precip_type}\n{alert_info}")
+                channel_ids = set()
+                if rain_channel_id:
+                    channel_ids.add(rain_channel_id)
+                if greeting_enabled and period["max_pop"] >= config.RAIN_NOTIFICATION_GREETING_THRESHOLD_POP:
+                    channel_ids.add(greeting_channel_id)
+                if not channel_ids:
+                    continue
+
+                primary_channel_id = sorted(channel_ids)[0]
+                ai_msg = await self.ai_handler.generate_system_alert_message(primary_channel_id, alert_info, f"{precip_type} 예보") if self.ai_handler and self.ai_handler.is_ready else None
+                fallback_msg = f"{precip_type} **{config.DEFAULT_LOCATION_NAME} {precip_type} 예보** {precip_type}\n{alert_info}"
+                for channel_id in channel_ids:
+                    alert_channel = self.bot.get_channel(channel_id)
+                    if not alert_channel:
+                        continue
+                    await alert_channel.send(ai_msg or fallback_msg)
                 self.notified_rain_event_starts.add(period["key"])
 
     async def _send_greeting_notification(self, greeting_type: str):
@@ -402,11 +420,37 @@ class WeatherCog(commands.Cog):
         """1분마다 최근 지진 정보를 확인하고 새로운 지진 발생 시 알립니다."""
         await self.bot.wait_until_ready()
         if not weather_utils.get_kma_api_key(): return
-        
-        alert_channel_id = config.RAIN_NOTIFICATION_CHANNEL_ID
-        if not alert_channel_id: return
-        alert_channel = self.bot.get_channel(alert_channel_id)
-        if not alert_channel: return
+
+        channel_ids: set[int] = set()
+        try:
+            # Prefer DB-registered channels (AI allowed channels)
+            async with self.bot.db.execute(
+                "SELECT ai_allowed_channels FROM guild_settings WHERE ai_allowed_channels IS NOT NULL"
+            ) as cursor:
+                rows = await cursor.fetchall()
+            for (raw_json,) in rows:
+                try:
+                    channels = json.loads(raw_json) if raw_json else []
+                except json.JSONDecodeError:
+                    channels = []
+                for cid in channels:
+                    try:
+                        channel_ids.add(int(cid))
+                    except (TypeError, ValueError):
+                        continue
+        except Exception:
+            pass
+
+        # Fallback to prompt-config registered channels
+        for cid, meta in getattr(config, "CHANNEL_AI_CONFIG", {}).items():
+            if meta.get("allowed", False):
+                channel_ids.add(int(cid))
+
+        if not channel_ids and getattr(config, "RAIN_NOTIFICATION_CHANNEL_ID", 0):
+            channel_ids.add(int(config.RAIN_NOTIFICATION_CHANNEL_ID))
+
+        if not channel_ids:
+            return
         
         earthquakes = await weather_utils.get_recent_earthquakes(self.bot.db)
         if not earthquakes: return
@@ -436,7 +480,15 @@ class WeatherCog(commands.Cog):
                         "지진 발생 알림"
                     ) if self.ai_handler and self.ai_handler.is_ready else None
                     
-                    await alert_channel.send(ai_msg or f"🚨 **긴급: 지진 발생**\n{formatted_msg}")
+                    payload = ai_msg or f"🚨 **긴급: 지진 발생**\n{formatted_msg}"
+                    for channel_id in channel_ids:
+                        alert_channel = self.bot.get_channel(channel_id)
+                        if not alert_channel:
+                            continue
+                        await alert_channel.send(
+                            payload,
+                            allowed_mentions=discord.AllowedMentions.none(),
+                        )
                     
                     if eqk_dt > new_last_time:
                         new_last_time = eqk_dt

@@ -77,6 +77,9 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
         base_url = "https://apihub.kma.go.kr/api/typ01/url/typ_lst.php"
         base_params.update({"disp": "0", "help": "0"})
     elif api_type == 'mid':
+        base_url = "https://apihub.kma.go.kr/api/typ02/openApi/MidFcstInfoService"
+        base_params.update({"pageNo": "1", "numOfRows": "1000", "dataType": "JSON"})
+    elif api_type == 'mid_v2':
         base_url = "https://apihub.kma.go.kr/api/typ01/url" # Base for typ01
         base_params.update({"disp": "0", "help": "0"})
     elif api_type == 'warning': # Special Weather Warnings (Typ01)
@@ -115,7 +118,7 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
 
                 # API Hub Typ01 often returns text/plain, handle header manually
                 content_type = response.headers.get('Content-Type', '')
-                if 'application/json' in content_type or (api_type not in ['typhoon', 'mid', 'warning', 'impact', 'alert'] and api_type != 'overview'):
+                if 'application/json' in content_type or (api_type not in ['typhoon', 'mid', 'mid_v2', 'warning', 'impact', 'alert'] and api_type != 'overview'):
                      try:
                          data = response.json()
                          # Normalize API Hub V2 flat format {"item": [...]} to standard KMA structure
@@ -377,19 +380,32 @@ def format_mid_term_forecast(land_data: dict, temp_data: dict, day_offset: int, 
     try:
         if not land_data or not temp_data:
             return f"{location}의 중기예보 데이터를 불러오지 못했습니다."
-            
-        land_response = land_data.get('response', {})
-        temp_response = temp_data.get('response', {})
-        
-        # Check Result Code
-        if land_response.get('header', {}).get('resultCode') != '00' or temp_response.get('header', {}).get('resultCode') != '00':
-             return f"{location}의 중기예보 데이터를 불러오는 데 실패했습니다 (API 오류)."
-            
-        land_items = land_response.get('body', {}).get('items', {}).get('item', [])
-        temp_items = temp_response.get('body', {}).get('items', {}).get('item', [])
+
+        if isinstance(land_data, dict) and land_data.get("error"):
+            return f"{location}의 중기예보 데이터를 불러오는 데 실패했습니다 ({land_data.get('message', 'API 오류')})."
+        if isinstance(temp_data, dict) and temp_data.get("error"):
+            return f"{location}의 중기예보 데이터를 불러오는 데 실패했습니다 ({temp_data.get('message', 'API 오류')})."
+
+        if not isinstance(land_data, dict) or not isinstance(temp_data, dict):
+            return f"{location}의 중기예보 데이터를 불러오지 못했습니다."
+
+        # _fetch_kma_api returns body.items directly for JSON endpoints.
+        if "response" not in land_data and "item" in land_data:
+            land_items = land_data.get("item", [])
+            temp_items = temp_data.get("item", [])
+        else:
+            land_response = land_data.get('response', {})
+            temp_response = temp_data.get('response', {})
+
+            # Check Result Code
+            if land_response.get('header', {}).get('resultCode') != '00' or temp_response.get('header', {}).get('resultCode') != '00':
+                return f"{location}의 중기예보 데이터를 불러오는 데 실패했습니다 (API 오류)."
+
+            land_items = land_response.get('body', {}).get('items', {}).get('item', [])
+            temp_items = temp_response.get('body', {}).get('items', {}).get('item', [])
         
         if not land_items or not temp_items:
-             return f"{location}의 중기예보 데이터가 없습니다."
+            return f"{location}의 중기예보 데이터가 없습니다."
              
         land_item = land_items[0]
         temp_item = temp_items[0]
@@ -400,17 +416,31 @@ def format_mid_term_forecast(land_data: dict, temp_data: dict, day_offset: int, 
             return f"{location}의 중기예보(3~10일 후) 범위를 벗어났습니다."
             
         # KMA Key naming: wf3Am, wf3Pm, wf8, wf9...
-        if target_day <= 7:
-            wf_key = f"wf{target_day}Pm"
-        else:
-            wf_key = f"wf{target_day}"
-            
-        sky = land_item.get(wf_key)
-        if not sky and target_day <= 7: sky = land_item.get(f"wf{target_day}Am")
-        
-        t_min = temp_item.get(f"taMin{target_day}")
-        t_max = temp_item.get(f"taMax{target_day}")
-        
+        def _get_sky(day: int) -> str | None:
+            if day <= 7:
+                return land_item.get(f"wf{day}Pm") or land_item.get(f"wf{day}Am")
+            return land_item.get(f"wf{day}")
+
+        def _get_temp(day: int):
+            return temp_item.get(f"taMin{day}"), temp_item.get(f"taMax{day}")
+
+        sky = _get_sky(target_day)
+        t_min, t_max = _get_temp(target_day)
+
+        # If target day fields are missing, fallback to the nearest available day.
+        if sky is None or t_min is None or t_max is None:
+            import re
+
+            land_days = {int(m.group(1)) for k in land_item.keys() for m in [re.match(r"wf(\d+)", k)] if m}
+            temp_days = {int(m.group(1)) for k in temp_item.keys() for m in [re.match(r"taMin(\d+)", k)] if m}
+            available_days = sorted(land_days & temp_days) or sorted(land_days | temp_days)
+
+            if available_days:
+                fallback_day = next((d for d in available_days if d >= target_day), available_days[-1])
+                sky = _get_sky(fallback_day)
+                t_min, t_max = _get_temp(fallback_day)
+                target_day = fallback_day
+
         date_str = (datetime.now(KST) + timedelta(days=target_day)).strftime("%m/%d(%a)")
         
         return f"📅 {date_str} [{location} 중기예보]\n🌦️ 날씨: {sky}\n🌡️ 기온: {t_min}°C ~ {t_max}°C"
@@ -635,7 +665,7 @@ async def get_mid_term_forecast_v2(db: aiosqlite.Connection, region_code: str) -
     # REG_ID ... WF ...
     # 11B00000 ... 맑음 ...
     
-    res = await _fetch_kma_api(db, "/fct_afs_dl.php", params, api_type='mid')
+    res = await _fetch_kma_api(db, "/fct_afs_dl.php", params, api_type='mid_v2')
     if not res or "#START" not in res: return None
     
     try:
@@ -673,5 +703,3 @@ async def get_impact_forecast(db: aiosqlite.Connection, timeout: float | None = 
                 reports.append(f"{name} 영향예보가 발표되었습니다.")
                 
     return ", ".join(reports) if reports else None
-
-
