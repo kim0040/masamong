@@ -29,9 +29,10 @@
 |------|------|
 | 🚀 **CometAPI 기반 LLM** | DeepSeek-V3.2 모델을 기본으로 사용, Gemini Flash는 폴백 |
 | ⚡ **키워드 기반 도구 감지** | Lite 모델 없이 0.1ms 내 패턴 매칭으로 의도 분석 |
+| 💡 **능동적 제안 (Proactive)** | 대화 맥락을 파악하여 먼저 정보(날씨, 주식 등)를 제안 |
 | 🔍 **하이브리드 RAG** | BM25(FTS5) + E5 임베딩 결합 검색 |
 | 💬 **슬라이딩 윈도우 대화 관리** | 12메시지 윈도우, stride 6으로 문맥 완전 유지 |
-| 🛠️ **다양한 외부 API** | 기상청, Finnhub, KRX, Kakao 등 실시간 데이터 |
+| 🛠️ **다양한 외부 API** | 기상청(KMA), yfinance(주식), Kakao(검색/이미지) 등 |
 | 📊 **SQLite 기반 저장소** | 대화 기록, 임베딩, BM25 인덱스 통합 관리 |
 
 ### 기술 스택
@@ -40,6 +41,7 @@
 |---------|------|
 | **프레임워크** | Discord.py 2.4+ |
 | **AI/ML** | CometAPI (DeepSeek-V3.2), Google Gemini 2.5 Flash |
+| **주식/금융** | yfinance (Yahoo Finance), Finnhub/KRX (Fallback) |
 | **임베딩** | `dragonkue/multilingual-e5-small-ko-v2` (SentenceTransformers) |
 | **검색** | SQLite FTS5 (BM25) + Cosine Similarity |
 | **데이터베이스** | SQLite3 with aiosqlite (WAL 모드) |
@@ -59,6 +61,7 @@
 | Lite 모델 JSON 파싱 오류 | **파싱 오류 완전 제거** |
 | 2번 왕복으로 3-5초 응답 지연 | **~1초 단축** |
 | Lite vs Main 디버깅 어려움 | **단일 경로로 추적 용이** |
+| **API 무한 대기 (Hanging)** | **AI 요청 타임아웃(45초) 적용으로 해결** |
 
 ### 전체 처리 흐름
 
@@ -66,8 +69,8 @@
 graph TB
     User[Discord 사용자] -->|"@마사몽 메시지"| Bot[마사몽 봇]
     Bot --> MentionCheck{멘션 확인}
-    MentionCheck -->|"멘션 없음"| Skip[무시]
-    MentionCheck -->|"멘션 있음"| KeywordDetect[키워드 패턴 매칭<br/>0.1ms 이내]
+    MentionCheck -->|"멘션 있음"| KeywordDetect[키워드 감지]
+    MentionCheck -->|"멘션 없음"| Proactive[Proactive Assistant<br/>(능동 제안)]
     
     KeywordDetect -->|"날씨/주식/장소"| Tools[도구 실행<br/>tools_cog.py]
     KeywordDetect -->|"일반 대화"| RAG[하이브리드 RAG 검색]
@@ -82,12 +85,83 @@ graph TB
     Gemini --> Response
     Response --> User
     
-    style Bot fill:#e1f5ff
-    style KeywordDetect fill:#fff4e1
-    style RAG fill:#f3e5f5
-    style CometAPI fill:#e8f5e9
-    style Gemini fill:#fff8e1
+    Proactive -->|"의도 감지 (여행/주식 등)"| Suggest[제안 메시지]
+    Suggest --> User
 ```
+
+---
+
+## 주요 기능
+
+### AI Handler (`cogs/ai_handler.py`)
+
+| 기능 | 설명 |
+|------|------|
+| 멘션 게이트 | `@마사몽` 멘션이 있는 메시지만 처리 |
+| 키워드 도구 감지 | 패턴 매칭으로 날씨/주식/장소 도구 자동 선택 |
+| CometAPI 통합 | DeepSeek-V3.2 모델로 응답 생성 (Gemini 폴백). **타임아웃 45초**. |
+| 하이브리드 RAG | BM25 + 임베딩 결합 검색 |
+| 대화 윈도우 관리 | 슬라이딩 윈도우 기반 청크 임베딩 |
+
+### Tools Cog (`cogs/tools_cog.py`)
+
+| 도구 | 설명 | API |
+|-----|------|-----|
+| `get_weather_forecast` | 날씨 조회 (단기/중기) | 기상청 (KMA) |
+| `get_stock_price` | 주식 시세 (티커 자동 추출) | **yfinance** (우선), Finnhub/KRX |
+| `get_krw_exchange_rate` | 환율 조회 | 한국수출입은행 |
+| `search_for_place` | 장소 검색 | Kakao Local |
+| `web_search` | 웹 검색 | Google CSE / Kakao |
+| `search_images` | 이미지 검색/생성 | Kakao / CometAPI(Flux) |
+
+### Proactive Assistant (`cogs/proactive_assistant.py`)
+사용자가 봇을 호출하지 않아도 대화 내용을 분석하여 도움이 될만한 정보를 먼저 제안합니다.
+- **여행**: "도쿄 여행 갈까?" -> 맛집 검색 제안
+- **금융**: "환율 많이 올랐네" -> 환율 조회 제안
+- **날씨**: "비 오려나?" -> 날씨 조회 제안
+- **게임**: "할 게임 없나" -> 게임 추천 제안
+
+---
+
+## 환경 변수
+
+### 필수
+
+| 변수명 | 설명 |
+|-------|------|
+| `DISCORD_BOT_TOKEN` | Discord 봇 토큰 |
+| `COMETAPI_KEY` | CometAPI 키 (기본 LLM) |
+| `GEMINI_API_KEY` | Google Gemini API 키 (폴백) |
+
+### CometAPI 설정
+
+| 변수명 | 기본값 | 설명 |
+|-------|--------|------|
+| `USE_COMETAPI` | `true` | CometAPI 우선 사용 여부 |
+| `COMETAPI_BASE_URL` | `https://api.cometapi.com/v1` | API 엔드포인트 |
+| `COMETAPI_MODEL` | `DeepSeek-V3.2-Exp-nothinking` | 사용할 모델 |
+| `AI_REQUEST_TIMEOUT` | `45` | API 응답 최대 대기 시간 (초) |
+
+### 주요 API 키 (선택)
+
+| 변수명 | 용도 |
+|-------|------|
+| `KMA_API_KEY` | 기상청 날씨 (타임아웃 30초) |
+| `KAKAO_API_KEY` | 장소/이미지 검색 |
+| `GOOGLE_API_KEY` | 웹 검색 |
+
+---
+
+## 문제 해결
+
+### 봇이 응답하지 않음 (No Reply)
+1. **API 타임아웃**: CometAPI는 45초, 기상청(KMA)은 30초의 타임아웃이 설정되어 있습니다. 이 시간이 지나면 에러가 로그에 기록되고 멈춥니다.
+2. `discord_logs.txt`에서 `APITimeoutError` 또는 `KMA_API_TIMEOUT` 에러를 확인하세요.
+3. 멘션 여부 확인: 봇은 반드시 `@마사몽` 멘션이 있어야 응답합니다 (DM 예외).
+
+### 주식 정보가 안 나와요
+- `yfinance` 모듈이 설치되어 있어야 합니다. (`requirements.txt` 확인)
+- 한국 주식도 종목명(예: `삼성전자`)으로 검색 가능합니다.
 
 ### 상세 처리 시퀀스
 
@@ -365,7 +439,7 @@ graph LR
 |------|------|
 | 멘션 게이트 | `@마사몽` 멘션이 있는 메시지만 처리 |
 | 키워드 도구 감지 | 패턴 매칭으로 날씨/주식/장소 도구 자동 선택 |
-| CometAPI 통합 | DeepSeek-V3.2 모델로 응답 생성 (Gemini 폴백) |
+| CometAPI 통합 | DeepSeek-V3.2 모델로 응답 생성 (Gemini 폴백). **타임아웃 45초 적용**. |
 | 하이브리드 RAG | BM25 + 임베딩 결합 검색 |
 | 대화 윈도우 관리 | 슬라이딩 윈도우 기반 청크 임베딩 |
 
@@ -373,12 +447,53 @@ graph LR
 
 | 도구 | 설명 | API |
 |-----|------|-----|
-| `get_weather_forecast` | 날씨 조회 | 기상청 (KMA) |
-| `get_stock_price` | 주식 시세 (국내/해외 자동 판별) | Finnhub / KRX |
+| `get_weather_forecast` | 날씨 조회 | 기상청 (KMA) - 타임아웃 30초 |
+| `get_stock_price` | 주식 시세 (티커 자동 추출) | **yfinance** (우선), Finnhub/KRX |
 | `get_krw_exchange_rate` | 환율 조회 | 한국수출입은행 |
 | `search_for_place` | 장소 검색 | Kakao Local |
 | `web_search` | 웹 검색 | Google CSE / Kakao |
-| `search_images` | 이미지 검색 | Kakao |
+| `search_images` | 이미지 검색/생성 | Kakao / CometAPI(Flux) |
+
+---
+
+## 환경 변수
+
+### 필수
+
+| 변수명 | 설명 |
+|-------|------|
+| `DISCORD_BOT_TOKEN` | Discord 봇 토큰 |
+| `COMETAPI_KEY` | CometAPI 키 (기본 LLM) |
+| `GEMINI_API_KEY` | Google Gemini API 키 (폴백) |
+
+### CometAPI 설정
+
+| 변수명 | 기본값 | 설명 |
+|-------|--------|------|
+| `USE_COMETAPI` | `true` | CometAPI 우선 사용 여부 |
+| `COMETAPI_BASE_URL` | `https://api.cometapi.com/v1` | API 엔드포인트 |
+| `COMETAPI_MODEL` | `DeepSeek-V3.2-Exp-nothinking` | 사용할 모델 |
+| `AI_REQUEST_TIMEOUT` | `45` | API 응답 최대 대기 시간 (초) |
+
+### RAG 파라미터
+
+| 변수명 | 기본값 | 설명 |
+|-------|--------|------|
+| `AI_MEMORY_ENABLED` | `true` | RAG 기능 활성화 |
+| `RAG_SIMILARITY_THRESHOLD` | `0.6` | 임베딩 유사도 임계값 |
+
+---
+
+## 문제 해결
+
+### 봇이 응답하지 않음 (No Reply)
+1. **API 타임아웃**: CometAPI는 45초, 기상청(KMA)은 30초의 타임아웃이 설정되어 있습니다. 이 시간이 지나면 에러가 로그에 기록되고 멈춥니다.
+2. `discord_logs.txt`에서 `APITimeoutError` 또는 `KMA_API_TIMEOUT` 에러를 확인하세요.
+3. 멘션 여부 확인: 봇은 반드시 `@마사몽` 멘션이 있어야 응답합니다 (DM 예외).
+
+### 주식 정보가 안 나와요
+- `yfinance` 모듈이 설치되어 있어야 합니다. (`requirements.txt` 확인)
+- 한국 주식도 종목명으로 검색 가능합니다.
 
 ### 키워드 기반 도구 감지
 
