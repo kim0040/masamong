@@ -1577,18 +1577,32 @@ Generate the optimized English image prompt:"""
                 continue
 
             # [Optimization] 주식 도구 결과 최적화
-            # [Optimization] 주식 도구 결과 최적화
             if name == "get_stock_price":
-                # yfinance 모드는 이미 포맷된 Markdown 문자열을 반환함
+                # 1. Wrapped String (yfinance Success) -> _execute_tool wraps str in {"result": str}
+                if isinstance(result, dict) and "result" in result and isinstance(result["result"], str):
+                    lines.append(f"[{name}] (결과 데이터)\n{result['result']}")
+                    continue
+                
+                # 2. Raw String (Safety fallback)
                 if isinstance(result, str):
-                    # 문자열이면 그대로 출력 (트렁케이션 없이 중요 정보 보존)
                     lines.append(f"[{name}] (결과 데이터)\n{result}")
                     continue
-                elif isinstance(result, dict):
-                     # Legacy (Finnhub/KRX) dict return
-                    curr = result.get("c" if "c" in result else "ItemPrice", "?") 
-                    change = result.get("d" if "d" in result else "FluctuationRate", "?")
-                    lines.append(f"[{name}] 현재가: {curr}, 등락: {change}")
+
+                # 3. Legacy Dict (Finnhub/KRX) or Error
+                if isinstance(result, dict):
+                    if "error" in result:
+                        lines.append(f"[{name}] 에러: {result['error']}")
+                        continue
+
+                    # Finnhub(c, d) / KRX(ItemPrice, FluctuationRate)
+                    curr = result.get("c") or result.get("ItemPrice")
+                    if curr:
+                        change = result.get("d") or result.get("FluctuationRate") or "?"
+                        lines.append(f"[{name}] 현재가: {curr}, 등락: {change}")
+                        continue
+                    
+                    # Fallback: Unknown dict structure
+                    lines.append(f"[{name}] {str(result)}")
                     continue
             
             # [Optimization] 나머지 도구는 문자열 길이 제한
