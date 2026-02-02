@@ -21,9 +21,10 @@ except ModuleNotFoundError:  # pragma: no cover - 환경에 따라 설치되지 
 
 # CometAPI용 OpenAI 호환 클라이언트
 try:
-    from openai import AsyncOpenAI
-except ModuleNotFoundError:  # pragma: no cover
+    from openai import AsyncOpenAI, APITimeoutError
+except ImportError:  # pragma: no cover
     AsyncOpenAI = None
+    APITimeoutError = None
 
 from datetime import datetime, timedelta, timezone
 import asyncio
@@ -374,6 +375,7 @@ class AIHandler(commands.Cog):
                 self._debug(f"[CometAPI] system={self._truncate_for_debug(system_prompt)}", log_extra)
                 self._debug(f"[CometAPI] user={self._truncate_for_debug(user_prompt)}", log_extra)
 
+            # [modified] Apply Timeout
             completion = await self.cometapi_client.chat.completions.create(
                 model=model or config.COMETAPI_MODEL,
                 messages=[
@@ -384,10 +386,14 @@ class AIHandler(commands.Cog):
                 temperature=config.AI_TEMPERATURE,
                 frequency_penalty=config.AI_FREQUENCY_PENALTY,
                 presence_penalty=config.AI_PRESENCE_PENALTY,
+                timeout=config.AI_REQUEST_TIMEOUT,  # <-- Timeout 적용
             )
 
             response_text = completion.choices[0].message.content
             reasoning_text = getattr(completion.choices[0].message, 'reasoning_content', None)
+            
+            # [CometAPI Debug] Raw Response: ... (omitted for brevity, keep existing logic)
+            # ... (Logic to return final_response) ...
             
             # [Debug] 응답 내용 확인을 위한 강제 로깅
             logger.info(f"[CometAPI Debug] Raw Response: {response_text!r}", extra=log_extra)
@@ -411,6 +417,11 @@ class AIHandler(commands.Cog):
             return final_response.strip() if final_response else None
 
         except Exception as e:
+            # Handle Timeout specifically if possible
+            if APITimeoutError and isinstance(e, APITimeoutError):
+                logger.error(f"CometAPI 요청 시간 초과 ({config.AI_REQUEST_TIMEOUT}s)", extra=log_extra)
+                return None
+            
             logger.error(f"CometAPI 응답 생성 중 오류: {e}", extra=log_extra, exc_info=True)
             return None
 
