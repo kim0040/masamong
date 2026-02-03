@@ -21,9 +21,16 @@ class MasamongHelpCommand(commands.HelpCommand):
             title="📖 친절한 마사몽의 사용 설명서",
             description=(
                 f"안녕하세요! 여러분의 AI 친구이자 비서, **{self.context.bot.user.display_name}**입니다. 🤖\n"
-                "궁금한 점이 있거나 도움이 필요하면 언제든 불러주세요.\n\n"
-                "💡 **팁**: 명령어의 자세한 사용법을 보려면 `!도움 [명령어]`를 입력하세요.\n"
-                "예: `!도움 운세`, `!도움 별자리`"
+                "모든 명령어는 **`!`로 시작**합니다.\n\n"
+                "**빠른 사용법**\n"
+                "- 전체 목록: `!도움`\n"
+                "- 자세한 설명: `!도움 <명령어>`\n"
+                "- 별칭도 동일하게 동작합니다. (예: `!도움 help`)\n\n"
+                "**예시**\n"
+                "- `!도움 날씨`\n"
+                "- `!도움 운세`\n"
+                "- `!도움 이미지`\n\n"
+                "⚠️ 일부 명령어는 **서버 전용/DM 전용/권한 제한**이 있습니다."
             ),
             color=0x66ccff # Sky Blue
         )
@@ -75,14 +82,45 @@ class MasamongHelpCommand(commands.HelpCommand):
         embed.add_field(name="📝 사용법", value=f"`{usage}`", inline=False)
         
         # 예시 (자동 생성은 어렵지만 힌트 제공)
+        examples = None
         if command.name == '운세':
-            examples = "`!운세` (오늘의 운세)\n`!운세 구독 08:00` (매일 아침 8시 알림)"
+            examples = (
+                "`!운세` (오늘 운세)\n"
+                "`!운세 상세` (DM 상세 운세)\n"
+                "`!운세 구독 08:00` (매일 아침 운세)"
+            )
         elif command.name == '별자리':
-            examples = "`!별자리` (전체 목록)\n`!별자리 물병자리` (특정 별자리 운세)"
+            examples = (
+                "`!별자리` (내 별자리 운세)\n"
+                "`!별자리 물병자리` (특정 별자리)\n"
+                "`!별자리 순위` (12별자리 랭킹)"
+            )
+        elif command.name == '날씨':
+            examples = (
+                "`!날씨` (기본 지역)\n"
+                "`!날씨 서울` (지역 지정)\n"
+                "`!날씨 내일 부산` (날짜+지역)\n"
+                "`!날씨 이번주 광주`"
+            )
         elif command.name == '이미지':
-            examples = "`!이미지 귀여운 아기 고양이`"
-        else:
-            examples = None
+            examples = "`!이미지 별이 가득한 밤하늘`"
+        elif command.name == '요약':
+            examples = "`!요약` (최근 대화 요약)"
+        elif command.name == '랭킹':
+            examples = "`!랭킹` (서버 활동 TOP5)"
+        elif command.name == '투표':
+            examples = (
+                "`!투표 \"점심 메뉴\" \"피자\" \"라멘\" \"국밥\"`\n"
+                "`!투표 \"회식할까?\"` (찬반 투표)"
+            )
+        elif command.name == '업데이트':
+            examples = "`!업데이트`"
+        elif command.name == 'delete_log':
+            examples = "`!delete_log` (관리자 전용)"
+        elif command.name == '구독':
+            examples = "`!구독 07:30` (운세 브리핑 구독)"
+        elif command.name in {'이번달운세', '올해운세'}:
+            examples = f"`!{command.name}`"
             
         if examples:
              embed.add_field(name="💡 예시", value=examples, inline=False)
