@@ -24,8 +24,16 @@ class UserCommands(commands.Cog):
     @commands.guild_only() # 서버 채널에서만 사용 가능
     async def delete_log(self, ctx: commands.Context):
         """
-        봇의 로그 파일을 삭제합니다. (관리자 전용)
-        `config.LOG_FILE_NAME`에 정의된 로그 파일을 대상으로 합니다.
+        봇의 로그 파일을 삭제합니다. (관리자 전용, 서버 전용)
+
+        사용법:
+        - `!delete_log`
+
+        예시:
+        - `!delete_log`
+
+        참고:
+        - `config.LOG_FILE_NAME`에 정의된 파일을 삭제합니다.
         """
         log_filename = config.LOG_FILE_NAME
         log_extra = {'guild_id': ctx.guild.id, 'author_id': ctx.author.id}
@@ -60,10 +68,18 @@ class UserCommands(commands.Cog):
     @commands.guild_only()
     async def generate_image_command(self, ctx: commands.Context, *, prompt: str = None):
         """
-        AI(CometAPI Flux)를 사용하여 고퀄리티 이미지를 생성합니다. 🎨
-        
-        사용법: `!이미지 <설명>`
-        예시: `!이미지 파란 하늘을 나는 귀여운 아기 고양이`, `!이미지 사이버펑크 스타일의 서울 야경`
+        AI로 이미지를 생성합니다. (서버 전용)
+
+        사용법:
+        - `!이미지 <설명>`
+
+        예시:
+        - `!이미지 파란 하늘을 나는 귀여운 아기 고양이`
+        - `!이미지 사이버펑크 스타일의 서울 야경`
+
+        참고:
+        - 이미지 생성은 `COMETAPI_KEY`가 필요합니다.
+        - 유저/전역 생성 횟수 제한이 있습니다.
         """
         log_extra = {'guild_id': ctx.guild.id, 'author_id': ctx.author.id}
         
@@ -156,7 +172,15 @@ class UserCommands(commands.Cog):
 
     @commands.command(name='업데이트', aliases=['update', '패치노트'])
     async def update_info(self, ctx: commands.Context):
-        """최근 추가된 기능과 변경 사항을 알려줍니다."""
+        """
+        최근 추가된 기능과 변경 사항을 알려줍니다.
+
+        사용법:
+        - `!업데이트`
+
+        예시:
+        - `!업데이트`
+        """
         embed = discord.Embed(
             title="🚀 마사몽 업데이트 소식",
             description="최근 추가된 따끈따끈한 기능들을 소개할게요!",

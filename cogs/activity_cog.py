@@ -52,8 +52,13 @@ class ActivityCog(commands.Cog):
     @commands.guild_only()
     async def ranking(self, ctx: commands.Context):
         """
-        서버 내 메시지 작성 수 기준 상위 5명의 랭킹을 조회하여 발표합니다.
-        AI 핸들러가 준비된 경우, AI가 생성한 창의적인 멘트와 함께 랭킹을 발표합니다.
+        서버 내 메시지 작성 수 기준 TOP5 랭킹을 발표합니다. (서버 전용)
+
+        사용법:
+        - `!랭킹`
+
+        예시:
+        - `!랭킹`
         """
         if not self.ai_handler:
             await ctx.send("랭킹을 발표할 AI가 아직 준비되지 않았어요. 잠시 후 다시 시도해주세요.")
