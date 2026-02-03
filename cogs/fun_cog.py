@@ -119,8 +119,16 @@ class FunCog(commands.Cog):
     @commands.command(name='요약', aliases=['summarize', 'summary', '3줄요약', 'sum'])
     async def summarize(self, ctx: commands.Context):
         """
-        현재 채널의 최근 대화(20개)를 분석하여 마사몽 스타일로 요약해줍니다.
-        바쁜 당신을 위해 핵심 내용만 쏙쏙 뽑아드릴게요! 📝
+        최근 대화(최대 20개)를 요약합니다. (서버 전용)
+
+        사용법:
+        - `!요약`
+
+        예시:
+        - `!요약`
+
+        참고:
+        - 대화 기록이 충분히 쌓여 있어야 합니다.
         """
         await self.execute_summarize(ctx.channel, ctx.author)
 

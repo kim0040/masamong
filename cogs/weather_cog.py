@@ -236,11 +236,18 @@ class WeatherCog(commands.Cog):
 
     @commands.command(name="날씨", aliases=["weather", "현재날씨", "오늘날씨"])
     async def weather_command(self, ctx: commands.Context, *, location_query: str = ""):
-        """`!날씨 [날짜] [지역]` 패턴을 해석해 날씨 정보를 제공합니다.
+        """날씨 정보를 조회합니다. (서버/DM 가능)
 
-        Args:
-            ctx (commands.Context): 명령을 실행한 컨텍스트.
-            location_query (str, optional): 사용자가 입력한 지역/날짜 정보.
+        사용법:
+        - `!날씨` : 기본 지역의 오늘 날씨
+        - `!날씨 서울` : 특정 지역의 오늘 날씨
+        - `!날씨 내일 부산` : 날짜 + 지역
+        - `!날씨 이번주 광주` : 주간 예보 요약
+
+        예시:
+        - `!날씨`
+        - `!날씨 내일 대구`
+        - `!날씨 이번주 제주`
         """
         user_original_query = location_query.strip() if location_query else "오늘 날씨"
         location_name, nx, ny = config.DEFAULT_LOCATION_NAME, config.DEFAULT_NX, config.DEFAULT_NY

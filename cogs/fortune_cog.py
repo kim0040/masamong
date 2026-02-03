@@ -76,10 +76,17 @@ class FortuneCog(commands.Cog):
         운세 관련 종합 기능을 제공합니다. 🔮
         
         사용법:
-        - `!운세`: 오늘의 운세를 확인합니다. (채널:요약, DM:상세)
-        - `!운세 구독 [시간]`: 매일 아침 브리핑을 받아요.
-        - `!운세 구독취소`: 알림을 끕니다.
-        - `!운세 등록`: 생년월일을 등록/수정하세요.
+        - `!운세` : 오늘의 운세 (서버=요약, DM=상세)
+        - `!운세 상세` : DM에서 상세 운세
+        - `!운세 등록` : 생년월일/시간/성별/출생지 등록 (DM 전용)
+        - `!운세 구독 HH:MM` : 매일 아침 운세 브리핑 (DM 전용)
+        - `!운세 구독취소` : 구독 해제
+        - `!운세 삭제` : 등록된 정보 삭제 (DM 전용)
+
+        예시:
+        - `!운세`
+        - `!운세 상세`
+        - `!운세 구독 07:30`
         """
         if ctx.invoked_subcommand is None:
             # 기존 !운세 (check_fortune) 로직 호출
@@ -89,7 +96,13 @@ class FortuneCog(commands.Cog):
     @commands.dm_only()
     async def fortune_register(self, ctx: commands.Context):
         """
-        사용자의 생년월일 정보를 대화형으로 입력받아 등록합니다. (DM 전용)
+        생년월일/시간/성별/출생지를 대화형으로 등록합니다. (DM 전용)
+
+        사용법:
+        - `!운세 등록`
+
+        예시:
+        - `!운세 등록`
         """
         # [Safety Lock] 다른 명령어/AI 응답 방지
         self.bot.locked_users.add(ctx.author.id)
@@ -207,7 +220,13 @@ class FortuneCog(commands.Cog):
     @fortune.command(name='삭제')
     async def fortune_delete(self, ctx: commands.Context):
         """
-        등록된 모든 개인 정보와 구독 설정을 삭제합니다. (DM 전용)
+        등록된 모든 정보와 구독 설정을 삭제합니다. (DM 전용)
+
+        사용법:
+        - `!운세 삭제`
+
+        예시:
+        - `!운세 삭제`
         """
         # DM 체크
         if ctx.guild:
@@ -226,7 +245,12 @@ class FortuneCog(commands.Cog):
     async def fortune_subscribe(self, ctx: commands.Context, time_str: str):
         """
         매일 아침 오늘의 운세 브리핑 구독을 설정합니다. (DM 전용)
-        사용법: !운세 구독 07:30
+
+        사용법:
+        - `!운세 구독 HH:MM`
+
+        예시:
+        - `!운세 구독 07:30`
         """
         # DM 체크
         if ctx.guild:
@@ -276,6 +300,12 @@ class FortuneCog(commands.Cog):
     async def fortune_unsubscribe(self, ctx: commands.Context):
         """
         운세 브리핑 구독을 중단합니다. (정보는 유지됨)
+
+        사용법:
+        - `!운세 구독취소`
+
+        예시:
+        - `!운세 구독취소`
         """
         try:
              await self.bot.db.execute(
@@ -290,13 +320,29 @@ class FortuneCog(commands.Cog):
 
     @commands.command(name='구독', aliases=['구독시간', '알림시간'])
     async def global_subscribe(self, ctx: commands.Context, time_str: str):
-        """운세 브리핑 구독 전용 명령어입니다. (DM 전용)"""
+        """
+        `!운세 구독`의 별칭 명령어입니다. (DM 전용)
+
+        사용법:
+        - `!구독 HH:MM`
+
+        예시:
+        - `!구독 08:00`
+        """
         await self.fortune_subscribe(ctx, time_str)
     
     @commands.command(name='이번달운세', aliases=['이번달'])
     @commands.dm_only()
     async def monthly_fortune(self, ctx: commands.Context, arg: str = None):
-        """이번 달의 운세를 확인합니다. (하루 3회 제한)"""
+        """
+        이번 달의 운세를 확인합니다. (DM 전용, 하루 3회 제한)
+
+        사용법:
+        - `!이번달운세`
+
+        예시:
+        - `!이번달운세`
+        """
         # !이번달 운세 <- 이렇게 띄어쓰기 한 경우 처리
         if arg and arg not in ['운세']:
              return # 다른 명령어일 수 있음
@@ -305,7 +351,15 @@ class FortuneCog(commands.Cog):
     @commands.command(name='올해운세', aliases=['올해', '신년운세'])
     @commands.dm_only()
     async def yearly_fortune(self, ctx: commands.Context, arg: str = None):
-        """올해의 운세를 확인합니다. (하루 3회 제한)"""
+        """
+        올해의 운세를 확인합니다. (DM 전용, 하루 3회 제한)
+
+        사용법:
+        - `!올해운세`
+
+        예시:
+        - `!올해운세`
+        """
         # !올해 운세 <- 띄어쓰기 대응
         if arg and arg not in ['운세']:
              return
@@ -467,9 +521,14 @@ class FortuneCog(commands.Cog):
         별자리 운세를 확인합니다. 🌌
         
         사용법:
-        - `!별자리`: (등록된 경우) 내 별자리 운세를 확인합니다.
-        - `!별자리 <이름>`: 특정 별자리 운세를 확인합니다. (예: `!별자리 물병`)
-        - `!별자리 순위`: 오늘의 12별자리 운세 랭킹을 봅니다.
+        - `!별자리` : 내 별자리 운세 (등록 정보가 있으면 자동)
+        - `!별자리 <이름>` : 특정 별자리 운세
+        - `!별자리 순위` : 오늘의 12별자리 랭킹
+
+        예시:
+        - `!별자리`
+        - `!별자리 물병자리`
+        - `!별자리 순위`
         """
         if ctx.invoked_subcommand is None:
             content = ctx.message.content.strip()
