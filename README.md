@@ -41,6 +41,61 @@
 - 응답 생성은 CometAPI(선택) → Gemini(폴백) 순서로 동작합니다.
 - Gemini API 키가 없으면 **AI 기능 전체가 비활성화**됩니다.
 
+**기술 구조 (동작 방식)**
+
+**전체 메시지 흐름**
+1. `main.py`의 `on_message`가 모든 메시지를 수신합니다.
+2. `!` 프리픽스가 있으면 명령어로 처리하고 종료합니다.
+3. 명령어가 아니면 `AIHandler`가 메시지를 분석합니다.
+4. 키워드 기반 도구 감지 → 도구 실행 → RAG 컨텍스트 구성 → LLM 응답 생성 순으로 진행됩니다.
+
+**메시지 처리 다이어그램 (요약)**
+```mermaid
+flowchart TD
+    A[Discord Message] --> B{Command?}
+    B -->|Yes| C[Process Command]
+    B -->|No| D[AIHandler.process_agent_message]
+    D --> E{Mention OK?}
+    E -->|No (Guild)| X[Ignore]
+    E -->|Yes/DM| F[Keyword Tool Detect]
+    F --> G[Tool Execute]
+    F --> H[RAG Search]
+    G --> I[Compose Prompt]
+    H --> I
+    I --> J[CometAPI]
+    J --> K[Reply]
+    I --> L[Gemini Fallback]
+    L --> K
+```
+
+**AI 응답 준비 조건**
+- `AIHandler.is_ready` 조건: Gemini API 설정 완료 + DB 연결 + ToolsCog 로드.
+- CometAPI는 **우선 사용**되지만, Gemini가 준비되지 않으면 AI 파이프라인 자체가 시작되지 않습니다.
+
+**도구 감지 로직**
+- Lite 모델 없이 **키워드 매칭**으로 도구를 선택합니다.
+- 감지된 도구는 `ToolsCog`에 위임되며 결과가 프롬프트 최상단에 들어갑니다.
+- 날씨 요청은 단일 도구로 즉시 처리합니다.
+
+**RAG(기억) 파이프라인**
+- 대화는 `conversation_history`에 저장됩니다.
+- 일정 메시지 수가 쌓이면 **윈도우 단위 요약 → 임베딩**을 생성합니다.
+- 검색은 **임베딩 + BM25(옵션) 하이브리드**로 수행됩니다.
+- `emb_config.json`에서 임베딩/BM25/쿼리 확장/리랭커 사용 여부를 제어합니다.
+
+**웹 검색 자동 판단**
+- “최근/뉴스/방법/왜”류 키워드 + RAG 점수 낮음 + 일일 한도 미달일 때 자동 실행됩니다.
+- Google CSE → 실패 시 Kakao 검색으로 폴백합니다.
+
+**비동기/백그라운드 작업**
+- 비/눈 알림: 단기 예보 강수 확률 기반.
+- 아침/저녁 인사: 지정 시각에 날씨 요약 포함 메시지 전송.
+- 지진 알림: 국내 영향권 규모 4.0+ 발생 시 알림.
+
+**설정 우선순위와 주의점**
+- 설정 로드 순서: **환경 변수 → `config.json` → 기본값**.
+- 채널 허용은 **`prompts.json`/`DEFAULT_AI_CHANNELS` 기준**이며, `/config channel`로 DB에 저장한 값은 AI 응답에 직접 반영되지 않습니다.
+
 **자동 도구 실행 기준 (요약)**
 - 날씨: 날씨/기온/비/눈/우산 등 키워드 감지
 - 주식: 주가/주식/시세 등 키워드 감지
