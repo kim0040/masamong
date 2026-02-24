@@ -54,7 +54,7 @@ class ProactiveAssistant(commands.Cog):
             "가고 싶은 도시가 있으면 `@마사몽 부산 맛집 찾아줘`처럼 말해서 주변 장소를 찾아봐."
         )
     
-    async def _suggest_financial_info(self, message: discord.Message) -> str:
+    async def _suggest_finance_info(self, message: discord.Message) -> str:
         """금융 관련 제안 메시지를 생성합니다."""
         content = message.content.lower()
         if any(word in content for word in ['환율', '달러', '엔화', '유로']):
