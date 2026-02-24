@@ -390,7 +390,7 @@ class WeatherCog(commands.Cog):
                     alert_channel = self.bot.get_channel(channel_id)
                     if not alert_channel:
                         continue
-                    await alert_channel.send(ai_msg or fallback_msg)
+                    await alert_channel.send(ai_msg or fallback_msg, allowed_mentions=discord.AllowedMentions.none())
                 self.notified_rain_event_starts.add(period["key"])
 
     async def _send_greeting_notification(self, greeting_type: str):
@@ -410,7 +410,7 @@ class WeatherCog(commands.Cog):
         else: alert_context = f"오늘 하루도 수고했어! 참고로 오늘 {config.DEFAULT_LOCATION_NAME} 날씨는 이랬어.\n\n> {summary}\n\n이제 편안한 밤 보내고, 내일 또 보자! 잘 자! 🌙"
         self.ai_handler = self.bot.get_cog('AIHandler')
         ai_msg = await self.ai_handler.generate_system_alert_message(channel_id, alert_context, f"{greeting_type} 인사") if self.ai_handler and self.ai_handler.is_ready else None
-        await alert_channel.send(ai_msg or alert_context)
+        await alert_channel.send(ai_msg or alert_context, allowed_mentions=discord.AllowedMentions.none())
 
     @tasks.loop(time=dt_time(hour=config.MORNING_GREETING_TIME["hour"], minute=config.MORNING_GREETING_TIME["minute"], tzinfo=KST))
     async def morning_greeting_loop(self):
