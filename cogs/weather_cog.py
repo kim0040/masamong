@@ -122,9 +122,6 @@ class WeatherCog(commands.Cog):
                 current_weather_str = weather_utils.format_current_weather(current_weather_data)
                 short_term_data = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
                 formatted_forecast = weather_utils.format_short_term_forecast(short_term_data, day_name, target_day_offset=0)
-                current_weather_str = weather_utils.format_current_weather(current_weather_data)
-                short_term_data = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
-                formatted_forecast = weather_utils.format_short_term_forecast(short_term_data, day_name, target_day_offset=0)
                 
                 # Extended Info (Overview & Typhoon & Warnings & Impact)
                 # "Smart Decision": Fetch urgently in parallel to avoid blocking core weather.
@@ -480,9 +477,11 @@ class WeatherCog(commands.Cog):
                     # Alert!
                     formatted_msg = weather_utils.format_earthquake_alert(eqk)
                     
+                    # AI 메시지는 채널 루프 밖에서 한 번만 생성 (대표 채널 ID 사용)
+                    primary_id = sorted(channel_ids)[0]
                     self.ai_handler = self.bot.get_cog('AIHandler')
                     ai_msg = await self.ai_handler.generate_system_alert_message(
-                        alert_channel.id, 
+                        primary_id, 
                         formatted_msg, 
                         "지진 발생 알림"
                     ) if self.ai_handler and self.ai_handler.is_ready else None
