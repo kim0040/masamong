@@ -1692,19 +1692,15 @@ Generate the optimized English image prompt:"""
 
         # generate_image는 프롬프트 생성 + CometAPI 호출 2-step 처리를 사용합니다.
         if tool_name == 'generate_image':
-            logger.info("특별 도구 실행: generate_image (CometAPI flux-2-flex)", extra=log_extra)
+            logger.info("특별 도구 실행: generate_image (CometAPI Seedream 5.0)", extra=log_extra)
             original_query = parameters.get('user_query', user_query)
             user_id = parameters.get('user_id')
             
             if user_id is None:
                 return {"error": "이미지 생성에 필요한 사용자 정보가 없습니다."}
             
-            # LLM을 사용하여 이미지 생성 프롬프트 최적화
-            image_prompt = await self._generate_image_prompt(original_query, log_extra)
-            if not image_prompt:
-                return {"error": "이미지 프롬프트를 생성하지 못했어요. 다시 시도해줘!"}
-            
-            self._debug(f"[도구:generate_image] 최적화된 프롬프트: {self._truncate_for_debug(image_prompt)}", log_extra)
+            # Seedream 5.0은 자체적인 프롬프트 이해 및 추론 능력이 뛰어나므로 번역/최적화 (LLM 1회 호출) 단계를 생략합니다.
+            image_prompt = original_query
             
             # ToolsCog의 generate_image 도구 호출
             result = await self.tools_cog.generate_image(prompt=image_prompt, user_id=user_id)
