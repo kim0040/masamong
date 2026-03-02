@@ -265,8 +265,8 @@ COMETAPI_IMAGE_ENABLED = as_bool(load_config_value('COMETAPI_IMAGE_ENABLED', 'tr
 COMETAPI_IMAGE_API_URL = "https://api.cometapi.com/v1/images/generations"
 # 사용 모델: 'doubao-seedream-5-0-260128'
 IMAGE_MODEL = load_config_value('IMAGE_MODEL', 'doubao-seedream-5-0-260128')
-# 이미지 크기: "1K", "2K", "4K" 등
-IMAGE_SIZE = load_config_value('IMAGE_SIZE', '4K')
+# 이미지 크기: "1K", "2k", "3k" 등
+IMAGE_SIZE = load_config_value('IMAGE_SIZE', '3k')
 # 응답 형식: "url" 또는 "b64_json"
 IMAGE_RESPONSE_FORMAT = load_config_value('IMAGE_RESPONSE_FORMAT', 'url')
 
