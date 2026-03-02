@@ -103,16 +103,8 @@ class UserCommands(commands.Cog):
                 # 생성 중 메시지 전송 (LLM 호출 없음)
                 status_msg = await ctx.send(f"🎨 **'{prompt}'**\n위 설명으로 그림을 그리고 있어요... (약 10~20초 소요)")
                 
-                # 1. 프롬프트 생성 (LLM 1회 호출)
-                image_prompt = await ai_handler._generate_image_prompt(
-                    prompt, 
-                    log_extra,
-                    rag_context=None  # 명령어에서는 RAG 컨텍스트 없음
-                )
-                
-                if not image_prompt:
-                    await status_msg.edit(content="❌ 이미지 프롬프트 변환에 실패했어요. 설명을 조금 더 구체적으로 적어주세요!")
-                    return
+                # 1. 프롬프트 세팅 (Seedream 5.0은 자체 추론이 뛰어나 번역/최적화 과정 생략)
+                image_prompt = prompt
                 
                 # 2. 이미지 생성 (tools_cog 직접 호출)
                 result = await ai_handler.tools_cog.generate_image(
