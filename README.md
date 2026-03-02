@@ -306,7 +306,9 @@ python3 main.py
 | 변수 | 설명 | 기본값 |
 |------|------|--------|
 | `COMETAPI_IMAGE_ENABLED` | 이미지 생성 활성화 | `true` |
-| `GEMINI_IMAGE_MODEL` | 이미지 생성 모델 | `gemini-2.5-flash-image` |
+| `IMAGE_MODEL` | 이미지 생성 모델 | `doubao-seedream-5-0-260128` |
+| `IMAGE_SIZE` | 이미지 크기 설정 | `4K` |
+| `IMAGE_RESPONSE_FORMAT` | 이미지 응답 형식 (url / b64_json) | `url` |
 | `IMAGE_USER_LIMIT` | 유저당 이미지 제한 (12시간) | `5` |
 | `IMAGE_GLOBAL_DAILY_LIMIT` | 전역 일일 이미지 제한 | `50` |
 
