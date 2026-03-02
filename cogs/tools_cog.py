@@ -461,11 +461,21 @@ class ToolsCog(commands.Cog):
                             "remaining": user_remaining - 1,
                         }
                     elif 'url' in image_data:
-                        logger.info(f"이미지 URL 수신: {image_data['url'][:50]}...", extra=log_extra)
-                        return {
-                            "image_url": image_data['url'],
-                            "remaining": user_remaining - 1,
-                        }
+                        image_url = image_data['url']
+                        logger.info(f"이미지 URL 수신: {image_url[:50]}...", extra=log_extra)
+                        
+                        # URL에서 이미지 다운로드
+                        async with session.get(image_url) as img_resp:
+                            if img_resp.status == 200:
+                                image_binary = await img_resp.read()
+                                logger.info(f"이미지 다운로드 완료: {len(image_binary)} bytes", extra=log_extra)
+                                return {
+                                    "image_data": image_binary,
+                                    "remaining": user_remaining - 1,
+                                }
+                            else:
+                                logger.error(f"이미지 다운로드 실패: {img_resp.status}", extra=log_extra)
+                                return {"error": "이미지 생성은 완료되었으나, 이미지를 다운로드하는 중 오류가 발생했어요."}
                     else:
                         logger.error(f"지원하지 않는 이미지 응답 형식: {image_data.keys()}", extra=log_extra)
                         return {"error": "알 수 없는 이미지 형식을 받았어요."}
