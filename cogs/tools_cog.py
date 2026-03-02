@@ -367,7 +367,7 @@ class ToolsCog(commands.Cog):
         return True, None
 
     async def generate_image(self, prompt: str, user_id: int) -> dict:
-        """Gemini Native API(CometAPI)를 사용하여 이미지를 생성합니다.
+        """OpenAI-compatible API(CometAPI)를 사용하여 이미지를 생성합니다.
         
         Args:
             prompt: 이미지 생성 프롬프트 (영문 권장)
@@ -406,89 +406,72 @@ class ToolsCog(commands.Cog):
         if global_limited:
             return {"error": "오늘 마사몽이 생성할 수 있는 이미지가 다 끝났어... 내일 다시 불러줘!"}
         
-        logger.info(f"이미지 생성 시작 (Gemini): user={user_id}, remaining={user_remaining}", extra=log_extra)
+        logger.info(f"이미지 생성 시작 (OpenAI-compatible): user={user_id}, remaining={user_remaining}", extra=log_extra)
         
-        # 6. CometAPI 호출 (Gemini Native Endpoint)
+        # 6. CometAPI 호출 (OpenAI-compatible Endpoint)
         try:
-            model_name = getattr(config, 'GEMINI_IMAGE_MODEL', 'gemini-2.5-flash-image')
-            # URL 포맷팅: {model} 부분을 실제 모델명으로 치환
-            api_url = getattr(config, 'COMETAPI_IMAGE_API_URL', 'https://api.cometapi.com/v1beta/models/{model}:generateContent')
-            if "{model}" in api_url:
-                api_url = api_url.replace("{model}", model_name)
+            model_name = getattr(config, 'IMAGE_MODEL', 'doubao-seedream-5-0-260128')
+            api_url = getattr(config, 'COMETAPI_IMAGE_API_URL', 'https://api.cometapi.com/v1/images/generations')
+            image_size = getattr(config, 'IMAGE_SIZE', '4K')
+            response_format = getattr(config, 'IMAGE_RESPONSE_FORMAT', 'url')
             
             # 헤더 설정
             headers = {
-                "x-goog-api-key": api_key,  # Gemini API 스타일 인증
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             }
             
             # 페이로드 구성
             payload = {
-                "contents": [{
-                    "parts": [{"text": prompt}]
-                }],
-                "generationConfig": {
-                    "responseModalities": ["IMAGE"], # 강제로 이미지만 생성
-                    "imageConfig": {
-                        "aspectRatio": getattr(config, 'GEMINI_IMAGE_ASPECT_RATIO', '1:1'),
-                    }
-                }
+                "model": model_name,
+                "prompt": prompt,
+                "size": image_size,
+                "response_format": response_format,
+                "watermark": False
             }
-            
-            # Gemini 3 Pro 전용 옵션 추가
-            if "gemini-3-pro" in model_name:
-                size_opt = getattr(config, 'GEMINI_IMAGE_SIZE', '1K')
-                if size_opt in ['1K', '2K', '4K']:
-                     payload["generationConfig"]["imageConfig"]["imageSize"] = size_opt
-
             
             async with aiohttp.ClientSession() as session:
                 async with session.post(api_url, headers=headers, json=payload, timeout=90) as resp:
                     if resp.status != 200:
                         error_text = await resp.text()
-                        logger.error(f"Gemini 이미지 생성 실패 ({resp.status}): {error_text}", extra=log_extra)
+                        logger.error(f"이미지 생성 실패 ({resp.status}): {error_text}", extra=log_extra)
                         if resp.status == 429:
                            return {"error": "이미지 생성 요청이 너무 많아요. 잠시 후에 다시 시도해줘!"}
                         return {"error": f"이미지 생성 요청 실패: {resp.status}"}
                     
                     data = await resp.json()
                     
-                    # 응답 파싱 (Google GenAI 형식)
-                    candidates = data.get('candidates', [])
-                    if not candidates:
-                         # 안전성 문제 등으로 차단된 경우
-                        prompt_feedback = data.get('promptFeedback', {})
-                        logger.warning(f"이미지 생성 차단됨: {prompt_feedback}", extra=log_extra)
-                        return {"error": "이미지가 안전 정책에 의해 생성되지 않았어요."}
-
-                    # 첫 번째 candidate의 parts 확인
-                    parts = candidates[0].get('content', {}).get('parts', [])
-                    image_data_b64 = None
-                    
-                    for part in parts:
-                        inline_data = part.get('inlineData')
-                        if inline_data:
-                            image_data_b64 = inline_data.get('data')
-                            break
-                    
-                    if not image_data_b64:
+                    # 응답 파싱 (OpenAI API 형식)
+                    images = data.get('data', [])
+                    if not images:
                         logger.error(f"이미지 데이터를 찾을 수 없음: {data}", extra=log_extra)
                         return {"error": "이미지 데이터를 받지 못했어요."}
                     
-                    import base64
-                    image_binary = base64.b64decode(image_data_b64)
+                    image_data = images[0]
                     
                     # 사용량 기록
                     await db_utils.log_image_generation(self.bot.db, user_id)
                     
-                    logger.info(f"이미지 디코딩 완료: {len(image_binary)} bytes", extra=log_extra)
-                    return {
-                        "image_data": image_binary,
-                        "remaining": user_remaining - 1,
-                    }
+                    if response_format == 'b64_json' and 'b64_json' in image_data:
+                        import base64
+                        image_binary = base64.b64decode(image_data['b64_json'])
+                        logger.info(f"이미지 디코딩 완료: {len(image_binary)} bytes", extra=log_extra)
+                        return {
+                            "image_data": image_binary,
+                            "remaining": user_remaining - 1,
+                        }
+                    elif 'url' in image_data:
+                        logger.info(f"이미지 URL 수신: {image_data['url'][:50]}...", extra=log_extra)
+                        return {
+                            "image_url": image_data['url'],
+                            "remaining": user_remaining - 1,
+                        }
+                    else:
+                        logger.error(f"지원하지 않는 이미지 응답 형식: {image_data.keys()}", extra=log_extra)
+                        return {"error": "알 수 없는 이미지 형식을 받았어요."}
 
         except asyncio.TimeoutError:
-            logger.error("Gemini API 타임아웃", extra=log_extra)
+            logger.error("이미지 API 타임아웃", extra=log_extra)
             return {"error": "이미지 생성이 너무 오래 걸려서 취소됐어. 다시 시도해줘!"}
         except Exception as e:
             logger.error(f"이미지 생성 중 예외: {e}", exc_info=True, extra=log_extra)
