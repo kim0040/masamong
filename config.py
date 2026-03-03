@@ -271,8 +271,8 @@ IMAGE_SIZE = load_config_value('IMAGE_SIZE', '3k')
 IMAGE_RESPONSE_FORMAT = load_config_value('IMAGE_RESPONSE_FORMAT', 'url')
 
 # 이미지 생성 사용량 제한
-IMAGE_USER_LIMIT = as_int(load_config_value('IMAGE_USER_LIMIT', 5), 5)  # 유저당 12시간 내 최대 5장
-IMAGE_USER_RESET_HOURS = as_int(load_config_value('IMAGE_USER_RESET_HOURS', 12), 12)  # 12시간 후 리셋
+IMAGE_USER_LIMIT = as_int(load_config_value('IMAGE_USER_LIMIT', 10), 10)  # 유저당 6시간 내 최대 10장
+IMAGE_USER_RESET_HOURS = as_int(load_config_value('IMAGE_USER_RESET_HOURS', 6), 6)  # 6시간 후 리셋
 IMAGE_GLOBAL_DAILY_LIMIT = as_int(load_config_value('IMAGE_GLOBAL_DAILY_LIMIT', 50), 50)  # 전역 일일 50장
 
 # 이미지 생성 안전 설정

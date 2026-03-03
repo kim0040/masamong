@@ -309,7 +309,7 @@ python3 main.py
 | `IMAGE_MODEL` | 이미지 생성 모델 | `doubao-seedream-5-0-260128` |
 | `IMAGE_SIZE` | 이미지 크기 설정 | `3k` |
 | `IMAGE_RESPONSE_FORMAT` | 이미지 응답 형식 (url / b64_json) | `url` |
-| `IMAGE_USER_LIMIT` | 유저당 이미지 제한 (12시간) | `5` |
+| `IMAGE_USER_LIMIT` | 유저당 이미지 제한 (6시간) | `10` |
 | `IMAGE_GLOBAL_DAILY_LIMIT` | 전역 일일 이미지 제한 | `50` |
 
 ### 안전장치 설정
