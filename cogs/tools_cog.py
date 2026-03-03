@@ -435,6 +435,8 @@ class ToolsCog(commands.Cog):
                     if resp.status != 200:
                         error_text = await resp.text()
                         logger.error(f"이미지 생성 실패 ({resp.status}): {error_text}", extra=log_extra)
+                        if "OutputImageSensitiveContentDetected" in error_text:
+                            return {"error": "요청한 내용을 그릴 수 없어요! 부적절한(선정적/민감한) 내용이 감지되어 시스템에 의해 차단되었습니다."}
                         if resp.status == 429:
                            return {"error": "이미지 생성 요청이 너무 많아요. 잠시 후에 다시 시도해줘!"}
                         return {"error": f"이미지 생성 요청 실패: {resp.status}"}
