@@ -419,36 +419,52 @@ class ToolsCog(commands.Cog):
             extra=log_extra
         )
 
-        # 6. CometAPI 호출 (Gemini-compatible Endpoint / google-genai SDK)
+        # 6. CometAPI 호출 (Gemini-compatible Endpoint / aiohttp)
         try:
-            from google import genai
-            from google.genai import types as genai_types
+            # google-genai SDK 대신 aiohttp를 사용하여 직접 REST API 호출 (서버 ImportError 방지)
+            endpoint = f"{base_url}/v1beta/models/{model_name}:generateContent"
+            
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "responseModalities": ["IMAGE"],
+                    "imageConfig": {"aspectRatio": ratio}
+                }
+            }
+            
+            headers = {
+                "Content-Type": "application/json",
+                "x-goog-api-key": api_key
+            }
 
-            # google-genai 클라이언트 (동기) → executor로 비동기 래핑
-            def _call_genai() -> bytes:
-                client = genai.Client(
-                    http_options={"api_version": "v1beta", "base_url": base_url},
-                    api_key=api_key,
-                )
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=[prompt],
-                    config=genai_types.GenerateContentConfig(
-                        response_modalities=["IMAGE"],
-                        image_config=genai_types.ImageConfig(aspect_ratio=ratio),
-                    ),
-                )
-                for part in response.parts:
-                    if part.inline_data is not None:
-                        # inline_data.data → 원본 PNG/JPEG bytes (4K 그대로 반환)
-                        return bytes(part.inline_data.data)
-                raise ValueError("응답에서 이미지 데이터를 찾을 수 없습니다.")
-
-            loop = asyncio.get_event_loop()
-            image_binary = await asyncio.wait_for(
-                loop.run_in_executor(None, _call_genai),
-                timeout=120,  # Gemini 이미지 생성은 최대 2분 대기
-            )
+            async with aiohttp.ClientSession() as session:
+                async with session.post(endpoint, json=payload, headers=headers, timeout=120) as resp:
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        logger.error(f"CometAPI 이미지 생성 API 오류 ({resp.status}): {error_text}", extra=log_extra)
+                        return {"error": f"API 서버가 오류를 반환했습니다. ({resp.status})"}
+                    
+                    data = await resp.json()
+                    
+                    # 응답 파싱
+                    for candidate in data.get("candidates", []):
+                        for part in candidate.get("content", {}).get("parts", []):
+                            if "inlineData" in part:
+                                # base64 데이터 추출하여 bytes로 변환
+                                import base64
+                                image_b64 = part["inlineData"].get("data")
+                                if image_b64:
+                                    image_binary = base64.b64decode(image_b64)
+                                    
+                                    # 사용량 기록
+                                    await db_utils.log_image_generation(self.bot.db, user_id)
+                                    logger.info(f"이미지 생성 완료: {len(image_binary):,} bytes", extra=log_extra)
+                                    return {
+                                        "image_data": image_binary,
+                                        "remaining": user_remaining - 1,
+                                    }
+                    
+                    raise ValueError("응답에서 이미지 데이터를 찾을 수 없습니다.")
 
             # 사용량 기록
             await db_utils.log_image_generation(self.bot.db, user_id)
