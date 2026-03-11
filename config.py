@@ -419,7 +419,6 @@ AI_CREATIVE_PROMPTS = {
 FUN_KEYWORD_TRIGGERS = { "enabled": True, "cooldown_seconds": 60, "triggers": { "fortune": ["운세", "오늘 운", "운세 좀"], "summarize": ["요약해줘", "무슨 얘기했어", "무슨 얘기함", "요약 좀", "지금까지 뭔 얘기"] } }
 AI_DEBUG_ENABLED = as_bool(load_config_value('AI_DEBUG_ENABLED', False))
 AI_DEBUG_LOG_MAX_LEN = int(load_config_value('AI_DEBUG_LOG_MAX_LEN', 400))
-KMA_API_KEY = load_config_value('KMA_API_KEY')
 KMA_API_DAILY_CALL_LIMIT = 10000
 KMA_API_MAX_RETRIES = int(load_config_value("KMA_API_MAX_RETRIES", 3))
 KMA_API_RETRY_DELAY_SECONDS = int(load_config_value("KMA_API_RETRY_DELAY_SECONDS", 2))

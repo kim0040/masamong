@@ -421,7 +421,6 @@ class ToolsCog(commands.Cog):
 
         # 6. CometAPI 호출 (Gemini-compatible Endpoint / google-genai SDK)
         try:
-            import asyncio
             from google import genai
             from google.genai import types as genai_types
 
