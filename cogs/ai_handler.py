@@ -55,7 +55,6 @@ from utils.embeddings import (
 )
 from database.bm25_index import BM25IndexManager
 from utils.hybrid_search import HybridSearchEngine
-from utils.hybrid_search import HybridSearchEngine
 from utils.reranker import Reranker, RerankerConfig
 from utils.api_handlers.finnhub import ALIAS_TO_TICKER  # [NEW] Import for robust stock detection
 
@@ -395,13 +394,12 @@ class AIHandler(commands.Cog):
             # [CometAPI Debug] Raw Response: ... (omitted for brevity, keep existing logic)
             # ... (Logic to return final_response) ...
             
-            # [Debug] 응답 내용 확인을 위한 강제 로깅
-            logger.info(f"[CometAPI Debug] Raw Response: {response_text!r}", extra=log_extra)
-            try:
-                # model_dump()가 가능한지 확인 (Pydantic v2)
-                logger.info(f"[CometAPI Debug] Message Obj: {completion.choices[0].message}", extra=log_extra)
-            except:
-                pass
+            if self.debug_enabled:
+                self._debug(f"[CometAPI Debug] Raw Response: {response_text!r}", log_extra)
+                try:
+                    self._debug(f"[CometAPI Debug] Message Obj: {completion.choices[0].message}", log_extra)
+                except Exception:
+                    pass
 
             await db_utils.log_api_call(self.bot.db, "cometapi")
 
@@ -1692,7 +1690,7 @@ Generate the optimized English image prompt:"""
 
         # generate_image는 프롬프트 생성 + CometAPI 호출 2-step 처리를 사용합니다.
         if tool_name == 'generate_image':
-            logger.info("특별 도구 실행: generate_image (CometAPI Seedream 5.0)", extra=log_extra)
+            logger.info("특별 도구 실행: generate_image (CometAPI Gemini 3.1 Flash Image)", extra=log_extra)
             original_query = parameters.get('user_query', user_query)
             user_id = parameters.get('user_id')
             
@@ -2114,43 +2112,44 @@ Generate the optimized English image prompt:"""
                     )
                 else:
                     # RAG 문맥이 독성/안전 문제로 차단되었을 가능성 -> RAG 없이 재시도
-                    if rag_blocks_for_prompt:
+                    # 재시도는 Gemini가 사용 가능한 경우에만 의미 있음 (CometAPI는 RAG와 무관하게 실패)
+                    if rag_blocks_for_prompt and self.gemini_configured and genai and locals().get('main_model'):
                         logger.warning("Main 모델 응답이 비어있어, RAG 문맥을 제외하고 재시도합니다.", extra=log_extra)
                         main_prompt_retry = self._compose_main_prompt(
                             message,
                             user_query=user_query,
-                            rag_blocks=[], # RAG 제거
+                            rag_blocks=[],  # RAG 제거
                             tool_results_block=tool_results_str if tool_results_str else None,
                         )
                         self._debug(f"[Main Retry] user_prompt={self._truncate_for_debug(main_prompt_retry)}", log_extra)
                         retry_response = await self._safe_generate_content(
-                            main_model, 
-                            main_prompt_retry, 
+                            main_model,
+                            main_prompt_retry,
                             log_extra,
                             generation_config=genai.types.GenerationConfig(temperature=config.AI_TEMPERATURE)
                         )
-                        
+
                         retry_text = ""
                         if retry_response and retry_response.parts:
                             try:
                                 retry_text = retry_response.text.strip()
                             except ValueError:
                                 pass
-                        
+
                         if retry_text:
                             await message.reply(retry_text, mention_author=False)
                             await db_utils.log_analytics(
                                 self.bot.db,
                                 "AI_INTERACTION",
                                 {
-                                    "guild_id": message.guild.id,
+                                    "guild_id": message.guild.id if message.guild else "DM",
                                     "user_id": message.author.id,
                                     "channel_id": message.channel.id,
                                     "trace_id": trace_id,
                                     "user_query": user_query,
                                     "tool_plan": executed_plan or tool_plan,
                                     "final_response": retry_text,
-                                    "is_fallback": True, # 재시도 했으므로 fallback 취급
+                                    "is_fallback": True,
                                 },
                             )
                             return
@@ -2162,8 +2161,8 @@ Generate the optimized English image prompt:"""
                                 f"{truncated_results}\n```",
                                 mention_author=False,
                             )
-                    else: # No RAG blocks for prompt, so no retry attempt
-                        logger.error("Main 모델이 최종 답변을 생성하지 못했습니다 (재시도 실패 포함).", extra=log_extra)
+                    else:  # RAG 없거나 Gemini 불가 → 재시도 불가
+                        logger.error("Main 모델이 최종 답변을 생성하지 못했습니다 (재시도 불가).", extra=log_extra)
                         truncated_results = tool_results_str[:1900] if tool_results_str else "No tool results."
                         await message.reply(
                             "모든 도구를 실행했지만, 최종 답변을 만드는 데 실패했어요. (AI 응답 없음)\n```json\n"
@@ -2267,14 +2266,16 @@ Generate the optimized English image prompt:"""
                 "공지 문구는 마사몽의 말투를 유지해 주고, 너무 장황하지 않게 작성해줘."
             )
 
+            alert_message = None
+
             # 1. CometAPI 우선 사용
             if self.use_cometapi:
                 alert_message = await self._cometapi_generate_content(
-                    system_prompt, 
-                    user_prompt, 
+                    system_prompt,
+                    user_prompt,
                     log_extra
                 )
-            
+
             # 2. 실패 시 Gemini 폴백
             if not alert_message and self.gemini_configured and genai:
                 model = genai.GenerativeModel(
