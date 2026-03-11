@@ -260,15 +260,13 @@ COMETAPI_BASE_URL = load_config_value('COMETAPI_BASE_URL', 'https://api.cometapi
 COMETAPI_MODEL = load_config_value('COMETAPI_MODEL', 'DeepSeek-V3.2-Exp-nothinking')
 USE_COMETAPI = as_bool(load_config_value('USE_COMETAPI', 'true'))  # CometAPI 우선 사용
 
-# CometAPI 이미지 생성 설정 (doubao-seedream via CometAPI OpenAI-compatible)
+# CometAPI 이미지 생성 설정 (Gemini via CometAPI Gemini-compatible)
 COMETAPI_IMAGE_ENABLED = as_bool(load_config_value('COMETAPI_IMAGE_ENABLED', 'true'))
-COMETAPI_IMAGE_API_URL = "https://api.cometapi.com/v1/images/generations"
-# 사용 모델: 'doubao-seedream-5-0-260128'
-IMAGE_MODEL = load_config_value('IMAGE_MODEL', 'doubao-seedream-5-0-260128')
-# 이미지 크기: "1K", "2k", "3k" 등
-IMAGE_SIZE = load_config_value('IMAGE_SIZE', '3k')
-# 응답 형식: "url" 또는 "b64_json"
-IMAGE_RESPONSE_FORMAT = load_config_value('IMAGE_RESPONSE_FORMAT', 'url')
+COMETAPI_IMAGE_BASE_URL = "https://api.cometapi.com"
+# 사용 모델: 'gemini-3.1-flash-image' (preview 제외, 일반 버전)
+IMAGE_MODEL = load_config_value('IMAGE_MODEL', 'gemini-3.1-flash-image')
+# 이미지 가로세로 비율: "1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9"
+IMAGE_ASPECT_RATIO = load_config_value('IMAGE_ASPECT_RATIO', '1:1')
 
 # 이미지 생성 사용량 제한
 IMAGE_USER_LIMIT = as_int(load_config_value('IMAGE_USER_LIMIT', 10), 10)  # 유저당 6시간 내 최대 10장

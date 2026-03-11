@@ -366,127 +366,109 @@ class ToolsCog(commands.Cog):
                 return False, keyword
         return True, None
 
-    async def generate_image(self, prompt: str, user_id: int) -> dict:
-        """OpenAI-compatible API(CometAPI)를 사용하여 이미지를 생성합니다.
-        
+    async def generate_image(self, prompt: str, user_id: int, aspect_ratio: str = None) -> dict:
+        """CometAPI(Gemini-compatible)를 사용하여 이미지를 생성합니다.
+
+        gemini-3.1-flash-image 모델을 사용하며 최대 4K 품질을 지원합니다.
+
         Args:
             prompt: 이미지 생성 프롬프트 (영문 권장)
             user_id: 요청한 유저 ID (Rate limiting용)
-            
+            aspect_ratio: 이미지 비율 (예: "1:1", "16:9", "9:16" 등). None이면 config 기본값 사용.
+
         Returns:
-            {'image_url': str, 'remaining': int} 또는 {'error': str}
+            {'image_data': bytes, 'remaining': int} 또는 {'error': str}
         """
         log_extra = {'user_id': user_id, 'prompt_preview': prompt[:100] if prompt else ''}
-        
+
         # 1. 이미지 생성 기능 활성화 확인
         if not getattr(config, 'COMETAPI_IMAGE_ENABLED', False):
             logger.warning("이미지 생성 기능이 비활성화되어 있습니다.", extra=log_extra)
             return {"error": "이미지 생성 기능이 현재 비활성화되어 있어요."}
-        
+
         # 2. API 키 확인
         api_key = getattr(config, 'COMETAPI_KEY', None)
         if not api_key:
             logger.error("COMETAPI_KEY가 설정되지 않았습니다.", extra=log_extra)
             return {"error": "이미지 생성 API 키가 설정되지 않았어요."}
-        
-        # 3. 프롬프트 안전성 검사 (NSFW 차단) - 로컬 필터 유지
+
+        # 3. 프롬프트 안전성 검사 (NSFW 차단)
         is_safe, blocked_keyword = self._is_prompt_safe(prompt)
         if not is_safe:
             logger.warning(f"NSFW 프롬프트 차단: '{blocked_keyword}'", extra=log_extra)
             return {"error": "요청한 이미지를 생성할 수 없어요. 부적절한 내용이 포함되어 있는 것 같아요."}
-        
+
         # 4. 유저별 제한 확인
         user_limited, user_remaining = await db_utils.check_image_user_limit(self.bot.db, user_id)
         if user_limited:
             reset_hours = getattr(config, 'IMAGE_USER_RESET_HOURS', 6)
             return {"error": f"이미지 생성 제한에 도달했어요. {reset_hours}시간 후에 다시 시도해줘!"}
-        
+
         # 5. 전역 일일 제한 확인
         global_limited, global_remaining = await db_utils.check_image_global_limit(self.bot.db)
         if global_limited:
             return {"error": "오늘 마사몽이 생성할 수 있는 이미지가 다 끝났어... 내일 다시 불러줘!"}
-        
-        logger.info(f"이미지 생성 시작 (OpenAI-compatible): user={user_id}, remaining={user_remaining}", extra=log_extra)
-        
-        # 6. CometAPI 호출 (OpenAI-compatible Endpoint)
+
+        model_name = getattr(config, 'IMAGE_MODEL', 'gemini-3.1-flash-image')
+        base_url = getattr(config, 'COMETAPI_IMAGE_BASE_URL', 'https://api.cometapi.com')
+        ratio = aspect_ratio or getattr(config, 'IMAGE_ASPECT_RATIO', '1:1')
+
+        logger.info(
+            f"이미지 생성 시작 (Gemini-compatible): user={user_id}, model={model_name}, "
+            f"ratio={ratio}, remaining={user_remaining}",
+            extra=log_extra
+        )
+
+        # 6. CometAPI 호출 (Gemini-compatible Endpoint / google-genai SDK)
         try:
-            model_name = getattr(config, 'IMAGE_MODEL', 'doubao-seedream-5-0-260128')
-            api_url = getattr(config, 'COMETAPI_IMAGE_API_URL', 'https://api.cometapi.com/v1/images/generations')
-            image_size = getattr(config, 'IMAGE_SIZE', '4K')
-            response_format = getattr(config, 'IMAGE_RESPONSE_FORMAT', 'url')
-            
-            # 헤더 설정
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
+            import asyncio
+            from google import genai
+            from google.genai import types as genai_types
+
+            # google-genai 클라이언트 (동기) → executor로 비동기 래핑
+            def _call_genai() -> bytes:
+                client = genai.Client(
+                    http_options={"api_version": "v1beta", "base_url": base_url},
+                    api_key=api_key,
+                )
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[prompt],
+                    config=genai_types.GenerateContentConfig(
+                        response_modalities=["IMAGE"],
+                        image_config=genai_types.ImageConfig(aspect_ratio=ratio),
+                    ),
+                )
+                for part in response.parts:
+                    if part.inline_data is not None:
+                        # inline_data.data → 원본 PNG/JPEG bytes (4K 그대로 반환)
+                        return bytes(part.inline_data.data)
+                raise ValueError("응답에서 이미지 데이터를 찾을 수 없습니다.")
+
+            loop = asyncio.get_event_loop()
+            image_binary = await asyncio.wait_for(
+                loop.run_in_executor(None, _call_genai),
+                timeout=120,  # Gemini 이미지 생성은 최대 2분 대기
+            )
+
+            # 사용량 기록
+            await db_utils.log_image_generation(self.bot.db, user_id)
+            logger.info(f"이미지 생성 완료: {len(image_binary):,} bytes", extra=log_extra)
+            return {
+                "image_data": image_binary,
+                "remaining": user_remaining - 1,
             }
-            
-            # 페이로드 구성
-            payload = {
-                "model": model_name,
-                "prompt": prompt,
-                "size": image_size,
-                "response_format": response_format,
-                "watermark": False
-            }
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.post(api_url, headers=headers, json=payload, timeout=90) as resp:
-                    if resp.status != 200:
-                        error_text = await resp.text()
-                        logger.error(f"이미지 생성 실패 ({resp.status}): {error_text}", extra=log_extra)
-                        if "OutputImageSensitiveContentDetected" in error_text:
-                            return {"error": "요청한 내용을 그릴 수 없어요! 부적절한(선정적/민감한) 내용이 감지되어 시스템에 의해 차단되었습니다."}
-                        if resp.status == 429:
-                           return {"error": "이미지 생성 요청이 너무 많아요. 잠시 후에 다시 시도해줘!"}
-                        return {"error": f"이미지 생성 요청 실패: {resp.status}"}
-                    
-                    data = await resp.json()
-                    
-                    # 응답 파싱 (OpenAI API 형식)
-                    images = data.get('data', [])
-                    if not images:
-                        logger.error(f"이미지 데이터를 찾을 수 없음: {data}", extra=log_extra)
-                        return {"error": "이미지 데이터를 받지 못했어요."}
-                    
-                    image_data = images[0]
-                    
-                    # 사용량 기록
-                    await db_utils.log_image_generation(self.bot.db, user_id)
-                    
-                    if response_format == 'b64_json' and 'b64_json' in image_data:
-                        import base64
-                        image_binary = base64.b64decode(image_data['b64_json'])
-                        logger.info(f"이미지 디코딩 완료: {len(image_binary)} bytes", extra=log_extra)
-                        return {
-                            "image_data": image_binary,
-                            "remaining": user_remaining - 1,
-                        }
-                    elif 'url' in image_data:
-                        image_url = image_data['url']
-                        logger.info(f"이미지 URL 수신: {image_url[:50]}...", extra=log_extra)
-                        
-                        # URL에서 이미지 다운로드
-                        async with session.get(image_url) as img_resp:
-                            if img_resp.status == 200:
-                                image_binary = await img_resp.read()
-                                logger.info(f"이미지 다운로드 완료: {len(image_binary)} bytes", extra=log_extra)
-                                return {
-                                    "image_data": image_binary,
-                                    "remaining": user_remaining - 1,
-                                }
-                            else:
-                                logger.error(f"이미지 다운로드 실패: {img_resp.status}", extra=log_extra)
-                                return {"error": "이미지 생성은 완료되었으나, 이미지를 다운로드하는 중 오류가 발생했어요."}
-                    else:
-                        logger.error(f"지원하지 않는 이미지 응답 형식: {image_data.keys()}", extra=log_extra)
-                        return {"error": "알 수 없는 이미지 형식을 받았어요."}
 
         except asyncio.TimeoutError:
-            logger.error("이미지 API 타임아웃", extra=log_extra)
+            logger.error("이미지 API 타임아웃 (120s)", extra=log_extra)
             return {"error": "이미지 생성이 너무 오래 걸려서 취소됐어. 다시 시도해줘!"}
         except Exception as e:
-            logger.error(f"이미지 생성 중 예외: {e}", exc_info=True, extra=log_extra)
+            err_msg = str(e)
+            logger.error(f"이미지 생성 중 예외: {err_msg}", exc_info=True, extra=log_extra)
+            if "SAFETY" in err_msg.upper() or "sensitive" in err_msg.lower():
+                return {"error": "요청한 내용을 그릴 수 없어요! 부적절한 내용이 감지되어 차단되었습니다."}
+            if "429" in err_msg or "quota" in err_msg.lower():
+                return {"error": "이미지 생성 요청이 너무 많아요. 잠시 후에 다시 시도해줘!"}
             return {"error": "이미지 생성 중 예상치 못한 오류가 발생했어요."}
 
 
