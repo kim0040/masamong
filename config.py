@@ -260,6 +260,14 @@ COMETAPI_BASE_URL = load_config_value('COMETAPI_BASE_URL', 'https://api.cometapi
 COMETAPI_MODEL = load_config_value('COMETAPI_MODEL', 'DeepSeek-V3.2-Exp-nothinking')
 USE_COMETAPI = as_bool(load_config_value('USE_COMETAPI', 'true'))  # CometAPI 우선 사용
 
+# Fast 모델 (뉴스 검색 중간 단계: 의도 분석, 키워드 생성, 기사 요약)
+# news/news_summarizer.py와 동일한 모델 사용
+FAST_MODEL_NAME = load_config_value('FAST_MODEL_NAME', 'gemini-3.1-flash-lite-preview')
+
+# DuckDuckGo 뉴스 검색 활성화 여부 (기본: 활성화)
+DDGS_ENABLED = as_bool(load_config_value('DDGS_ENABLED', 'true'))
+
+
 # CometAPI 이미지 생성 설정 (Gemini via CometAPI Gemini-compatible)
 COMETAPI_IMAGE_ENABLED = as_bool(load_config_value('COMETAPI_IMAGE_ENABLED', 'true'))
 COMETAPI_IMAGE_BASE_URL = "https://api.cometapi.com"

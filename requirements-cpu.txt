@@ -1,0 +1,24 @@
+# ==============================================================================
+# requirements-cpu.txt — 서버 (CPU-only) 환경용 전체 스택
+#
+# 사용법:
+#   pip install -r requirements.txt
+#   pip install -r requirements-cpu.txt
+#
+# 주의:
+#   - numpy를 1.x 고정합니다 (sentence-transformers 호환)
+#   - torch CPU-only 버전을 사용합니다 (GPU 없는 저사양 서버용)
+#   - 설치 순서 중요: torch 먼저, 이후 sentence-transformers
+# ==============================================================================
+
+# --- numpy 호환 버전 고정 (RAG 핵심) ---
+# numpy 2.0은 sentence-transformers와 호환 불가 → 1.x 유지
+"numpy>=1.24,<2.0"
+
+# --- PyTorch CPU-only ---
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+
+# --- RAG / 임베딩 ---
+sentence-transformers
+scikit-learn

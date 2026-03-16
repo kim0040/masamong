@@ -1,0 +1,21 @@
+# ==============================================================================
+# requirements-gpu.txt — 로컬 개발 (GPU) 환경용 전체 스택
+#
+# 사용법:
+#   pip install -r requirements.txt
+#   pip install -r requirements-gpu.txt
+#
+# 주의:
+#   - numpy를 1.x 고정합니다 (sentence-transformers 호환)
+#   - CUDA 지원 torch를 설치합니다 (GPU 사용 가능 환경)
+# ==============================================================================
+
+# --- numpy 호환 버전 고정 ---
+"numpy>=1.24,<2.0"
+
+# --- PyTorch (CUDA 지원) ---
+torch
+
+# --- RAG / 임베딩 ---
+sentence-transformers
+scikit-learn

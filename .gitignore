@@ -20,6 +20,7 @@ channel_prompts.*
 logs/
 *.txt
 !requirements.txt
+!requirements-*.txt
 
 # 문서 파일 (개인 메모 등)
 *.pdf
