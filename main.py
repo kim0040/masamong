@@ -32,8 +32,9 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 # Google GenAI SDK의 키 중복 경고 무시 (CometAPI 사용 시 고정적으로 발생)
 warnings.filterwarnings("ignore", message=".*Both GOOGLE_API_KEY and GEMINI_API_KEY are set.*")
-# SDK 내부 INFO 로그 억제 (AFC 10회 호출 안내 등 불필요한 노이즈 제거)
+# SDK 및 관련 패키지 내부 INFO 로그 억제 (AFC 안내, HTTP 요청 상세 등 노이즈 제거)
 logging.getLogger('google_genai').setLevel(logging.WARNING)
+logging.getLogger('httpx').setLevel(logging.WARNING)
 # ---------------------------------------------
 
 # 봇 버전 정보
