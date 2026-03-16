@@ -948,6 +948,7 @@ Generate the optimized English image prompt:"""
             "- get_stock_price(user_query) — stock/coin/market price\n"
             "- search_for_place(query) — restaurants, cafes, nearby places\n"
             "- generate_image(user_query) — image/drawing generation\n"
+            "- search_news_rag(user_query) — Latest news, current events, real-time information, person or event details that require search\n"
             "Output ONLY valid JSON, no explanation.\n"
             '{"tools":[{"tool":"name","params":{"k":"v"}}]} or {"tools":[]}'
         )
@@ -970,6 +971,8 @@ Generate the optimized English image prompt:"""
                 '"오늘 서울 날씨?" → {"tools":[{"tool":"get_weather_forecast","params":{"location":"서울","day_offset":0}}]}\n'
                 '"삼성 주가 알려줘" → {"tools":[{"tool":"get_stock_price","params":{"user_query":"삼성 주가 알려줘"}}]}\n'
                 '"강남 맛집" → {"tools":[{"tool":"search_for_place","params":{"query":"강남 맛집"}}]}\n'
+                '"최신 뉴스 알려줘" → {"tools":[{"tool":"search_news_rag","params":{"user_query":"최신 뉴스 알려줘"}}]}\n'
+                '"미국 이란 관계 소식" → {"tools":[{"tool":"search_news_rag","params":{"user_query":"미국 이란 관계 소식"}}]}\n'
                 '"고양이 그냥 담화해줘" → {"tools":[]}\n'
                 f"\nUser message: {query}"
             )
