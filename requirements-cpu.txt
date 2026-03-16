@@ -18,6 +18,7 @@ numpy>=1.24,<2.0
 # --- PyTorch CPU-only ---
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch
+google-genai
 
 # --- RAG / 임베딩 ---
 sentence-transformers

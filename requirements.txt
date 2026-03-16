@@ -17,6 +17,7 @@ python-dotenv
 
 # --- Google AI / Gemini ---
 google-generativeai
+google-genai
 
 # --- LLM API (OpenAI-compatible: CometAPI) ---
 openai>=2.28.0
