@@ -13,7 +13,7 @@
 
 # --- numpy 호환 버전 고정 (RAG 핵심) ---
 # numpy 2.0은 sentence-transformers와 호환 불가 → 1.x 유지
-"numpy>=1.24,<2.0"
+numpy>=1.24,<2.0
 
 # --- PyTorch CPU-only ---
 --extra-index-url https://download.pytorch.org/whl/cpu
