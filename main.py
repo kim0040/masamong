@@ -22,6 +22,15 @@ import config
 from logger_config import logger, register_discord_logging
 from utils import initial_data
 
+# --- [Fixed] 터미널 경고 메시지(Noise) 억제 ---
+import warnings
+# urllib3의 LibreSSL 관련 경고 무시 (macOS 환경용)
+warnings.filterwarnings("ignore", message=".*urllib3.*NotOpenSSLWarning.*")
+# Google API의 Python 3.9 EOL 및 Deprecation 경고 무시 (안정적 구동을 위해)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+# ---------------------------------------------
+
 # 봇 버전 정보
 __version__ = "2.0.0"
 __author__ = "kim0040"
