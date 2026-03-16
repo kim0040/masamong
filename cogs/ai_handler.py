@@ -19,6 +19,12 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - 환경에 따라 설치되지 않을 수 있음
     genai = None
 
+# 신규 Google GenAI SDK (for CometAPI/FastModel)
+try:
+    from google import genai as google_genai
+except ImportError:
+    google_genai = None
+
 # CometAPI용 OpenAI 호환 클라이언트
 try:
     from openai import AsyncOpenAI, APITimeoutError
@@ -948,8 +954,13 @@ Generate the optimized English image prompt:"""
         try:
             if not (self.use_cometapi and config.COMETAPI_KEY):
                 return self._detect_tools_by_keyword(query)
-            from google import genai as _genai
-            _client = _genai.Client(
+            
+            if google_genai is None:
+                # 패키지 누락 시 fallback
+                return self._detect_tools_by_keyword(query)
+
+            # [Fixed] 사용자 제공 패턴에 맞춰 클라이언트 생성
+            _client = google_genai.Client(
                 http_options={"api_version": "v1beta", "base_url": "https://api.cometapi.com"},
                 api_key=config.COMETAPI_KEY,
             )

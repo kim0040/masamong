@@ -29,6 +29,8 @@ warnings.filterwarnings("ignore", message=".*urllib3.*NotOpenSSLWarning.*")
 # Google API의 Python 3.9 EOL 및 Deprecation 경고 무시 (안정적 구동을 위해)
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
+# Google GenAI SDK의 키 중복 경고 무시 (CometAPI 사용 시 고정적으로 발생)
+warnings.filterwarnings("ignore", message=".*Both GOOGLE_API_KEY and GEMINI_API_KEY are set.*")
 # ---------------------------------------------
 
 # 봇 버전 정보
