@@ -15,6 +15,7 @@ numpy>=1.24,<2.0
 
 # --- PyTorch (CUDA 지원) ---
 torch
+google-genai
 
 # --- RAG / 임베딩 ---
 sentence-transformers
