@@ -73,6 +73,8 @@ class AIHandler(commands.Cog):
         self.tools_cog = bot.get_cog('ToolsCog')
         self.ai_user_cooldowns: Dict[int, datetime] = {}
         self.proactive_cooldowns: Dict[int, float] = {}
+        # 뉴스 출처 리액션 캐시: {메시지ID: [URL, ...]} — 📰 리액션 클릭 시 출처 표시
+        self._news_source_cache: Dict[int, list] = {}
         self.gemini_configured = False
         self.api_call_lock = asyncio.Lock()
         self.discord_embedding_store = DiscordEmbeddingStore(config.DISCORD_EMBEDDING_DB_PATH)
@@ -670,106 +672,7 @@ class AIHandler(commands.Cog):
                 exc_info=True,
             )
 
-    # ========== 스마트 웹 검색 시스템 (Google Custom Search API 사용) ==========
-
-    _WEB_SEARCH_TRIGGER_KEYWORDS = frozenset([
-        '오늘', '최근', '뉴스', '현재', '지금', '실시간', '최신',
-        '어제', '이번 주', '이번 달', '올해', '가격', '시세',
-        '언제', '무슨 일', '뭔 일', '어떻게', '방법',
-        '찾아', '검색', '알려줘', '뭐야', '무엇', '왜'
-    ])
-
-    _NO_SEARCH_PATTERNS = frozenset([
-        '나', '너', '우리', '마사몽', '마사모', '서버',
-        '아까', '전에', '지난번', '기억', '했었', '말했'
-    ])
-
-    async def _should_use_web_search(self, query: str, rag_top_score: float) -> bool:
-        """웹 검색이 필요한 질문인지 판단합니다.
-        
-        일일 100회 제한을 고려하여 보수적으로 판단합니다.
-        """
-        query_lower = query.lower()
-
-        # RAG 점수가 충분히 높으면 검색 불필요
-        if rag_top_score >= config.RAG_STRONG_SIMILARITY_THRESHOLD:
-            return False
-
-        # 이미 다른 도구(날씨, 주식 등)로 처리 가능한 질문은 제외
-        if any(kw in query_lower for kw in self._WEATHER_KEYWORDS):
-            return False
-        if any(kw in query_lower for kw in self._STOCK_US_KEYWORDS | self._STOCK_KR_KEYWORDS):
-            return False
-        if any(kw in query_lower for kw in self._PLACE_KEYWORDS):
-            return False
-
-        # 내부 정보로 해결 가능한 패턴 제외
-        if any(pat in query_lower for pat in self._NO_SEARCH_PATTERNS):
-            return False
-
-        # 웹 검색 트리거 키워드가 있어야 검색 수행
-        if not any(kw in query_lower for kw in self._WEB_SEARCH_TRIGGER_KEYWORDS):
-            return False
-
-        # 일일 제한 확인
-        if await self._check_daily_search_limit():
-            return False
-
-        return True
-
-    async def _check_daily_search_limit(self) -> bool:
-        """Google Custom Search API 일일 사용량이 제한에 도달했는지 확인합니다."""
-        if not self.bot.db:
-            return True  # DB 없으면 검색 비활성화
-
-        today_count = await db_utils.get_daily_api_count(self.bot.db, 'google_custom_search')
-        limit = getattr(config, 'GOOGLE_CUSTOM_SEARCH_DAILY_LIMIT', 100)
-        if today_count >= limit:
-            logger.warning(f"Google Custom Search API 일일 제한({limit})에 도달했습니다. 현재: {today_count}")
-            return True
-        return False
-
-    async def _generate_search_keywords(self, user_query: str, log_extra: dict) -> str:
-        """LLM을 사용하여 검색에 최적화된 키워드를 생성합니다."""
-        keyword_prompt = f"""[현재 시간]: {db_utils.get_current_time()}
-
-사용자 질문을 Google 검색에 적합한 키워드로 변환해줘.
-
-규칙:
-- 한국어 질문이면 한국어 키워드 유지
-- 핵심 단어만 추출 (조사, 어미 제거)
-- 최대 5개 단어
-- '요즘', '최근' 등의 시간 표현이 있으면 [현재 시간]을 참고하여 구체적인 연도나 월을 키워드에 포함할 것 (예: 2026년 1월)
-- 검색 결과가 잘 나오도록 구체적으로
-
-사용자 질문: {user_query}
-검색 키워드:"""
-
-        keywords = None
-        if self.use_cometapi:
-            keywords = await self._cometapi_generate_content(
-                "너는 검색 키워드 생성 전문가야. 입력된 질문을 검색에 최적화된 키워드로 변환해. 키워드만 출력해.",
-                keyword_prompt,
-                log_extra,
-            )
-        elif self.gemini_configured and genai:
-            model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME)
-            response = await self._safe_generate_content(model, keyword_prompt, log_extra)
-            keywords = response.text.strip() if response and response.text else None
-
-        if not keywords:
-            # LLM 실패 시 간단한 키워드 추출
-            return self._extract_simple_keywords(user_query)
-
-        return keywords.strip()
-
-    def _extract_simple_keywords(self, query: str) -> str:
-        """간단한 규칙 기반 키워드 추출 (LLM 폴백용)"""
-        stopwords = {'이', '가', '은', '는', '을', '를', '에', '의', '와', '과', '도', '로', '으로', 
-                     '해줘', '알려줘', '뭐야', '뭔가', '좀', '그', '저', '이거', '뭐', '어떻게'}
-        words = query.split()
-        keywords = [w for w in words if w not in stopwords and len(w) > 1]
-        return ' '.join(keywords[:5])
+    # ========== 뉴스/실시간 정보 검색 (DuckDuckGo RAG) ==========
 
     async def _generate_image_prompt(
         self,
@@ -896,92 +799,193 @@ Generate the optimized English image prompt:"""
         user_query: str,
         log_extra: dict
     ) -> dict:
-        """Google Custom Search API 호출 후 LLM으로 결과를 해석합니다.
+        """
+        [수정] DuckDuckGo 뉴스 RAG 파이프라인으로 뉴스를 검색하고,
+        마사몽의 채널 페르소나로 최종 답변을 생성합니다.
 
         플로우:
-        1. LLM이 검색 키워드 생성
-        2. Google Custom Search API 호출 (tools_cog.web_search 사용)
-        3. LLM이 검색 결과를 읽고 답변 생성용 요약 반환
+        1. tools_cog.search_news_rag() 호출 (DuckDuckGo 검색 + 기사 요약)
+        2. 마사몽 채널 페르소나 + 기사 요약 컨텍스트로 LLM 최종 답변 생성
+        3. 출처 URL 자동 첨부
         """
-        # 1. 검색 키워드 생성
-        search_keywords = await self._generate_search_keywords(user_query, log_extra)
-        self._debug(f"[웹검색] 생성된 키워드: {search_keywords}", log_extra)
-
-        # 2. tools_cog.web_search 호출 (이미 Google CSE 연동됨)
         if not self.tools_cog:
             return {"error": "ToolsCog가 초기화되지 않았습니다."}
 
-        search_result = await self.tools_cog.web_search(search_keywords)
+        # 1. DuckDuckGo 뉴스 RAG 파이프라인 실행
+        logger.info(f"[뉴스검색] DuckDuckGo RAG 파이프라인 시작: '{user_query}'", extra=log_extra)
+        news_result = await self.tools_cog.search_news_rag(user_query)
 
-        # 3. 검색 결과 기록
-        await db_utils.log_api_call(self.bot.db, 'google_custom_search')
+        if news_result.get("status") != "success":
+            error_msg = news_result.get("message", "뉴스 검색 실패")
+            logger.warning(f"[뉴스검색] 파이프라인 실패: {error_msg}", extra=log_extra)
+            return {"result": None, "error": error_msg}
 
-        if not search_result or '검색 결과가 없습니다' in search_result:
-            return {"result": None, "error": "검색 결과 없음", "search_keywords": search_keywords}
+        news_context = news_result.get("context", "")
+        source_footer = news_result.get("source_footer", "")
 
-        # 4. LLM으로 검색 결과 해석 및 요약
+        # 2. 마사몽 채널 페르소나로 최종 답변 생성
         channel_id = log_extra.get('channel_id')
         persona_prompt = self._get_channel_system_prompt(channel_id)
 
-        system_prompt = f"""너는 웹 검색 결과를 보고 사용자에게 정보를 전달하는 AI 에이전트야.
-검색 결과를 단순 요약하지 말고, 아래 페르소나에 맞춰서 네 주관적인 의견이나 감상을 섞어 친구에게 말하듯이 설명해줘.
-반드시 아래 설정된 말투를 완벽하게 유지해야 해.
+        system_prompt = (
+            f"{persona_prompt}\n\n"
+            f"### 추가 지시사항\n"
+            f"- 제공된 뉴스 요약 정보를 바탕으로 사용자 질문에 답해.\n"
+            f"- '뉴스 검색했더니', '검색 결과를 보면' 같은 표현 금지.\n"
+            f"- 시스템 태그([뉴스 출처 N]) 절대 노출 금지.\n"
+            f"- 페르소나 말투를 반드시 유지해."
+        )
 
-{persona_prompt}
-"""
-
-        summarize_prompt = f"""사용자 질문: '{user_query}'
-
-검색 결과:
-{search_result[:6000]}
-
-답변 가이드:
-1. 검색된 정보의 핵심을 정확히 전달해.
-2. 하지만 말투는 위에서 설정된 페르소나를 완벽하게 유지해야 해.
-3. 단순 정보 나열 대신 "와, 이거 진짜 신기하다", "이런 것도 있네?", "도움이 됐으면 좋겠어" 같이 네 감상이나 리액션을 자연스럽게 섞어줘.
-4. 친구에게 카톡하듯이 3-4문장으로 답변해.
-
-답변:"""
+        user_prompt = (
+            f"사용자 질문: '{user_query}'\n\n"
+            f"참고 뉴스 요약:\n{news_context}\n\n"
+            f"위 정보를 바탕으로 사용자 질문에 자연스럽게 답변해줘."
+        )
 
         summary = None
         if self.use_cometapi:
             summary = await self._cometapi_generate_content(
                 system_prompt,
-                summarize_prompt,
+                user_prompt,
                 log_extra,
             )
         elif self.gemini_configured and genai:
             model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME)
-            response = await self._safe_generate_content(model, summarize_prompt, log_extra)
+            full_prompt = f"{system_prompt}\n\n{user_prompt}"
+            response = await self._safe_generate_content(model, full_prompt, log_extra)
             summary = response.text.strip() if response and response.text else None
 
         if summary:
-            self._debug(f"[웹검색] 요약 결과: {self._truncate_for_debug(summary)}", log_extra)
-            return {"result": summary, "summary": summary, "search_keywords": search_keywords}
+            # 출처 URL 자동 첨부 (LLM 환각 방지)
+            final_text = summary  # 출처는 리액션 클릭 시 표시
+            self._debug(f"[뉴스검색] 최종 답변 생성 완료", log_extra)
+            return {
+                "result": final_text,
+                "summary": final_text,
+                "source_urls": news_result.get("source_urls", []),
+                "use_reaction_source": True,  # 📰 리액션으로 출처 표시
+            }
 
-        # LLM 요약 실패 시 원본 검색 결과 반환
-        return {"result": search_result[:1500], "search_keywords": search_keywords}
+        # LLM 요약 실패 시 뉴스 컨텍스트 + 출처만 반환
+        fallback = f"뉴스를 찾긴 했는데 요약에 실패했어. 참고 자료야:\n\n{news_context}{source_footer}"
+        return {"result": fallback, "source_urls": news_result.get("source_urls", [])}
 
 
     # ========== 키워드 기반 도구 감지 (Lite 모델 대체) ==========
 
-    _WEATHER_KEYWORDS = frozenset(['날씨', '기온', '온도', '비', '눈', '맑', '흐림', '우산', '강수', '일기예보', '체감', '덥', '춥', '쌀쌀', '따뜻', '폭염', '한파', '태풍'])
-    _STOCK_US_KEYWORDS = frozenset(['애플', 'apple', 'aapl', '테슬라', 'tesla', 'tsla', '구글', 'google', 'googl', '엔비디아', 'nvidia', 'nvda', '마이크로소프트', 'microsoft', 'msft', '아마존', 'amazon', 'amzn', '맥도날드', '스타벅스', '코카콜라', '펩시', '넷플릭스', '메타', '페이스북', '디즈니', '인텔', 'amd', '나이키', '코스트코', '버크셔'])
-    _STOCK_KR_KEYWORDS = frozenset(['삼성전자', '현대차', 'sk하이닉스', '네이버', '카카오', 'lg에너지', '셀트리온', '삼성바이오', '기아', '포스코'])
+    # [Fix] 1글자 단독 키워드 제거 → 최소 2글자 이상 또는 복합어 패턴만 사용 (오매칭 방지)
+    # 예: '비' 단독 → '비가','비온다','비내리' 등으로 대체
+    _WEATHER_KEYWORDS = frozenset([
+        '날씨', '기온', '온도', '흐림', '우산', '강수', '일기예보', '체감',
+        '폭염', '한파', '태풍', '황사', '미세먼지', '자외선',
+        '비가', '비온', '비내', '눈이', '눈온', '눈날',
+        '덥다', '덥네', '더워', '춥다', '춥네', '추워', '따뜻해', '쌀쌀',
+        '맑음', '맑다', '맑네', '흐리다', '구름', '안개',
+    ])
+    _STOCK_US_KEYWORDS = frozenset([
+        '애플', 'apple', 'aapl', '테슬라', 'tesla', 'tsla',
+        '구글', 'google', 'googl', '엔비디아', 'nvidia', 'nvda',
+        '마이크로소프트', 'microsoft', 'msft', '아마존', 'amazon', 'amzn',
+        '맥도날드', '스타벅스', '코카콜라', '펩시', '넷플릭스',
+        '메타', '페이스북', '디즈니', '인텔', 'amd', '나이키', '코스트코', '버크셔',
+    ])
+    _STOCK_KR_KEYWORDS = frozenset([
+        '삼성전자', '현대차', 'sk하이닉스', '네이버', '카카오',
+        'lg에너지', '셀트리온', '삼성바이오', '기아', '포스코',
+    ])
     _STOCK_GENERAL_KEYWORDS = frozenset(['주가', '주식', '시세', '종가', '시가', '상장'])
-    _PLACE_KEYWORDS = frozenset(['맛집', '카페', '음식점', '식당', '추천', '근처', '주변', '가볼만한', '핫플'])
-    _LOCATION_KEYWORDS = [] # Deprecated: 사용하지 않음 (DB 캐시로 대체)
-    
-    # 이미지 생성 키워드
+    _PLACE_KEYWORDS = frozenset(['맛집', '카페', '음식점', '식당', '근처', '주변', '가볼만한', '핫플레이스'])
+    _LOCATION_KEYWORDS = []  # Deprecated: DB 캐시로 대체
+
+    # [Fix] 이미지 생성 키워드 - 중복 제거 및 정리
     _IMAGE_GEN_KEYWORDS = frozenset([
         '이미지 생성', '그림 그려', '사진 만들어', '이미지 만들어',
         '그려줘', '생성해줘', '그림 생성', '이미지 그려', '사진 생성',
-        '그려줘', '만들어줘', '그림으로', '이미지로', 
-        'generate image', 'create image', 'draw', 'make an image',
+        '만들어줘', '그림으로 그려', '이미지로 만들어',
+        'generate image', 'create image', 'draw me', 'make an image',
     ])
 
+    # [NEW] 뉴스/실시간 검색 전용 키워드 (웹검색 트리거)
+    # 이 키워드가 있을 때만 DuckDuckGo 뉴스 검색 실행
+    _NEWS_SEARCH_KEYWORDS = frozenset([
+        '뉴스', '소식', '최신', '최근', '실시간', '오늘 무슨', '오늘 뭔',
+        '요즘', '이슈', '이번 주', '이번달', '요새', '근래',
+        '어떻게 됐어', '어떻게 됨', '결과 어떻게', '현재 상황', '지금 어떻게',
+        '사건', '사고', '발표', '결과', '현황',
+    ])
+
+
+    _NO_SEARCH_PATTERNS = frozenset([
+        '나', '너', '우리', '마사몽', '마사모', '서버',
+        '아까', '전에', '지난번', '기억', '했었', '말했'
+    ])
+
+    async def _should_use_web_search(self, query: str, rag_top_score: float) -> bool:
+        """뉴스/실시간 정보 검색 여부 판단. 명확한 뉴스 키워드 있고 RAG 점수 낮을 때만 True."""
+        query_lower = query.lower()
+        if rag_top_score >= config.RAG_STRONG_SIMILARITY_THRESHOLD:
+            return False
+        if any(pat in query_lower for pat in self._NO_SEARCH_PATTERNS):
+            return False
+        return any(kw in query_lower for kw in self._NEWS_SEARCH_KEYWORDS)
+
+    async def _detect_tools_by_llm(self, query: str, log_extra: dict) -> list[dict]:
+        """Fast 모델(gemini-3.1-flash-lite-preview)이 질문을 분석하여 필요한 도구를 자동 판단.
+        LLM 호출 실패 시 _detect_tools_by_keyword() fallback 사용.
+        """
+        import json as _json
+        fast_model = getattr(config, 'FAST_MODEL_NAME', 'gemini-3.1-flash-lite-preview')
+        system_prompt = (
+            "You are 마사몽's tool planner. Analyze the Korean user message and decide which tool to use.\n"
+            "Available tools:\n"
+            "- get_weather_forecast(location,day_offset) — weather. day_offset: 0=today,1=tomorrow,3+=weekly\n"
+            "- get_stock_price(user_query) — stock/coin/market price\n"
+            "- search_for_place(query) — restaurants, cafes, nearby places\n"
+            "- generate_image(user_query) — image/drawing generation\n"
+            "Output ONLY valid JSON, no explanation.\n"
+            '{"tools":[{"tool":"name","params":{"k":"v"}}]} or {"tools":[]}'
+        )
+        try:
+            if not (self.use_cometapi and config.COMETAPI_KEY):
+                return self._detect_tools_by_keyword(query)
+            from google import genai as _genai
+            _client = _genai.Client(
+                http_options={"api_version": "v1beta", "base_url": "https://api.cometapi.com"},
+                api_key=config.COMETAPI_KEY,
+            )
+            prompt = (
+                f"System:\n{system_prompt}\n\n"
+                "Examples:\n"
+                '"오늘 서울 날씨?" → {"tools":[{"tool":"get_weather_forecast","params":{"location":"서울","day_offset":0}}]}\n'
+                '"삼성 주가 알려줘" → {"tools":[{"tool":"get_stock_price","params":{"user_query":"삼성 주가 알려줘"}}]}\n'
+                '"강남 맛집" → {"tools":[{"tool":"search_for_place","params":{"query":"강남 맛집"}}]}\n'
+                '"고양이 그냥 담화해줘" → {"tools":[]}\n'
+                f"\nUser message: {query}"
+            )
+            response = await asyncio.to_thread(
+                _client.models.generate_content,
+                model=fast_model,
+                contents=prompt,
+            )
+            raw = (response.text or "").strip()
+            if "```" in raw:
+                raw = re.sub(r"```(?:json)?", "", raw).replace("```", "").strip()
+            parsed = _json.loads(raw)
+            tool_list = parsed.get("tools", [])
+            result = []
+            for t in tool_list:
+                name = t.get("tool", "")
+                if not name or name == "none":
+                    continue
+                result.append({"tool_to_use": name, "tool_name": name, "parameters": t.get("params", {})})
+            logger.info(f"[LLM도구선택] {[r['tool_to_use'] for r in result] or '도구없음'}", extra=log_extra)
+            return result
+        except Exception as e:
+            logger.warning(f"[LLM도구선택] 실패 → 키워드 fallback: {e}", extra=log_extra)
+            return self._detect_tools_by_keyword(query)
+
     def _detect_tools_by_keyword(self, query: str) -> list[dict]:
-        """키워드 패턴으로 필요한 도구를 감지합니다. Lite 모델을 대체합니다."""
+        """키워드 기반 도구 감지 (LLM 실패 시 fallback)."""
         tools = []
         query_lower = query.lower()
 
@@ -1678,10 +1682,6 @@ Generate the optimized English image prompt:"""
             query = parameters.get('query', user_query)
             self._debug(f"[도구:web_search] 쿼리: {self._truncate_for_debug(query)}", log_extra)
             
-            # 일일 제한 확인
-            if await self._check_daily_search_limit():
-                return {"error": "Google Custom Search API 일일 제한에 도달했습니다."}
-            
             search_result = await self._execute_web_search_with_llm(query, log_extra)
             if search_result.get("result"):
                 self._debug(f"[도구:web_search] 결과: {self._truncate_for_debug(search_result)}", log_extra)
@@ -1843,11 +1843,11 @@ Generate the optimized English image prompt:"""
 
                 # ========== 단일 모델 아키텍처: Lite 모델 제거, 키워드 기반 도구 감지 ==========
                 # 키워드 패턴으로 도구 필요 여부 판단 (API 호출 없음)
-                tool_plan = self._detect_tools_by_keyword(user_query)
+                tool_plan = await self._detect_tools_by_llm(user_query, log_extra)
                 if tool_plan:
-                    logger.info(f"키워드 기반 도구 감지: {[t['tool_to_use'] for t in tool_plan]}", extra=log_extra)
+                    logger.info(f"LLM 도구선택: {[t['tool_to_use'] for t in tool_plan]}", extra=log_extra)
                 else:
-                    logger.info("도구 필요 없음 - RAG/일반 대화로 처리", extra=log_extra)
+                    logger.info("LLM 도구선택: 도구 없음 — RAG/일반 대화로 처리", extra=log_extra)
 
                 tool_results: list[dict[str, Any]] = []
                 executed_plan: list[dict[str, Any]] = []
@@ -1948,16 +1948,33 @@ Generate the optimized English image prompt:"""
                         logger.info("자동 판단: 웹 검색이 필요한 질문으로 판단됨", extra=log_extra)
                         web_result = await self._execute_web_search_with_llm(user_query, log_extra)
                         
-                        # 웹 검색 요약 결과가 있으면 바로 응답 (3번째 LLM 호출 방지)
+                        # 뉴스 검색 결과가 있으면 바로 응답 + 📰 리액션 추가
                         if web_result.get("summary"):
-                            final_response_text = web_result["summary"]
-                            logger.info("웹 검색 요약을 최종 응답으로 사용", extra=log_extra)
+                            source_urls = web_result.get("source_urls", [])
+                            # 출처가 있으면 안내 문구 추가 (LLM 담당 아님, 코드에서 자동 생성)
+                            if source_urls:
+                                final_response_text = web_result["summary"] + "\n\n📰 *뉴스 리액션을 누르면 출처를 확인할 수 있어!*"
+                            else:
+                                final_response_text = web_result["summary"]
+                            logger.info("뉴스 검색 요약을 최종 응답으로 사용", extra=log_extra)
                             
                             # LLM 일일 카운터 증가 (안전장치)
                             await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
                             await db_utils.log_api_call(self.bot.db, "llm_global")
                             
-                            await message.reply(final_response_text, mention_author=False)
+                            reply_msg = await message.reply(final_response_text, mention_author=False)
+                            
+                            # 출처 URL이 있으면 캐시에 저장하고 📰 리액션 추가
+                            if source_urls:
+                                self._news_source_cache[reply_msg.id] = source_urls
+                                # 캐시 크기 제한 (최대 50개)
+                                if len(self._news_source_cache) > 50:
+                                    oldest_key = next(iter(self._news_source_cache))
+                                    del self._news_source_cache[oldest_key]
+                                try:
+                                    await reply_msg.add_reaction("📰")
+                                except Exception as e:
+                                    logger.warning(f"📰 리액션 추가 실패: {e}", extra=log_extra)
                             await db_utils.log_analytics(
                                 self.bot.db,
                                 "AI_INTERACTION",
@@ -1998,23 +2015,14 @@ Generate the optimized English image prompt:"""
                 executed_tool_names = {res.get("tool_name") for res in executed_tool_results}
                 use_fallback_prompt = False
 
-                if executed_tool_results and any_failed and 'web_search' not in executed_tool_names:
-                    logger.info("하나 이상의 도구 실행에 실패하여 웹 검색으로 대체합니다.", extra=log_extra)
-                    web_result = await self._execute_tool(
-                        {"tool_to_use": "web_search", "parameters": {"query": user_query}},
-                        guild_id_safe,
-                        user_query,
-                    )
-                    tool_results = [res for res in tool_results if res.get("tool_name") == "local_rag"]
-                    tool_results.append(
-                        {
-                            "step": len(tool_results) + 1,
-                            "tool_name": "web_search",
-                            "parameters": {"query": user_query},
-                            "result": web_result,
-                        }
-                    )
-                    use_fallback_prompt = True
+                # [Fix] 도구 실패 시 자동 웹검색 폴백 제거
+                # 이전: 날씨/주식 실패 → 무조건 웹검색 → 엉뚱한 정보 출력
+                # 변경: 실패하면 RAG 컨텍스트만 사용하여 일반 대화로 처리
+                if executed_tool_results and any_failed:
+                    failed_tools = [res.get('tool_name') for res in executed_tool_results if _is_tool_failed(res.get('result'))]
+                    logger.info(f"도구 실행 실패 ({failed_tools}). 일반 대화로 처리합니다.", extra=log_extra)
+                    # 실패한 도구 결과 제거 (LLM에 오류 정보가 넘어가지 않게)
+                    tool_results = [res for res in tool_results if res.get('tool_name') == 'local_rag']
 
                 tool_results_str = self._format_tool_results_for_prompt(tool_results)
                 if len(tool_results_str) > 3800:
@@ -2389,6 +2397,33 @@ Generate the optimized English image prompt:"""
         except Exception as e:
             logger.error(f"Ticker extraction failed: {e}")
             return None
+
+
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
+        """📰 리액션 클릭 시 뉴스 출처 URL을 해당 메시지의 reply로 전송합니다."""
+        # 봇 자신의 리액션은 무시
+        if payload.user_id == self.bot.user.id:
+            return
+        # 📰 이모지 외 무시
+        if str(payload.emoji) != "📰":
+            return
+        # 캐시에 없으면 무시 (뉴스 검색 결과 아님)
+        source_urls = self._news_source_cache.get(payload.message_id)
+        if not source_urls:
+            return
+        try:
+            channel = self.bot.get_channel(payload.channel_id)
+            if not channel:
+                return
+            msg = await channel.fetch_message(payload.message_id)
+            # 출처 목록 생성
+            url_lines = [f"{i}. {url}" for i, url in enumerate(source_urls, 1)]
+            source_text = "📰 **뉴스 출처**\n" + "\n".join(url_lines)
+            await msg.reply(source_text, mention_author=False)
+        except Exception as e:
+            logger.warning(f"뉴스 출처 리액션 처리 실패: {e}")
 
 
 async def setup(bot: commands.Bot):

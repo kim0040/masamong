@@ -1,12 +1,13 @@
 <p align="center">
   <h1 align="center">🤖 마사몽 (Masamong)</h1>
   <p align="center">
-    AI 기반 다기능 Discord 봇 — 대화 · 날씨 · 주식 · 운세 · 이미지 생성을 하나로
+    AI 기반 다기능 Discord 봇 — 대화 · 날씨 · 주식 · 뉴스검색 · 이미지 생성을 하나로
   </p>
   <p align="center">
     <img src="https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white" alt="Python">
-    <img src="https://img.shields.io/badge/discord.py-2.0+-5865F2?logo=discord&logoColor=white" alt="discord.py">
+    <img src="https://img.shields.io/badge/discord.py-2.7+-5865F2?logo=discord&logoColor=white" alt="discord.py">
     <img src="https://img.shields.io/badge/AI-Gemini%20%7C%20CometAPI-FF6F00?logo=google&logoColor=white" alt="AI">
+    <img src="https://img.shields.io/badge/Search-DuckDuckGo%20RAG-DE5833?logo=duckduckgo&logoColor=white" alt="Search">
     <img src="https://img.shields.io/badge/DB-SQLite-003B57?logo=sqlite&logoColor=white" alt="SQLite">
     <img src="https://img.shields.io/badge/License-Private-gray" alt="License">
   </p>
@@ -65,7 +66,9 @@
 | 멘션 기반 대화 | `@마사몽`으로 시작하는 메시지에만 응답 |
 | DM 대화 | 멘션 없이 1:1 대화 가능 (사용량 제한 적용) |
 | 장기 기억 (RAG) | 임베딩 + BM25 하이브리드 검색으로 과거 대화 참조 |
-| 웹 검색 | 최신 정보가 필요한 질문에 자동으로 웹 검색 수행 |
+| **뉴스 검색** | **DuckDuckGo RAG 파이프라인으로 최신 뉴스 자동 검색 (API 키 불필요)** |
+| **뉴스 출처 리액션** | **📰 이모티콘 클릭 시 참조 기사 URL 표시** |
+| **LLM 도구 자동선택** | **Fast 모델이 질문을 분석하여 도구를 자동으로 결정** |
 | 능동적 제안 | 대화 맥락에서 관련 기능을 자연스럽게 안내 |
 
 ### 🌦️ 날씨 · 재난
@@ -126,7 +129,7 @@ masamong/
 ├── main.py                     # 봇 엔트리포인트 (초기화, Cog 로딩, 메시지 라우팅)
 ├── config.py                   # 전체 설정값 관리 (환경변수 → config.json → 기본값)
 ├── logger_config.py            # 로깅 설정
-├── requirements.txt            # Python 의존성
+- `utils/news_search.py`  # 뉴스 RAG 파이프라인 (DuckDuckGo)
 ├── setup.py                    # 초기 설정 스크립트
 │
 ├── cogs/                       # Discord Cog 모듈 (기능 단위 분리)
@@ -171,6 +174,11 @@ masamong/
 │   ├── init_db.py              # DB 초기화 스크립트
 │   └── bm25_index.py           # BM25 인덱스 관리
 │
+├── requirements.txt            # Python 의존성 (공통 base)
+├── requirements-cpu.txt        # CPU-only 서버용 RAG 스택
+├── requirements-gpu.txt        # GPU 로컬 개발용 RAG 스택
+├── setup.py                    # 초기 설정 스크립트
+│
 ├── tests/                      # 테스트
 ├── scripts/                    # 개발/진단 스크립트
 ├── docs/                       # 문서 (다국어 README, 아키텍처, 변경이력)
@@ -208,10 +216,15 @@ pip install -r requirements.txt
 장기 기억 기능을 사용하려면 추가 패키지가 필요합니다:
 
 ```bash
-# CPU 전용 환경 (서버 권장)
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install numpy sentence-transformers
+# CPU-only 서버 (저사양 서버 권장)
+pip install -r requirements-cpu.txt
+
+# GPU 지원 로컬 환경
+pip install -r requirements-gpu.txt
 ```
+
+> [!IMPORTANT]
+> numpy는 **1.x 버전으로 고정**됩니다 (`numpy>=1.24,<2.0`). numpy 2.0은 sentence-transformers와 호환 불가합니다.
 
 ### 환경 변수 설정
 
@@ -274,6 +287,8 @@ python3 main.py
 | `COMETAPI_BASE_URL` | CometAPI 엔드포인트 | `https://api.cometapi.com/v1` |
 | `COMETAPI_MODEL` | CometAPI 모델명 | `DeepSeek-V3.2-Exp-nothinking` |
 | `USE_COMETAPI` | CometAPI 활성화 여부 | `true` |
+| `FAST_MODEL_NAME` | 뉴스 RAG Fast 모델명 | `gemini-3.1-flash-lite-preview` |
+| `DDGS_ENABLED` | DuckDuckGo 뉴스 검색 활성화 | `true` |
 | `AI_RESPONSE_LENGTH_LIMIT` | 응답 최대 글자수 | `300` |
 | `AI_TEMPERATURE` | 생성 온도 | `0.0` |
 | `AI_REQUEST_TIMEOUT` | 응답 타임아웃 (초) | `45` |
@@ -398,11 +413,12 @@ Discord Message
 | 단계 | 모듈 | 설명 |
 |------|------|------|
 | 1. 라우팅 | `main.py` | 멘션 검사 후 AI 핸들러로 전달 |
-| 2. 도구 감지 | `ai_handler.py` | 키워드 기반 도구 선택 |
+| 2. **LLM 도구선택** | `ai_handler.py` | **Fast 모델이 질문을 분석하여 도구 자동 결정 (키워드 fallback)** |
 | 3. 도구 실행 | `tools_cog.py` | 외부 API 호출 및 결과 수집 |
 | 4. RAG 검색 | `hybrid_search.py` | 임베딩 + BM25 하이브리드 검색 |
-| 5. 프롬프트 구성 | `ai_handler.py` | 페르소나 + 도구 결과 + RAG 컨텍스트 조합 |
-| 6. LLM 호출 | `ai_handler.py` | CometAPI → Gemini 순서로 시도 |
+| 5. 뉴스 검색 | `news_search.py` | DuckDuckGo RAG 파이프라인 (뉴스 키워드 감지 시) |
+| 6. 프롬프트 구성 | `ai_handler.py` | 페르소나 + 도구 결과 + RAG 컨텍스트 조합 |
+| 7. LLM 호출 | `ai_handler.py` | CometAPI → Gemini 순서로 시도 |
 
 ### RAG 시스템
 
