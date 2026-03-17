@@ -1008,7 +1008,7 @@ Generate the optimized English image prompt:"""
         history_text = ""
         if history:
             history_lines = []
-            for h in history[-5:]: # 최근 5개만
+            for h in history[-config.INTENT_HISTORY_LIMIT:]: # 설정된 개수만큼만
                 role = "User" if h['role'] == 'user' else "Masamong"
                 content = h['parts'][0] if isinstance(h['parts'], list) else str(h['parts'])
                 history_lines.append(f"{role}: {content}")
@@ -1557,8 +1557,8 @@ Generate the optimized English image prompt:"""
             for block in rag_blocks:
                 snippet = block[:20] if len(block) > 20 else block
                 if snippet not in recent_context_str:
-                    # [Optimization] 각 블록을 500자로 제한하여 토큰 절약
-                    truncated_block = block[:500] + "..." if len(block) > 500 else block
+                    # [Optimization] 각 블록을 설정된 글자수로 제한하여 토큰 절약
+                    truncated_block = block[:config.MAX_RAG_BLOCK_CHARS] + "..." if len(block) > config.MAX_RAG_BLOCK_CHARS else block
                     filtered_rag.append(truncated_block)
             
             if filtered_rag:
@@ -2108,13 +2108,13 @@ Generate the optimized English image prompt:"""
             self._debug(f"--- 에이전트 세션 종료 trace_id={trace_id}", log_extra)
     async def _get_recent_history(self, message: discord.Message, rag_prompt: str) -> list:
         """모델에 전달할 최근 대화 기록을 채널에서 가져옵니다."""
-        history_limit = 6 if rag_prompt else 12
+        history_limit = config.HISTORY_LIMIT_WITH_RAG if rag_prompt else config.HISTORY_LIMIT_WITHOUT_RAG
         history = []
         
         async for msg in message.channel.history(limit=history_limit + 1):
             if msg.id == message.id: continue
             role = 'model' if msg.author.id == self.bot.user.id else 'user'
-            content = msg.content[:2000]
+            content = msg.content[:config.MAX_MESSAGE_CHARS]
             history.append({'role': role, 'parts': [content]})
 
         history.reverse()
