@@ -254,6 +254,20 @@ MAX_PROMPT_TOKENS = as_int(load_config_value('MAX_PROMPT_TOKENS', 4000), 4000)
 # 동일 메시지 스팸 방지 시간 (초)
 SPAM_PREVENTION_SECONDS = as_int(load_config_value('SPAM_PREVENTION_SECONDS', 10), 10)
 
+# --- 대화 히스토리 및 RAG 제한 설정 ---
+# 메인 답변 시 가져올 이전 대화 개수 (RAG 사용 시 / 미사용 시)
+HISTORY_LIMIT_WITH_RAG = as_int(load_config_value('HISTORY_LIMIT_WITH_RAG', 6), 6)
+HISTORY_LIMIT_WITHOUT_RAG = as_int(load_config_value('HISTORY_LIMIT_WITHOUT_RAG', 10), 10)
+# 도구 의도 분석 시 참고할 이전 대화 개수
+INTENT_HISTORY_LIMIT = as_int(load_config_value('INTENT_HISTORY_LIMIT', 5), 5)
+
+# 메시지 1개당 최대 글자수 (프롬프트 포함 시)
+MAX_MESSAGE_CHARS = as_int(load_config_value('MAX_MESSAGE_CHARS', 1500), 1500)
+# RAG 결과 1개당 최대 글자수
+MAX_RAG_BLOCK_CHARS = as_int(load_config_value('MAX_RAG_BLOCK_CHARS', 500), 500)
+# RAG 컨텍스트 최대 개수
+MAX_RAG_RESULTS = as_int(load_config_value('MAX_RAG_RESULTS', 5), 5)
+
 # CometAPI 설정 (Gemini 대체 - OpenAI Compatible)
 COMETAPI_KEY = load_config_value('COMETAPI_KEY')
 COMETAPI_BASE_URL = load_config_value('COMETAPI_BASE_URL', 'https://api.cometapi.com/v1')
