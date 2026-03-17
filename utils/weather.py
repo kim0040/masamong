@@ -145,7 +145,10 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
                          
                          if data.get('response', {}).get('header', {}).get('resultCode') != '00':
                              error_msg = data.get('response', {}).get('header', {}).get('resultMsg', 'Unknown API Error')
-                             logger.error(f"기상청 API 오류: {error_msg}")
+                             if error_msg == "NO_DATA":
+                                 logger.info(f"기상청 API: {endpoint} ({api_type}) 데이터가 현재 없습니다 (NO_DATA).")
+                             else:
+                                 logger.error(f"기상청 API 오류: {error_msg}")
                              return {"error": True, "message": error_msg}
 
                          return data.get('response', {}).get('body', {}).get('items')

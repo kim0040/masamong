@@ -1731,7 +1731,7 @@ Generate the optimized English image prompt:"""
         
         # 텍스트가 짧으면 바로 전송
         if len(text) <= chunk_size:
-            await message.reply(text, mention_author=False)
+            await message.channel.send(text)
             return
 
         # 긴 텍스트 분할 전송
@@ -1740,7 +1740,7 @@ Generate the optimized English image prompt:"""
         for i, chunk in enumerate(chunks):
             # 첫 번째 메시지는 reply로, 나머지는 일반 메시지로 전송하여 스레드처럼 보이게 함
             if i == 0:
-                await message.reply(chunk, mention_author=False)
+                await message.channel.send(chunk)
             else:
                 await message.channel.send(chunk)
             # 순서 보장을 위한 짧은 텀
@@ -1874,14 +1874,14 @@ Generate the optimized English image prompt:"""
         user_daily_count = await db_utils.get_daily_api_count(self.bot.db, user_daily_key)
         if user_daily_count >= config.USER_DAILY_LLM_LIMIT:
             logger.warning(f"사용자 {user_id} 일일 LLM 제한 도달 ({user_daily_count}/{config.USER_DAILY_LLM_LIMIT})", extra=base_log_extra)
-            await message.reply("오늘 너무 많이 물어봤어! 내일 다시 물어봐~ 😅", mention_author=False)
+            await message.channel.send("오늘 너무 많이 물어봤어! 내일 다시 물어봐~ 😅")
             return
         
         # 4. 글로벌 일일 LLM 호출 제한 검사
         global_daily_count = await db_utils.get_daily_api_count(self.bot.db, "llm_global")
         if global_daily_count >= config.GLOBAL_DAILY_LLM_LIMIT:
             logger.warning(f"글로벌 일일 LLM 제한 도달 ({global_daily_count}/{config.GLOBAL_DAILY_LLM_LIMIT})", extra=base_log_extra)
-            await message.reply("오늘 할 수 있는 대화가 다 끝났어... 내일 봐! 😢", mention_author=False)
+            await message.channel.send("오늘 할 수 있는 대화가 다 끝났어... 내일 봐! 😢")
             return
         
         # 쿨다운 갱신
@@ -1897,17 +1897,15 @@ Generate the optimized English image prompt:"""
             # 5-1. 사용자별 1:1 제한 (3시간 5회)
             allowed, reset_time = await db_utils.check_dm_message_limit(self.bot.db, user_id)
             if not allowed:
-                 await message.reply(
-                     f"⛔ 일일 대화량이 초과되었습니다.\n마사몽과의 1:1 대화는 5시간당 30회로 제한됩니다.\n🕒 해제 예정 시각: {reset_time}",
-                     mention_author=False
+                 await message.channel.send(
+                     f"⛔ 일일 대화량이 초과되었습니다.\n마사몽과의 1:1 대화는 5시간당 30회로 제한됩니다.\n🕒 해제 예정 시각: {reset_time}"
                  )
                  return
             
             # 5-2. 전역 일일 DM 제한 (하루 100회 - API 보호)
             if not await db_utils.check_global_dm_limit(self.bot.db):
-                await message.reply(
-                    "⛔ 죄송합니다. 오늘 마사몽이 처리할 수 있는 DM 총량을 초과했습니다.\n내일 다시 이용해 주세요! (서버 채널에서는 계속 이용 가능합니다)",
-                    mention_author=False
+                await message.channel.send(
+                    "⛔ 죄송합니다. 오늘 마사몽이 처리할 수 있는 DM 총량을 초과했습니다.\n내일 다시 이용해 주세요! (서버 채널에서는 계속 이용 가능합니다)"
                 )
                 return
 
@@ -1918,7 +1916,7 @@ Generate the optimized English image prompt:"""
         self._debug(f"--- 에이전트 세션 시작 trace_id={trace_id}", log_extra)
 
         # [Progress Update] 초기 상태 메시지 전송
-        status_msg = await message.reply("🤔 마사몽이 생각 중이야...", mention_author=False)
+        status_msg = await message.channel.send("🤔 마사몽이 생각 중이야...")
 
         try:
             # 1단계: 분석 및 도구 계획 수립
@@ -1978,9 +1976,9 @@ Generate the optimized English image prompt:"""
                         if result.get('image_data'):
                             import io
                             image_file = discord.File(io.BytesIO(result['image_data']), filename="generated_image.jpg")
-                            await message.reply(f"짜잔~ 이미지 생성했어! 🎨\n(남은 생성 횟수: {remaining}장)", file=image_file, mention_author=False)
+                            await message.channel.send(f"짜잔~ 이미지 생성했어! 🎨\n(남은 생성 횟수: {remaining}장)", file=image_file)
                         else:
-                            await message.reply(f"짜잔~ 이미지 생성했어! 🎨\n{result['image_url']}\n(남은 생성 횟수: {remaining}장)", mention_author=False)
+                            await message.channel.send(f"짜잔~ 이미지 생성했어! 🎨\n{result['image_url']}\n(남은 생성 횟수: {remaining}장)")
                         
                         await status_msg.delete()
                         await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
@@ -2105,7 +2103,7 @@ Generate the optimized English image prompt:"""
             try:
                 await status_msg.edit(content=config.MSG_AI_ERROR)
             except:
-                await message.reply(config.MSG_AI_ERROR, mention_author=False)
+                await message.channel.send(config.MSG_AI_ERROR)
         finally:
             self._debug(f"--- 에이전트 세션 종료 trace_id={trace_id}", log_extra)
     async def _get_recent_history(self, message: discord.Message, rag_prompt: str) -> list:
@@ -2342,10 +2340,16 @@ Generate the optimized English image prompt:"""
             if not channel:
                 return
             msg = await channel.fetch_message(payload.message_id)
+            
             # 출처 목록 생성
             url_lines = [f"{i}. {url}" for i, url in enumerate(source_urls, 1)]
-            source_text = "📰 **뉴스 출처**\n" + "\n".join(url_lines)
-            await msg.reply(source_text, mention_author=False)
+            source_text = "\n\n📰 **뉴스 출처**\n" + "\n".join(url_lines)
+            
+            # 이미 출처가 포함되어 있는지 확인
+            if "📰 **뉴스 출처**" in msg.content:
+                return # 이미 추가됨
+                
+            await msg.edit(content=msg.content + source_text)
         except Exception as e:
             logger.warning(f"뉴스 출처 리액션 처리 실패: {e}")
 
