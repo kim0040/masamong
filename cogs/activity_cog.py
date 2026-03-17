@@ -51,29 +51,29 @@ class ActivityCog(commands.Cog):
     @commands.command(name='랭킹', aliases=['수다왕', 'ranking'])
     @commands.guild_only()
     async def ranking(self, ctx: commands.Context):
-        """
-        서버 내 메시지 작성 수 기준 TOP5 랭킹을 발표합니다. (서버 전용)
-
-        사용법:
-        - `!랭킹`
-
-        예시:
-        - `!랭킹`
-        """
+        """서버 내 활동 순위와 상세 통계를 보여줍니다."""
         if not self.ai_handler:
             await ctx.send("랭킹을 발표할 AI가 아직 준비되지 않았어요. 잠시 후 다시 시도해주세요.")
             return
 
         log_extra = {'guild_id': ctx.guild.id, 'author_id': ctx.author.id}
         try:
-            # 데이터베이스에서 상위 5명 조회
+            # 1. 상위 10명 조회 (기존 5명에서 확대) 및 마지막 활동 시간 포함
             async with self.bot.db.execute("""
-                SELECT user_id, message_count FROM user_activity
+                SELECT user_id, message_count, last_active_at FROM user_activity
                 WHERE guild_id = ?
                 ORDER BY message_count DESC
-                LIMIT 5;
+                LIMIT 10;
             """, (ctx.guild.id,)) as cursor:
                 top_users = await cursor.fetchall()
+
+            # 2. 서버 전체 통계 조회
+            async with self.bot.db.execute("""
+                SELECT SUM(message_count), COUNT(user_id) FROM user_activity
+                WHERE guild_id = ?
+            """, (ctx.guild.id,)) as cursor:
+                server_total = await cursor.fetchone()
+                total_msgs, total_users = server_total if server_total else (0, 0)
 
         except aiosqlite.Error as e:
             logger.error(f"랭킹 조회 중 데이터베이스 오류 발생: {e}", exc_info=True, extra=log_extra)
@@ -85,36 +85,53 @@ class ActivityCog(commands.Cog):
             return
 
         async with ctx.typing():
-            # 랭킹 목록 문자열 생성
-            ranking_list = []
-            for i, (user_id, count) in enumerate(top_users):
+            # 랭킹 목록 및 상세 데이터 구성
+            ranking_lines = []
+            
+            def get_grade(count):
+                if count >= 1000: return "🏆 전설의 수다왕"
+                if count >= 500: return "👑 열혈 수다쟁이"
+                if count >= 100: return "✨ 활발한 멤버"
+                if count >= 10: return "🌱 새내기 수다쟁이"
+                return "🥚 부화 중"
+
+            for i, (user_id, count, last_active) in enumerate(top_users):
                 try:
-                    # user_id로 Discord 사용자 객체 조회
                     user = self.bot.get_user(int(user_id)) or await self.bot.fetch_user(int(user_id))
                     user_name = user.display_name
-                except discord.NotFound:
-                    user_name = f"알수없는유저({str(user_id)[-4:]})"
-                except (ValueError, TypeError):
-                    user_name = f"잘못된ID({user_id})"
-                ranking_list.append(f"{i+1}위: {user_name} ({count}회)")
+                except:
+                    user_name = f"탈퇴한유저({str(user_id)[-4:]})"
+                
+                grade = get_grade(count)
+                # 마지막 활동 시간 포맷팅 (ISO -> HH:MM)
+                last_time_str = "방금 전"
+                if last_active:
+                    try:
+                        lt = datetime.fromisoformat(last_active)
+                        last_time_str = lt.strftime("%y-%m-%d %H:%M")
+                    except: pass
+                
+                ranking_lines.append(f"{i+1}위: {user_name} | {count}회 | {grade} (최근: {last_time_str})")
 
-            ranking_str = "\n".join(ranking_list)
+            ranking_data_str = "\n".join(ranking_lines)
+            server_stat_str = f"서버 총 메시지: {total_msgs or 0}개 | 참여 인원: {total_users or 0}명"
 
-            # AI 핸들러를 사용하여 창의적인 랭킹 발표 멘트 생성
-            if not self.ai_handler.is_ready:
-                 await ctx.send(f"**🏆 이번 주 수다왕 랭킹! 🏆**\n\n{ranking_str}")
-                 return
+            # AI에게 전달할 맥락 보강
+            full_context = {
+                'ranking_list': ranking_data_str,
+                'server_stats': server_stat_str,
+                'top_one_name': (self.bot.get_user(int(top_users[0][0])) or await self.bot.fetch_user(int(top_users[0][0]))).display_name if top_users else "없음"
+            }
 
             response_text = await self.ai_handler.generate_creative_text(
                 channel=ctx.channel,
                 author=ctx.author,
                 prompt_key='ranking',
-                context={'ranking_list': ranking_str}
+                context=full_context
             )
 
-            # AI 응답 생성에 실패하면 기본 텍스트 사용
             if not response_text or response_text in [config.MSG_AI_ERROR, config.MSG_CMD_ERROR]:
-                final_response = f"**🏆 이번 주 수다왕 랭킹! 🏆**\n\n{ranking_str}"
+                final_response = f"**🏆 서버 수다왕 랭킹 리포트 🏆**\n\n{ranking_data_str}\n\n📊 {server_stat_str}"
             else:
                 final_response = response_text
 

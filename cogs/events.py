@@ -64,36 +64,6 @@ class EventListeners(commands.Cog):
         if self.weather_cog:
             self.weather_cog.setup_and_start_loops()
 
-    async def _handle_keyword_triggers(self, message: discord.Message) -> bool:
-        """
-        메시지 내용에서 특정 키워드('요약', '운세' 등)를 감지하여 관련 기능을 실행합니다.
-        `on_message` 핸들러에서 호출됩니다.
-        
-        Returns:
-            bool: 키워드가 감지되어 기능이 실행되었으면 True, 아니면 False.
-        """
-        if not self.fun_cog or not config.FUN_KEYWORD_TRIGGERS.get("enabled"):
-            return False
-        # 채널별 쿨다운 확인
-        if self.fun_cog.is_on_cooldown(message.channel.id):
-            return False
-
-        msg_content = message.content.lower()
-        for trigger_type, keywords in config.FUN_KEYWORD_TRIGGERS.get("triggers", {}).items():
-            if any(keyword in msg_content for keyword in keywords):
-                # [Fix] '운세' 키워드는 봇 멘션이 있을 때만 트리거 (일상 대화 오작동 방지)
-                if trigger_type == "fortune" and self.bot.user not in message.mentions:
-                    continue
-
-                logger.info(f"FunCog 키워드 '{trigger_type}'가 감지되었습니다.", extra={'guild_id': message.guild.id})
-                self.fun_cog.update_cooldown(message.channel.id)
-                
-                if trigger_type == "summarize":
-                    await self.fun_cog.execute_summarize(message.channel, message.author)
-                elif trigger_type == "fortune":
-                    await self.fun_cog.execute_fortune(message.channel, message.author)
-                return True # 키워드가 처리되었음을 알림
-        return False
 
     @commands.Cog.listener()
     async def on_command_completion(self, ctx: commands.Context):
