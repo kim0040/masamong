@@ -2344,7 +2344,16 @@ Generate the optimized English image prompt:"""
         try:
             channel = self.bot.get_channel(payload.channel_id)
             if not channel:
+                # DM 채널의 경우 캐시에 없을 수 있으므로 직접 가져오기 시도
+                try:
+                    channel = await self.bot.fetch_channel(payload.channel_id)
+                except Exception as e:
+                    logger.debug(f"채널 fetch 실패 (ID: {payload.channel_id}): {e}")
+                    return
+            
+            if not channel:
                 return
+                
             msg = await channel.fetch_message(payload.message_id)
             
             # 출처 목록 생성
