@@ -800,10 +800,49 @@ Generate the optimized English image prompt:"""
         return None
 
 
+    async def _refine_search_query_with_llm(self, query: str, history: list, log_extra: dict) -> str:
+        """대화 히스토리를 바탕으로 사용자의 모호한 질문을 명확한 검색어로 정제합니다."""
+        fast_model = getattr(config, 'FAST_MODEL_NAME', 'gemini-3.1-flash-lite-preview')
+        
+        # 히스토리 텍스트 변환 (최근 3개)
+        history_text = ""
+        if history:
+            h_lines = []
+            for h in history[-3:]:
+                role = "U" if h['role'] == 'user' else "M"
+                content = h['parts'][0] if isinstance(h['parts'], list) else str(h['parts'])
+                h_lines.append(f"{role}: {content}")
+            history_text = "\n".join(h_lines)
+
+        prompt = (
+            "당신은 검색 쿼리 최적화 전문가입니다. 이전 대화 맥락을 바탕으로 사용자의 현재 질문을 "
+            "단독 검색이 가능한 명확한 검색어로 변환하세요. 다른 설명 없이 정제된 검색어만 출력하세요.\n\n"
+            "예시:\n"
+            "Context: U: 이란 이스라엘 전쟁 소식 알려줘 | M: (답변)\n"
+            "User: 군비는 얼마나 썼대?\n"
+            "Result: 이란 이스라엘 전쟁 군비 지출액\n\n"
+            f"--- Current Context ---\n{history_text}\n"
+            f"User Message: {query}\n"
+            "Result:"
+        )
+        try:
+            if not (self.use_cometapi and config.COMETAPI_KEY): return query
+            _client = google_genai.Client(
+                http_options={"api_version": "v1beta", "base_url": "https://api.cometapi.com"},
+                api_key=config.COMETAPI_KEY,
+            )
+            response = await asyncio.to_thread(_client.models.generate_content, model=fast_model, contents=prompt)
+            refined = (response.text or "").strip()
+            return refined if refined else query
+        except Exception as e:
+            logger.warning(f"쿼리 정제 실패: {e}")
+            return query
+
     async def _execute_web_search_with_llm(
         self,
         user_query: str,
-        log_extra: dict
+        log_extra: dict,
+        history: list = None
     ) -> dict:
         """
         [수정] DuckDuckGo 뉴스 RAG 파이프라인으로 뉴스를 검색하고,
@@ -818,34 +857,40 @@ Generate the optimized English image prompt:"""
             return {"error": "ToolsCog가 초기화되지 않았습니다."}
 
         # 1. DuckDuckGo 뉴스 RAG 파이프라인 실행
-        logger.info(f"[뉴스검색] DuckDuckGo RAG 파이프라인 시작: '{user_query}'", extra=log_extra)
+        logger.info(f"[뉴스검색] RAG 파이프라인 시작: '{user_query}'", extra=log_extra)
         news_result = await self.tools_cog.search_news_rag(user_query)
 
         if news_result.get("status") != "success":
             error_msg = news_result.get("message", "뉴스 검색 실패")
-            logger.warning(f"[뉴스검색] 파이프라인 실패: {error_msg}", extra=log_extra)
             return {"result": None, "error": error_msg}
 
         news_context = news_result.get("context", "")
-        source_footer = news_result.get("source_footer", "")
+        
+        # 2. 히스토리 요약 포함하여 답변 생성
+        history_summary = ""
+        if history:
+             history_lines = []
+             for h in history[-3:]:
+                 role = "User" if h['role'] == 'user' else "Masamong"
+                 content = h['parts'][0] if isinstance(h['parts'], list) else str(h['parts'])
+                 history_lines.append(f"{role}: {content}")
+             history_summary = "\n[이전 대화 맥락]\n" + "\n".join(history_lines)
 
-        # 2. 마사몽 채널 페르소나로 최종 답변 생성
         channel_id = log_extra.get('channel_id')
         persona_prompt = self._get_channel_system_prompt(channel_id)
 
         system_prompt = (
             f"{persona_prompt}\n\n"
             f"### 추가 지시사항\n"
-            f"- 제공된 뉴스 요약 정보를 바탕으로 사용자 질문에 답해.\n"
-            f"- '뉴스 검색했더니', '검색 결과를 보면' 같은 표현 금지.\n"
-            f"- 시스템 태그([뉴스 출처 N]) 절대 노출 금지.\n"
+            f"- 제공된 뉴스 정보를 바탕으로 답하되, 이전 대화 맥락({history_summary})이 있다면 자연스럽게 대화를 이어가.\n"
+            f"- 검색 결과임을 드러내는 표현은 피하고, 시스템 태그는 절대 노출하지 마.\n"
             f"- 페르소나 말투를 반드시 유지해."
         )
 
         user_prompt = (
             f"사용자 질문: '{user_query}'\n\n"
-            f"참고 뉴스 요약:\n{news_context}\n\n"
-            f"위 정보를 바탕으로 사용자 질문에 자연스럽게 답변해줘."
+            f"참고 뉴스:\n{news_context}\n\n"
+            f"위 정보를 바탕으로 답변해줘."
         )
 
         summary = None
@@ -926,55 +971,91 @@ Generate the optimized English image prompt:"""
         '아까', '전에', '지난번', '기억', '했었', '말했'
     ])
 
-    async def _should_use_web_search(self, query: str, rag_top_score: float) -> bool:
-        """뉴스/실시간 정보 검색 여부 판단. 명확한 뉴스 키워드 있고 RAG 점수 낮을 때만 True."""
+    async def _should_use_web_search(self, query: str, rag_top_score: float, history: list = None) -> bool:
+        """뉴스/실시간 정보 검색 여부 판단. 대화 맥락과 RAG 점수를 함께 고려합니다."""
         query_lower = query.lower()
-        if rag_top_score >= config.RAG_STRONG_SIMILARITY_THRESHOLD:
-            return False
+        
+        # 명시적인 검색 방지 패턴
         if any(pat in query_lower for pat in self._NO_SEARCH_PATTERNS):
             return False
-        return any(kw in query_lower for kw in self._NEWS_SEARCH_KEYWORDS)
 
-    async def _detect_tools_by_llm(self, query: str, log_extra: dict) -> list[dict]:
-        """Fast 모델(gemini-3.1-flash-lite-preview)이 질문을 분석하여 필요한 도구를 자동 판단.
-        LLM 호출 실패 시 _detect_tools_by_keyword() fallback 사용.
-        """
+        # RAG 점수가 매우 높으면 검색 생략 (이미 알고 있는 정보)
+        if rag_top_score >= config.RAG_STRONG_SIMILARITY_THRESHOLD:
+            # 하지만 "최근", "오늘", "뉴스" 등의 키워드가 있으면 검색 시도 가능성 열어둠
+            if not any(kw in query_lower for kw in ["오늘", "최근", "요즘", "뉴스"]):
+                return False
+
+        # 1. 키워드 기반 판단
+        if any(kw in query_lower for kw in self._NEWS_SEARCH_KEYWORDS):
+            return True
+
+        # 2. 맥락 기반 판단 (연계 질문)
+        if history:
+            last_msg = history[-1]['parts'][0] if isinstance(history[-1]['parts'], list) else str(history[-1]['parts'])
+            # 이전 답변에 뉴스/검색 안내가 있었고, 이번 질문이 짧거나 지시 대명사를 포함하면 검색 시도
+            if "뉴스" in last_msg or "출처" in last_msg or "검색" in last_msg:
+                if len(query_lower) < 15 or any(dw in query_lower for dw in ["그거", "더", "자세히", "얼마나", "누가"]):
+                    return True
+
+        return False
+
+    async def _detect_tools_by_llm(self, query: str, log_extra: dict, history: list = None) -> list[dict]:
+        """사용자의 의도와 대화 맥락을 분석하여 가장 적합한 도구와 최적화된 검색 파라미터를 결정합니다."""
         import json as _json
         fast_model = getattr(config, 'FAST_MODEL_NAME', 'gemini-3.1-flash-lite-preview')
+        
+        # 히스토리 텍스트 변환
+        history_text = ""
+        if history:
+            history_lines = []
+            for h in history[-5:]: # 최근 5개만
+                role = "User" if h['role'] == 'user' else "Masamong"
+                content = h['parts'][0] if isinstance(h['parts'], list) else str(h['parts'])
+                history_lines.append(f"{role}: {content}")
+            history_text = "\n".join(history_lines)
+
         system_prompt = (
-            "You are 마사몽's tool planner. Analyze the Korean user message and decide which tool to use.\n"
-            "Available tools:\n"
-            "- get_weather_forecast(location,day_offset) — weather. day_offset: 0=today,1=tomorrow,3+=weekly\n"
-            "- get_stock_price(user_query) — stock/coin/market price\n"
-            "- search_for_place(query) — restaurants, cafes, nearby places\n"
-            "- generate_image(user_query) — image/drawing generation\n"
-            "- search_news_rag(query) — Latest news, current events, real-time information, person or event details that require search\n"
-            "Output ONLY valid JSON, no explanation.\n"
-            '{"tools":[{"tool":"name","params":{"k":"v"}}]} or {"tools":[]}'
+            "당신은 마사몽의 도구 플래너이자 검색 쿼리 최적화 전문가입니다. "
+            "사용자의 현재 메시지와 이전 대화 맥락을 분석하여 의도를 파악하고, 작업을 수행하기 위해 가장 적절한 도구를 선택하세요.\n\n"
+            "핵심 규칙:\n"
+            "1. 대화 맥락 고려: 사용자가 '그거', '그때 말한 거' 등 지시 대명사를 쓰거나 주어를 생략하면 이전 대화에서 대상을 찾아 검색 쿼리에 포함하세요.\n"
+            "2. 독립적 쿼리 생성: 도구 파라미터(특히 query)를 설정할 때, 이전 맥락 없이도 검색 엔진에서 정확한 결과를 얻을 수 있도록 완성된 문장/키워드로 변환하세요.\n"
+            "3. 멀티 도구 선택: 여러 질문이 섞여 있다면 도구를 여러 개 선택할 수 있습니다.\n\n"
+            "사용 가능 도구:\n"
+            "1. get_weather_forecast(location, day_offset): 특정 지역/시간의 날씨.\n"
+            "2. get_stock_price(user_query): 주식, 코인, 지수 등 금융 시세.\n"
+            "3. search_for_place(query): 맛집, 장소 정보.\n"
+            "4. generate_image(user_query): 그림 생성.\n"
+            "5. search_news_rag(query): 최신 뉴스, 시사, 인물/사건 상세 정보. 실시간성이 필요할 때 사용.\n\n"
+            "출력 형식 (유효한 JSON만):\n"
+            '{"intent": "의도", "reasoning": "선택 근거", "tools": [{"tool": "이름", "params": {"키": "값"}}]}'
         )
         try:
             if not (self.use_cometapi and config.COMETAPI_KEY):
                 return self._detect_tools_by_keyword(query)
             
             if google_genai is None:
-                # 패키지 누락 시 fallback
                 return self._detect_tools_by_keyword(query)
 
-            # [Fixed] 사용자 제공 패턴에 맞춰 클라이언트 생성
             _client = google_genai.Client(
                 http_options={"api_version": "v1beta", "base_url": "https://api.cometapi.com"},
                 api_key=config.COMETAPI_KEY,
             )
+            
             prompt = (
                 f"System:\n{system_prompt}\n\n"
                 "Examples:\n"
-                '"오늘 서울 날씨?" → {"tools":[{"tool":"get_weather_forecast","params":{"location":"서울","day_offset":0}}]}\n'
-                '"삼성 주가 알려줘" → {"tools":[{"tool":"get_stock_price","params":{"user_query":"삼성 주가 알려줘"}}]}\n'
-                '"강남 맛집" → {"tools":[{"tool":"search_for_place","params":{"query":"강남 맛집"}}]}\n'
-                '"최신 뉴스 알려줘" → {"tools":[{"tool":"search_news_rag","params":{"query":"최신 뉴스 알려줘"}}]}\n'
-                '"미국 이란 관계 소식" → {"tools":[{"tool":"search_news_rag","params":{"query":"미국 이란 관계 소식"}}]}\n'
-                '"고양이 그냥 담화해줘" → {"tools":[]}\n'
-                f"\nUser message: {query}"
+                'Context: (None)\nUser: "오늘 서울 날씨?"\n'
+                'Response: {"intent": "날씨 조회", "reasoning": "서울 날씨 요청", "tools": [{"tool": "get_weather_forecast", "params": {"location": "서울", "day_offset": 0}}]}\n\n'
+                'Context: User: "미국 이란 전쟁에 대해 알려줘"\\nMasamong: (전쟁 설명...)\n'
+                'User: "군비는 얼마나 썼대?"\n'
+                'Response: {"intent": "상세 수치 검색", "reasoning": "이전 대화인 미국-이란 전쟁의 군비 지출액을 묻는 연계 질문", "tools": [{"tool": "search_news_rag", "params": {"query": "미국 이란 전쟁 군비 지출 및 비용"}}] }\n\n'
+                'Context: User: "서울 날씨 어때?"\\nMasamong: (서울 날씨 답변...)\n'
+                'User: "내일은?"\n'
+                'Response: {"intent": "날씨 연계 질문", "reasoning": "이전 대화의 지역(서울) 유치, 시간만 내일로 변경", "tools": [{"tool": "get_weather_forecast", "params": {"location": "서울", "day_offset": 1}}] }\n\n'
+                f"--- Current Context ---\n{history_text}\n"
+                f"User Message: {query}\n\n"
+                "Response:"
             )
             response = await asyncio.to_thread(
                 _client.models.generate_content,
@@ -984,7 +1065,10 @@ Generate the optimized English image prompt:"""
             raw = (response.text or "").strip()
             if "```" in raw:
                 raw = re.sub(r"```(?:json)?", "", raw).replace("```", "").strip()
+            
             parsed = _json.loads(raw)
+            logger.info(f"[LLM의도분석] Intent: {parsed.get('intent')}, Reason: {parsed.get('reasoning')}", extra=log_extra)
+            
             tool_list = parsed.get("tools", [])
             result = []
             for t in tool_list:
@@ -992,7 +1076,6 @@ Generate the optimized English image prompt:"""
                 if not name or name == "none":
                     continue
                 result.append({"tool_to_use": name, "tool_name": name, "parameters": t.get("params", {})})
-            logger.info(f"[LLM도구선택] {[r['tool_to_use'] for r in result] or '도구없음'}", extra=log_extra)
             return result
         except Exception as e:
             logger.warning(f"[LLM도구선택] 실패 → 키워드 fallback: {e}", extra=log_extra)
@@ -1834,370 +1917,197 @@ Generate the optimized English image prompt:"""
         logger.info(f"에이전트 처리 시작. Query: '{user_query}'", extra=log_extra)
         self._debug(f"--- 에이전트 세션 시작 trace_id={trace_id}", log_extra)
 
-        async with message.channel.typing():
-            try:
-                # [NEW] 지역명 캐시 로드 (필요 시)
-                await self._load_location_cache()
+        # [Progress Update] 초기 상태 메시지 전송
+        status_msg = await message.reply("🤔 마사몽이 생각 중이야...", mention_author=False)
 
-                recent_search_messages = await self._collect_recent_search_messages(message)
-                guild_id_safe = message.guild.id if message.guild else 0
-                rag_prompt, rag_entries, rag_top_score, rag_blocks = await self._get_rag_context(
-                    guild_id_safe,
-                    message.channel.id,
-                    message.author.id,
-                    user_query,
-                    recent_messages=recent_search_messages,
-                )
-                history = await self._get_recent_history(message, rag_prompt)
-                rag_is_strong = bool(rag_blocks) and rag_top_score >= config.RAG_STRONG_SIMILARITY_THRESHOLD
-                self._debug(
-                    f"RAG 결과: strong={rag_is_strong} top_score={rag_top_score:.3f} blocks={len(rag_blocks)}",
-                    log_extra,
-                )
+        try:
+            # 1단계: 분석 및 도구 계획 수립
+            await status_msg.edit(content="🤔 질문을 분석하고 있어...")
+            
+            # [NEW] 지역명 캐시 로드 (필요 시)
+            await self._load_location_cache()
 
-                # ========== 단일 모델 아키텍처: Lite 모델 제거, 키워드 기반 도구 감지 ==========
-                # 키워드 패턴으로 도구 필요 여부 판단 (API 호출 없음)
-                tool_plan = await self._detect_tools_by_llm(user_query, log_extra)
-                if tool_plan:
-                    logger.info(f"LLM 도구선택: {[t['tool_to_use'] for t in tool_plan]}", extra=log_extra)
-                else:
-                    logger.info("LLM 도구선택: 도구 없음 — RAG/일반 대화로 처리", extra=log_extra)
+            recent_search_messages = await self._collect_recent_search_messages(message)
+            guild_id_safe = message.guild.id if message.guild else 0
+            
+            # RAG 컨텍스트 가져오기
+            rag_prompt, rag_entries, rag_top_score, rag_blocks = await self._get_rag_context(
+                guild_id_safe,
+                message.channel.id,
+                message.author.id,
+                user_query,
+                recent_messages=recent_search_messages,
+            )
+            # [Move Up] 히스토리를 도구 선택 이전에 가져옴
+            history = await self._get_recent_history(message, rag_prompt)
+            rag_is_strong = bool(rag_blocks) and rag_top_score >= config.RAG_STRONG_SIMILARITY_THRESHOLD
+            
+            # 도구 계획 수립 (LLM 기반, 히스토리 주입)
+            tool_plan = await self._detect_tools_by_llm(user_query, log_extra, history=history)
+            
+            tool_results: list[dict[str, Any]] = []
+            executed_plan: list[dict[str, Any]] = []
 
-                tool_results: list[dict[str, Any]] = []
-                executed_plan: list[dict[str, Any]] = []
+            if rag_blocks:
+                tool_results.append({
+                    "step": 0,
+                    "tool_name": "local_rag",
+                    "parameters": {"top_score": rag_top_score},
+                    "result": {"entries": rag_entries},
+                })
 
-                if rag_blocks:
-                    tool_results.append(
-                        {
-                            "step": 0,
-                            "tool_name": "local_rag",
-                            "parameters": {"top_score": rag_top_score},
-                            "result": {"entries": rag_entries},
-                        }
-                    )
-
-                if tool_plan:
-                    logger.info(f"2단계: 도구 실행 시작. 총 {len(tool_plan)}단계.", extra=log_extra)
-                    self._debug(f"도구 계획: {self._truncate_for_debug(tool_plan)}", log_extra)
-                    for idx, tool_call in enumerate(tool_plan, start=1):
-                        logger.info(f"계획 실행 ({idx}/{len(tool_plan)}): {tool_call.get('tool_to_use')}", extra=log_extra)
-                        
-                        # generate_image 도구의 경우 user_id를 파라미터에 주입
-                        if tool_call.get('tool_to_use') == 'generate_image':
-                            tool_call.setdefault('parameters', {})['user_id'] = message.author.id
-                            # 생성 중 메시지 전송 (LLM 호출 없음)
-                            status_msg = await message.reply("🎨 이미지 생성 중이에요... 잠시만 기다려줘!", mention_author=False)
-                        
-                        result = await self._execute_tool(tool_call, guild_id_safe, user_query)
-                        
-                        # 이미지 생성 성공 시 바로 이미지 전송 (별도 처리)
-                        if tool_call.get('tool_to_use') == 'generate_image' and (result.get('image_data') or result.get('image_url')):
-                            remaining = result.get('remaining', 0)
-                            logger.info(f"이미지 생성 성공, 전송 시작", extra=log_extra)
-                            
-                            # 상태 메시지 삭제
-                            try:
-                                await status_msg.delete()
-                            except:
-                                pass
-                            
-                            # 이미지 바이너리가 있으면 파일로 업로드 (URL 만료 방지)
-                            if result.get('image_data'):
-                                import io
-                                image_file = discord.File(
-                                    io.BytesIO(result['image_data']),
-                                    filename="generated_image.jpg"
-                                )
-                                await message.reply(
-                                    f"짜잔~ 이미지 생성했어! 🎨\n(남은 이미지 생성 횟수: {remaining}장)",
-                                    file=image_file,
-                                    mention_author=False
-                                )
-                            else:
-                                # 폴백: URL로 전송
-                                await message.reply(
-                                    f"짜잔~ 이미지 생성했어! 🎨\n{result['image_url']}\n\n(남은 이미지 생성 횟수: {remaining}장)",
-                                    mention_author=False
-                                )
-                            
-                            # LLM 호출 카운터 증가
-                            await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
-                            await db_utils.log_api_call(self.bot.db, "llm_global")
-                            
-                            await db_utils.log_analytics(
-                                self.bot.db,
-                                "AI_INTERACTION",
-                                {
-                                    "guild_id": guild_id_safe,
-                                    "user_id": message.author.id,
-                                    "channel_id": message.channel.id,
-                                    "trace_id": trace_id,
-                                    "mode": "image_generation",
-                                },
-                            )
-                            return  # 이미지 생성 완료, 추가 처리 없이 종료
-                        
-                        # 이미지 생성 에러 시 상태 메시지 수정
-                        if tool_call.get('tool_to_use') == 'generate_image' and result.get('error'):
-                            error_msg = result['error']
-                            logger.warning(f"이미지 생성 실패: {error_msg}", extra=log_extra)
-                            try:
-                                await status_msg.edit(content=f"😅 {error_msg}")
-                            except:
-                                await message.reply(f"😅 {error_msg}", mention_author=False)
-                            return  # 이미지 생성 실패, 추가 처리 없이 종료
-                        
-                        tool_results.append(
-                            {
-                                "step": idx,
-                                "tool_name": tool_call.get('tool_to_use'),
-                                "parameters": tool_call.get('parameters'),
-                                "result": result,
-                            }
-                        )
-                        executed_plan.append(tool_call)
-                else:
-                    # 도구 계획이 없을 때, 웹 검색이 필요한 질문인지 자동 판단
-                    if await self._should_use_web_search(user_query, rag_top_score):
-                        logger.info("자동 판단: 웹 검색이 필요한 질문으로 판단됨", extra=log_extra)
-                        web_result = await self._execute_web_search_with_llm(user_query, log_extra)
-                        
-                        # 뉴스 검색 결과가 있으면 바로 응답 + 📰 리액션 추가
-                        if web_result.get("summary"):
-                            source_urls = web_result.get("source_urls", [])
-                            # 출처가 있으면 안내 문구 추가 (LLM 담당 아님, 코드에서 자동 생성)
-                            if source_urls:
-                                final_response_text = web_result["summary"] + "\n\n📰 *뉴스 리액션을 누르면 출처를 확인할 수 있어!*"
-                            else:
-                                final_response_text = web_result["summary"]
-                            logger.info("뉴스 검색 요약을 최종 응답으로 사용", extra=log_extra)
-                            
-                            # LLM 일일 카운터 증가 (안전장치)
-                            await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
-                            await db_utils.log_api_call(self.bot.db, "llm_global")
-                            
-                            reply_msg = await message.reply(final_response_text, mention_author=False)
-                            
-                            # 출처 URL이 있으면 캐시에 저장하고 📰 리액션 추가
-                            if source_urls:
-                                self._news_source_cache[reply_msg.id] = source_urls
-                                # 캐시 크기 제한 (최대 50개)
-                                if len(self._news_source_cache) > 50:
-                                    oldest_key = next(iter(self._news_source_cache))
-                                    del self._news_source_cache[oldest_key]
-                                try:
-                                    await reply_msg.add_reaction("📰")
-                                except Exception as e:
-                                    logger.warning(f"📰 리액션 추가 실패: {e}", extra=log_extra)
-                            await db_utils.log_analytics(
-                                self.bot.db,
-                                "AI_INTERACTION",
-                                {
-                                    "guild_id": guild_id_safe,
-                                    "user_id": message.author.id,
-                                    "channel_id": message.channel.id,
-                                    "trace_id": trace_id,
-                                    "mode": "web_search_auto",
-                                },
-                            )
-                            return  # 여기서 종료 - 추가 LLM 호출 방지
-                        
-                        # 요약 실패 시 기존 로직으로 폴백
-                        if web_result.get("result"):
-                            tool_results.append(
-                                {
-                                    "step": 1,
-                                    "tool_name": "web_search",
-                                    "parameters": {"query": user_query, "auto_triggered": True},
-                                    "result": web_result,
-                                }
-                            )
-                            executed_plan.append({"tool_to_use": "web_search", "parameters": {"query": user_query}})
-                    else:
-                        logger.info("도구 계획 없음 - RAG/일반 대화로 처리", extra=log_extra)
-
-                executed_tool_results = [res for res in tool_results if res.get("tool_name") not in {"local_rag"}]
-
-                def _is_tool_failed(result_obj: Any) -> bool:
-                    if result_obj is None:
-                        return True
-                    lowered = str(result_obj).lower()
-                    failure_keywords = ["error", "오류", "실패", "없습니다", "알 수 없는", "찾을 수"]
-                    return any(keyword in lowered for keyword in failure_keywords)
-
-                any_failed = any(_is_tool_failed(res.get("result")) for res in executed_tool_results)
-                executed_tool_names = {res.get("tool_name") for res in executed_tool_results}
-                use_fallback_prompt = False
-
-                # [Fix] 도구 실패 시 자동 웹검색 폴백 제거
-                # 이전: 날씨/주식 실패 → 무조건 웹검색 → 엉뚱한 정보 출력
-                # 변경: 실패하면 RAG 컨텍스트만 사용하여 일반 대화로 처리
-                if executed_tool_results and any_failed:
-                    failed_tools = [res.get('tool_name') for res in executed_tool_results if _is_tool_failed(res.get('result'))]
-                    logger.info(f"도구 실행 실패 ({failed_tools}). 일반 대화로 처리합니다.", extra=log_extra)
-                    # 실패한 도구 결과 제거 (LLM에 오류 정보가 넘어가지 않게)
-                    tool_results = [res for res in tool_results if res.get('tool_name') == 'local_rag']
-
-                tool_results_str = self._format_tool_results_for_prompt(tool_results)
-                if len(tool_results_str) > 3800:
-                    tool_results_str = tool_results_str[:3800]  # Gemini 입력 제한 보호
-
-
-                # 단일 모델 아키텍처: Main 모델 호출
-                system_prompt = config.WEB_FALLBACK_PROMPT if use_fallback_prompt else config.AGENT_SYSTEM_PROMPT
-                rag_blocks_for_prompt = [] if use_fallback_prompt else rag_blocks
+            if tool_plan:
+                await status_msg.edit(content=f"🔍 필요한 정보를 찾는 중이야... ({len(tool_plan)}단계)")
+                logger.info(f"2단계: 도구 실행 시작. 총 {len(tool_plan)}단계.", extra=log_extra)
                 
-                # [NEW] 운세 컨텍스트 조회 (DM인 경우에만)
-                fortune_context = None
-                if not message.guild and self.bot.db:
-                    try:
-                        # 오늘 날짜 확인
-                        today_str = datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d')
-                        # 구독 발송 기록(last_fortune_sent)은 YYYY-MM-DD
-                        # last_fortune_content가 언제 저장되었는지 별도 컬럼이 없지만,
-                        # last_fortune_sent가 '오늘'이면 last_fortune_content도 '오늘'것일 확률이 높음.
-                        # 다만 sent가 업데이트 안되고 content만 업데이트(직접조회) 될 수 있음.
-                        # 여기서는 last_fortune_content가 null이 아니면 일단 가져오되,
-                        # 내용 안에 날짜가 없다면... 음.
-                        # 일단 단순히 가져와보자. (user_profiles에 last_gen_date가 있으면 좋겠지만 sent를 활용하거나)
-                        # 여기서는 content만 가져옴.
-                        row = await self.bot.db.execute("SELECT last_fortune_content FROM user_profiles WHERE user_id = ?", (message.author.id,)) # 
-                        res = await row.fetchone()
-                        if res and res[0]:
-                             fortune_context = res[0]
-                    except Exception as e:
-                        logger.error(f"운세 컨텍스트 조회 실패: {e}")
-
-                main_prompt = self._compose_main_prompt(
-                    message,
-                    user_query=user_query,
-                    rag_blocks=rag_blocks_for_prompt,
-                    tool_results_block=tool_results_str if tool_results_str else None,
-                    fortune_context=fortune_context,
-                    recent_history=history, # [NEW] 히스토리 주입
-                )
-
-                final_response_text = ""
-
-                # CometAPI 우선 사용, 실패 시 Gemini로 폴백
-                if self.use_cometapi:
-                    logger.info("CometAPI(답변 생성) 호출...", extra=log_extra)
-                    final_response_text = await self._cometapi_generate_content(
-                        system_prompt, main_prompt, log_extra
-                    ) or ""
-                
-                # CometAPI 실패 또는 비활성화 시 Gemini 사용
-                if not final_response_text and self.gemini_configured and genai:
-                    logger.info("Gemini(답변 생성) 호출...", extra=log_extra)
-                    main_model = genai.GenerativeModel(
-                        config.AI_RESPONSE_MODEL_NAME,
-                        system_instruction=system_prompt,
-                    )
-                    self._debug(f"[Gemini] system_prompt={self._truncate_for_debug(system_prompt)}", log_extra)
-                    self._debug(f"[Gemini] user_prompt={self._truncate_for_debug(main_prompt)}", log_extra)
-                    main_response = await self._safe_generate_content(main_model, main_prompt, log_extra)
-                    if main_response and main_response.parts:
-                        try:
-                            final_response_text = main_response.text.strip()
-                        except ValueError:
-                            pass
-                
-                if final_response_text:
-                    self._debug(f"[Main] 최종 응답: {self._truncate_for_debug(final_response_text)}", log_extra)
-                    debug_block = self._build_rag_debug_block(rag_entries)
-                    if debug_block:
-                        logger.debug("RAG 디버그 블록:\n%s", debug_block, extra=log_extra)
+                for idx, tool_call in enumerate(tool_plan, start=1):
+                    tool_name = tool_call.get('tool_to_use')
+                    await status_msg.edit(content=f"🔍 {tool_name} 실행 중... ({idx}/{len(tool_plan)})")
                     
-                    # LLM 일일 카운터 증가 (안전장치)
-                    await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
-                    await db_utils.log_api_call(self.bot.db, "llm_global")
-
-                    # 응답 텍스트 후처리: 자기 자신 멘션(@마사몽 등) 제거
-                    final_response_text = re.sub(r'^@마사몽\s*', '', final_response_text)
-                    final_response_text = re.sub(r'^@masamong\s*', '', final_response_text, flags=re.IGNORECASE)
-                    final_response_text = re.sub(r'^<@!?[0-9]+>\s*', '', final_response_text)
+                    # generate_image 도구 특수 처리
+                    if tool_name == 'generate_image':
+                        tool_call.setdefault('parameters', {})['user_id'] = message.author.id
+                        await status_msg.edit(content="🎨 멋진 이미지를 그려내고 있어! 잠시만 기다려줘...")
                     
-                    await self._send_split_message(message, final_response_text)
-                    await db_utils.log_analytics(
-                        self.bot.db,
-                        "AI_INTERACTION",
-                        {
-                            "guild_id": message.guild.id if message.guild else "DM",
-                            "user_id": message.author.id,
-                            "channel_id": message.channel.id,
-                            "trace_id": trace_id,
-                            "user_query": user_query,
-                            "tool_plan": executed_plan or tool_plan,
-                            "final_response": final_response_text,
-                            "is_fallback": use_fallback_prompt,
-                        },
-                    )
-                else:
-                    # RAG 문맥이 독성/안전 문제로 차단되었을 가능성 -> RAG 없이 재시도
-                    # 재시도는 Gemini가 사용 가능한 경우에만 의미 있음 (CometAPI는 RAG와 무관하게 실패)
-                    if rag_blocks_for_prompt and self.gemini_configured and genai and locals().get('main_model'):
-                        logger.warning("Main 모델 응답이 비어있어, RAG 문맥을 제외하고 재시도합니다.", extra=log_extra)
-                        main_prompt_retry = self._compose_main_prompt(
-                            message,
-                            user_query=user_query,
-                            rag_blocks=[],  # RAG 제거
-                            tool_results_block=tool_results_str if tool_results_str else None,
-                        )
-                        self._debug(f"[Main Retry] user_prompt={self._truncate_for_debug(main_prompt_retry)}", log_extra)
-                        retry_response = await self._safe_generate_content(
-                            main_model,
-                            main_prompt_retry,
-                            log_extra,
-                            generation_config=genai.types.GenerationConfig(temperature=config.AI_TEMPERATURE)
-                        )
-
-                        retry_text = ""
-                        if retry_response and retry_response.parts:
-                            try:
-                                retry_text = retry_response.text.strip()
-                            except ValueError:
-                                pass
-
-                        if retry_text:
-                            await message.reply(retry_text, mention_author=False)
-                            await db_utils.log_analytics(
-                                self.bot.db,
-                                "AI_INTERACTION",
-                                {
-                                    "guild_id": message.guild.id if message.guild else "DM",
-                                    "user_id": message.author.id,
-                                    "channel_id": message.channel.id,
-                                    "trace_id": trace_id,
-                                    "user_query": user_query,
-                                    "tool_plan": executed_plan or tool_plan,
-                                    "final_response": retry_text,
-                                    "is_fallback": True,
-                                },
-                            )
-                            return
+                    result = await self._execute_tool(tool_call, guild_id_safe, user_query)
+                    
+                    # 이미지 생성 성공 시 처리
+                    if tool_name == 'generate_image' and (result.get('image_data') or result.get('image_url')):
+                        # ... (기존 이미지 전송 로직 유지하되 status_msg 활용) ...
+                        remaining = result.get('remaining', 0)
+                        if result.get('image_data'):
+                            import io
+                            image_file = discord.File(io.BytesIO(result['image_data']), filename="generated_image.jpg")
+                            await message.reply(f"짜잔~ 이미지 생성했어! 🎨\n(남은 생성 횟수: {remaining}장)", file=image_file, mention_author=False)
                         else:
-                            logger.error("Main 모델이 최종 답변을 생성하지 못했습니다.", extra=log_extra)
-                            truncated_results = tool_results_str[:1900] if tool_results_str else "No tool results."
-                            await message.reply(
-                                "모든 도구를 실행했지만, 최종 답변을 만드는 데 실패했어요. 도구 응답 요약:\n```json\n"
-                                f"{truncated_results}\n```",
-                                mention_author=False,
-                            )
-                    else:  # RAG 없거나 Gemini 불가 → 재시도 불가
-                        logger.error("Main 모델이 최종 답변을 생성하지 못했습니다 (재시도 불가).", extra=log_extra)
-                        truncated_results = tool_results_str[:1900] if tool_results_str else "No tool results."
-                        await message.reply(
-                            "모든 도구를 실행했지만, 최종 답변을 만드는 데 실패했어요. (AI 응답 없음)\n```json\n"
-                            f"{truncated_results}\n```",
-                            mention_author=False,
-                        )
+                            await message.reply(f"짜잔~ 이미지 생성했어! 🎨\n{result['image_url']}\n(남은 생성 횟수: {remaining}장)", mention_author=False)
+                        
+                        await status_msg.delete()
+                        await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
+                        await db_utils.log_api_call(self.bot.db, "llm_global")
+                        return
 
+                    tool_results.append({
+                        "step": idx,
+                        "tool_name": tool_name,
+                        "parameters": tool_call.get('parameters'),
+                        "result": result,
+                    })
+                    executed_plan.append(tool_call)
+                # 도구 계획이 없을 때 웹 검색 자동 판단
+                if await self._should_use_web_search(user_query, rag_top_score, history=history):
+                    await status_msg.edit(content="🌐 웹에서 정보를 찾아보는 중이야...")
+                    
+                    # [NEW] 히스토리를 바탕으로 검색 쿼리 정제
+                    refined_query = user_query
+                    if history:
+                        refined_query = await self._refine_search_query_with_llm(user_query, history, log_extra)
+                        logger.info(f"자동 웹검색 쿼리 정제: '{user_query}' -> '{refined_query}'", extra=log_extra)
 
-            except Exception as e:
-                logger.error(f"에이전트 처리 중 최상위 오류: {e}", exc_info=True, extra=log_extra)
+                    web_result = await self._execute_web_search_with_llm(refined_query, log_extra, history=history)
+                    
+                    if web_result.get("summary"):
+                        source_urls = web_result.get("source_urls", [])
+                        final_response_text = web_result["summary"]
+                        if source_urls:
+                             final_response_text += "\n\n📰 *뉴스 리액션을 누르면 출처를 확인할 수 있어!*"
+                        
+                        await status_msg.edit(content=final_response_text)
+                        if source_urls:
+                             self._news_source_cache[status_msg.id] = source_urls
+                             if len(self._news_source_cache) > 50:
+                                 self._news_source_cache.pop(next(iter(self._news_source_cache)))
+                             try:
+                                 await status_msg.add_reaction("📰")
+                             except: pass
+                        
+                        await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
+                        await db_utils.log_api_call(self.bot.db, "llm_global")
+                        return
+
+            # 답변 작성 단계
+            await status_msg.edit(content="✍️ 답변을 정리하고 있어...")
+
+            # 도구 결과에서 출처 URL 추출
+            source_urls_to_cache = []
+            for res in tool_results:
+                if (res.get("tool_name") == "search_news_rag" or res.get("tool_name") == "web_search") and isinstance(res.get("result"), dict):
+                    urls = res["result"].get("source_urls") or res["result"].get("urls")
+                    if urls:
+                        source_urls_to_cache.extend(urls)
+
+            # 도구 결과 포맷팅 및 프롬프트 구성
+            tool_results_str = self._format_tool_results_for_prompt(tool_results)
+            system_prompt = config.AGENT_SYSTEM_PROMPT
+            
+            # [NEW] 운세 컨텍스트 조회
+            fortune_context = None
+            if not message.guild and self.bot.db:
+                row = await self.bot.db.execute("SELECT last_fortune_content FROM user_profiles WHERE user_id = ?", (message.author.id,))
+                res = await row.fetchone()
+                if res and res[0]: fortune_context = res[0]
+
+            main_prompt = self._compose_main_prompt(
+                message,
+                user_query=user_query,
+                rag_blocks=rag_blocks,
+                tool_results_block=tool_results_str if tool_results_str else None,
+                fortune_context=fortune_context,
+                recent_history=history,
+            )
+
+            # 답변 생성 (CometAPI -> Gemini)
+            final_response_text = ""
+            if self.use_cometapi:
+                final_response_text = await self._cometapi_generate_content(system_prompt, main_prompt, log_extra) or ""
+            
+            if not final_response_text and self.gemini_configured:
+                main_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, system_instruction=system_prompt)
+                main_response = await self._safe_generate_content(main_model, main_prompt, log_extra)
+                if main_response: final_response_text = main_response.text.strip()
+
+            if final_response_text:
+                # 멘션 제거 및 후처리
+                final_response_text = re.sub(r'^@마사몽\s*|^@masamong\s*|^<@!?[0-9]+>\s*', '', final_response_text, flags=re.IGNORECASE)
+                
+                # [Progress Update] 최종 답변으로 편집
+                if source_urls_to_cache:
+                    final_response_text += "\n\n📰 *뉴스 리액션을 누르면 출처를 확인할 수 있어!*"
+
+                await status_msg.edit(content=final_response_text)
+
+                # 출처 캐시 저장 및 리액션 추가
+                if source_urls_to_cache:
+                    self._news_source_cache[status_msg.id] = list(dict.fromkeys(source_urls_to_cache)) # 중복 제거
+                    if len(self._news_source_cache) > 50:
+                        self._news_source_cache.pop(next(iter(self._news_source_cache)))
+                    try:
+                        await status_msg.add_reaction("📰")
+                    except: pass
+                
+                # 분석 데이터 로깅
+                await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
+                await db_utils.log_api_call(self.bot.db, "llm_global")
+                await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {
+                    "guild_id": message.guild.id if message.guild else "DM",
+                    "user_id": message.author.id,
+                    "channel_id": message.channel.id,
+                    "trace_id": trace_id,
+                    "user_query": user_query,
+                    "tool_plan": executed_plan or tool_plan,
+                    "final_response": final_response_text,
+                })
+            else:
+                await status_msg.edit(content="미안해, 답변을 생성하는 데 실패했어. 😢")
+
+        except Exception as e:
+            logger.error(f"에이전트 처리 중 최상위 오류: {e}", exc_info=True, extra=log_extra)
+            try:
+                await status_msg.edit(content=config.MSG_AI_ERROR)
+            except:
                 await message.reply(config.MSG_AI_ERROR, mention_author=False)
-            finally:
-                self._debug(f"--- 에이전트 세션 종료 trace_id={trace_id}", log_extra)
+        finally:
+            self._debug(f"--- 에이전트 세션 종료 trace_id={trace_id}", log_extra)
     async def _get_recent_history(self, message: discord.Message, rag_prompt: str) -> list:
         """모델에 전달할 최근 대화 기록을 채널에서 가져옵니다."""
         history_limit = 6 if rag_prompt else 12

@@ -419,7 +419,7 @@ RAG_ARCHIVING_CONFIG = {
 AI_CREATIVE_PROMPTS = {
     "fortune": "사용자 '{user_name}'를 위한 오늘의 운세를 재치있게 알려줘.",
     "summarize": "다음 대화 내용을 분석해서, 핵심 내용을 3가지 항목으로 요약해줘.\n--- 대화 내용 ---\n{conversation}",
-    "ranking": "다음 서버 활동 랭킹을 보고, 1등을 축하하고 다른 사람들을 독려하는 발표 멘트를 작성해줘.\n--- 활동 랭킹 ---\n{ranking_list}",
+    "ranking": "다음 서버 활동 랭킹과 통계를 보고, 1등({top_one_name})을 특별히 축하하며 전체적인 서버 분위기를 북돋우는 재치 있는 발표 멘트를 작성해줘. 등급이나 최근 활동 정보도 언급해주면 좋아.\n--- 서버 통계 ---\n{server_stats}\n--- 활동 랭킹 ---\n{ranking_list}",
     "answer_time": "현재 시간은 '{current_time}'입니다. 이 정보를 사용하여 사용자에게 현재 시간을 알려주세요.",
     "answer_weather": "'{location_name}'의 날씨 정보는 다음과 같습니다: {weather_data}. 이 정보를 바탕으로 사용자에게 날씨를 설명해주세요.",
     "answer_weather_weekly": "'{location_name}'의 이번 주 주간 날씨 데이터(단기+중기)는 다음과 같습니다:\n{weather_data}\n\n이 데이터를 바탕으로 사용자가 이번 주 날씨 흐름(요일별 변화 등)을 한눈에 알 수 있도록 요약해서 설명해주세요. 날짜별 날씨, 기온 변화 등을 자연스럽게 언급하세요."

@@ -246,19 +246,6 @@ class ReMasamongBot(commands.Bot):
                     extra={'guild_id': guild_id, 'channel_id': channel_id}
                 )
 
-        events_cog = self.get_cog('EventListeners')
-        if events_cog:
-            try:
-                # 키워드 트리거도 DM에서는 굳이 동작할 필요 없거나, 내부에서 체크할 것임.
-                if await events_cog._handle_keyword_triggers(message):
-                    return
-            except Exception as exc:  # pragma: no cover
-                logger.error(
-                    "키워드 트리거 처리 중 오류: %s",
-                    exc,
-                    exc_info=True,
-                    extra={'guild_id': guild_id, 'channel_id': channel_id}
-                )
 
         ai_ready = ai_handler and ai_handler.is_ready
         if not ai_ready:
