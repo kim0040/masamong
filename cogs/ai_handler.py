@@ -81,6 +81,7 @@ class AIHandler(commands.Cog):
         self.proactive_cooldowns: Dict[int, float] = {}
         # 뉴스 출처 리액션 캐시: {메시지ID: [URL, ...]} — 📰 리액션 클릭 시 출처 표시
         self._news_source_cache: Dict[int, list] = {}
+        self._updating_news_sources: set[int] = set() # [NEW] 동시성 방어용: 현재 업데이트 중인 메시지 ID 세트
         self.gemini_configured = False
         self.api_call_lock = asyncio.Lock()
         self.discord_embedding_store = DiscordEmbeddingStore(config.DISCORD_EMBEDDING_DB_PATH)
@@ -2335,6 +2336,11 @@ Generate the optimized English image prompt:"""
         source_urls = self._news_source_cache.get(payload.message_id)
         if not source_urls:
             return
+        # 동시성 방어: 이미 다른 요청이 이 메시지를 업데이트 중이면 무시
+        if payload.message_id in self._updating_news_sources:
+            return
+            
+        self._updating_news_sources.add(payload.message_id)
         try:
             channel = self.bot.get_channel(payload.channel_id)
             if not channel:
@@ -2345,13 +2351,17 @@ Generate the optimized English image prompt:"""
             url_lines = [f"{i}. {url}" for i, url in enumerate(source_urls, 1)]
             source_text = "\n\n📰 **뉴스 출처**\n" + "\n".join(url_lines)
             
-            # 이미 출처가 포함되어 있는지 확인
+            # 이미 출처가 포함되어 있는지 확인 (더블 체크)
             if "📰 **뉴스 출처**" in msg.content:
-                return # 이미 추가됨
+                return
                 
             await msg.edit(content=msg.content + source_text)
         except Exception as e:
             logger.warning(f"뉴스 출처 리액션 처리 실패: {e}")
+        finally:
+            # 작업이 끝나면 세트에서 제거 (성공/실패 여부와 상관없이)
+            if payload.message_id in self._updating_news_sources:
+                self._updating_news_sources.remove(payload.message_id)
 
 
 async def setup(bot: commands.Bot):
