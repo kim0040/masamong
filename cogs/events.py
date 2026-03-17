@@ -114,10 +114,10 @@ class EventListeners(commands.Cog):
         if isinstance(error, commands.CheckFailure):
             # DM 전용 명령어 체크 실패 시 안내
             if isinstance(error, commands.PrivateMessageOnly):
-                await ctx.reply("🔒 개인 정보 보호를 위해 **DM(다이렉트 메시지)**에서만 사용할 수 있는 명령어입니다.")
+                await ctx.send("🔒 개인 정보 보호를 위해 **DM(다이렉트 메시지)**에서만 사용할 수 있는 명령어입니다.")
                 return
             if isinstance(error, commands.NoPrivateMessage):
-                await ctx.reply("📢 이 명령어는 **서버 채널**에서만 사용할 수 있어요.")
+                await ctx.send("📢 이 명령어는 **서버 채널**에서만 사용할 수 있어요.")
                 return
             
             # 기타 권한 부족 등은 로그만 남김
