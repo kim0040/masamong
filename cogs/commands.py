@@ -8,6 +8,7 @@ import discord
 from discord.ext import commands
 import os
 import io
+import asyncio
 
 import config
 from logger_config import logger
