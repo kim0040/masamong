@@ -16,6 +16,7 @@ from __future__ import annotations  # Python 3.9 호환: X | Y 타입 힌트 지
 
 import asyncio
 import re
+import json
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -28,6 +29,18 @@ from google import genai
 
 import config
 from logger_config import logger
+
+# [Security/Fix] NLTK resources check
+try:
+    import nltk
+    # punkt, punkt_tab are needed for newspaper4k
+    for res in ['punkt', 'punkt_tab']:
+        try:
+            nltk.data.find(f'tokenizers/{res}')
+        except LookupError:
+            nltk.download(res, quiet=True)
+except ImportError:
+    pass
 
 # ─────────────────────────────────────────────
 # Fast 모델 클라이언트 (의도 분석 / 키워드 / 기사 요약 전용)
