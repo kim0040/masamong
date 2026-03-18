@@ -134,17 +134,92 @@ def _extract_article_text(url: str) -> tuple[str | None, str]:
 # 파이프라인 내부 함수들
 # ─────────────────────────────────────────────
 
-def _analyze_intent(user_query: str) -> str:
+def _analyze_intent(user_query: str) -> dict[str, str]:
     """
-    사용자 질문이 국내(LOCAL)/해외(GLOBAL)/양쪽(BOTH) 뉴스를 필요로 하는지 판단합니다.
+    사용자 질문의 의도를 분석하여 검색 전략을 결정합니다.
+    분류:
+    - category: 'NEWS' (최신 사건/뉴스가 필요한 경우), 'GENERAL' (일반 지식/기관 정보/과거 사실이 필요한 경우)
+    - scope: 'LOCAL', 'GLOBAL', 'BOTH' (검색 지역 범위)
     """
     prompt = (
-        f"다음 질문이 국내 소식에 국한된 것인지, 해외 소식이 중요하거나 함께 봐야 하는지 분석하세요.\n"
-        f"반드시 'LOCAL', 'GLOBAL', 'BOTH' 중 하나로만 대답하세요. 다른 텍스트는 일절 출력하지 마세요.\n"
-        f"질문: {user_query}"
+        f"다음 질문의 의도를 분석하여 JSON 형식으로 답변하세요.\n"
+        f"1. category: 최신 뉴스/사건보도가 필요하면 'NEWS', 일반 상식/지식/기관정보/위키 등 광범위한 정보가 필요하면 'GENERAL'\n"
+        f"2. scope: 국내 소식 중심이면 'LOCAL', 해외 소식이 중요하면 'GLOBAL', 둘 다면 'BOTH'\n\n"
+        f"질문: {user_query}\n\n"
+        f"형식: {{\"category\": \"NEWS\", \"scope\": \"LOCAL\"}}"
     )
-    result = _call_fast_model(prompt).strip().upper()
-    return result if result in ("LOCAL", "GLOBAL", "BOTH") else "BOTH"
+    raw = _call_fast_model(prompt)
+    try:
+        # JSON 문자열만 추출 (마크다운 코드 블록 제거 등)
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if match:
+            data = json.loads(match.group())
+            category = data.get("category", "NEWS").upper()
+            scope = data.get("scope", "BOTH").upper()
+            return {
+                "category": category if category in ("NEWS", "GENERAL") else "NEWS",
+                "scope": scope if scope in ("LOCAL", "GLOBAL", "BOTH") else "BOTH"
+            }
+    except Exception as e:
+        logger.warning(f"[news_search] 의도 분석 파싱 실패: {e}")
+    
+    return {"category": "NEWS", "scope": "BOTH"}
+
+
+def _search_web_sync(user_query: str, region: str = "kr-kr") -> tuple[list | None, str]:
+    """
+    [동기] DuckDuckGo 일반 웹 검색을 수행합니다 (날짜 제한 없음).
+    공식 홈페이지, 위키백과 등을 찾기에 유리합니다.
+    """
+    lang = "ko" if region == "kr-kr" else "en"
+    label = "국내/웹" if region == "kr-kr" else "해외/웹"
+
+    keywords = _build_keywords(user_query, lang)
+    logger.info(f"[news_search] [{label}] 검색어: {keywords}")
+
+    all_raw: list[dict] = []
+    seen_urls: set[str] = set()
+
+    for kw in keywords:
+        try:
+            with DDGS() as ddgs:
+                results = list(
+                    ddgs.text(
+                        kw,
+                        region=region,
+                        safesearch="off",
+                        max_results=10,
+                    )
+                )
+                for r in results:
+                    url = r.get("href", "")
+                    if url and url not in seen_urls:
+                        all_raw.append({
+                            "title": r.get("title", ""),
+                            "body": r.get("body", ""),
+                            "url": url,
+                            "source": "Web",
+                            "date": "" # 웹 검색은 날짜 정보가 부정확할 수 있음
+                        })
+                        seen_urls.add(url)
+        except Exception as e:
+            logger.warning(f"[news_search] DDGS Web 오류 ({kw[:30]}): {e}")
+
+    if not all_raw:
+        return None, f"[{label}] 검색 결과가 없습니다."
+
+    results = [
+        {
+            "title": r.get("title", ""),
+            "snippet": r.get("body", ""),
+            "url": r.get("url", ""),
+            "source": r.get("source", ""),
+            "date": r.get("date", ""),
+        }
+        for r in all_raw
+    ]
+    logger.info(f"[news_search] [{label}] 총 {len(results)}개 웹 후보 확보")
+    return results, "성공"
 
 
 def _build_keywords(user_query: str, lang: str) -> list[str]:
@@ -261,12 +336,13 @@ def _select_best_links(user_query: str, search_results: list, count: int = 3) ->
     candidates_text = _format_ddgs_results_for_llm(search_results)
     select_prompt = (
         f"사용자 질문: \"{user_query}\"\n\n"
-        f"아래 뉴스 후보 중 질문에 가장 정확하고 신뢰할 수 있는 기사를 최대 {count}개 선정하세요.\n\n"
+        f"아래 검색 후보 중 질문에 가장 정확하고 신뢰할 수 있는 정보를 최대 {count}개 선정하세요.\n\n"
         f"선정 기준:\n"
-        f"1. 언론사가 명확한 공식 보도 기관 우선 (연합뉴스, Reuters, BBC, 한경 등)\n"
-        f"2. 날짜가 최신일수록 우선\n"
-        f"3. 제목과 내용이 질문과 직접 관련된 기사 우선\n"
-        f"4. 개인 블로그, 커뮤니티, 위키 성격의 URL은 배제\n\n"
+        f"1. 공식 홈페이지(.ac.kr, .go.kr), 나무위키, 위키백과 등 공신력 있거나 정보량이 많은 출처 우선\n"
+        f"2. 언론사의 공식 보도 기사 우선\n"
+        f"3. 질문이 최신 사건이 아닌 일반 지식/정보인 경우, 날짜보다 내용의 정확성 위주로 판단\n"
+        f"4. 커뮤니티(디시인사이드, 에펨코리아, 아카라이브 등) 게시글은 실시간 반응이나 여론 확인이 필요한 경우에만 포함하되, 공식 출처보다 후순위로 선정\n"
+        f"5. 개인 블로그 등 지나치게 주관적인 출처는 가급적 배제\n\n"
         f"출력 형식: 선정한 URL만 한 줄에 하나씩 출력하세요. 다른 텍스트는 출력하지 마세요.\n\n"
         f"후보 목록:\n{candidates_text}"
     )
@@ -316,61 +392,59 @@ def _process_single_article(url: str, user_query: str, snippet: str = "") -> dic
 
 async def run_news_search_pipeline(user_query: str) -> dict[str, Any]:
     """
-    마사몽용 비동기 뉴스 검색 파이프라인.
-
-    전체 흐름:
-      1. 의도 분석 (LOCAL/GLOBAL/BOTH)
-      2. DuckDuckGo 뉴스 검색
-      3. LLM이 최적 기사 URL 3개 선정
-      4. 병렬 본문 추출 + 요약
-      5. 요약 컨텍스트 문자열 반환 (최종 답변 합성은 ai_handler 담당)
-
-    Returns:
-        {
-            "status": "success",
-            "context": str,      # 기사 요약들 (프롬프트에 주입될 텍스트)
-            "source_urls": list  # 출처 URL 목록
-        }
-        또는
-        {
-            "status": "error",
-            "message": str
-        }
+    마사몽용 비동기 뉴스/웹 검색 RAG 파이프라인.
     """
     if not getattr(config, "DDGS_ENABLED", True):
-        return {"status": "error", "message": "뉴스 검색 기능이 비활성화되어 있습니다."}
+        return {"status": "error", "message": "검색 기능이 비활성화되어 있습니다."}
 
     logger.info(f"[news_search] 파이프라인 시작: \"{user_query}\"")
 
-    # ── 단계 1: 의도 분석 (동기 → async로 감싸기) ──
-    intent = await asyncio.to_thread(_analyze_intent, user_query)
-    logger.info(f"[news_search] 검색 범위: [{intent}]")
+    # ── 단계 1: 의도 분석 ──
+    intent_data = await asyncio.to_thread(_analyze_intent, user_query)
+    category = intent_data["category"]
+    scope = intent_data["scope"]
+    logger.info(f"[news_search] 분석 결과: Category=[{category}], Scope=[{scope}]")
 
-    # ── 단계 2: 검색 ──
+    # ── 단계 2: 검색 (NEWS면 뉴스 검색, GENERAL이면 웹 검색) ──
     all_results: list[dict] = []
 
-    if intent in ("LOCAL", "BOTH"):
-        results_ko, _ = await asyncio.to_thread(_search_news_sync, user_query, "kr-kr")
-        if results_ko:
-            all_results.extend(results_ko)
+    async def _perform_search(cat: str, target_scope: str):
+        results = []
+        if cat == "NEWS":
+            if target_scope in ("LOCAL", "BOTH"):
+                res, _ = await asyncio.to_thread(_search_news_sync, user_query, "kr-kr")
+                if res: results.extend(res)
+            if target_scope in ("GLOBAL", "BOTH"):
+                res, _ = await asyncio.to_thread(_search_news_sync, user_query, "wt-wt")
+                if res: results.extend(res)
+        else: # GENERAL
+            if target_scope in ("LOCAL", "BOTH"):
+                res, _ = await asyncio.to_thread(_search_web_sync, user_query, "kr-kr")
+                if res: results.extend(res)
+            if target_scope in ("GLOBAL", "BOTH"):
+                res, _ = await asyncio.to_thread(_search_web_sync, user_query, "wt-wt")
+                if res: results.extend(res)
+        return results
 
-    if intent in ("GLOBAL", "BOTH"):
-        results_en, _ = await asyncio.to_thread(_search_news_sync, user_query, "wt-wt")
-        if results_en:
-            all_results.extend(results_en)
+    all_results = await _perform_search(category, scope)
+
+    # NEWS 검색 실패 시 GENERAL로 자동 폴백
+    if not all_results and category == "NEWS":
+        logger.info(f"[news_search] 뉴스 결과 없음 → 일반 웹 검색으로 폴백 시도")
+        all_results = await _perform_search("GENERAL", scope)
 
     if not all_results:
-        return {"status": "error", "message": "관련 뉴스를 찾지 못했습니다."}
+        return {"status": "error", "message": "관련 정보를 찾지 못했습니다."}
 
-    # ── 단계 3: 기사 선정 ──
+    # ── 단계 3: 기사/페이지 선정 ──
     best_urls, msg = await asyncio.to_thread(_select_best_links, user_query, all_results, 3)
     if not best_urls:
-        return {"status": "error", "message": f"기사 선정 실패: {msg}"}
+        return {"status": "error", "message": f"정보 선정 실패: {msg}"}
 
     snippet_map = {r["url"]: r.get("snippet", "") for r in all_results}
 
     # ── 단계 4: 병렬 요약 ──
-    logger.info(f"[news_search] {len(best_urls)}개 기사 병렬 분석 중...")
+    logger.info(f"[news_search] {len(best_urls)}개 페이지 병렬 분석 중...")
 
     def _parallel_summarize() -> list[dict]:
         with ThreadPoolExecutor(max_workers=3) as executor:
@@ -383,22 +457,22 @@ async def run_news_search_pipeline(user_query: str) -> dict[str, Any]:
     individual_results = await asyncio.to_thread(_parallel_summarize)
 
     if not individual_results:
-        return {"status": "error", "message": "기사 본문 추출에 모두 실패했습니다."}
+        return {"status": "error", "message": "본문 추출에 모두 실패했습니다."}
 
-    # ── 단계 5: 컨텍스트 문자열 조립 (최종 합성은 ai_handler 담당) ──
+    # ── 단계 5: 컨텍스트 문자열 조립 ──
     context_blocks = []
     source_urls = []
     for i, res in enumerate(individual_results, 1):
         if res and res.get("summary"):
-            context_blocks.append(f"[뉴스 출처 {i}]\n{res['summary']}")
+            context_blocks.append(f"[검색 출처 {i}]\n{res['summary']}")
             source_urls.append(res["url"])
 
     if not context_blocks:
-        return {"status": "error", "message": "유효한 기사 요약을 생성하지 못했습니다."}
+        return {"status": "error", "message": "유효한 요약을 생성하지 못했습니다."}
 
     context = "\n\n".join(context_blocks)
 
-    logger.info(f"[news_search] 파이프라인 완료. 요약 기사: {len(individual_results)}개")
+    logger.info(f"[news_search] 파이프라인 완료. 분석 페이지: {len(individual_results)}개")
     return {
         "status": "success",
         "context": context,
