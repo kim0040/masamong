@@ -141,6 +141,9 @@ class AIHandler(commands.Cog):
         
         # [NEW] Location Cache from DB
         self.location_cache: set[str] = set()
+        
+        # [NEW] Emoji Cache: {guild_id: (formatted_list, timestamp)}
+        self._emoji_cache: Dict[int, Tuple[list[str], float]] = {}
 
     # [NEW] 뉴스 출처 안내 메시지 상수
     NEWS_SOURCE_FOOTER = "\n\n📰 *뉴스 리액션을 누르면 출처를 확인할 수 있어!*"
@@ -247,6 +250,61 @@ class AIHandler(commands.Cog):
         alias_candidates = {alias for alias in alias_candidates if alias.strip("@")}
         return any(alias in content for alias in alias_candidates)
 
+    def _get_custom_emoji_instruction(self, guild: discord.Guild | None, user_query: str = "") -> str:
+        """현재 서버의 커스텀 이모지 목록을 가져와 AI용 지시문으로 반환합니다.
+        
+        [최적화]: 토큰 절약을 위해 다음 로직을 적용합니다:
+        1. 캐싱: 이모지 목록을 10분간 캐싱합니다.
+        2. 조건부 주입: 사용자가 이모지를 언급하거나, 감정 표현이 필요한 경우에만 주입합니다.
+        3. 샘플링: 일반 대화에서는 최대 5개, 이모지 언급 시 최대 30개로 제한합니다.
+        """
+        if not guild:
+            return ""
+        
+        # 1. 캐시 확인 및 갱신 (10분 기준)
+        now = time.time()
+        cached = self._emoji_cache.get(guild.id)
+        if cached and (now - cached[1]) < 600:
+            all_emojis = cached[0]
+        else:
+            all_emojis = []
+            for emoji in guild.emojis:
+                if emoji.animated:
+                    all_emojis.append(f"- {emoji.name}: <a:{emoji.name}:{emoji.id}>")
+                else:
+                    all_emojis.append(f"- {emoji.name}: <:{emoji.name}:{emoji.id}>")
+            self._emoji_cache[guild.id] = (all_emojis, now)
+        
+        if not all_emojis:
+            return ""
+
+        # 2. 주입 여부 및 샘플링 개수 결정
+        query_lower = user_query.lower()
+        emoji_keywords = ["이모지", "이모티콘", "스티커", "표정", "짤", "emoji", "emoticon"]
+        expressive_keywords = ["ㅋㅋ", "ㅎㅎ", "!", "?", "반가워", "축하", "기뻐", "슬퍼", "화나", "대박", "헐", "미친"]
+        
+        is_explicit = any(kw in query_lower for kw in emoji_keywords)
+        is_expressive = any(kw in query_lower for kw in expressive_keywords)
+        
+        if is_explicit:
+            sample_count = 30 # 이모지 질문 시 넉넉하게
+        elif is_expressive or random.random() < 0.2: # 20% 확률로 일반 대화에서도 인지시킴
+            sample_count = 5 # 평소에는 아주 적게
+        else:
+            return "" # 그 외엔 주입하지 않음 (토큰 절약)
+
+        # 3. 샘플링 (랜덤 추출하여 다양성 확보)
+        sampled = random.sample(all_emojis, min(len(all_emojis), sample_count))
+        emoji_list_str = "\n".join(sampled)
+        
+        count_info = f" (현재 {len(all_emojis)}개 중 {len(sampled)}개 샘플링됨)" if not is_explicit else ""
+        return (
+            f"\n\n### 서버 커스텀 이모지{count_info}\n"
+            "이 서버에서 사용할 수 있는 커스텀 이모지 샘플이야. 대화 맥락에 어울린다면 적극적으로 사용해줘!\n"
+            "**주의**: 이모지는 반드시 아래의 `<:이름:ID>` 또는 `<a:이름:ID>` 형식을 그대로 사용해야 전송돼.\n"
+            f"{emoji_list_str}\n"
+        )
+
     def _strip_bot_references(self, content: str, guild: discord.Guild | None) -> str:
         """메시지 내용에서 봇 멘션 및 별칭을 제거합니다."""
         base_content = content or ""
@@ -312,6 +370,21 @@ class AIHandler(commands.Cog):
             return None
         self._debug(f"정제된 사용자 쿼리: {self._truncate_for_debug(stripped)}", log_extra)
         return stripped
+
+    async def get_ai_completion(
+        self,
+        prompt: str,
+        system_role: str = "도움이 되는 친절한 보조원",
+        model: str | None = None
+    ) -> str | None:
+        """외부 Cog에서 일반적인 AI 응답을 얻기 위해 사용하는 공개 메서드입니다."""
+        log_extra = {'trace_id': f"gen_comp_{uuid.uuid4().hex[:4]}"}
+        if self.use_cometapi:
+            return await self._cometapi_generate_content(system_role, prompt, log_extra, model=model)
+        else:
+            # Gemini 전용 폴백 (필요 시)
+            logger.warning("get_ai_completion: Gemini fallback is not implemented. Use CometAPI instead.")
+            return None
 
     async def _safe_generate_content(self, model: genai.GenerativeModel, prompt: Any, log_extra: dict, generation_config: genai.types.GenerationConfig = None) -> genai.types.GenerateContentResponse | None:
         """Gemini `generate_content_async` 호출을 감싸 안정성을 높입니다.
@@ -2060,6 +2133,11 @@ Generate the optimized English image prompt:"""
             # 도구 결과 포맷팅 및 프롬프트 구성
             tool_results_str = self._format_tool_results_for_prompt(tool_results)
             system_prompt = config.AGENT_SYSTEM_PROMPT
+            
+            # [NEW] 커스텀 이모지 지시문 추가 (최적화: 필요한 경우에만 샘플링하여 주입)
+            emoji_instruction = self._get_custom_emoji_instruction(message.guild, user_query)
+            if emoji_instruction:
+                system_prompt = emoji_instruction + "\n" + system_prompt
             
             # [NEW] 운세 컨텍스트 조회
             fortune_context = None
