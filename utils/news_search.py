@@ -96,10 +96,27 @@ def _extract_article_text(url: str) -> tuple[str | None, str]:
         text = ""
 
         # 단계 1: Newspaper4k
-        article = Article(url, language="ko")
-        article.set_html(html_content)
-        article.parse()
-        text = article.text.strip()
+        try:
+            # newspaper4k에서는 생성자에 html을 넣거나 download(html=...)를 사용
+            article = Article(url, language="ko")
+            # 만약 .html 속성이 있다면 직접 할당 시도해볼 수 있으나, 
+            # 가장 안전한 방식은 parse() 전에 속성을 채우는 것 (버전에 따라 다름)
+            if hasattr(article, 'set_html'):
+                article.set_html(html_content)
+            elif hasattr(article, 'download'):
+                # 일부 버전은 download에 html 인자를 받음
+                try:
+                    article.download(input_html=html_content)
+                except:
+                    article.html = html_content
+            else:
+                article.html = html_content
+                
+            article.parse()
+            text = article.text.strip()
+        except Exception as e:
+            logger.warning(f"[news_search] Newspaper4k 파싱 실패: {e}")
+            text = ""
 
         # 단계 2: Trafilatura 표준
         if len(text) < 300:
@@ -336,13 +353,13 @@ def _select_best_links(user_query: str, search_results: list, count: int = 3) ->
     candidates_text = _format_ddgs_results_for_llm(search_results)
     select_prompt = (
         f"사용자 질문: \"{user_query}\"\n\n"
-        f"아래 검색 후보 중 질문에 가장 정확하고 신뢰할 수 있는 정보를 최대 {count}개 선정하세요.\n\n"
+        f"아래 검색 결과 중 질문에 답변하기 위해 가장 **관련성이 높고 유용한** 정보를 최대 {count}개 선정하세요.\n\n"
         f"선정 기준:\n"
-        f"1. 공식 홈페이지(.ac.kr, .go.kr), 나무위키, 위키백과 등 공신력 있거나 정보량이 많은 출처 우선\n"
-        f"2. 언론사의 공식 보도 기사 우선\n"
-        f"3. 질문이 최신 사건이 아닌 일반 지식/정보인 경우, 날짜보다 내용의 정확성 위주로 판단\n"
-        f"4. 커뮤니티(디시인사이드, 에펨코리아, 아카라이브 등) 게시글은 실시간 반응이나 여론 확인이 필요한 경우에만 포함하되, 공식 출처보다 후순위로 선정\n"
-        f"5. 개인 블로그 등 지나치게 주관적인 출처는 가급적 배제\n\n"
+        f"1. **내용 적합성**: 질문의 핵심 키워드를 가장 잘 담고 있거나 질문에 대한 답을 포함하고 있는 결과 우선\n"
+        f"2. **출처의 다양성**: 공식 홈페이지(.ac.kr, .go.kr), 위키백과, 나무위키, 정규 언론사 기사는 물론, 필요한 경우 커뮤니티(디시인사이드 등)나 블로그도 정보가 풍부하다면 포함 가능\n"
+        f"3. **최신성/정확성**: 뉴스인 경우 최신순, 일반 정보인 경우 정확도순으로 판단\n"
+        f"4. **스팸 배제**: 질문과 전혀 관계없는 광고성 페이지는 제외\n\n"
+        f"**주의**: 완벽한 공식 출처가 없더라도, 정보를 얻을 수 있는 차선책을 반드시 선정하세요.\n\n"
         f"출력 형식: 선정한 URL만 한 줄에 하나씩 출력하세요. 다른 텍스트는 출력하지 마세요.\n\n"
         f"후보 목록:\n{candidates_text}"
     )
@@ -398,6 +415,24 @@ async def run_news_search_pipeline(user_query: str) -> dict[str, Any]:
         return {"status": "error", "message": "검색 기능이 비활성화되어 있습니다."}
 
     logger.info(f"[news_search] 파이프라인 시작: \"{user_query}\"")
+
+    # ── [NEW] 단계 0: 직접 URL 여부 확인 ──
+    # 사용자가 직접 URL을 던진 경우 검색 과정을 건너뛰고 바로 크롤링합니다.
+    url_match = re.search(r"https?://[^\s<>\"']+", user_query)
+    if url_match:
+        target_url = url_match.group()
+        logger.info(f"[news_search] 직접 URL 감지: {target_url}")
+        
+        # 바로 요약 단계로 진행
+        res = await asyncio.to_thread(_process_single_article, target_url, user_query, "")
+        if res and res.get("summary"):
+            return {
+                "status": "success",
+                "context": f"[직접 링크 분석]\n{res['summary']}",
+                "source_urls": [target_url],
+            }
+        else:
+            return {"status": "error", "message": "해당 URL에서 내용을 추출하지 못했습니다."}
 
     # ── 단계 1: 의도 분석 ──
     intent_data = await asyncio.to_thread(_analyze_intent, user_query)
