@@ -142,6 +142,9 @@ class AIHandler(commands.Cog):
         # [NEW] Location Cache from DB
         self.location_cache: set[str] = set()
 
+    # [NEW] 뉴스 출처 안내 메시지 상수
+    NEWS_SOURCE_FOOTER = "\n\n📰 *뉴스 리액션을 누르면 출처를 확인할 수 있어!*"
+
     @property
     def is_ready(self) -> bool:
         """AI 핸들러가 모든 의존성(Gemini, DB, ToolsCog)을 포함하여 준비되었는지 확인합니다."""
@@ -2027,7 +2030,8 @@ Generate the optimized English image prompt:"""
                         source_urls = web_result.get("source_urls", [])
                         final_response_text = web_result["summary"]
                         if source_urls:
-                             final_response_text += "\n\n📰 *뉴스 리액션을 누르면 출처를 확인할 수 있어!*"
+                             if self.NEWS_SOURCE_FOOTER.strip() not in final_response_text:
+                                 final_response_text += self.NEWS_SOURCE_FOOTER
                         
                         await status_msg.edit(content=final_response_text)
                         if source_urls:
@@ -2089,7 +2093,8 @@ Generate the optimized English image prompt:"""
                 
                 # [Progress Update] 최종 답변으로 편집
                 if source_urls_to_cache:
-                    final_response_text += "\n\n📰 *뉴스 리액션을 누르면 출처를 확인할 수 있어!*"
+                    if self.NEWS_SOURCE_FOOTER.strip() not in final_response_text:
+                        final_response_text += self.NEWS_SOURCE_FOOTER
 
                 await status_msg.edit(content=final_response_text)
 
@@ -2134,6 +2139,11 @@ Generate the optimized English image prompt:"""
             if msg.id == message.id: continue
             role = 'model' if msg.author.id == self.bot.user.id else 'user'
             content = msg.content[:config.MAX_MESSAGE_CHARS]
+            
+            # [NEW] 이전 답변에서 뉴스 출처 안내 문구 제거 (모델이 따라하는 것 방지)
+            if role == 'model' and self.NEWS_SOURCE_FOOTER.strip() in content:
+                content = content.replace(self.NEWS_SOURCE_FOOTER, "").replace(self.NEWS_SOURCE_FOOTER.strip(), "").strip()
+                
             history.append({'role': role, 'parts': [content]})
 
         history.reverse()
