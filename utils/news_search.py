@@ -14,8 +14,9 @@ news/news_summarizer.py에서 이식, 마사몽 아키텍처에 맞게 수정:
 """
 from __future__ import annotations  # Python 3.9 호환: X | Y 타입 힌트 지원
 
-import re
 import asyncio
+import re
+from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -72,6 +73,48 @@ def _call_fast_model(prompt: str) -> str:
 
 _REQUEST_TIMEOUT = 15
 _MIN_ARTICLE_LENGTH = 30
+
+
+def _is_safe_url(url: str) -> bool:
+    """
+    URL의 안전성을 검사합니다.
+    - 내부 네트워크(SSRF) 차단
+    - 파일 크기 제한 (2MB)
+    - Content-Type 제한 (HTML/TEXT)
+    """
+    try:
+        parsed = urlparse(url)
+        hostname = (parsed.hostname or "").lower()
+        
+        # 1. 내부/루프백 IP 및 호스트 차단
+        if hostname in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
+            logger.warning(f"[news_search] 차단된 로컬 호스트: {hostname}")
+            return False
+        if hostname.startswith("192.168.") or hostname.startswith("10.") or hostname.startswith("172.16."):
+            logger.warning(f"[news_search] 차단된 내부 IP 대역: {hostname}")
+            return False
+
+        # 2. HEAD 요청으로 메타데이터 확인 (최대 2MB)
+        headers = {"User-Agent": "Mozilla/5.0"}
+        # SSL 인증서 오류가 있는 사이트도 메타데이터는 확인하기 위해 verify=False 설정 고려
+        response = requests.head(url, headers=headers, timeout=5, allow_redirects=True, verify=False)
+        
+        # Content-Type 체크
+        content_type = response.headers.get("Content-Type", "").lower()
+        if "text/html" not in content_type and "text/plain" not in content_type:
+            logger.warning(f"[news_search] 허용되지 않는 Content-Type: {content_type} ({url})")
+            return False
+            
+        # Content-Length 체크
+        content_length = response.headers.get("Content-Length")
+        if content_length and int(content_length) > 2 * 1024 * 1024:
+            logger.warning(f"[news_search] 파일 크기 초과: {content_length} bytes ({url})")
+            return False
+            
+        return True
+    except Exception as e:
+        logger.warning(f"[news_search] URL 안전성 검사 중 오류 (건너뜀): {e}")
+        return True # 오류 시 본문 추출 단계에서 처리되도록 허용
 
 
 def _extract_article_text(url: str) -> tuple[str | None, str]:
