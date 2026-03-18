@@ -39,3 +39,5 @@ ephem
 ddgs
 trafilatura
 newspaper4k
+nltk
+lxml_html_clean
