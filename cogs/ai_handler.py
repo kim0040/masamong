@@ -1984,7 +1984,7 @@ Generate the optimized English image prompt:"""
                     # generate_image 도구 특수 처리
                     if tool_name == 'generate_image':
                         tool_call.setdefault('parameters', {})['user_id'] = message.author.id
-                        await status_msg.edit(content="🎨 멋진 이미지를 그려내고 있어! 잠시만 기다려줘...")
+                        await status_msg.edit(content="🎨 멋진 이미지를 그려내고 있어! (최대 1분 30초 정도 걸릴 수 있으니 잠시만 기다려줘...)")
                     
                     result = await self._execute_tool(tool_call, guild_id_safe, user_query)
                     

@@ -101,7 +101,7 @@ class UserCommands(commands.Cog):
         async with ctx.typing():
             try:
                 # 생성 중 메시지 전송 (LLM 호출 없음)
-                status_msg = await ctx.send(f"🎨 **'{prompt}'**\n위 설명으로 그림을 그리고 있어요... (약 10~20초 소요)")
+                status_msg = await ctx.send(f"🎨 **'{prompt}'**\n위 설명으로 그림을 그리고 있어요... (최대 1분 30초 정도 걸릴 수 있으니 잠시만 기다려줘...)")
                 
                 # 1. 프롬프트 세팅 (Seedream 5.0은 자체 추론이 뛰어나 번역/최적화 과정 생략)
                 image_prompt = prompt
