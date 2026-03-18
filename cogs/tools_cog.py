@@ -461,7 +461,7 @@ class ToolsCog(commands.Cog):
             }
 
             async with aiohttp.ClientSession() as session:
-                async with session.post(endpoint, json=payload, headers=headers, timeout=120) as resp:
+                async with session.post(endpoint, json=payload, headers=headers, timeout=600) as resp:
                     if resp.status != 200:
                         error_text = await resp.text()
                         logger.error(f"CometAPI 이미지 생성 API 오류 ({resp.status}): {error_text}", extra=log_extra)
@@ -498,8 +498,8 @@ class ToolsCog(commands.Cog):
             }
 
         except asyncio.TimeoutError:
-            logger.error("이미지 API 타임아웃 (120s)", extra=log_extra)
-            return {"error": "이미지 생성이 너무 오래 걸려서 취소됐어. 다시 시도해줘!"}
+            logger.error("이미지 API 타임아웃 (600s)", extra=log_extra)
+            return {"error": "이미지 생성이 10분을 초과하여 중단되었습니다. API 서버가 혼잡할 수 있으니 잠시 후 다시 시도해 주세요."}
         except Exception as e:
             err_msg = str(e)
             logger.error(f"이미지 생성 중 예외: {err_msg}", exc_info=True, extra=log_extra)
