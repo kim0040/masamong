@@ -2390,6 +2390,49 @@ Generate the optimized English image prompt:"""
             if payload.message_id in self._updating_news_sources:
                 self._updating_news_sources.remove(payload.message_id)
 
+    @commands.Cog.listener()
+    async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent):
+        """📰 리액션이 제거되어 1개(봇 것)만 남으면 메시지에서 출처 정보를 다시 지웁니다."""
+        if str(payload.emoji) != "📰":
+            return
+            
+        # 캐시에 있는 메시지인지 확인
+        if payload.message_id not in self._news_source_cache:
+            return
+
+        # 동시성 방어
+        if payload.message_id in self._updating_news_sources:
+            return
+            
+        self._updating_news_sources.add(payload.message_id)
+        try:
+            channel = self.bot.get_channel(payload.channel_id)
+            if not channel:
+                try:
+                    channel = await self.bot.fetch_channel(payload.channel_id)
+                except:
+                    return
+            
+            if not channel:
+                return
+
+            msg = await channel.fetch_message(payload.message_id)
+            
+            # 리액션 개수 확인
+            newspaper_reaction = discord.utils.get(msg.reactions, emoji="📰")
+            
+            # 만약 리액션이 1개 이하(봇만 남거나 다 사라진 경우)면 출처 텍스트 제거
+            if newspaper_reaction and newspaper_reaction.count <= 1:
+                if "📰 **뉴스 출처**" in msg.content:
+                    # 출처 섹션 시작 지점을 찾아 그 앞까지만 남김
+                    new_content = msg.content.split("\n\n📰 **뉴스 출처**")[0]
+                    await msg.edit(content=new_content)
+        except Exception as e:
+            logger.debug(f"뉴스 출처 숨기기 실패: {e}")
+        finally:
+            if payload.message_id in self._updating_news_sources:
+                self._updating_news_sources.remove(payload.message_id)
+
 
 async def setup(bot: commands.Bot):
     """Cog를 봇에 등록하는 함수"""
