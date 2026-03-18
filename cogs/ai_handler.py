@@ -380,11 +380,24 @@ class AIHandler(commands.Cog):
         """외부 Cog에서 일반적인 AI 응답을 얻기 위해 사용하는 공개 메서드입니다."""
         log_extra = {'trace_id': f"gen_comp_{uuid.uuid4().hex[:4]}"}
         if self.use_cometapi:
-            return await self._cometapi_generate_content(system_role, prompt, log_extra, model=model)
-        else:
-            # Gemini 전용 폴백 (필요 시)
-            logger.warning("get_ai_completion: Gemini fallback is not implemented. Use CometAPI instead.")
-            return None
+            res = await self._cometapi_generate_content(system_role, prompt, log_extra, model=model)
+            if res:
+                return res
+        
+        # [NEW] Gemini fallback
+        if self.gemini_configured and genai:
+            try:
+                # Use standard response model by default
+                model_name = model or config.AI_RESPONSE_MODEL_NAME
+                gen_model = genai.GenerativeModel(model_name, system_instruction=system_role)
+                response = await self._safe_generate_content(gen_model, prompt, log_extra)
+                if response and hasattr(response, 'text'):
+                    return response.text.strip()
+            except Exception as e:
+                logger.error(f"get_ai_completion (Gemini Fallback) 오류: {e}", extra=log_extra)
+        
+        logger.warning("get_ai_completion: Both CometAPI and Gemini failed or are not configured.", extra=log_extra)
+        return None
 
     async def _safe_generate_content(self, model: genai.GenerativeModel, prompt: Any, log_extra: dict, generation_config: genai.types.GenerationConfig = None) -> genai.types.GenerateContentResponse | None:
         """Gemini `generate_content_async` 호출을 감싸 안정성을 높입니다.

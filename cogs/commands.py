@@ -165,36 +165,76 @@ class UserCommands(commands.Cog):
     @commands.command(name='업데이트', aliases=['update', '패치노트'])
     async def update_info(self, ctx: commands.Context):
         """
-        최근 추가된 기능과 변경 사항을 알려줍니다.
-
-        사용법:
-        - `!업데이트`
-
-        예시:
-        - `!업데이트`
+        최근 추가된 기능과 변경 사항을 알려줍니다. (Git 로그 자동 요약)
         """
-        embed = discord.Embed(
-            title="🚀 마사몽 업데이트 소식",
-            description="최근 추가된 따끈따끈한 기능들을 소개할게요!",
-            color=0xff6b6b # Rose Color
-        )
+        log_extra = {'guild_id': ctx.guild.id if ctx.guild else 0, 'author_id': ctx.author.id}
         
-        embed.add_field(
-            name="🎨 차세대 AI 이미지 생성 탑재 (Gemini 3.1 Flash Image)",
-            value=(
-                "**최대 4K 품질로 그림을 그려드려요!** (`!이미지`)\n"
-                "- 🚀 **Google Gemini 3.1 Flash Image** 모델 적용\n"
-                "- 🧠 **강력한 이미지 이해**: 복잡한 묘사와 다중 객체도 정확하게 표현합니다.\n"
-                "- ✨ **압도적 디테일**: 포토리얼리즘부터 일러스트까지 폭넓은 스타일 지원!\n"
-                "- 🖼️ **4K 고해상도 출력**: 선명하고 디테일한 결과물을 경험하세요.\n"
-                "\n*기존보다 훨씬 높은 품질의 결과물을 경험해보세요!*\n\n"
-                "🎉 **업데이트!** 이미지 생성 한도가 기존 12시간 당 5장에서 **6시간 당 10장**으로 대폭 상향되었습니다!"
-            ),
-            inline=False
-        )
-        
-        embed.set_footer(text="자세한 내용은 !도움 명령어를 참고해주세요.")
-        await ctx.send(embed=embed)
+        async with ctx.typing():
+            try:
+                # 1. Git 로그 가져오기 (최근 10개의 변경 사항을 가져와 유연하게 대응)
+                import subprocess
+                # [Fix] 특정 기간 대신 최근 커밋 10개를 가져오도록 변경 (-n 10)
+                cmd = ['git', 'log', '-n', '10', '--pretty=format:- %s']
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await process.communicate()
+                
+                git_logs = stdout.decode('utf-8').strip()
+                if stderr:
+                    logger.warning(f"Git log 실행 중 경고/오류: {stderr.decode('utf-8')}", extra=log_extra)
+                
+                logger.info(f"Git 로그 수집 결과 ({len(git_logs)} bytes)", extra=log_extra)
+                
+                # 2. 로그가 있으면 AI 요약 시도
+                if git_logs:
+                    ai_handler = self.bot.get_cog('AIHandler')
+                    if ai_handler:
+                        # 깃 커밋 로그를 친근한 마사몽 스타일의 업데이트 내용으로 요약 부탁
+                        prompt = (
+                            "다음은 최근 시스템의 깃 커밋 로그 문구들이야.\n"
+                            "이 내용을 바탕으로 사용자들에게 알려줄 친근하고 귀여운 '업데이트 소식'을 작성해줘.\n"
+                            "형식은 마크다운 불렛 포인트로 간결하게 작성하고, 말투는 마사몽 답게(~어, ~해 등) 해줘.\n\n"
+                            f"커밋 로그:\n{git_logs}"
+                        )
+                        system_role = "너는 친절하고 귀여운 챗봇 '마사몽'이야. 시스템 변경 사항을 사용자에게 알기 쉽게 요약해서 전달해주는 역할을 해."
+                        
+                        summary = await ai_handler.get_ai_completion(prompt, system_role=system_role)
+                        
+                        if summary:
+                            embed = discord.Embed(
+                                title="🚀 마사몽 업데이트 소식 (자동 요약)",
+                                description=summary,
+                                color=0xff6b6b # Rose Color
+                            )
+                            embed.set_footer(text="최근 깃허브 변경 내역을 바탕으로 생성되었습니다.")
+                            await ctx.send(embed=embed)
+                            return
+
+                # 3. 로그가 없거나 AI 요약 실패 시 기존 고정 메시지 출력 (폴백)
+                embed = discord.Embed(
+                    title="🚀 마사몽 업데이트 소식",
+                    description="최근 추가된 따끈따끈한 기능들을 소개할게요!",
+                    color=0xff6b6b
+                )
+                embed.add_field(
+                    name="✨ 커스텀 이모지 지원 & 성능 최적화",
+                    value=(
+                        "- 이제 제가 서버만의 **특별한 커스텀 이모지**를 대화 중에 사용할 수 있어요! 🥰\n"
+                        "- 불필요한 데이터를 줄여서 훨씬 **가볍고 빠르게** 대답하도록 최적화했습니다.\n"
+                        "- 각종 연결 오류 및 인텐트 버그를 수정하여 **더욱 안정적인** 모습으로 돌아왔어요!\n\n"
+                        "*최근 상세 변경 내역을 불러오지 못했습니다. 위 주요 업데이트 사항을 확인해 주세요!*"
+                    ),
+                    inline=False
+                )
+                embed.set_footer(text="자세한 내용은 !도움 명령어를 참고해주세요.")
+                await ctx.send(embed=embed)
+
+            except Exception as e:
+                logger.error(f"업데이트 명령어 처리 중 오류: {e}", exc_info=True, extra=log_extra)
+                await ctx.send("❌ 업데이트 정보를 가져오는 중 오류가 발생했어요.")
 
 async def setup(bot: commands.Bot):
     """Cog를 봇에 등록하는 함수입니다."""
