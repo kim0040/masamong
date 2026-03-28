@@ -280,6 +280,15 @@ FAST_MODEL_NAME = load_config_value('FAST_MODEL_NAME', 'gemini-3.1-flash-lite-pr
 
 # DuckDuckGo 뉴스 검색 활성화 여부 (기본: 활성화)
 DDGS_ENABLED = as_bool(load_config_value('DDGS_ENABLED', 'true'))
+# 범용 웹 탐색 파이프라인 예산/캐시 설정
+WEB_RAG_FAST_LLM_MAX_CALLS = max(0, as_int(load_config_value('WEB_RAG_FAST_LLM_MAX_CALLS', 5), 5))
+WEB_RAG_MAX_SELECTED_URLS = max(1, as_int(load_config_value('WEB_RAG_MAX_SELECTED_URLS', 4), 4))
+WEB_RAG_MAX_SUMMARIZED_ARTICLES = max(1, as_int(load_config_value('WEB_RAG_MAX_SUMMARIZED_ARTICLES', 3), 3))
+WEB_RAG_MAX_CANDIDATES = max(5, as_int(load_config_value('WEB_RAG_MAX_CANDIDATES', 24), 24))
+WEB_RAG_CACHE_TTL_SECONDS = max(0, as_int(load_config_value('WEB_RAG_CACHE_TTL_SECONDS', 300), 300))
+WEB_RAG_CACHE_MAX_ENTRIES = max(1, as_int(load_config_value('WEB_RAG_CACHE_MAX_ENTRIES', 128), 128))
+WEB_RAG_FAST_PROMPT_MAX_CHARS = max(800, as_int(load_config_value('WEB_RAG_FAST_PROMPT_MAX_CHARS', 5000), 5000))
+WEB_RAG_CONTEXT_MAX_CHARS = max(800, as_int(load_config_value('WEB_RAG_CONTEXT_MAX_CHARS', 2200), 2200))
 
 
 # CometAPI 이미지 생성 설정 (Gemini via CometAPI Gemini-compatible)
@@ -317,9 +326,9 @@ KAKAO_VECTOR_EXTENSION = EMBED_CONFIG.get("kakao_vector_extension")
 
 # 검색 엔진 활성화 설정 (emb_config.json에서 관리)
 EMBEDDING_ENABLED = as_bool(EMBED_CONFIG.get("embedding_enabled", True))
-BM25_ENABLED = as_bool(EMBED_CONFIG.get("bm25_enabled", True))
-
-BM25_DATABASE_PATH = EMBED_CONFIG.get("bm25_db_path", DATABASE_FILE) if BM25_ENABLED else None
+# BM25는 현재 운영 정책상 사용하지 않음 (로컬/서버 공통 비활성화)
+BM25_ENABLED = False
+BM25_DATABASE_PATH = None
 LOCAL_EMBEDDING_MODEL_NAME = EMBED_CONFIG.get("embedding_model_name", "dragonkue/multilingual-e5-small-ko-v2")
 LOCAL_EMBEDDING_DEVICE = EMBED_CONFIG.get("embedding_device")
 LOCAL_EMBEDDING_NORMALIZE = EMBED_CONFIG.get("normalize_embeddings", True)
@@ -397,11 +406,35 @@ FINNHUB_API_RPM_LIMIT = 50
 AI_TEMPERATURE = 0.0
 AI_FREQUENCY_PENALTY = 0.0
 AI_PRESENCE_PENALTY = 0.0
-KAKAO_API_RPD_LIMIT = 95000
+KAKAO_API_RPM_LIMIT = max(1, as_int(load_config_value('KAKAO_API_RPM_LIMIT', 60), 60))
+KAKAO_API_RPD_LIMIT = max(1, as_int(load_config_value('KAKAO_API_RPD_LIMIT', 95000), 95000))
+KAKAO_API_MAX_CONCURRENCY = max(1, as_int(load_config_value('KAKAO_API_MAX_CONCURRENCY', 6), 6))
+KAKAO_API_TIMEOUT_SECONDS = max(1, as_int(load_config_value('KAKAO_API_TIMEOUT_SECONDS', 10), 10))
 KRX_API_RPD_LIMIT = 9000
 AI_RESPONSE_LENGTH_LIMIT = 300
 AI_COOLDOWN_SECONDS = 3
 AI_REQUEST_TIMEOUT = as_int(load_config_value('AI_REQUEST_TIMEOUT', 45), 45)  # AI 응답 제한 시간 (초)
+# CometAPI 보호장치 (외부 LLM 과호출/과토큰 방지)
+COMETAPI_RPM_LIMIT = max(1, as_int(load_config_value('COMETAPI_RPM_LIMIT', 40), 40))
+COMETAPI_RPD_LIMIT = max(1, as_int(load_config_value('COMETAPI_RPD_LIMIT', 3000), 3000))
+COMETAPI_MAX_TOKENS = max(128, as_int(load_config_value('COMETAPI_MAX_TOKENS', 2048), 2048))
+COMETAPI_SYSTEM_PROMPT_MAX_CHARS = max(400, as_int(load_config_value('COMETAPI_SYSTEM_PROMPT_MAX_CHARS', 6000), 6000))
+COMETAPI_USER_PROMPT_MAX_CHARS = max(800, as_int(load_config_value('COMETAPI_USER_PROMPT_MAX_CHARS', 12000), 12000))
+# !요약 전용 컨텍스트 압축 설정 (긴 이력을 보되 입력 토큰은 고정 예산으로 제한)
+SUMMARY_MAX_LOOKBACK = max(20, as_int(load_config_value('SUMMARY_MAX_LOOKBACK', 120), 120))
+SUMMARY_MAX_CONTEXT_CHARS = max(1200, as_int(load_config_value('SUMMARY_MAX_CONTEXT_CHARS', 3200), 3200))
+SUMMARY_RECENT_TURNS = max(4, as_int(load_config_value('SUMMARY_RECENT_TURNS', 12), 12))
+SUMMARY_OLDER_TURNS = max(0, as_int(load_config_value('SUMMARY_OLDER_TURNS', 8), 8))
+SUMMARY_RECENT_LINE_CHARS = max(60, as_int(load_config_value('SUMMARY_RECENT_LINE_CHARS', 180), 180))
+SUMMARY_OLDER_LINE_CHARS = max(40, as_int(load_config_value('SUMMARY_OLDER_LINE_CHARS', 90), 90))
+SUMMARY_INCREMENTAL_ENABLED = as_bool(load_config_value('SUMMARY_INCREMENTAL_ENABLED', True))
+SUMMARY_INCREMENTAL_MAX_NEW_MESSAGES = max(1, as_int(load_config_value('SUMMARY_INCREMENTAL_MAX_NEW_MESSAGES', 24), 24))
+SUMMARY_INCREMENTAL_DELTA_LOOKBACK = max(8, as_int(load_config_value('SUMMARY_INCREMENTAL_DELTA_LOOKBACK', 48), 48))
+SUMMARY_CACHE_MAX_CHANNELS = max(1, as_int(load_config_value('SUMMARY_CACHE_MAX_CHANNELS', 300), 300))
+
+RAG_GUILD_SCOPE = str(load_config_value('RAG_GUILD_SCOPE', EMBED_CONFIG.get("guild_scope", "channel"))).strip().lower()
+if RAG_GUILD_SCOPE not in {"channel", "user"}:
+    RAG_GUILD_SCOPE = "channel"
 # AI 메모리/RAG 기능은 기본 활성화지만, 저사양 환경에서는 환경변수/설정으로 비활성화할 수 있다.
 AI_MEMORY_ENABLED = as_bool(load_config_value('AI_MEMORY_ENABLED', EMBED_CONFIG.get("enable_local_embeddings", True)))
 LITE_MODEL_SYSTEM_PROMPT = _extract_prompt_value("lite_system_prompt", FALLBACK_LITE_PROMPT)
@@ -430,7 +463,42 @@ RAG_ARCHIVING_CONFIG = {
 }
 AI_CREATIVE_PROMPTS = {
     "fortune": "사용자 '{user_name}'를 위한 오늘의 운세를 재치있게 알려줘.",
-    "summarize": "다음 대화 내용을 분석해서, 핵심 내용을 3가지 항목으로 요약해줘.\n--- 대화 내용 ---\n{conversation}",
+    "summarize": (
+        "다음 대화 내용을 바탕으로 요약해줘.\n"
+        "입력은 [이전 맥락(압축)] + [최신 대화] 형식일 수 있어.\n\n"
+        "출력 규칙:\n"
+        "1) 최신 대화에 나온 사실을 우선 반영해.\n"
+        "2) 추측 금지. 대화에 없는 정보는 만들지 마.\n"
+        "3) 아래 형식 그대로 작성해.\n"
+        "## 핵심 3줄\n"
+        "- ...\n"
+        "- ...\n"
+        "- ...\n"
+        "## 결정/할 일\n"
+        "- ... (없으면 '없음')\n"
+        "## 남은 이슈\n"
+        "- ... (없으면 '없음')\n\n"
+        "--- 대화 내용 ---\n{conversation}"
+    ),
+    "summarize_incremental": (
+        "아래에 '이전 요약'과 '신규 대화'가 주어진다.\n"
+        "이전 요약을 바탕으로, 신규 대화를 반영한 최신 요약으로 갱신해줘.\n\n"
+        "출력 규칙:\n"
+        "1) 최신 대화에서 바뀐 점/새 결정사항을 반드시 반영.\n"
+        "2) 이전 요약의 사실 중 신규 대화와 충돌하는 내용은 수정.\n"
+        "3) 추측 금지. 대화에 없는 정보 생성 금지.\n"
+        "4) 아래 형식 그대로 작성.\n"
+        "## 핵심 3줄\n"
+        "- ...\n"
+        "- ...\n"
+        "- ...\n"
+        "## 결정/할 일\n"
+        "- ... (없으면 '없음')\n"
+        "## 남은 이슈\n"
+        "- ... (없으면 '없음')\n\n"
+        "--- 이전 요약 ---\n{previous_summary}\n\n"
+        "--- 신규 대화 ---\n{new_conversation}"
+    ),
     "ranking": "다음 서버 활동 랭킹과 통계를 보고, 전체적인 서버 분위기를 북돋우는 재치 있는 발표 멘트를 작성해줘.\n\n### 출력 규칙\n1. **가독성 최우선**: 정보를 나열할 때 난해하지 않게 깔끔한 구조로 작성해.\n2. **1등 강조**: 1등({top_one_name})을 특별히 축하하고 재미있는 코멘트를 달아줘.\n3. **섹션 구분**: '서버 통계 브리핑', '명예의 전당(랭킹)', '마사몽의 한마디' 등으로 명확히 나눠서 보여주면 좋아.\n4. **이모지 활용**: 적절한 이모지를 사용하여 분위기를 살려줘.\n\n--- 서버 통계 ---\n{server_stats}\n--- 활동 랭킹 ---\n{ranking_list}",
     "answer_time": "현재 시간은 '{current_time}'입니다. 이 정보를 사용하여 사용자에게 현재 시간을 알려주세요.",
     "answer_weather": "'{location_name}'의 날씨 정보는 다음과 같습니다: {weather_data}. 이 정보를 바탕으로 사용자에게 날씨를 설명해주세요.",

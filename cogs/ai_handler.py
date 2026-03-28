@@ -468,6 +468,23 @@ class AIHandler(commands.Cog):
             return None
 
         try:
+            if self.bot.db and await db_utils.check_api_rate_limit(
+                self.bot.db,
+                "cometapi",
+                config.COMETAPI_RPM_LIMIT,
+                config.COMETAPI_RPD_LIMIT,
+            ):
+                logger.warning(
+                    "[CometAPI] 호출 차단 - rate limit 도달 (rpm=%s, rpd=%s)",
+                    config.COMETAPI_RPM_LIMIT,
+                    config.COMETAPI_RPD_LIMIT,
+                    extra=log_extra,
+                )
+                return None
+
+            system_prompt = (system_prompt or "")[: int(getattr(config, "COMETAPI_SYSTEM_PROMPT_MAX_CHARS", 6000))]
+            user_prompt = (user_prompt or "")[: int(getattr(config, "COMETAPI_USER_PROMPT_MAX_CHARS", 12000))]
+
             if self.debug_enabled:
                 self._debug(f"[CometAPI] system={self._truncate_for_debug(system_prompt)}", log_extra)
                 self._debug(f"[CometAPI] user={self._truncate_for_debug(user_prompt)}", log_extra)
@@ -479,7 +496,7 @@ class AIHandler(commands.Cog):
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                max_tokens=2048, # 약간 늘림
+                max_tokens=int(getattr(config, "COMETAPI_MAX_TOKENS", 2048)),
                 temperature=config.AI_TEMPERATURE,
                 frequency_penalty=config.AI_FREQUENCY_PENALTY,
                 presence_penalty=config.AI_PRESENCE_PENALTY,
@@ -529,6 +546,47 @@ class AIHandler(commands.Cog):
                 return None
             
             logger.error(f"CometAPI 응답 생성 중 오류: {e}", extra=log_extra, exc_info=True)
+            return None
+
+    async def _cometapi_fast_generate_text(
+        self,
+        prompt: str,
+        model: str,
+        log_extra: dict,
+        *,
+        trace_key: str = "cometapi_fast",
+    ) -> str | None:
+        """CometAPI Fast 모델 호출을 중앙 rate-limit/log 체계와 함께 수행합니다."""
+        if not (self.use_cometapi and config.COMETAPI_KEY and google_genai):
+            return None
+
+        try:
+            if self.bot.db and await db_utils.check_api_rate_limit(
+                self.bot.db,
+                "cometapi",
+                config.COMETAPI_RPM_LIMIT,
+                config.COMETAPI_RPD_LIMIT,
+            ):
+                logger.warning("[CometAPI-Fast] 호출 차단 - rate limit 도달", extra=log_extra)
+                return None
+
+            _client = google_genai.Client(
+                http_options={"api_version": "v1beta", "base_url": "https://api.cometapi.com"},
+                api_key=config.COMETAPI_KEY,
+            )
+            response = await asyncio.to_thread(
+                _client.models.generate_content,
+                model=model,
+                contents=prompt,
+            )
+
+            if self.bot.db:
+                await db_utils.log_api_call(self.bot.db, "cometapi")
+                await db_utils.log_api_call(self.bot.db, trace_key)
+
+            return (response.text or "").strip() or None
+        except Exception as e:
+            logger.warning(f"[CometAPI-Fast] 호출 실패: {e}", extra=log_extra)
             return None
 
     async def _generate_local_embedding(self, content: str, log_extra: dict, prefix: str = "") -> np.ndarray | None:
@@ -927,12 +985,12 @@ Generate the optimized English image prompt:"""
         )
         try:
             if not (self.use_cometapi and config.COMETAPI_KEY): return query
-            _client = google_genai.Client(
-                http_options={"api_version": "v1beta", "base_url": "https://api.cometapi.com"},
-                api_key=config.COMETAPI_KEY,
+            refined = await self._cometapi_fast_generate_text(
+                prompt,
+                fast_model,
+                log_extra,
+                trace_key="cometapi_fast_refine",
             )
-            response = await asyncio.to_thread(_client.models.generate_content, model=fast_model, contents=prompt)
-            refined = (response.text or "").strip()
             return refined if refined else query
         except Exception as e:
             logger.warning(f"쿼리 정제 실패: {e}")
@@ -945,26 +1003,29 @@ Generate the optimized English image prompt:"""
         history: list = None
     ) -> dict:
         """
-        [수정] DuckDuckGo 뉴스 RAG 파이프라인으로 뉴스를 검색하고,
+        DuckDuckGo 기반 범용 탐색 RAG 파이프라인으로 자료를 검색하고,
         마사몽의 채널 페르소나로 최종 답변을 생성합니다.
 
         플로우:
-        1. tools_cog.search_news_rag() 호출 (DuckDuckGo 검색 + 기사 요약)
-        2. 마사몽 채널 페르소나 + 기사 요약 컨텍스트로 LLM 최종 답변 생성
+        1. tools_cog.search_news_rag() 호출 (뉴스/웹/블로그/문서 탐색 + 요약)
+        2. 마사몽 채널 페르소나 + 탐색 컨텍스트로 LLM 최종 답변 생성
         3. 출처 URL 자동 첨부
         """
         if not self.tools_cog:
             return {"error": "ToolsCog가 초기화되지 않았습니다."}
 
-        # 1. DuckDuckGo 뉴스 RAG 파이프라인 실행
-        logger.info(f"[뉴스검색] RAG 파이프라인 시작: '{user_query}'", extra=log_extra)
+        # 1. DuckDuckGo 범용 탐색 RAG 파이프라인 실행
+        logger.info(f"[웹탐색] RAG 파이프라인 시작: '{user_query}'", extra=log_extra)
         news_result = await self.tools_cog.search_news_rag(user_query)
 
         if news_result.get("status") != "success":
-            error_msg = news_result.get("message", "뉴스 검색 실패")
+            error_msg = news_result.get("message", "외부 검색 실패")
             return {"result": None, "error": error_msg}
 
         news_context = news_result.get("context", "")
+        max_context_chars = int(getattr(config, "WEB_RAG_CONTEXT_MAX_CHARS", 2200))
+        if len(news_context) > max_context_chars:
+            news_context = news_context[:max_context_chars].rstrip() + "\n...(생략)"
         
         # 2. 히스토리 요약 포함하여 답변 생성
         history_summary = ""
@@ -982,14 +1043,14 @@ Generate the optimized English image prompt:"""
         system_prompt = (
             f"{persona_prompt}\n\n"
             f"### 추가 지시사항\n"
-            f"- 제공된 뉴스 정보를 바탕으로 답하되, 이전 대화 맥락({history_summary})이 있다면 자연스럽게 대화를 이어가.\n"
+            f"- 제공된 검색 자료를 바탕으로 답하되, 이전 대화 맥락({history_summary})이 있다면 자연스럽게 대화를 이어가.\n"
             f"- 검색 결과임을 드러내는 표현은 피하고, 시스템 태그는 절대 노출하지 마.\n"
             f"- 페르소나 말투를 반드시 유지해."
         )
 
         user_prompt = (
             f"사용자 질문: '{user_query}'\n\n"
-            f"참고 뉴스:\n{news_context}\n\n"
+            f"참고 자료:\n{news_context}\n\n"
             f"위 정보를 바탕으로 답변해줘."
         )
 
@@ -1009,7 +1070,7 @@ Generate the optimized English image prompt:"""
         if summary:
             # 출처 URL 자동 첨부 (LLM 환각 방지)
             final_text = summary  # 출처는 리액션 클릭 시 표시
-            self._debug(f"[뉴스검색] 최종 답변 생성 완료", log_extra)
+            self._debug(f"[웹탐색] 최종 답변 생성 완료", log_extra)
             return {
                 "result": final_text,
                 "summary": final_text,
@@ -1017,8 +1078,13 @@ Generate the optimized English image prompt:"""
                 "use_reaction_source": True,  # 📰 리액션으로 출처 표시
             }
 
-        # LLM 요약 실패 시 뉴스 컨텍스트 + 출처만 반환
-        fallback = f"뉴스를 찾긴 했는데 요약에 실패했어. 참고 자료야:\n\n{news_context}{source_footer}"
+        # LLM 요약 실패 시 원본 컨텍스트 + 출처만 반환
+        source_urls = news_result.get("source_urls", [])
+        source_footer = ""
+        if source_urls:
+            source_lines = [f"{idx}. {url}" for idx, url in enumerate(source_urls, 1)]
+            source_footer = "\n\n[출처]\n" + "\n".join(source_lines)
+        fallback = f"자료를 찾긴 했는데 요약에 실패했어. 참고 자료야:\n\n{news_context}{source_footer}"
         return {"result": fallback, "source_urls": news_result.get("source_urls", [])}
 
 
@@ -1045,6 +1111,17 @@ Generate the optimized English image prompt:"""
         'lg에너지', '셀트리온', '삼성바이오', '기아', '포스코',
     ])
     _STOCK_GENERAL_KEYWORDS = frozenset(['주가', '주식', '시세', '종가', '시가', '상장'])
+    _EXCHANGE_KEYWORDS = frozenset([
+        '환율', '달러', '엔화', '유로', 'usd', 'jpy', 'eur', 'krw', '환전',
+        '코인', '비트코인', '이더리움', 'crypto', 'bitcoin', 'eth',
+    ])
+    _FINANCE_KEYWORDS = _STOCK_US_KEYWORDS | _STOCK_KR_KEYWORDS | _STOCK_GENERAL_KEYWORDS | _EXCHANGE_KEYWORDS
+    _DEPRECATED_FINANCE_TOOLS = frozenset([
+        'get_stock_price',
+        'get_krw_exchange_rate',
+        'get_company_news',
+        'get_exchange_rate',
+    ])
     _PLACE_KEYWORDS = frozenset(['맛집', '카페', '음식점', '식당', '근처', '주변', '가볼만한', '핫플레이스'])
     _LOCATION_KEYWORDS = []  # Deprecated: DB 캐시로 대체
 
@@ -1056,23 +1133,25 @@ Generate the optimized English image prompt:"""
         'generate image', 'create image', 'draw me', 'make an image',
     ])
 
-    # [NEW] 뉴스/실시간 검색 전용 키워드 (웹검색 트리거)
-    # 이 키워드가 있을 때만 DuckDuckGo 뉴스 검색 실행
-    _NEWS_SEARCH_KEYWORDS = frozenset([
+    # 범용 정보 탐색 트리거 키워드 (뉴스 + 웹/블로그/문서)
+    _WEB_SEARCH_KEYWORDS = frozenset([
         '뉴스', '소식', '최신', '최근', '실시간', '오늘 무슨', '오늘 뭔',
         '요즘', '이슈', '이번 주', '이번달', '요새', '근래',
         '어떻게 됐어', '어떻게 됨', '결과 어떻게', '현재 상황', '지금 어떻게',
         '사건', '사고', '발표', '결과', '현황',
+        '찾아줘', '검색해줘', '탐색', '조사', '정리',
+        '블로그', '후기', '리뷰', '사용기', '비교', '추천',
+        '공식 문서', '문서', '레퍼런스', '위키', '출처',
+        '사용법', '가이드', '튜토리얼', '설정 방법',
     ])
 
 
     _NO_SEARCH_PATTERNS = frozenset([
-        '나', '너', '우리', '마사몽', '마사모', '서버',
-        '아까', '전에', '지난번', '기억', '했었', '말했'
+        '내 얘기', '우리 얘기', '너 얘기', '잡담만', '인사만'
     ])
 
     async def _should_use_web_search(self, query: str, rag_top_score: float, history: list = None) -> bool:
-        """뉴스/실시간 정보 검색 여부 판단. 대화 맥락과 RAG 점수를 함께 고려합니다."""
+        """외부 정보 탐색(뉴스/웹/블로그/문서) 필요 여부를 판단합니다."""
         query_lower = query.lower()
         
         # 명시적인 검색 방지 패턴
@@ -1081,12 +1160,12 @@ Generate the optimized English image prompt:"""
 
         # RAG 점수가 매우 높으면 검색 생략 (이미 알고 있는 정보)
         if rag_top_score >= config.RAG_STRONG_SIMILARITY_THRESHOLD:
-            # 하지만 "최근", "오늘", "뉴스" 등의 키워드가 있으면 검색 시도 가능성 열어둠
-            if not any(kw in query_lower for kw in ["오늘", "최근", "요즘", "뉴스"]):
+            # 최신/외부탐색 키워드가 없으면 검색 생략
+            if not any(kw in query_lower for kw in ["오늘", "최근", "요즘", "뉴스", "검색", "블로그", "리뷰", "문서", "사용법"]):
                 return False
 
         # 1. 키워드 기반 판단
-        if any(kw in query_lower for kw in self._NEWS_SEARCH_KEYWORDS):
+        if any(kw in query_lower for kw in self._WEB_SEARCH_KEYWORDS):
             return True
 
         # 2. 맥락 기반 판단 (연계 질문)
@@ -1123,10 +1202,11 @@ Generate the optimized English image prompt:"""
             "3. 멀티 도구 선택: 여러 질문이 섞여 있다면 도구를 여러 개 선택할 수 있습니다.\n\n"
             "사용 가능 도구:\n"
             "1. get_weather_forecast(location, day_offset): 특정 지역/시간의 날씨.\n"
-            "2. get_stock_price(user_query): 주식, 코인, 지수 등 금융 시세.\n"
-            "3. search_for_place(query): 맛집, 장소 정보.\n"
-            "4. generate_image(user_query): 그림 생성.\n"
-            "5. search_news_rag(query): 최신 뉴스, 시사, 인물/사건 상세 정보. 실시간성이 필요할 때 사용.\n\n"
+            "2. search_for_place(query): 맛집, 장소 정보.\n"
+            "3. generate_image(user_query): 그림 생성.\n"
+            "4. search_news_rag(query): 외부 정보 탐색(뉴스/웹/블로그/문서/커뮤니티).\n"
+            "   - 최신 이슈뿐 아니라 사용법/비교/후기/공식 문서 탐색에도 사용.\n"
+            "   - 주식/환율/코인 등 금융 관련 질문도 search_news_rag로 처리.\n\n"
             "출력 형식 (유효한 JSON만):\n"
             '{"intent": "의도", "reasoning": "선택 근거", "tools": [{"tool": "이름", "params": {"키": "값"}}]}'
         )
@@ -1137,11 +1217,6 @@ Generate the optimized English image prompt:"""
             if google_genai is None:
                 return self._detect_tools_by_keyword(query)
 
-            _client = google_genai.Client(
-                http_options={"api_version": "v1beta", "base_url": "https://api.cometapi.com"},
-                api_key=config.COMETAPI_KEY,
-            )
-            
             prompt = (
                 f"System:\n{system_prompt}\n\n"
                 "Examples:\n"
@@ -1157,12 +1232,14 @@ Generate the optimized English image prompt:"""
                 f"User Message: {query}\n\n"
                 "Response:"
             )
-            response = await asyncio.to_thread(
-                _client.models.generate_content,
-                model=fast_model,
-                contents=prompt,
+            raw = await self._cometapi_fast_generate_text(
+                prompt,
+                fast_model,
+                log_extra,
+                trace_key="cometapi_fast_intent",
             )
-            raw = (response.text or "").strip()
+            if not raw:
+                return self._detect_tools_by_keyword(query)
             if "```" in raw:
                 raw = re.sub(r"```(?:json)?", "", raw).replace("```", "").strip()
             
@@ -1175,7 +1252,29 @@ Generate the optimized English image prompt:"""
                 name = t.get("tool", "")
                 if not name or name == "none":
                     continue
-                result.append({"tool_to_use": name, "tool_name": name, "parameters": t.get("params", {})})
+                params = t.get("params", {})
+                if not isinstance(params, dict):
+                    params = {}
+
+                # 금융 도구는 실수 빈도가 높아 뉴스 검색 도구로 일괄 대체
+                if name in self._DEPRECATED_FINANCE_TOOLS:
+                    finance_query = (
+                        params.get("query")
+                        or params.get("user_query")
+                        or params.get("symbol")
+                        or params.get("stock_name")
+                        or query
+                    )
+                    result.append(
+                        {
+                            "tool_to_use": "search_news_rag",
+                            "tool_name": "search_news_rag",
+                            "parameters": {"query": self._build_finance_news_query(finance_query)},
+                        }
+                    )
+                    continue
+
+                result.append({"tool_to_use": name, "tool_name": name, "parameters": params})
             return result
         except Exception as e:
             logger.warning(f"[LLM도구선택] 실패 → 키워드 fallback: {e}", extra=log_extra)
@@ -1207,27 +1306,15 @@ Generate the optimized English image prompt:"""
             })
             return tools  # 날씨 요청은 단일 도구로 처리
 
-        # [Refactor] Unified Stock Detection (yfinance + LLM Extraction)
-        # 키워드가 있거나, "주가", "얼마" 등의 표현이 있으면 시도
-        stock_triggers = self._STOCK_US_KEYWORDS | self._STOCK_KR_KEYWORDS | self._STOCK_GENERAL_KEYWORDS
-        if any(kw in query_lower for kw in stock_triggers) or "주가" in query_lower or "주식" in query_lower or "시세" in query_lower:
-             # LLM을 통해 티커 추출 시도 (강력한 추출기)
-             # 기존 로직 대신 바로 LLM에 의존하여 유연성 확보
-             logger.info(f"주식 관련 질문 감지: '{query}' -> 티커 추출 시도")
-             
-             # 도구 호출 계획에는 'user_query'만 넘기고, 실제 실행 시점에 extract_ticker_with_llm 호출하도록 변경할 수도 있으나,
-             # 여기선 도구 파라미터가 명확해야 하므로, tool execution 단계에서 extraction을 수행하도록 
-             # 'get_stock_price' 도구에 쿼리 자체를 넘기는 방식으로 변경 제안.
-             # ToolsCog.get_stock_price가 (stock_name=...) 대신 (query=...)를 받아서 내부적으로 처리하거나,
-             # 아니면 여기서 추출해서 넘겨야 함. 
-             # 실행 속도를 위해 여기서 추출하지 않고 ToolsCog에서 처리하도록 'query'를 파라미터로 전달.
-             
-             tools.append({
-                'tool_to_use': 'get_stock_price',
-                'tool_name': 'get_stock_price',
-                'parameters': {'user_query': query} # stock_name 대신 user_query 전달
-             })
-             return tools
+        # 금융 관련 질문은 직접 시세 도구 대신 뉴스 검색으로 대체
+        if any(kw in query_lower for kw in self._FINANCE_KEYWORDS):
+            logger.info(f"금융 관련 질문 감지: '{query}' -> search_news_rag로 대체")
+            tools.append({
+                'tool_to_use': 'search_news_rag',
+                'tool_name': 'search_news_rag',
+                'parameters': {'query': self._build_finance_news_query(query)}
+            })
+            return tools
 
         # 장소 검색 감지
         if any(kw in query_lower for kw in self._PLACE_KEYWORDS):
@@ -1255,6 +1342,21 @@ Generate the optimized English image prompt:"""
 
         # 도구 필요 없음 - 일반 대화 또는 RAG로 처리
         return tools
+
+    @staticmethod
+    def _build_finance_news_query(query: str) -> str:
+        """금융 질문을 뉴스 검색 친화 쿼리로 보정합니다."""
+        base = (query or "").strip()
+        if not base:
+            return "국내외 금융 시장 최신 뉴스"
+        base_lower = base.lower()
+        has_news_hint = any(
+            hint in base_lower
+            for hint in ("뉴스", "소식", "헤드라인", "이슈", "동향", "시황", "news")
+        )
+        if has_news_hint:
+            return base
+        return f"{base} 최신 금융 뉴스"
 
     def _extract_location_from_query(self, query: str) -> str | None:
         """쿼리에서 지역명을 추출합니다 (DB 캐시 사용)."""
@@ -1337,9 +1439,15 @@ Generate the optimized English image prompt:"""
             logger.warning("하이브리드 검색 엔진이 초기화되지 않았습니다.", extra=log_extra)
             return "", [], 0.0, []
 
-        # [NEW] DM(길드 없음)인 경우, 봇의 답변도 기억하기 위해 user_id 필터를 해제(None)합니다.
-        # DM은 channel_id가 사용자별로 고유하므로, 채널 ID만으로도 데이터 격리가 보장됩니다.
-        search_user_id = user_id if guild_id else None
+        # RAG 스코프 정책:
+        # - guild(channel) 기본: 채널 전체 맥락을 회수
+        # - guild(user): 요청자 본인 메시지만 회수
+        # - DM: 채널 ID 자체가 사용자별로 분리되므로 user 필터를 두지 않음
+        rag_scope = getattr(config, "RAG_GUILD_SCOPE", "channel")
+        if guild_id and rag_scope == "user":
+            search_user_id = user_id
+        else:
+            search_user_id = None
 
         try:
             result = await engine.search(
@@ -1881,6 +1989,28 @@ Generate the optimized English image prompt:"""
         if not tool_name: 
             return {"error": "tool_to_use가 지정되지 않았습니다."}
 
+        # 금융 도구는 비활성화하고 뉴스 검색으로 강제 대체
+        if tool_name in self._DEPRECATED_FINANCE_TOOLS:
+            redirected_query = self._build_finance_news_query(
+                parameters.get('query')
+                or parameters.get('user_query')
+                or parameters.get('symbol')
+                or parameters.get('stock_name')
+                or parameters.get('currency_code')
+                or user_query
+            )
+            logger.info(
+                "금융 도구 '%s' 비활성화: search_news_rag로 대체합니다. query='%s'",
+                tool_name,
+                redirected_query,
+                extra=log_extra,
+            )
+            search_result = await self._execute_web_search_with_llm(redirected_query, log_extra)
+            if search_result.get("result"):
+                search_result["redirected_from"] = tool_name
+                return search_result
+            return {"error": search_result.get("error", "금융 뉴스 검색에 실패했습니다.")}
+
         # web_search는 Google Custom Search API와 LLM 2-step 처리를 사용합니다.
         if tool_name == 'web_search':
             logger.info("특별 도구 실행: web_search (Google Custom Search API)", extra=log_extra)
@@ -2100,37 +2230,39 @@ Generate the optimized English image prompt:"""
                         "result": result,
                     })
                     executed_plan.append(tool_call)
-                # 도구 계획이 없을 때 웹 검색 자동 판단
-                if await self._should_use_web_search(user_query, rag_top_score, history=history):
-                    await status_msg.edit(content="🌐 웹에서 정보를 찾아보는 중이야...")
-                    
-                    # [NEW] 히스토리를 바탕으로 검색 쿼리 정제
-                    refined_query = user_query
-                    if history:
-                        refined_query = await self._refine_search_query_with_llm(user_query, history, log_extra)
-                        logger.info(f"자동 웹검색 쿼리 정제: '{user_query}' -> '{refined_query}'", extra=log_extra)
 
-                    web_result = await self._execute_web_search_with_llm(refined_query, log_extra, history=history)
-                    
-                    if web_result.get("summary"):
-                        source_urls = web_result.get("source_urls", [])
-                        final_response_text = web_result["summary"]
-                        if source_urls:
-                             if self.NEWS_SOURCE_FOOTER.strip() not in final_response_text:
-                                 final_response_text += self.NEWS_SOURCE_FOOTER
-                        
-                        await status_msg.edit(content=final_response_text)
-                        if source_urls:
-                             self._news_source_cache[status_msg.id] = source_urls
-                             if len(self._news_source_cache) > 50:
-                                 self._news_source_cache.pop(next(iter(self._news_source_cache)))
-                             try:
-                                 await status_msg.add_reaction("📰")
-                             except: pass
-                        
-                        await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
-                        await db_utils.log_api_call(self.bot.db, "llm_global")
-                        return
+            # 도구 계획이 없을 때만 웹 검색 자동 판단 (중복 탐색/과호출 방지)
+            if not tool_plan and await self._should_use_web_search(user_query, rag_top_score, history=history):
+                await status_msg.edit(content="🌐 웹에서 정보를 찾아보는 중이야...")
+
+                # [NEW] 히스토리를 바탕으로 검색 쿼리 정제
+                refined_query = user_query
+                if history:
+                    refined_query = await self._refine_search_query_with_llm(user_query, history, log_extra)
+                    logger.info(f"자동 웹검색 쿼리 정제: '{user_query}' -> '{refined_query}'", extra=log_extra)
+
+                web_result = await self._execute_web_search_with_llm(refined_query, log_extra, history=history)
+
+                if web_result.get("summary"):
+                    source_urls = web_result.get("source_urls", [])
+                    final_response_text = web_result["summary"]
+                    if source_urls:
+                        if self.NEWS_SOURCE_FOOTER.strip() not in final_response_text:
+                            final_response_text += self.NEWS_SOURCE_FOOTER
+
+                    await status_msg.edit(content=final_response_text)
+                    if source_urls:
+                        self._news_source_cache[status_msg.id] = source_urls
+                        if len(self._news_source_cache) > 50:
+                            self._news_source_cache.pop(next(iter(self._news_source_cache)))
+                        try:
+                            await status_msg.add_reaction("📰")
+                        except:
+                            pass
+
+                    await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
+                    await db_utils.log_api_call(self.bot.db, "llm_global")
+                    return
 
             # 답변 작성 단계
             await status_msg.edit(content="✍️ 답변을 정리하고 있어...")
@@ -2272,19 +2404,253 @@ Generate the optimized English image prompt:"""
 
         return False
 
-    async def get_recent_conversation_text(self, guild_id: int, channel_id: int, look_back: int = 20) -> str:
-        """DB에서 최근 대화 기록을 텍스트로 가져옵니다 (요약 기능용)."""
-        if not self.bot.db: return ""
-        query = "SELECT user_name, content FROM conversation_history WHERE guild_id = ? AND channel_id = ? AND is_bot = 0 ORDER BY created_at DESC LIMIT ?"
+    @staticmethod
+    def _normalize_summary_text(text: str) -> str:
+        """요약 입력용 텍스트의 공백/개행을 정규화합니다."""
+        return re.sub(r"\s+", " ", (text or "")).strip()
+
+    @staticmethod
+    def _truncate_summary_text(text: str, limit: int) -> str:
+        """문자 수 제한을 넘는 요약 입력 라인을 안전하게 자릅니다."""
+        if len(text) <= limit:
+            return text
+        if limit <= 3:
+            return text[:limit]
+        return text[: limit - 3].rstrip() + "..."
+
+    @staticmethod
+    def _sample_evenly(items: list[dict[str, Any]], target: int) -> list[dict[str, Any]]:
+        """리스트 전체 구간을 고르게 대표하는 항목 샘플을 선택합니다."""
+        if target <= 0 or not items:
+            return []
+        if len(items) <= target:
+            return items
+        if target == 1:
+            return [items[-1]]
+
+        total = len(items)
+        step = (total - 1) / float(target - 1)
+        indices: list[int] = []
+        for i in range(target):
+            idx = int(round(i * step))
+            if indices and idx <= indices[-1]:
+                idx = min(indices[-1] + 1, total - 1)
+            indices.append(idx)
+        return [items[idx] for idx in indices]
+
+    def _merge_rows_to_turns(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """연속 발화자를 하나의 turn으로 병합해 요약 입력 토큰을 줄입니다."""
+        turns: list[dict[str, Any]] = []
+        for row in rows:
+            content = self._normalize_summary_text(row.get("content", ""))
+            if not content:
+                continue
+
+            speaker = str(row.get("user_name") or "Unknown")
+            user_id_raw = row.get("user_id")
+            user_id: int | None
+            try:
+                user_id = int(user_id_raw) if user_id_raw is not None else None
+            except (TypeError, ValueError):
+                user_id = None
+            created_at = str(row.get("created_at") or "")
+            is_bot = bool(row.get("is_bot"))
+            speaker_key = f"user:{user_id}" if user_id is not None else f"name:{speaker.lower()}"
+
+            if turns and turns[-1]["speaker_key"] == speaker_key:
+                turns[-1]["content"] = f"{turns[-1]['content']} {content}".strip()
+                turns[-1]["is_bot"] = turns[-1]["is_bot"] or is_bot
+            else:
+                turns.append(
+                    {
+                        "speaker": speaker,
+                        "speaker_key": speaker_key,
+                        "user_id": user_id,
+                        "content": content,
+                        "created_at": created_at,
+                        "is_bot": is_bot,
+                    }
+                )
+        return turns
+
+    @staticmethod
+    def _build_speaker_disambiguation(turns: list[dict[str, Any]]) -> dict[str, set[str]]:
+        """동일 닉네임이 여러 사용자에 매핑되는지 계산합니다."""
+        buckets: dict[str, set[str]] = {}
+        for turn in turns:
+            if turn.get("is_bot"):
+                continue
+            name = str(turn.get("speaker") or "Unknown").strip() or "Unknown"
+            key = str(turn.get("speaker_key") or name.lower())
+            buckets.setdefault(name, set()).add(key)
+        return buckets
+
+    @staticmethod
+    def _resolve_speaker_label(turn: dict[str, Any], disambiguation: dict[str, set[str]]) -> str:
+        """요약 표시용 화자 라벨을 생성합니다."""
+        if turn.get("is_bot"):
+            return "마사몽"
+
+        base_name = str(turn.get("speaker") or "Unknown").strip() or "Unknown"
+        keys = disambiguation.get(base_name, set())
+        if len(keys) <= 1:
+            return base_name
+
+        user_id = turn.get("user_id")
+        if user_id is None:
+            return f"{base_name}(구분필요)"
+        return f"{base_name}({str(user_id)[-4:]})"
+
+    def _build_summary_context_from_turns(self, turns: list[dict[str, Any]]) -> str:
+        """긴 대화를 압축해 [이전 맥락]+[최신 대화] 형태의 입력으로 변환합니다."""
+        if not turns:
+            return ""
+
+        recent_turn_count = max(1, int(getattr(config, "SUMMARY_RECENT_TURNS", 12)))
+        older_turn_count = max(0, int(getattr(config, "SUMMARY_OLDER_TURNS", 8)))
+        recent_line_chars = max(40, int(getattr(config, "SUMMARY_RECENT_LINE_CHARS", 180)))
+        older_line_chars = max(30, int(getattr(config, "SUMMARY_OLDER_LINE_CHARS", 90)))
+        max_chars = max(800, int(getattr(config, "SUMMARY_MAX_CONTEXT_CHARS", 3200)))
+
+        recent_turns = turns[-recent_turn_count:]
+        older_turns = turns[:-recent_turn_count]
+        older_samples = self._sample_evenly(older_turns, older_turn_count)
+        speaker_disambiguation = self._build_speaker_disambiguation(turns)
+
+        def _format_line(turn: dict[str, Any], *, limit: int) -> str:
+            speaker = self._resolve_speaker_label(turn, speaker_disambiguation)
+            content = self._truncate_summary_text(str(turn.get("content") or ""), limit)
+            return f"- {speaker}: {content}"
+
+        older_lines = [_format_line(turn, limit=older_line_chars) for turn in older_samples]
+        recent_lines = [_format_line(turn, limit=recent_line_chars) for turn in recent_turns]
+
+        def _render() -> str:
+            sections: list[str] = []
+            if older_lines:
+                sections.append("[이전 맥락(압축)]\n" + "\n".join(older_lines))
+            if recent_lines:
+                sections.append("[최신 대화]\n" + "\n".join(recent_lines))
+            return "\n\n".join(sections)
+
+        context_text = _render()
+        while len(context_text) > max_chars and older_lines:
+            older_lines.pop(0)
+            context_text = _render()
+
+        while len(context_text) > max_chars and len(recent_lines) > 4:
+            recent_lines.pop(0)
+            context_text = _render()
+
+        if len(context_text) > max_chars:
+            context_text = self._truncate_summary_text(context_text, max_chars)
+
+        return context_text
+
+    async def get_recent_conversation_text(
+        self,
+        guild_id: int,
+        channel_id: int,
+        look_back: int = 20,
+        *,
+        max_chars: int | None = None,
+        include_bot: bool = True,
+        after_message_id: int | None = None,
+    ) -> str:
+        """요약 기능용 최근 대화를 읽어 압축된 컨텍스트 문자열로 반환합니다."""
+        if not self.bot.db:
+            return ""
+
+        look_back = max(1, look_back)
+        effective_max_chars = max_chars if max_chars is not None else getattr(config, "SUMMARY_MAX_CONTEXT_CHARS", 3200)
+
+        query_parts = [
+            "SELECT message_id, user_id, user_name, content, is_bot, created_at",
+            "FROM conversation_history",
+            "WHERE guild_id = ? AND channel_id = ?",
+        ]
+        params: list[int] = [int(guild_id), int(channel_id)]
+        if after_message_id is not None:
+            query_parts.append("AND message_id > ?")
+            params.append(int(after_message_id))
+        query_parts.append("ORDER BY created_at DESC, message_id DESC LIMIT ?")
+        params.append(int(look_back))
+        query = " ".join(query_parts)
+
         try:
-            async with self.bot.db.execute(query, (guild_id, channel_id, look_back)) as cursor:
+            async with self.bot.db.execute(query, tuple(params)) as cursor:
                 rows = await cursor.fetchall()
-            if not rows: return ""
+            if not rows:
+                return ""
+
             rows.reverse()
-            return "\n".join([f"User({row['user_name']}): {row['content']}" for row in rows])
+            materialized_rows = [dict(row) for row in rows]
+            if not include_bot:
+                materialized_rows = [row for row in materialized_rows if not bool(row.get("is_bot"))]
+            if not materialized_rows:
+                return ""
+
+            turns = self._merge_rows_to_turns(materialized_rows)
+            context_text = self._build_summary_context_from_turns(turns)
+            return self._truncate_summary_text(context_text, max(800, int(effective_max_chars)))
         except Exception as e:
             logger.error(f"최근 대화 기록 조회 중 DB 오류: {e}", exc_info=True)
             return ""
+
+    async def get_latest_conversation_message_id(self, guild_id: int, channel_id: int) -> int | None:
+        """채널의 최신 message_id를 반환합니다."""
+        if not self.bot.db:
+            return None
+        query = (
+            "SELECT message_id FROM conversation_history "
+            "WHERE guild_id = ? AND channel_id = ? "
+            "ORDER BY created_at DESC, message_id DESC LIMIT 1"
+        )
+        try:
+            async with self.bot.db.execute(query, (int(guild_id), int(channel_id))) as cursor:
+                row = await cursor.fetchone()
+            if not row:
+                return None
+            value = row["message_id"] if isinstance(row, aiosqlite.Row) else row[0]
+            return int(value)
+        except Exception as e:
+            logger.error(f"최신 메시지 ID 조회 중 DB 오류: {e}", exc_info=True)
+            return None
+
+    async def count_recent_conversation_messages(
+        self,
+        guild_id: int,
+        channel_id: int,
+        *,
+        after_message_id: int | None = None,
+        include_bot: bool = True,
+    ) -> int:
+        """요약 기준 범위 내 메시지 개수를 반환합니다."""
+        if not self.bot.db:
+            return 0
+
+        query_parts = [
+            "SELECT COUNT(1) AS cnt FROM conversation_history",
+            "WHERE guild_id = ? AND channel_id = ?",
+        ]
+        params: list[int] = [int(guild_id), int(channel_id)]
+        if not include_bot:
+            query_parts.append("AND is_bot = 0")
+        if after_message_id is not None:
+            query_parts.append("AND message_id > ?")
+            params.append(int(after_message_id))
+        query = " ".join(query_parts)
+
+        try:
+            async with self.bot.db.execute(query, tuple(params)) as cursor:
+                row = await cursor.fetchone()
+            if not row:
+                return 0
+            value = row["cnt"] if isinstance(row, aiosqlite.Row) else row[0]
+            return int(value or 0)
+        except Exception as e:
+            logger.error(f"최근 대화 개수 조회 중 DB 오류: {e}", exc_info=True)
+            return 0
 
     async def generate_system_alert_message(self, channel_id: int, alert_context: str, alert_title: str | None = None) -> str | None:
         """주기적 알림 등 시스템 메시지를 AI 말투로 재작성합니다."""
