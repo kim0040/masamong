@@ -1,530 +1,362 @@
-<p align="center">
-  <h1 align="center">🤖 마사몽 (Masamong)</h1>
-  <p align="center">
-    AI 기반 다기능 Discord 봇 — 대화 · 날씨 · 주식 · 뉴스검색 · 이미지 생성을 하나로
-  </p>
-  <p align="center">
-    <img src="https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white" alt="Python">
-    <img src="https://img.shields.io/badge/discord.py-2.7+-5865F2?logo=discord&logoColor=white" alt="discord.py">
-    <img src="https://img.shields.io/badge/AI-Gemini%20%7C%20CometAPI-FF6F00?logo=google&logoColor=white" alt="AI">
-    <img src="https://img.shields.io/badge/Search-DuckDuckGo%20RAG-DE5833?logo=duckduckgo&logoColor=white" alt="Search">
-    <img src="https://img.shields.io/badge/DB-SQLite-003B57?logo=sqlite&logoColor=white" alt="SQLite">
-    <img src="https://img.shields.io/badge/License-Private-gray" alt="License">
-  </p>
-</p>
+# 마사몽 (Masamong)
+
+Discord 서버용 AI 보조 봇입니다.  
+멘션 기반 대화, 날씨/재난 정보, 웹 탐색 RAG, 이미지 생성, 운세, 커뮤니티 유틸리티를 제공합니다.
+
+- 기본 언어: 한국어
+- 런타임: Python 3.9+
+- DB: SQLite (`database/remasamong.db`)
+- 아키텍처: `discord.py` + Cog 모듈 + 로컬 RAG + 외부 API 툴
+
+## 문서 언어
+- 한국어 (이 문서)
+- English: [docs/README.en.md](docs/README.en.md)
+- 日本語: [docs/README.ja.md](docs/README.ja.md)
 
 ---
 
-한국어 | [English](docs/README.en.md) | [日本語](docs/README.ja.md)
+## 1. 핵심 기능
 
-## 📋 목차
+### AI 대화
+- 서버: `@멘션`이 있는 메시지에만 응답
+- DM: 멘션 없이 대화 가능 (사용량 제한 적용)
+- 채널별 페르소나/규칙 적용 (`prompts.json`의 `channels`)
+- 도구 자동 선택(LLM + 키워드 fallback)
 
-- [소개](#-소개)
-- [주요 기능](#-주요-기능)
-- [기술 스택](#-기술-스택)
-- [프로젝트 구조](#-프로젝트-구조)
-- [시작하기](#-시작하기)
-  - [사전 요구사항](#사전-요구사항)
-  - [설치](#설치)
-  - [환경 변수 설정](#환경-변수-설정)
-  - [데이터베이스 초기화](#데이터베이스-초기화)
-  - [실행](#실행)
-- [환경 변수 레퍼런스](#-환경-변수-레퍼런스)
-- [명령어 레퍼런스](#-명령어-레퍼런스)
-- [아키텍처](#-아키텍처)
-  - [메시지 처리 흐름](#메시지-처리-흐름)
-  - [AI 파이프라인](#ai-파이프라인)
-  - [RAG 시스템](#rag-시스템)
-  - [백그라운드 태스크](#백그라운드-태스크)
-- [데이터베이스 스키마](#-데이터베이스-스키마)
-- [설정 파일](#-설정-파일)
-- [배포](#-배포)
-- [기여하기](#-기여하기)
-- [라이선스](#-라이선스)
+### 외부 정보 탐색
+- `search_news_rag` 기반 범용 탐색
+- 뉴스뿐 아니라 웹/블로그/문서/커뮤니티 결과를 수집/요약
+- 페이지 크롤링 실패 시 snippet/title 기반 fallback 요약
+- 동일 질의 단기 캐시 및 Fast LLM 호출 예산 제한
 
----
+### 날씨/재난
+- 현재/단기/중기 예보
+- `!날씨 이번주` 종합 요약
+- 강수 알림, 아침/저녁 인사, 지진 알림 루프
 
-## 🎯 소개
+### 금융/생활 도구
+- 주식(yfinance 우선, KRX/Finnhub 경로 보유)
+- 환율(수출입은행)
+- 장소/웹/이미지 검색(카카오)
+- 이미지 생성(CometAPI Gemini-compatible 이미지 엔드포인트)
 
-**마사몽**은 Discord 서버에서 `@마사몽` 멘션으로 자연스러운 대화를 나눌 수 있는 AI 봇입니다. 단순한 챗봇을 넘어, 실시간 날씨 예보, 주식 시세, 환율 조회, AI 이미지 생성, 사주/운세 등 **생활 밀착형 도구**를 통합 제공합니다.
-
-### ✨ 왜 마사몽인가?
-
-- **멘션 기반 대화** — `@마사몽`으로 호출할 때만 응답하여, 서버 대화를 방해하지 않습니다
-- **장기 기억(RAG)** — 과거 대화를 임베딩 기반으로 검색하여 문맥을 기억합니다
-- **자동 알림 시스템** — 강수 예보, 아침/저녁 인사, 지진 경보를 자동으로 전송합니다
-- **다중 AI 폴백** — CometAPI → Gemini 순서로 시도하여 높은 가용성을 보장합니다
-- **서버별 커스터마이징** — 슬래시 커맨드로 AI 페르소나, 허용 채널 등을 서버별로 설정합니다
+### 운세/커뮤니티
+- `!운세` 그룹(등록/구독/상세/삭제)
+- 별자리 운세/순위
+- 대화 요약(`!요약`) 증분 요약 + 컨텍스트 압축
+- 활동 랭킹, 투표
 
 ---
 
-## 🛠 주요 기능
+## 2. 실제 동작 정책 (코드 기준)
 
-### 💬 AI 대화
-| 기능 | 설명 |
-|------|------|
-| 멘션 기반 대화 | `@마사몽`으로 시작하는 메시지에만 응답 |
-| DM 대화 | 멘션 없이 1:1 대화 가능 (사용량 제한 적용) |
-| 장기 기억 (RAG) | 임베딩 + BM25 하이브리드 검색으로 과거 대화 참조 |
-| **뉴스 검색** | **DuckDuckGo RAG 파이프라인으로 최신 뉴스 자동 검색 (API 키 불필요)** |
-| **뉴스 출처 리액션** | **📰 이모티콘 클릭 시 참조 기사 URL 표시** |
-| **LLM 도구 자동선택** | **Fast 모델이 질문을 분석하여 도구를 자동으로 결정** |
-| 능동적 제안 | 대화 맥락에서 관련 기능을 자연스럽게 안내 |
-
-### 🌦️ 날씨 · 재난
-| 기능 | 설명 |
-|------|------|
-| 현재 날씨 | 기상청 초단기실황 API 기반 현재 날씨 조회 |
-| 단기/중기 예보 | 3일 / 10일 예보 조회 |
-| 주간 날씨 종합 | `!날씨 이번주`로 단기+중기 통합 요약 |
-| 강수 알림 | 비/눈 예보 시 지정 채널에 자동 알림 |
-| 아침/저녁 인사 | 지정 시각에 날씨 요약 포함 AI 인사 전송 |
-| 지진 경보 | 국내 영향권 지진 발생 시 전 채널 알림 |
-| 기상 특보 | 폭염/한파/태풍 등 기상 특보 연동 |
-
-### 📊 생활 도구
-| 기능 | 설명 |
-|------|------|
-| 주식 시세 | yfinance 기반 글로벌 주식 + KRX 국내 주식 조회 |
-| 환율 조회 | 한국수출입은행 API 기반 실시간 환율 |
-| 장소 검색 | 카카오 API 기반 키워드 장소 검색 |
-| 이미지 생성 | Gemini Native API 기반 텍스트-이미지 생성 |
-| 이미지 검색 | 카카오 이미지 검색 |
-
-### 🔮 운세 · 별자리
-| 기능 | 설명 |
-|------|------|
-| 오늘의 운세 | 사주(생년월일/시) 기반 운세 생성 |
-| 별자리 운세 | 12별자리 일일 운세 및 랭킹 |
-| 월간/연간 운세 | 이번 달 / 올해 운세 상세 분석 |
-| 운세 구독 | 매일 지정 시간에 DM으로 운세 브리핑 전송 |
-
-### 🎉 커뮤니티
-| 기능 | 설명 |
-|------|------|
-| 대화 요약 | 최근 대화를 AI가 3줄 요약 |
-| 활동 랭킹 | 서버 멤버 메시지 활동 TOP 5 |
-| 투표 | 찬반 / 다중 선택 투표 생성 |
+- AI 준비 상태(`AIHandler.is_ready`)는 `GEMINI_API_KEY` 설정을 전제로 합니다.
+  - CometAPI를 사용하더라도 Gemini 키가 없으면 AI 경로가 준비 상태가 되지 않습니다.
+- 금융 질문은 운영 정책상 AI 라우팅에서 `search_news_rag`로 우선 처리되도록 구성되어 있습니다.
+  - 기존 금융 툴 이름이 들어와도 내부에서 웹 탐색 경로로 리다이렉트될 수 있습니다.
+- BM25는 현재 설정상 비활성 (`config.BM25_ENABLED = False`)입니다.
 
 ---
 
-## 🧰 기술 스택
+## 3. 프로젝트 구조
 
-| 분류 | 기술 |
-|------|------|
-| **언어** | Python 3.9+ |
-| **프레임워크** | discord.py 2.0+ |
-| **AI** | Google Gemini (google-generativeai), CometAPI (OpenAI Compatible) |
-| **데이터베이스** | SQLite (aiosqlite) |
-| **임베딩** | sentence-transformers, numpy |
-| **외부 API** | 기상청(KMA), 카카오, yfinance, Finnhub, 한국수출입은행 |
-| **점성술** | ephem, korean-lunar-calendar |
-
----
-
-## 📁 프로젝트 구조
-
-```
+```text
 masamong/
-├── main.py                     # 봇 엔트리포인트 (초기화, Cog 로딩, 메시지 라우팅)
-├── config.py                   # 전체 설정값 관리 (환경변수 → config.json → 기본값)
-├── logger_config.py            # 로깅 설정
-- `utils/news_search.py`  # 뉴스 RAG 파이프라인 (DuckDuckGo)
-├── setup.py                    # 초기 설정 스크립트
-│
-├── cogs/                       # Discord Cog 모듈 (기능 단위 분리)
-│   ├── ai_handler.py           # AI 대화 파이프라인 (도구 감지, RAG, LLM 호출)
-│   ├── weather_cog.py          # 날씨 조회, 강수/인사/지진 알림
-│   ├── fortune_cog.py          # 운세, 별자리, 사주
-│   ├── tools_cog.py            # 외부 도구 (주식/환율/장소/웹/이미지)
-│   ├── commands.py             # 일반 명령어 (로그 삭제, 이미지 생성, 업데이트)
-│   ├── fun_cog.py              # 재미 기능 (대화 요약)
-│   ├── activity_cog.py         # 활동 기록 및 랭킹
-│   ├── poll_cog.py             # 투표 기능
-│   ├── events.py               # 이벤트 리스너 (on_ready, on_error 등)
-│   ├── settings_cog.py         # 서버별 설정 (슬래시 커맨드)
-│   ├── maintenance_cog.py      # 유지보수 (아카이빙, BM25 재구축)
-│   ├── help_cog.py             # 커스텀 도움말
-│   └── proactive_assistant.py  # 능동적 제안 시스템
-│
-├── utils/                      # 유틸리티 모듈
-│   ├── weather.py              # 기상청 API 래퍼
-│   ├── coords.py               # 좌표 변환 유틸리티
-│   ├── db.py                   # 데이터베이스 유틸리티
-│   ├── embeddings.py           # 임베딩 생성/저장
-│   ├── hybrid_search.py        # 하이브리드 RAG 검색 (임베딩 + BM25)
-│   ├── query_rewriter.py       # 검색 쿼리 확장/재작성
-│   ├── reranker.py             # 검색 결과 리랭킹
-│   ├── fortune.py              # 사주/운세 계산 유틸리티
-│   ├── http.py                 # HTTP 요청 래퍼
-│   ├── text_cleaner.py         # 텍스트 전처리
-│   ├── chunker.py              # 텍스트 청킹
-│   ├── data_formatters.py      # 데이터 포맷팅
-│   ├── kma_codes.py            # 기상청 코드 매핑
-│   ├── initial_data.py         # 초기 데이터 시딩
-│   └── api_handlers/           # 외부 API 핸들러
-│       ├── exchange_rate.py    #   환율 (수출입은행)
-│       ├── yfinance_handler.py #   주식 (yfinance)
-│       ├── finnhub.py          #   주식 (Finnhub)
-│       ├── krx.py / krx_v2.py  #   국내 주식 (KRX)
-│       └── kakao.py            #   장소/이미지 검색 (카카오)
-│
-├── database/                   # 데이터베이스
-│   ├── schema.sql              # 전체 스키마 정의
-│   ├── init_db.py              # DB 초기화 스크립트
-│   └── bm25_index.py           # BM25 인덱스 관리
-│
-├── requirements.txt            # Python 의존성 (공통 base)
-├── requirements-cpu.txt        # CPU-only 서버용 RAG 스택
-├── requirements-gpu.txt        # GPU 로컬 개발용 RAG 스택
-├── setup.py                    # 초기 설정 스크립트
-│
-├── tests/                      # 테스트
-├── scripts/                    # 개발/진단 스크립트
-├── docs/                       # 문서 (다국어 README, 아키텍처, 변경이력)
-└── examples/                   # 설정 파일 예시
+├─ main.py                     # 엔트리포인트, DB 연결, Cog 로딩, 메시지 라우팅
+├─ config.py                   # 환경변수/config.json/기본값 로더
+├─ prompts.json                # 채널별 페르소나/규칙 및 프롬프트
+├─ emb_config.json             # RAG/임베딩 상세 설정
+├─ cogs/
+│  ├─ ai_handler.py            # 에이전트 메인 파이프라인
+│  ├─ tools_cog.py             # 외부 API 툴
+│  ├─ weather_cog.py           # 날씨 명령/알림 루프
+│  ├─ fortune_cog.py           # 운세/별자리/구독
+│  ├─ fun_cog.py               # !요약
+│  ├─ activity_cog.py          # !랭킹
+│  ├─ poll_cog.py              # !투표
+│  ├─ settings_cog.py          # 슬래시 설정 커맨드
+│  ├─ maintenance_cog.py       # 아카이빙/BM25 유지보수
+│  ├─ events.py                # 이벤트 리스너
+│  └─ help_cog.py              # 커스텀 도움말
+├─ utils/
+│  ├─ news_search.py           # 범용 웹 탐색 RAG 파이프라인
+│  ├─ weather.py               # 기상청 API 래퍼
+│  ├─ db.py                    # 레이트리밋/로그/보조 DB 유틸
+│  ├─ hybrid_search.py         # 로컬 RAG 검색
+│  ├─ embeddings.py            # 임베딩 저장/조회
+│  └─ api_handlers/            # 카카오/금융/환율 등 API 핸들러
+├─ database/
+│  ├─ schema.sql               # DB 스키마
+│  └─ init_db.py               # 수동 초기화 스크립트
+├─ requirements.txt            # 공통 의존성
+├─ requirements-cpu.txt        # 서버 CPU용 RAG 의존성
+└─ requirements-gpu.txt        # 로컬 GPU용 RAG 의존성
 ```
 
 ---
 
-## 🚀 시작하기
+## 4. 설치
 
-### 사전 요구사항
+### 4.1 사전 요구사항
+- Python 3.9+
+- pip / virtualenv
+- Discord Bot Token
+- Gemini API Key (필수)
 
-- **Python 3.9** 이상
-- **Discord Bot Token** ([Discord Developer Portal](https://discord.com/developers/applications)에서 발급)
-- **Gemini API Key** ([Google AI Studio](https://aistudio.google.com/apikey)에서 발급) — AI 대화 필수
-
-### 설치
+### 4.2 가상환경 + 의존성
 
 ```bash
-# 1. 저장소 클론
-git clone https://github.com/kim0040/masamong.git
+git clone <your-repo-url>
 cd masamong
 
-# 2. 가상환경 생성 및 활성화
 python3 -m venv .venv
-source .venv/bin/activate  # macOS/Linux
-# .venv\Scripts\activate   # Windows
+source .venv/bin/activate
 
-# 3. 의존성 설치
 pip install -r requirements.txt
 ```
 
-#### (선택) RAG 기능 활성화
-
-장기 기억 기능을 사용하려면 추가 패키지가 필요합니다:
+RAG 임베딩까지 쓸 경우:
 
 ```bash
-# CPU-only 서버 (저사양 서버 권장)
+# 서버 CPU
 pip install -r requirements-cpu.txt
 
-# GPU 지원 로컬 환경
+# 로컬 GPU
 pip install -r requirements-gpu.txt
 ```
 
-> [!IMPORTANT]
-> numpy는 **1.x 버전으로 고정**됩니다 (`numpy>=1.24,<2.0`). numpy 2.0은 sentence-transformers와 호환 불가합니다.
+---
 
-### 환경 변수 설정
+## 5. 설정
 
-`.env` 파일 또는 `config.json`을 프로젝트 루트에 생성합니다.
+## 5.1 설정 로드 우선순위
+`config.py` 기준:
+1. 환경변수 (`.env` 포함)
+2. `config.json`
+3. 코드 기본값
+
+### 5.2 최소 필수 `.env`
 
 ```env
-# === 필수 ===
-DISCORD_BOT_TOKEN=your_discord_bot_token
-GEMINI_API_KEY=your_gemini_api_key
+DISCORD_BOT_TOKEN=...
+GEMINI_API_KEY=...
+```
 
-# === AI (선택) ===
-COMETAPI_KEY=your_cometapi_key           # CometAPI 우선 사용
+### 5.3 권장 `.env` (자주 쓰는 값)
+
+```env
+# AI
 USE_COMETAPI=true
+COMETAPI_KEY=...
+COMETAPI_BASE_URL=https://api.cometapi.com/v1
+COMETAPI_MODEL=DeepSeek-V3.2-Exp-nothinking
+FAST_MODEL_NAME=gemini-3.1-flash-lite-preview
 
-# === 날씨 (선택) ===
-KMA_API_KEY=your_kma_api_key             # 기상청 API
+# 외부 검색
+DDGS_ENABLED=true
+KAKAO_API_KEY=...
+GOOGLE_API_KEY=...
+GOOGLE_CX=...
+SERPAPI_KEY=...
 
-# === 주식/환율 (선택) ===
-FINNHUB_API_KEY=your_finnhub_key
-EXIM_API_KEY_KR=your_exim_key            # 한국수출입은행 환율
+# 날씨/재난
+KMA_API_KEY=...
+# KMA 키가 없으면 GO_DATA_API_KEY_KR를 fallback으로 사용 가능
+GO_DATA_API_KEY_KR=...
 
-# === 검색 (선택) ===
-KAKAO_API_KEY=your_kakao_key             # 장소/이미지 검색
-GOOGLE_API_KEY=your_google_key           # 웹 검색
-GOOGLE_CX=your_google_cx
+# 금융/환율
+FINNHUB_API_KEY=...
+EXIM_API_KEY_KR=...
+
+# 이미지
+COMETAPI_IMAGE_ENABLED=true
+IMAGE_MODEL=gemini-3.1-flash-image
+IMAGE_ASPECT_RATIO=1:1
+IMAGE_USER_LIMIT=10
+IMAGE_GLOBAL_DAILY_LIMIT=50
 ```
 
-> **설정 우선순위**: 환경 변수 → `config.json` → 기본값
+### 5.4 RAG/메모리 설정 파일
+- `emb_config.json`
+  - 임베딩 모델/디바이스/threshold
+  - 윈도우 크기/stride
+  - query rewrite/reranker 옵션
+- 현재 기본 정책상 BM25는 비활성 상태
 
-### 데이터베이스 초기화
+### 5.5 프롬프트/채널 페르소나
+- `prompts.json`
+  - `prompts`: 시스템 프롬프트 템플릿
+  - `channels`: 채널별 `allowed/persona/rules`
 
-```bash
-python3 database/init_db.py
-```
+---
 
-> 봇 첫 실행 시 자동으로 마이그레이션이 수행되므로, 이 단계는 선택사항입니다.
-
-### 실행
+## 6. 실행
 
 ```bash
 python3 main.py
 ```
 
----
-
-## 📖 환경 변수 레퍼런스
-
-### 필수 설정
-
-| 변수 | 설명 | 기본값 |
-|------|------|--------|
-| `DISCORD_BOT_TOKEN` | Discord 봇 토큰 | — |
-| `GEMINI_API_KEY` | Google Gemini API 키 | — |
-
-### AI 설정
-
-| 변수 | 설명 | 기본값 |
-|------|------|--------|
-| `COMETAPI_KEY` | CometAPI 키 (우선 사용) | — |
-| `COMETAPI_BASE_URL` | CometAPI 엔드포인트 | `https://api.cometapi.com/v1` |
-| `COMETAPI_MODEL` | CometAPI 모델명 | `DeepSeek-V3.2-Exp-nothinking` |
-| `USE_COMETAPI` | CometAPI 활성화 여부 | `true` |
-| `FAST_MODEL_NAME` | 뉴스 RAG Fast 모델명 | `gemini-3.1-flash-lite-preview` |
-| `DDGS_ENABLED` | DuckDuckGo 뉴스 검색 활성화 | `true` |
-| `AI_RESPONSE_LENGTH_LIMIT` | 응답 최대 글자수 | `300` |
-| `AI_TEMPERATURE` | 생성 온도 | `0.0` |
-| `AI_REQUEST_TIMEOUT` | 응답 타임아웃 (초) | `45` |
-| `AI_INTENT_ANALYSIS_ENABLED` | 의도 분석 활성화 | `true` |
-
-### 날씨/알림 설정
-
-| 변수 | 설명 | 기본값 |
-|------|------|--------|
-| `KMA_API_KEY` | 기상청 API 키 | — |
-| `ENABLE_RAIN_NOTIFICATION` | 강수 알림 활성화 | `true` |
-| `RAIN_NOTIFICATION_CHANNEL_ID` | 알림 전송 채널 ID | — |
-| `WEATHER_CHECK_INTERVAL_MINUTES` | 날씨 확인 주기 (분) | `60` |
-| `RAIN_NOTIFICATION_THRESHOLD_POP` | 강수 알림 확률 임계값 (%) | `30` |
-| `ENABLE_GREETING_NOTIFICATION` | 아침/저녁 인사 활성화 | `true` |
-
-### 외부 API 키
-
-| 변수 | 설명 | 용도 |
-|------|------|------|
-| `KAKAO_API_KEY` | 카카오 API 키 | 장소/이미지 검색 |
-| `GOOGLE_API_KEY` | Google Custom Search 키 | 웹 검색 |
-| `GOOGLE_CX` | Google CX 식별자 | 웹 검색 |
-| `SERPAPI_KEY` | SerpAPI 키 | 웹 검색 (폴백) |
-| `FINNHUB_API_KEY` | Finnhub 키 | 해외 주식 |
-| `EXIM_API_KEY_KR` | 수출입은행 API 키 | 환율 |
-
-### 이미지 생성 설정
-
-| 변수 | 설명 | 기본값 |
-|------|------|--------|
-| `COMETAPI_IMAGE_ENABLED` | 이미지 생성 활성화 | `true` |
-| `IMAGE_MODEL` | 이미지 생성 모델 | `gemini-3.1-flash-image` |
-| `IMAGE_SIZE` | 이미지 크기 설정 | `3k` |
-| `IMAGE_RESPONSE_FORMAT` | 이미지 응답 형식 (url / b64_json) | `url` |
-| `IMAGE_USER_LIMIT` | 유저당 이미지 제한 (6시간) | `10` |
-| `IMAGE_GLOBAL_DAILY_LIMIT` | 전역 일일 이미지 제한 | `50` |
-
-### 안전장치 설정
-
-| 변수 | 설명 | 기본값 |
-|------|------|--------|
-| `USER_COOLDOWN_SECONDS` | 유저별 요청 쿨다운 (초) | `3` |
-| `USER_DAILY_LLM_LIMIT` | 유저별 일일 LLM 호출 제한 | `200` |
-| `GLOBAL_DAILY_LLM_LIMIT` | 전역 일일 LLM 호출 제한 | `5000` |
+- 첫 실행 시 `main.py`에서 스키마 적용 및 필요한 테이블/컬럼 점검 수행
+- `database/init_db.py`는 수동 초기화가 필요할 때만 실행
 
 ---
 
-## 📚 명령어 레퍼런스
+## 7. 명령어
 
-### 🔹 일반 명령어
+모든 텍스트 명령어 prefix는 기본 `!`입니다.
 
-| 명령어 | 별명 | 설명 | 범위 |
-|--------|------|------|------|
-| `!도움` | `!도움말`, `!h`, `!help` | 명령어 목록 및 상세 도움말 | 전체 |
-| `!날씨 [지역]` | `!weather` | 오늘/내일/모레/주간 날씨 조회 | 전체 |
-| `!이미지 <설명>` | — | AI 이미지 생성 | 서버 |
-| `!업데이트` | — | 최근 업데이트 내역 확인 | 전체 |
+### 일반
+- `!도움`, `!help`, `!도움말`, `!h`
+- `!이미지 <프롬프트>` (`image`, `img`, `그림`, `생성`)
+- `!업데이트` (`update`, `패치노트`)
+- `!delete_log` (`로그삭제`) - 관리자, 서버 전용
 
-### 🔹 운세 명령어
+### 날씨
+- `!날씨`
+- `!날씨 서울`
+- `!날씨 내일 부산`
+- `!날씨 이번주 광주`
 
-| 명령어 | 별명 | 설명 | 범위 |
-|--------|------|------|------|
-| `!운세` | `!fortune` | 오늘의 운세 | 전체 |
-| `!운세 등록` | — | 생년월일/시간 등록 | DM |
-| `!운세 상세` | — | 상세 운세 (DM 전송) | 전체 |
-| `!운세 구독 [HH:MM]` | — | 매일 운세 브리핑 구독 | 전체 |
-| `!별자리 [별자리명]` | — | 별자리 운세 | 전체 |
-| `!별자리 순위` | — | 12별자리 행운 랭킹 | 전체 |
-| `!이번달운세` | — | 월간 운세 | 전체 |
-| `!올해운세` | — | 연간 운세 | 전체 |
+### 운세
+- `!운세`
+- `!운세 등록` (DM 권장)
+- `!운세 상세`
+- `!운세 구독 HH:MM`
+- `!운세 구독취소`
+- `!운세 삭제`
+- `!구독 HH:MM` (`구독시간`, `알림시간`)
+- `!이번달운세` (`이번달`)
+- `!올해운세` (`올해`, `신년운세`)
 
-### 🔹 커뮤니티 명령어
+### 별자리
+- `!별자리`
+- `!별자리 <별자리명>`
+- `!별자리 순위`
 
-| 명령어 | 별명 | 설명 | 범위 |
-|--------|------|------|------|
-| `!요약` | `!summarize`, `!3줄요약` | 최근 대화 AI 요약 | 서버 |
-| `!랭킹` | `!수다왕`, `!ranking` | 서버 활동 TOP 5 | 서버 |
-| `!투표 "주제" "항목1" "항목2"` | `!poll` | 투표 생성 | 서버 |
+### 커뮤니티
+- `!요약` (`summarize`, `summary`, `3줄요약`, `sum`)
+- `!랭킹` (`수다왕`, `ranking`)
+- `!투표 "주제" "항목1" ...` (`poll`)
 
-### 🔹 관리 명령어
+### 슬래시(설정)
+- `/config set_ai`
+- `/config channel`
+- `/persona view`
+- `/persona set`
 
-| 명령어 | 설명 | 권한 |
-|--------|------|------|
-| `!delete_log` | 로그 파일 삭제 | 관리자 |
-| `!debug status` | 시스템 상태 확인 | 봇 오너 |
-| `!debug reset_dm <user_id>` | DM 제한 초기화 | 봇 오너 |
-| `/config ai_enabled` | AI 기능 활성화/비활성화 | 관리자 |
-| `/config channel` | AI 허용 채널 관리 | 관리자 |
-| `/config persona` | AI 페르소나 설정 | 관리자 |
-
----
-
-## 🏗 아키텍처
-
-### 메시지 처리 흐름
-
-```
-Discord Message
-  │
-  ├─ "!" 프리픽스 → 명령어 처리 (commands.py, fun_cog, etc.)
-  │
-  └─ 일반 메시지
-      │
-      ├─ activity_cog: 활동 기록
-      │
-      ├─ events.py: 키워드 트리거 감지 (운세, 요약 등)
-      │
-      └─ ai_handler.py: AI 파이프라인 진입
-          │
-          ├─ 멘션 검증 (서버: 필수, DM: 비필수)
-          ├─ 도구 감지 (키워드 매칭)
-          ├─ 도구 실행 (tools_cog → 날씨/주식/환율/장소)
-          ├─ RAG 컨텍스트 검색 (hybrid_search)
-          ├─ 웹 검색 (자동 판단)
-          ├─ 프롬프트 구성
-          └─ LLM 응답 생성 (CometAPI → Gemini 폴백)
-```
-
-### AI 파이프라인
-
-| 단계 | 모듈 | 설명 |
-|------|------|------|
-| 1. 라우팅 | `main.py` | 멘션 검사 후 AI 핸들러로 전달 |
-| 2. **LLM 도구선택** | `ai_handler.py` | **Fast 모델이 질문을 분석하여 도구 자동 결정 (키워드 fallback)** |
-| 3. 도구 실행 | `tools_cog.py` | 외부 API 호출 및 결과 수집 |
-| 4. RAG 검색 | `hybrid_search.py` | 임베딩 + BM25 하이브리드 검색 |
-| 5. 뉴스 검색 | `news_search.py` | DuckDuckGo RAG 파이프라인 (뉴스 키워드 감지 시) |
-| 6. 프롬프트 구성 | `ai_handler.py` | 페르소나 + 도구 결과 + RAG 컨텍스트 조합 |
-| 7. LLM 호출 | `ai_handler.py` | CometAPI → Gemini 순서로 시도 |
-
-### RAG 시스템
-
-```
-대화 기록 저장 (conversation_history)
-        │
-        ▼
-윈도우 단위 분할 (conversation_windows)
-        │
-        ▼
-임베딩 벡터 생성 (sentence-transformers)
-        │
-        ▼
-벡터 DB 저장 (discord_embeddings.db)
-        │
-        ▼
-질문 시 하이브리드 검색 (임베딩 + BM25 → RRF 통합 → 리랭킹)
-```
-
-### 백그라운드 태스크
-
-| 태스크 | 주기 | 설명 |
-|--------|------|------|
-| 강수 알림 | 60분 | 단기예보 강수확률 기반 자동 알림 |
-| 아침 인사 | 매일 07:30 | 날씨 요약 포함 AI 인사 |
-| 저녁 인사 | 매일 23:50 | 날씨 요약 포함 AI 인사 |
-| 지진 알림 | 1분 | 국내 영향권 지진 발생 실시간 알림 |
-| 아카이빙 | 24시간 | 오래된 대화 기록 아카이빙 |
-| BM25 재구축 | 15분 | 유휴 상태 감지 시 인덱스 갱신 |
-| 운세 브리핑 | 매일 (구독 시간) | 구독자에게 DM 운세 전송 |
+참고: 슬래시 커맨드는 운영 환경에서 command tree sync가 선행되어야 표시됩니다.
 
 ---
 
-## 🗃 데이터베이스 스키마
+## 8. 운영 안전장치
 
-SQLite 기반으로 12개 테이블을 사용합니다. 전체 스키마는 [`database/schema.sql`](database/schema.sql)에 정의되어 있습니다.
+### 8.1 레이트리밋/쿨다운
+- 사용자 쿨다운
+- 사용자 일일 LLM 제한
+- 글로벌 일일 LLM 제한
+- DM 개별/전역 제한
+- 이미지 생성 개별/전역 제한
+- CometAPI RPM/RPD 제한 + 프롬프트/토큰 상한
+- 웹탐색 Fast LLM 호출 예산 제한
 
-| 테이블 | 용도 |
-|--------|------|
-| `guild_settings` | 서버별 AI 설정 (활성화/채널/페르소나) |
-| `user_activity` | 유저별 메시지 활동 기록 |
-| `conversation_history` | 실시간 대화 기록 저장 |
-| `conversation_windows` | 윈도우 단위 대화 요약/임베딩 |
-| `conversation_history_archive` | 보관된 과거 대화 |
-| `user_profiles` | 운세용 유저 프로필 (생년월일/성별/구독) |
-| `user_preferences` | 유저 알림/선호 설정 |
-| `locations` | 날씨 격자 좌표 매핑 |
-| `system_counters` | API 호출 카운터 |
-| `api_call_log` | API 호출 기록 (RPM/RPD 관리) |
-| `analytics_log` | 운영 분석 로그 |
-| `dm_usage_logs` | DM 사용량 제한 관리 |
+### 8.2 검색/요약 비용 최적화
+- `search_news_rag` 질의 결과 단기 캐시
+- 후보 URL 수/요약 페이지 수 상한
+- 문맥 길이 상한 (`WEB_RAG_CONTEXT_MAX_CHARS`)
+- 요약 컨텍스트 압축(최근 대화 + 과거 샘플)
 
 ---
 
-## ⚙ 설정 파일
+## 9. 데이터베이스
 
-| 파일 | 용도 | Git 추적 |
-|------|------|----------|
-| `.env` | 환경 변수 (API 키 등) | ❌ |
-| `config.json` | 환경 변수 대체 설정 | ❌ |
-| `prompts.json` / `prompts.yaml` | AI 프롬프트, 채널 설정, 페르소나 | ❌ |
-| `emb_config.json` | 임베딩/RAG 상세 설정 | ❌ |
-| `config.py` | 설정 로드 로직 & 기본값 | ✅ |
-| `database/schema.sql` | DB 스키마 정의 | ✅ |
+기본 DB 파일: `database/remasamong.db`
 
-> **프롬프트 커스터마이징**: `prompts.json`의 `channels` 섹션에서 채널별 페르소나와 규, 허용 여부를 설정할 수 있습니다.
+주요 테이블:
+- `conversation_history`, `conversation_windows`, `conversation_history_archive`
+- `guild_settings`, `user_activity`, `user_profiles`
+- `api_call_log`, `system_counters`, `analytics_log`, `dm_usage_logs`, `locations`
+
+스키마 원본: `database/schema.sql`
 
 ---
 
-## 🚢 배포
+## 10. 배포/업데이트 (기존 서버 DB 보호)
 
-배포 가이드는 [`DEPLOYMENT.md`](DEPLOYMENT.md)를 참고하세요.
+요청하신 조건처럼 **기존 누적 DB 영향 최소화**를 기준으로 운영하세요.
+
+### 권장 절차
 
 ```bash
-# 빠른 배포 (기존 서버)
-git pull origin main
+# 1) 코드만 업데이트
+git pull origin <branch>
+
+# 2) 의존성 동기화 (필요 시)
+source .venv/bin/activate
 pip install -r requirements.txt
-python3 database/init_db.py
+# RAG 사용 환경이면 CPU/GPU 파일 추가 설치
+
+# 3) DB 백업 (강력 권장)
+cp database/remasamong.db database/remasamong.db.bak.$(date +%Y%m%d_%H%M%S)
+
+# 4) 봇 재시작
 python3 main.py
 ```
 
-> **운영 시 유의사항**
-> - `GEMINI_API_KEY`가 없으면 AI 기능 전체가 비활성화됩니다
-> - 주식 조회는 yfinance 기본이며, CometAPI 티커 추출 실패 시 조회가 불가합니다
-> - 이미지 생성은 유저/전역 제한이 적용됩니다
-> - DM은 5시간당 30회 + 전역 하루 100회 제한이 있습니다
+### 주의
+- 코드가 DB를 강제로 초기화하거나 삭제하는 동작은 기본 경로에 없습니다.
+- `database/init_db.py`는 필요 시에만 수동 실행하세요.
+- 운영 DB를 건드리지 않는 검증이 필요하면 `/tmp` 임시 DB로 별도 테스트 하네스를 돌리세요.
 
 ---
 
-## 🤝 기여하기
+## 11. 테스트
 
-기여 가이드는 [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)를 참고하세요.
+### 기본 문법 점검
 
-1. Fork 후 브랜치 생성 (`git checkout -b feature/amazing-feature`)
-2. 변경사항 커밋 (`git commit -m 'feat: 새로운 기능 추가'`)
-3. 브랜치에 Push (`git push origin feature/amazing-feature`)
-4. Pull Request 생성
+```bash
+python3 -m compileall -q cogs utils main.py
+```
+
+### 제공 스크립트
+- `scripts/test_all_features.py`: 외부 API 중심 종합 점검
+- `scripts/test_context_aware.py`: 도구 선택/쿼리 정제 점검
+- `tests/verify_fortune.py`: 운세 계산 로직 점검
+
+실환경 API 검증 시에는 실제 키/네트워크 상태에 따라 결과가 달라질 수 있습니다.
 
 ---
 
-## 📄 라이선스
+## 12. 트러블슈팅
 
-이 프로젝트는 비공개 라이선스로 관리됩니다. 자세한 사항은 프로젝트 관리자에게 문의하세요.
+### 봇이 응답하지 않음
+- `DISCORD_BOT_TOKEN`, `GEMINI_API_KEY` 설정 확인
+- Discord Developer Portal에서 Message Content Intent 확인
+- 채널 허용 설정(`prompts.json` 또는 DB `guild_settings.ai_allowed_channels`) 확인
+
+### 날씨 API 실패
+- `KMA_API_KEY` 유효성 확인
+- 필요 시 `GO_DATA_API_KEY_KR` fallback 사용
+- 기상청 API 자체 장애/지연 가능성 확인
+
+### KRX 주식 조회 실패
+- 실제 런타임 키는 `GO_DATA_API_KEY_KR` 경로를 확인
+- 키 권한/호출 제한/엔드포인트 상태 점검
+
+### 이미지 생성 실패
+- `COMETAPI_KEY`/`COMETAPI_IMAGE_ENABLED` 확인
+- 사용자/전역 이미지 제한 도달 여부 확인
+- 안전 필터(NSFW) 차단 여부 확인
 
 ---
 
-<p align="center">
-  Made with ❤️ by the Masamong Team
-</p>
+## 13. 추가 문서
+- 아키텍처: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- 퀵스타트: [docs/QUICKSTART.md](docs/QUICKSTART.md)
+- 변경 이력: [docs/CHANGELOG.md](docs/CHANGELOG.md)
+- 기여 가이드: [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)
+
+---
+
+## 14. 라이선스
+
+Private repository / 내부 운영 프로젝트.
