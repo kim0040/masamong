@@ -74,7 +74,7 @@ END;
 """
 
 _CONTEXT_FETCH_SQL = """
-SELECT message_id, user_name, content
+SELECT message_id, user_id, user_name, content
 FROM conversation_history
 WHERE channel_id = ?
   AND created_at BETWEEN ? AND ?
@@ -243,6 +243,7 @@ class BM25IndexManager:
             window.append(
                 {
                     "message_id": row["message_id"],
+                    "user_id": row["user_id"],
                     "user_name": row["user_name"],
                     "message": row["content"],
                 }
@@ -330,20 +331,20 @@ class BM25IndexManager:
 
         radius = max(1, int(radius))
         center_query = """
-            SELECT message_id, user_name, content, is_bot, created_at
+            SELECT message_id, user_id, user_name, content, is_bot, created_at
             FROM conversation_history
             WHERE message_id = ?
             LIMIT 1
         """
         neighbors_before = """
-            SELECT message_id, user_name, content, is_bot, created_at
+            SELECT message_id, user_id, user_name, content, is_bot, created_at
             FROM conversation_history
             WHERE channel_id = ? AND created_at < ?
             ORDER BY created_at DESC
             LIMIT ?
         """
         neighbors_after = """
-            SELECT message_id, user_name, content, is_bot, created_at
+            SELECT message_id, user_id, user_name, content, is_bot, created_at
             FROM conversation_history
             WHERE channel_id = ? AND created_at > ?
             ORDER BY created_at ASC
@@ -373,6 +374,7 @@ class BM25IndexManager:
             results.append(
                 {
                     "message_id": row["message_id"],
+                    "user_id": row["user_id"],
                     "user_name": row["user_name"],
                     "content": row["content"],
                     "is_bot": bool(row["is_bot"]),

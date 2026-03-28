@@ -44,8 +44,9 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
     api_key = get_kma_api_key()
     if not api_key: return {"error": True, "message": config.MSG_WEATHER_API_KEY_MISSING}
 
-    if await db_utils.check_api_rate_limit(db, 'kma_daily', config.KMA_API_DAILY_CALL_LIMIT, 99999):
+    if await db_utils.check_api_rate_limit(db, 'kma_daily', 99999, config.KMA_API_DAILY_CALL_LIMIT):
         return {"error": True, "message": config.MSG_KMA_API_DAILY_LIMIT_REACHED}
+    await db_utils.log_api_call(db, 'kma_daily')
 
     base_params: dict[str, str] = {}
     base_url = ""

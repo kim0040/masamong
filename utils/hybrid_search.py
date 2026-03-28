@@ -85,12 +85,14 @@ class HybridSearchEngine:
             return HybridSearchResult(entries=[], query_variants=[], top_score=0.0)
 
         candidate_map: Dict[str, dict[str, Any]] = {}
+        dialogue_cache: Dict[tuple[str, int, int], List[dict[str, Any]]] = {}
         for variant in variants:
             embed_entries = await self._embedding_candidates(
                 variant,
                 guild_id=guild_id,
                 channel_id=channel_id,
                 user_id=user_id,
+                dialogue_cache=dialogue_cache,
             )
             for rank, entry in enumerate(embed_entries[: self.embedding_top_n]):
                 # 임베딩 후보는 가중치 계산을 위해 랭크를 기록한다.
@@ -100,6 +102,7 @@ class HybridSearchEngine:
                 variant,
                 guild_id=guild_id,
                 channel_id=channel_id,
+                dialogue_cache=dialogue_cache,
             )
             for rank, entry in enumerate(bm25_entries[: self.bm25_top_n]):
                 # BM25 후보도 동일한 후보 맵에 합산한다.
@@ -196,6 +199,7 @@ class HybridSearchEngine:
         guild_id: int,
         channel_id: int,
         user_id: int | None,
+        dialogue_cache: Dict[tuple[str, int, int], List[dict[str, Any]]] | None = None,
     ) -> List[dict[str, Any]]:
         if np is None:
             if not self._warned_numpy:
@@ -234,6 +238,7 @@ class HybridSearchEngine:
 
             focus = {
                 "message_id": message_id_int,
+                "user_id": row.get("user_id"),
                 "user_name": row.get("user_name") or "User",
                 "content": message,
                 "created_at": timestamp,
@@ -244,6 +249,8 @@ class HybridSearchEngine:
                 message_id=message_id_int,
                 fallback=row.get("context_window"),
                 focus=focus,
+                cache_namespace="discord",
+                dialogue_cache=dialogue_cache,
             )
             dialogue_block = self._format_dialogue_block(dialogue_messages)
             if not dialogue_block:
@@ -293,6 +300,7 @@ class HybridSearchEngine:
 
                 focus = {
                     "message_id": message_id_int,
+                    "user_id": row.get("user_id"),
                     "user_name": row.get("speaker") or row.get("user_name") or "카카오",
                     "content": message,
                     "created_at": timestamp,
@@ -303,6 +311,8 @@ class HybridSearchEngine:
                     message_id=message_id_int,
                     fallback=None,
                     focus=focus,
+                    cache_namespace=f"kakao:{row.get('db_path') or ''}",
+                    dialogue_cache=dialogue_cache,
                 )
                 dialogue_block = self._format_dialogue_block(dialogue_messages)
                 if not dialogue_block:
@@ -335,6 +345,7 @@ class HybridSearchEngine:
         *,
         guild_id: int,
         channel_id: int,
+        dialogue_cache: Dict[tuple[str, int, int], List[dict[str, Any]]] | None = None,
     ) -> List[dict[str, Any]]:
         if self.bm25_manager is None:
             return []
@@ -350,6 +361,7 @@ class HybridSearchEngine:
             normalized_score = 1.0 / (1.0 + item.bm25_score)
             focus = {
                 "message_id": item.message_id,
+                "user_id": item.user_id,
                 "user_name": item.user_name,
                 "content": item.content,
                 "created_at": item.created_at,
@@ -360,6 +372,8 @@ class HybridSearchEngine:
                 message_id=item.message_id,
                 fallback=item.context_window,
                 focus=focus,
+                cache_namespace="bm25",
+                dialogue_cache=dialogue_cache,
             )
             dialogue_block = self._format_dialogue_block(dialogue_messages)
             if not dialogue_block:
@@ -438,9 +452,18 @@ class HybridSearchEngine:
         message_id: int | None,
         fallback: Iterable[dict[str, Any]] | None,
         focus: dict[str, Any] | None,
+        cache_namespace: str,
+        dialogue_cache: Dict[tuple[str, int, int], List[dict[str, Any]]] | None = None,
     ) -> List[dict[str, Any]]:
         messages: List[dict[str, Any]] = []
         target_id_str = str(message_id) if message_id is not None else None
+        cache_key: tuple[str, int, int] | None = None
+        if message_id is not None:
+            cache_key = (cache_namespace, channel_id, message_id)
+            if dialogue_cache is not None:
+                cached = dialogue_cache.get(cache_key)
+                if cached is not None:
+                    return [dict(item) for item in cached]
 
         if message_id is not None and self.bm25_manager is not None:
             window = await self.bm25_manager.fetch_window_for_message(
@@ -467,6 +490,8 @@ class HybridSearchEngine:
         messages = self._dedupe_messages(messages)
         if target_id_str is not None:
             messages = self._trim_window(messages, target_id_str, self.neighbor_radius)
+        if cache_key is not None and dialogue_cache is not None:
+            dialogue_cache[cache_key] = [dict(item) for item in messages]
         return messages
 
     def _coerce_dialogue_entry(self, raw: dict[str, Any]) -> dict[str, Any]:
@@ -475,12 +500,18 @@ class HybridSearchEngine:
             message_id = int(message_id)
         except (TypeError, ValueError):
             message_id = None
+        user_id = raw.get("user_id")
+        try:
+            user_id = int(user_id) if user_id is not None else None
+        except (TypeError, ValueError):
+            user_id = None
         user_name = raw.get("user_name") or raw.get("speaker") or "User"
         content = raw.get("content") or raw.get("message") or ""
         created_at = raw.get("created_at") or raw.get("timestamp") or ""
         is_bot = bool(raw.get("is_bot", False))
         return {
             "message_id": message_id,
+            "user_id": user_id,
             "user_name": user_name,
             "content": content,
             "created_at": created_at,
@@ -536,12 +567,31 @@ class HybridSearchEngine:
     def _format_dialogue_block(self, messages: List[dict[str, Any]]) -> str:
         if not messages:
             return ""
+
+        # 동일 표시명(user_name)이 여러 사용자(user_id)에 매핑되면 라벨을 보정한다.
+        name_to_ids: dict[str, set[str]] = {}
+        for item in messages:
+            if item.get("is_bot"):
+                continue
+            name = str(item.get("user_name") or "User")
+            uid = item.get("user_id")
+            key = str(uid) if uid is not None else f"name:{name.lower()}"
+            name_to_ids.setdefault(name, set()).add(key)
+
         lines: List[str] = []
         seen_lines: set[str] = set()
         for item in messages:
             speaker = item.get("user_name") or "User"
             if item.get("is_bot"):
                 speaker = "마사몽"
+            else:
+                collisions = name_to_ids.get(str(speaker), set())
+                if len(collisions) > 1:
+                    uid = item.get("user_id")
+                    if uid is not None:
+                        speaker = f"{speaker}({str(uid)[-4:]})"
+                    else:
+                        speaker = f"{speaker}(구분필요)"
             timestamp = item.get("created_at") or ""
             content = self._clean_content(item.get("content") or "")
             if not content:

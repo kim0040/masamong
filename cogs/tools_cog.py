@@ -37,6 +37,14 @@ class ToolsCog(commands.Cog):
         self.weather_cog: WeatherCog = self.bot.get_cog('WeatherCog')
         logger.info("ToolsCog가 성공적으로 초기화되었습니다.")
 
+    def cog_unload(self):
+        """공유 HTTP 세션 정리."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(kakao.close_kakao_session())
+
     # --- 고수준 메타 도구 --- #
 
     async def get_current_time(self) -> str:
@@ -275,13 +283,13 @@ class ToolsCog(commands.Cog):
 
     async def search_news_rag(self, query: str) -> dict:
         """
-        DuckDuckGo 기반 뉴스 RAG 파이프라인을 실행합니다.
+        DuckDuckGo 기반 범용 탐색 RAG 파이프라인을 실행합니다.
         utils/news_search.py의 run_news_search_pipeline()을 호출합니다.
 
         반환값:
             {
                 "status": "success",
-                "context": str,        # 기사 요약 텍스트 (프롬프트에 주입)
+                "context": str,        # 탐색 요약 텍스트 (프롬프트에 주입)
                 "source_footer": str,  # 출처 URL 목록 (답변 하단에 붙임)
                 "source_urls": list
             }
@@ -289,12 +297,12 @@ class ToolsCog(commands.Cog):
         """
         try:
             from utils.news_search import run_news_search_pipeline
-            logger.info(f"뉴스 RAG 파이프라인 실행: '{query}'")
+            logger.info(f"웹탐색 RAG 파이프라인 실행: '{query}'")
             result = await run_news_search_pipeline(query)
             return result
         except Exception as e:
-            logger.error(f"뉴스 RAG 파이프라인 실행 중 오류: {e}", exc_info=True)
-            return {"status": "error", "message": f"뉴스 검색 중 오류가 발생했습니다: {e}"}
+            logger.error(f"웹탐색 RAG 파이프라인 실행 중 오류: {e}", exc_info=True)
+            return {"status": "error", "message": f"외부 검색 중 오류가 발생했습니다: {e}"}
 
     async def web_search(self, query: str) -> str:
         """
