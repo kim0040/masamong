@@ -8,10 +8,19 @@ import discord
 from discord.ext import commands
 from typing import Dict
 from datetime import datetime, timedelta
+from dataclasses import dataclass
 
 import config
 from logger_config import logger
 from .ai_handler import AIHandler
+
+
+@dataclass
+class SummaryCacheEntry:
+    anchor_message_id: int
+    summary_text: str
+    updated_at: datetime
+
 
 class FunCog(commands.Cog):
     """재미, 편의 목적의 명령어 및 키워드 기반 기능을 그룹화하는 클래스입니다."""
@@ -21,6 +30,8 @@ class FunCog(commands.Cog):
         self.ai_handler: AIHandler | None = None # main.py에서 주입됨
         # 채널별 키워드 기능 쿨다운을 관리하는 딕셔너리
         self.keyword_cooldowns: Dict[int, datetime] = {}
+        # DB 변경 없이 증분 요약을 지원하기 위한 메모리 캐시 (채널 단위)
+        self.summary_cache: Dict[int, SummaryCacheEntry] = {}
         logger.info("FunCog가 성공적으로 초기화되었습니다.")
 
     # --- 쿨다운 관리 ---
@@ -37,6 +48,23 @@ class FunCog(commands.Cog):
         """특정 채널의 키워드 기능 쿨다운을 현재 시간으로 갱신합니다."""
         self.keyword_cooldowns[channel_id] = datetime.now()
         logger.debug(f"FunCog: 채널({channel_id})의 키워드 응답 쿨다운이 갱신되었습니다.")
+
+    def _trim_summary_cache(self):
+        """캐시가 설정 개수를 초과하면 오래된 항목부터 제거합니다."""
+        max_channels = max(1, int(getattr(config, "SUMMARY_CACHE_MAX_CHANNELS", 300)))
+        if len(self.summary_cache) <= max_channels:
+            return
+        overflow = len(self.summary_cache) - max_channels
+        for channel_id, _ in sorted(self.summary_cache.items(), key=lambda item: item[1].updated_at)[:overflow]:
+            self.summary_cache.pop(channel_id, None)
+
+    def _update_summary_cache(self, channel_id: int, anchor_message_id: int, summary_text: str):
+        self.summary_cache[channel_id] = SummaryCacheEntry(
+            anchor_message_id=int(anchor_message_id),
+            summary_text=(summary_text or "").strip(),
+            updated_at=datetime.now(),
+        )
+        self._trim_summary_cache()
 
     # --- 핵심 실행 로직 ---
 
@@ -83,24 +111,77 @@ class FunCog(commands.Cog):
 
         async with channel.typing():
             try:
-                # AI 핸들러를 통해 DB에서 최근 대화 기록을 가져옵니다.
-                history_str = await self.ai_handler.get_recent_conversation_text(channel.guild.id, channel.id, look_back=20)
-
-                if not history_str:
+                guild_id = channel.guild.id
+                channel_id = channel.id
+                latest_message_id = await self.ai_handler.get_latest_conversation_message_id(guild_id, channel_id)
+                if latest_message_id is None:
                     await channel.send("요약할 만한 대화가 충분히 쌓이지 않았어요.")
                     return
 
-                response_text = await self.ai_handler.generate_creative_text(
-                    channel=channel,
-                    author=author,
-                    prompt_key='summarize',
-                    context={'conversation': history_str}
-                )
+                cache_entry = self.summary_cache.get(channel_id)
+                response_text = None
+
+                # 1) 캐시 앵커 이후 신규 대화가 적으면 증분 요약
+                if (
+                    getattr(config, "SUMMARY_INCREMENTAL_ENABLED", True)
+                    and cache_entry
+                    and cache_entry.summary_text
+                ):
+                    new_count = await self.ai_handler.count_recent_conversation_messages(
+                        guild_id,
+                        channel_id,
+                        after_message_id=cache_entry.anchor_message_id,
+                        include_bot=True,
+                    )
+
+                    if new_count <= 0:
+                        response_text = cache_entry.summary_text
+                    elif new_count <= getattr(config, "SUMMARY_INCREMENTAL_MAX_NEW_MESSAGES", 24):
+                        delta_context = await self.ai_handler.get_recent_conversation_text(
+                            guild_id,
+                            channel_id,
+                            look_back=getattr(config, "SUMMARY_INCREMENTAL_DELTA_LOOKBACK", 48),
+                            max_chars=getattr(config, "SUMMARY_MAX_CONTEXT_CHARS", 3200),
+                            include_bot=True,
+                            after_message_id=cache_entry.anchor_message_id,
+                        )
+                        if delta_context:
+                            response_text = await self.ai_handler.generate_creative_text(
+                                channel=channel,
+                                author=author,
+                                prompt_key='summarize_incremental',
+                                context={
+                                    'previous_summary': cache_entry.summary_text,
+                                    'new_conversation': delta_context,
+                                }
+                            )
+
+                # 2) 증분이 불가하거나 신규 대화량이 많으면 전체 압축 요약
+                if not response_text:
+                    history_str = await self.ai_handler.get_recent_conversation_text(
+                        guild_id,
+                        channel_id,
+                        look_back=getattr(config, "SUMMARY_MAX_LOOKBACK", 120),
+                        max_chars=getattr(config, "SUMMARY_MAX_CONTEXT_CHARS", 3200),
+                        include_bot=True,
+                    )
+
+                    if not history_str:
+                        await channel.send("요약할 만한 대화가 충분히 쌓이지 않았어요.")
+                        return
+
+                    response_text = await self.ai_handler.generate_creative_text(
+                        channel=channel,
+                        author=author,
+                        prompt_key='summarize',
+                        context={'conversation': history_str}
+                    )
                 
                 # AI 응답 생성 실패 시 기본 메시지 전송
                 if not response_text or response_text in [config.MSG_AI_ERROR, config.MSG_CMD_ERROR]:
                     await channel.send(response_text or "대화 내용을 요약하다가 머리에 쥐났어요. 다시 시도해주세요.")
                 else:
+                    self._update_summary_cache(channel_id, latest_message_id, response_text)
                     await channel.send(f"**📈 최근 대화 요약 (마사몽 ver.)**\n{response_text}")
             except Exception as e:
                 # [Fix] Handle logs safely even if guild is None (though we return early above, good for safety)
@@ -119,7 +200,7 @@ class FunCog(commands.Cog):
     @commands.command(name='요약', aliases=['summarize', 'summary', '3줄요약', 'sum'])
     async def summarize(self, ctx: commands.Context):
         """
-        최근 대화(최대 20개)를 요약합니다. (서버 전용)
+        최근 대화를 압축 컨텍스트로 요약합니다. (서버 전용)
 
         사용법:
         - `!요약`
