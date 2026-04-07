@@ -2232,7 +2232,7 @@ Generate the optimized English image prompt:"""
 
                 # [NEW] 히스토리를 바탕으로 검색 쿼리 정제
                 refined_query = user_query
-                if history:
+                if history and getattr(config, "WEB_SEARCH_REFINE_WITH_LLM", False):
                     refined_query = await self._refine_search_query_with_llm(user_query, history, log_extra)
                     logger.info(f"자동 웹검색 쿼리 정제: '{user_query}' -> '{refined_query}'", extra=log_extra)
 
@@ -2295,15 +2295,26 @@ Generate the optimized English image prompt:"""
                 recent_history=history,
             )
 
-            # 답변 생성 (CometAPI -> Gemini)
+            # 답변 생성 (웹 검색 단독 결과는 재합성하지 않고 바로 사용)
             final_response_text = ""
-            if self.use_cometapi:
-                final_response_text = await self._cometapi_generate_content(system_prompt, main_prompt, log_extra) or ""
-            
-            if not final_response_text and self.gemini_configured:
-                main_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, system_instruction=system_prompt)
-                main_response = await self._safe_generate_content(main_model, main_prompt, log_extra)
-                if main_response: final_response_text = main_response.text.strip()
+            non_local_tool_results = [res for res in tool_results if res.get("tool_name") != "local_rag"]
+            if (
+                len(non_local_tool_results) == 1
+                and non_local_tool_results[0].get("tool_name") == "web_search"
+                and isinstance(non_local_tool_results[0].get("result"), dict)
+                and non_local_tool_results[0]["result"].get("summary")
+            ):
+                final_response_text = str(non_local_tool_results[0]["result"]["summary"]).strip()
+                logger.info("웹 검색 단독 결과를 최종 답변으로 재사용합니다.", extra=log_extra)
+            else:
+                if self.use_cometapi:
+                    final_response_text = await self._cometapi_generate_content(system_prompt, main_prompt, log_extra) or ""
+
+                if not final_response_text and self.gemini_configured:
+                    main_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, system_instruction=system_prompt)
+                    main_response = await self._safe_generate_content(main_model, main_prompt, log_extra)
+                    if main_response:
+                        final_response_text = main_response.text.strip()
 
             if final_response_text:
                 # 멘션 제거 및 후처리

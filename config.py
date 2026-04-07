@@ -287,7 +287,7 @@ FAST_MODEL_NAME = load_config_value('FAST_MODEL_NAME', 'gemini-3.1-flash-lite-pr
 # DuckDuckGo 웹 검색 활성화 여부 (기본: 활성화)
 DDGS_ENABLED = as_bool(load_config_value('DDGS_ENABLED', 'true'))
 # 범용 웹 탐색 파이프라인 예산/캐시 설정
-WEB_RAG_FAST_LLM_MAX_CALLS = max(0, as_int(load_config_value('WEB_RAG_FAST_LLM_MAX_CALLS', 5), 5))
+WEB_RAG_FAST_LLM_MAX_CALLS = max(0, as_int(load_config_value('WEB_RAG_FAST_LLM_MAX_CALLS', 3), 3))
 WEB_RAG_MAX_SELECTED_URLS = max(1, as_int(load_config_value('WEB_RAG_MAX_SELECTED_URLS', 4), 4))
 WEB_RAG_MAX_SUMMARIZED_ARTICLES = max(1, as_int(load_config_value('WEB_RAG_MAX_SUMMARIZED_ARTICLES', 3), 3))
 WEB_RAG_MAX_CANDIDATES = max(5, as_int(load_config_value('WEB_RAG_MAX_CANDIDATES', 24), 24))
@@ -295,6 +295,7 @@ WEB_RAG_CACHE_TTL_SECONDS = max(0, as_int(load_config_value('WEB_RAG_CACHE_TTL_S
 WEB_RAG_CACHE_MAX_ENTRIES = max(1, as_int(load_config_value('WEB_RAG_CACHE_MAX_ENTRIES', 128), 128))
 WEB_RAG_FAST_PROMPT_MAX_CHARS = max(800, as_int(load_config_value('WEB_RAG_FAST_PROMPT_MAX_CHARS', 5000), 5000))
 WEB_RAG_CONTEXT_MAX_CHARS = max(800, as_int(load_config_value('WEB_RAG_CONTEXT_MAX_CHARS', 2200), 2200))
+WEB_SEARCH_REFINE_WITH_LLM = as_bool(load_config_value('WEB_SEARCH_REFINE_WITH_LLM', 'false'))
 
 
 # CometAPI 이미지 생성 설정 (Gemini via CometAPI Gemini-compatible)
