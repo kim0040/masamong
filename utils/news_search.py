@@ -418,6 +418,93 @@ def _analyze_intent(
     return {"category": "GENERAL", "scope": "BOTH"}
 
 
+def _infer_category_fallback(user_query: str) -> str:
+    query = (user_query or "").lower()
+    news_keywords = (
+        "최신", "최근", "요즘", "뉴스", "소식", "속보", "오늘", "이번 주", "이번주",
+        "현재", "실시간", "동향", "발표", "이슈", "업데이트",
+    )
+    return "NEWS" if any(token in query for token in news_keywords) else "GENERAL"
+
+
+def _infer_scope_fallback(user_query: str) -> str:
+    query = (user_query or "").lower()
+    local_keywords = ("한국", "국내", "우리나라", "전주", "서울", "광양", "부산")
+    global_keywords = ("해외", "글로벌", "미국", "일본", "중국", "유럽", "world", "global")
+    has_local = any(token in query for token in local_keywords)
+    has_global = any(token in query for token in global_keywords)
+    if has_local and has_global:
+        return "BOTH"
+    if has_local:
+        return "LOCAL"
+    if has_global:
+        return "GLOBAL"
+    return "BOTH"
+
+
+def _plan_search_fallback(user_query: str) -> dict[str, Any]:
+    category = _infer_category_fallback(user_query)
+    return {
+        "category": category,
+        "scope": _infer_scope_fallback(user_query),
+        "keywords_ko": _build_keywords_fallback(user_query, "ko", category),
+        "keywords_en": _build_keywords_fallback(user_query, "en", category),
+    }
+
+
+def _plan_search(
+    user_query: str,
+    *,
+    budget: FastLLMBudget | None = None,
+    quota_manager: FastLLMQuotaManager | None = None,
+) -> dict[str, Any]:
+    """검색 전략과 다국어 키워드를 한 번에 생성합니다."""
+    prompt = (
+        "당신은 웹 검색 전략가입니다. 사용자 질문을 보고 검색 계획을 JSON으로만 출력하세요.\n"
+        "반드시 아래 형식을 지키세요.\n"
+        "{"
+        "\"category\":\"GENERAL 또는 NEWS\","
+        "\"scope\":\"LOCAL 또는 GLOBAL 또는 BOTH\","
+        "\"keywords_ko\":[\"한국어 검색어1\",\"한국어 검색어2\"],"
+        "\"keywords_en\":[\"english query 1\",\"english query 2\"]"
+        "}\n\n"
+        "[규칙]\n"
+        "- category: 최신 뉴스/속보성 정보가 중요하면 NEWS, 일반 정보/문서/후기/비교면 GENERAL\n"
+        "- scope: 국내 중심 LOCAL, 해외 중심 GLOBAL, 둘 다면 BOTH\n"
+        "- keywords_ko: 핵심 검색어와 확장 검색어 2개\n"
+        "- keywords_en: 영문 검색어 2개\n"
+        "- 다른 설명, 코드블록, 마크다운 없이 JSON만 출력\n\n"
+        f"질문: {user_query}"
+    )
+    raw = _call_fast_model(prompt, budget=budget, quota_manager=quota_manager)
+    try:
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not match:
+            return _plan_search_fallback(user_query)
+        data = json.loads(match.group())
+        category = str(data.get("category", "GENERAL")).upper()
+        scope = str(data.get("scope", "BOTH")).upper()
+        keywords_ko = [str(v).strip() for v in data.get("keywords_ko", []) if str(v).strip()]
+        keywords_en = [str(v).strip() for v in data.get("keywords_en", []) if str(v).strip()]
+        if category not in ("NEWS", "GENERAL"):
+            category = _infer_category_fallback(user_query)
+        if scope not in ("LOCAL", "GLOBAL", "BOTH"):
+            scope = _infer_scope_fallback(user_query)
+        if not keywords_ko:
+            keywords_ko = _build_keywords_fallback(user_query, "ko", category)
+        if not keywords_en:
+            keywords_en = _build_keywords_fallback(user_query, "en", category)
+        return {
+            "category": category,
+            "scope": scope,
+            "keywords_ko": list(dict.fromkeys(keywords_ko))[:2],
+            "keywords_en": list(dict.fromkeys(keywords_en))[:2],
+        }
+    except Exception as e:
+        logger.warning(f"[web_search] 검색 계획 파싱 실패: {e}")
+        return _plan_search_fallback(user_query)
+
+
 def _search_web_sync(user_query: str, region: str = "kr-kr", *, keywords: list[str]) -> tuple[list | None, str]:
     """
     [동기] DuckDuckGo 일반 웹 검색을 수행합니다 (날짜 제한 없음).
@@ -824,36 +911,18 @@ async def run_news_search_pipeline(user_query: str) -> dict[str, Any]:
         else:
             return {"status": "error", "message": "해당 URL에서 내용을 추출하지 못했습니다."}
 
-    # ── 단계 1: 의도 분석 ──
-    intent_data = await asyncio.to_thread(
-        _analyze_intent,
+    # ── 단계 1: 검색 계획 생성 ──
+    plan = await asyncio.to_thread(
+        _plan_search,
         user_query,
         budget=fast_budget,
         quota_manager=quota_manager,
     )
-    category = intent_data["category"]
-    scope = intent_data["scope"]
-    logger.info(f"[web_search] 분석 결과: Category=[{category}], Scope=[{scope}]")
-
-    # ── 단계 1.5: 검색어 생성 (언어별 1회만) ──
-    keywords_ko, keywords_en = await asyncio.gather(
-        asyncio.to_thread(
-            _build_keywords,
-            user_query,
-            "ko",
-            category=category,
-            budget=fast_budget,
-            quota_manager=quota_manager,
-        ),
-        asyncio.to_thread(
-            _build_keywords,
-            user_query,
-            "en",
-            category=category,
-            budget=fast_budget,
-            quota_manager=quota_manager,
-        ),
-    )
+    category = plan["category"]
+    scope = plan["scope"]
+    keywords_ko = plan["keywords_ko"]
+    keywords_en = plan["keywords_en"]
+    logger.info(f"[web_search] 검색 계획: Category=[{category}], Scope=[{scope}]")
     logger.info(f"[web_search] 생성된 키워드(ko): {keywords_ko}")
     logger.info(f"[web_search] 생성된 키워드(en): {keywords_en}")
 
