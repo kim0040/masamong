@@ -14,6 +14,8 @@ import math
 import aiosqlite
 from typing import Dict, Optional
 
+import config
+
 # --- 기상청 격자 변환을 위한 상수 --- #
 RE = 6371.00877  # 지구 반경 (km)
 GRID = 5.0       # 격자 간격 (km)
@@ -59,7 +61,12 @@ async def get_coords_from_db(db: aiosqlite.Connection, location_name: str) -> Op
             return {'name': result['name'], 'nx': result['nx'], 'ny': result['ny']}
 
     # 2. 부분 일치로 검색 (LIKE)
-    async with db.execute("SELECT name, nx, ny FROM locations WHERE ? LIKE '%' || name || '%'", (location_name,)) as cursor:
+    if config.DB_BACKEND == "tidb":
+        partial_query = "SELECT name, nx, ny FROM locations WHERE LOCATE(name, ?) > 0"
+    else:
+        partial_query = "SELECT name, nx, ny FROM locations WHERE ? LIKE '%' || name || '%'"
+
+    async with db.execute(partial_query, (location_name,)) as cursor:
         result = await cursor.fetchone()
         if result:
             return {'name': result['name'], 'nx': result['nx'], 'ny': result['ny']}

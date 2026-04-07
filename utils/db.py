@@ -62,10 +62,17 @@ async def set_guild_setting(db: aiosqlite.Connection, guild_id: int, setting_nam
             return
 
         # UPSERT (INSERT OR REPLACE) 쿼리 실행
-        await db.execute(
-            f"INSERT INTO guild_settings (guild_id, {setting_name}) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET {setting_name} = excluded.{setting_name}",
-            (guild_id, value)
-        )
+        if config.DB_BACKEND == "tidb":
+            query = (
+                f"INSERT INTO guild_settings (guild_id, {setting_name}) VALUES (?, ?) "
+                f"ON DUPLICATE KEY UPDATE {setting_name} = VALUES({setting_name})"
+            )
+        else:
+            query = (
+                f"INSERT INTO guild_settings (guild_id, {setting_name}) VALUES (?, ?) "
+                f"ON CONFLICT(guild_id) DO UPDATE SET {setting_name} = excluded.{setting_name}"
+            )
+        await db.execute(query, (guild_id, value))
         await db.commit()
     except Exception as e:
         logger.error(f"서버 설정({setting_name}) 저장 중 DB 오류: {e}", exc_info=True, extra={'guild_id': guild_id})
@@ -353,13 +360,23 @@ async def check_global_dm_limit(db: aiosqlite.Connection) -> bool:
             return False
             
         # 카운트 증가 (UPSERT)
-        await db.execute("""
-            INSERT INTO system_counters (counter_name, counter_value, last_reset_at)
-            VALUES (?, 1, ?)
-            ON CONFLICT(counter_name) DO UPDATE SET
-                counter_value = counter_value + 1,
-                last_reset_at = excluded.last_reset_at
-        """, (today_key, now_str))
+        if config.DB_BACKEND == "tidb":
+            query = """
+                INSERT INTO system_counters (counter_name, counter_value, last_reset_at)
+                VALUES (?, 1, ?)
+                ON DUPLICATE KEY UPDATE
+                    counter_value = counter_value + 1,
+                    last_reset_at = VALUES(last_reset_at)
+            """
+        else:
+            query = """
+                INSERT INTO system_counters (counter_name, counter_value, last_reset_at)
+                VALUES (?, 1, ?)
+                ON CONFLICT(counter_name) DO UPDATE SET
+                    counter_value = counter_value + 1,
+                    last_reset_at = excluded.last_reset_at
+            """
+        await db.execute(query, (today_key, now_str))
         await db.commit()
         
         return True

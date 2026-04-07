@@ -162,6 +162,7 @@ local_settings.py
 test_data/
 *.test.db
 data/
+임시/
 
 
 # 임시 스크립트 (개발 중 테스트용)

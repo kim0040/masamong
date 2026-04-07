@@ -36,13 +36,23 @@ class ActivityCog(commands.Cog):
             now_utc_str = datetime.now(timezone.utc).isoformat()
 
             # ON CONFLICT를 사용하여 INSERT 또는 UPDATE를 한 번의 쿼리로 처리 (UPSERT)
-            await self.bot.db.execute("""
-                INSERT INTO user_activity (user_id, guild_id, message_count, last_active_at)
-                VALUES (?, ?, 1, ?)
-                ON CONFLICT(user_id, guild_id) DO UPDATE SET
-                    message_count = message_count + 1,
-                    last_active_at = excluded.last_active_at;
-            """, (user_id, guild_id, now_utc_str))
+            if config.DB_BACKEND == "tidb":
+                query = """
+                    INSERT INTO user_activity (user_id, guild_id, message_count, last_active_at)
+                    VALUES (?, ?, 1, ?)
+                    ON DUPLICATE KEY UPDATE
+                        message_count = message_count + 1,
+                        last_active_at = VALUES(last_active_at);
+                """
+            else:
+                query = """
+                    INSERT INTO user_activity (user_id, guild_id, message_count, last_active_at)
+                    VALUES (?, ?, 1, ?)
+                    ON CONFLICT(user_id, guild_id) DO UPDATE SET
+                        message_count = message_count + 1,
+                        last_active_at = excluded.last_active_at;
+                """
+            await self.bot.db.execute(query, (user_id, guild_id, now_utc_str))
             await self.bot.db.commit()
 
         except aiosqlite.Error as e:

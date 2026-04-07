@@ -12,6 +12,7 @@ import pytz
 import re
 
 import config
+from database.compat_db import get_table_columns
 from logger_config import logger
 from utils import db as db_utils
 from utils.fortune import FortuneCalculator, get_sign_from_date
@@ -33,35 +34,31 @@ class FortuneCog(commands.Cog):
         """pending_payload 컬럼이 없으면 추가합니다."""
         await self.bot.wait_until_ready()
         try:
-            # PRAGMA는 row factory에 따라 다를 수 있으므로 인덱스 사용
-            async with self.bot.db.execute("PRAGMA table_info(user_profiles)") as cursor:
-                rows = await cursor.fetchall()
-                # row[1]이 name 컬럼 (sqlite3.Row 객체일 수도 있고 튜플일 수도 있음)
-                columns = [row['name'] if isinstance(row, dict) else row[1] for row in rows]
+            columns = await get_table_columns(self.bot.db, "user_profiles")
                 
-                if 'pending_payload' not in columns:
-                    logger.info("필요한 컬럼(pending_payload)이 없어 추가합니다.")
-                    await self.bot.db.execute("ALTER TABLE user_profiles ADD COLUMN pending_payload TEXT")
-                    await self.bot.db.commit()
-                    logger.info("Added 'pending_payload' column to user_profiles")
+            if 'pending_payload' not in columns:
+                logger.info("필요한 컬럼(pending_payload)이 없어 추가합니다.")
+                await self.bot.db.execute("ALTER TABLE user_profiles ADD COLUMN pending_payload TEXT")
+                await self.bot.db.commit()
+                logger.info("Added 'pending_payload' column to user_profiles")
 
-                if 'gender' not in columns:
-                    logger.info("필요한 컬럼(gender)이 없어 추가합니다.")
-                    await self.bot.db.execute("ALTER TABLE user_profiles ADD COLUMN gender TEXT")
-                    await self.bot.db.commit()
-                    logger.info("Added 'gender' column to user_profiles")
+            if 'gender' not in columns:
+                logger.info("필요한 컬럼(gender)이 없어 추가합니다.")
+                await self.bot.db.execute("ALTER TABLE user_profiles ADD COLUMN gender TEXT")
+                await self.bot.db.commit()
+                logger.info("Added 'gender' column to user_profiles")
 
-                if 'last_fortune_content' not in columns:
-                    logger.info("필요한 컬럼(last_fortune_content)이 없어 추가합니다.")
-                    await self.bot.db.execute("ALTER TABLE user_profiles ADD COLUMN last_fortune_content TEXT")
-                    await self.bot.db.commit()
-                    logger.info("Added 'last_fortune_content' column to user_profiles")
+            if 'last_fortune_content' not in columns:
+                logger.info("필요한 컬럼(last_fortune_content)이 없어 추가합니다.")
+                await self.bot.db.execute("ALTER TABLE user_profiles ADD COLUMN last_fortune_content TEXT")
+                await self.bot.db.commit()
+                logger.info("Added 'last_fortune_content' column to user_profiles")
 
-                if 'birth_place' not in columns:
-                    logger.info("필요한 컬럼(birth_place)이 없어 추가합니다.")
-                    await self.bot.db.execute("ALTER TABLE user_profiles ADD COLUMN birth_place TEXT")
-                    await self.bot.db.commit()
-                    logger.info("Added 'birth_place' column to user_profiles")
+            if 'birth_place' not in columns:
+                logger.info("필요한 컬럼(birth_place)이 없어 추가합니다.")
+                await self.bot.db.execute("ALTER TABLE user_profiles ADD COLUMN birth_place TEXT")
+                await self.bot.db.commit()
+                logger.info("Added 'birth_place' column to user_profiles")
         except Exception as e:
             logger.error(f"Failed to check/add column: {e}")
         finally:
@@ -197,11 +194,18 @@ class FortuneCog(commands.Cog):
 
     async def _save_user_profile(self, user_id, birth_date, birth_time, gender, birth_place):
         """DB에 사용자 프로필 저장/업데이트"""
-        async with self.bot.db.execute(
+        if config.DB_BACKEND == "tidb":
+            query = """
+                REPLACE INTO user_profiles (user_id, birth_date, birth_time, gender, birth_place, created_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP(6))
             """
-            INSERT OR REPLACE INTO user_profiles (user_id, birth_date, birth_time, gender, birth_place, created_at)
-            VALUES (?, ?, ?, ?, ?, datetime('now'))
-            """,
+        else:
+            query = """
+                INSERT OR REPLACE INTO user_profiles (user_id, birth_date, birth_time, gender, birth_place, created_at)
+                VALUES (?, ?, ?, ?, ?, datetime('now'))
+            """
+        async with self.bot.db.execute(
+            query,
             (user_id, birth_date, birth_time, gender, birth_place)
         ):
             await self.bot.db.commit()

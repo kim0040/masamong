@@ -11,6 +11,7 @@ discord.py>=2.7.1
 
 # --- 데이터베이스 ---
 aiosqlite
+PyMySQL>=1.1.0
 
 # --- 환경변수 / 설정 ---
 python-dotenv
