@@ -23,3 +23,4 @@ google-genai
 # --- RAG / 임베딩 ---
 sentence-transformers
 scikit-learn
+PyMySQL>=1.1.0
