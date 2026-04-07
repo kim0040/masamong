@@ -17,12 +17,6 @@ load_dotenv()
 USE_YFINANCE = True
 YFINANCE_CACHE_TTL = 600 # 10분 캐시
 
-# [NEW] KRX Public Data API
-# Use os.environ.get to ensure .env is respected, with fallback to hardcoded (or just use env)
-KRX_API_KEY = os.environ.get("KRX_API_KEY", "6c011e7e46e49805aba48c467a835c79b8cd2236fb5ca9a4711b668cd3ef671a")
-# Base URL might differ depending on service status. Trying HTTPS.
-KRX_BASE_URL = "https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService"
-
 def load_config_value(key, default=None):
     """환경 변수 → `config.json` 순으로 값을 조회하고, 없으면 기본값을 반환합니다.
 
@@ -206,10 +200,12 @@ def _normalize_kakao_servers(raw_value) -> dict[str, dict[str, str]]:
             if not server_id or not isinstance(meta, dict):
                 continue
             db_path = meta.get('db_path')
-            if not db_path:
+            room_key = meta.get('room_key')
+            if not db_path and not room_key:
                 continue
             normalized[str(server_id)] = {
                 'db_path': db_path,
+                'room_key': room_key,
                 'label': meta.get('label', '')
             }
         return normalized
@@ -221,10 +217,12 @@ def _normalize_kakao_servers(raw_value) -> dict[str, dict[str, str]]:
                 continue
             server_id = entry.get('server_id')
             db_path = entry.get('db_path')
-            if not server_id or not db_path:
+            room_key = entry.get('room_key')
+            if not server_id or (not db_path and not room_key):
                 continue
             normalized[str(server_id)] = {
                 'db_path': db_path,
+                'room_key': room_key,
                 'label': entry.get('label', '')
             }
         return normalized
@@ -235,7 +233,15 @@ TOKEN = load_config_value('DISCORD_BOT_TOKEN')
 COMMAND_PREFIX = "!"
 LOG_FILE_NAME = "discord_logs.txt"
 ERROR_LOG_FILE_NAME = "error_logs.txt"
+DB_BACKEND = str(load_config_value('MASAMONG_DB_BACKEND', 'sqlite')).strip().lower()
 DATABASE_FILE = "database/remasamong.db"
+TIDB_HOST = load_config_value('MASAMONG_DB_HOST')
+TIDB_PORT = as_int(load_config_value('MASAMONG_DB_PORT', 4000), 4000)
+TIDB_NAME = load_config_value('MASAMONG_DB_NAME', 'masamong')
+TIDB_USER = load_config_value('MASAMONG_DB_USER')
+TIDB_PASSWORD = load_config_value('MASAMONG_DB_PASSWORD')
+TIDB_SSL_CA = load_config_value('MASAMONG_DB_SSL_CA')
+TIDB_SSL_VERIFY_IDENTITY = as_bool(load_config_value('MASAMONG_DB_SSL_VERIFY_IDENTITY', 'true'))
 GEMINI_API_KEY = load_config_value('GEMINI_API_KEY')
 GOOGLE_API_KEY = load_config_value('GOOGLE_API_KEY')
 GOOGLE_CX = load_config_value('GOOGLE_CX')
@@ -310,6 +316,7 @@ IMAGE_SAFETY_TOLERANCE = 0  # 가장 엄격한 수준 (0=strict, 5=permissive) -
 
 FINNHUB_API_KEY = load_config_value('FINNHUB_API_KEY', 'YOUR_FINNHUB_API_KEY')
 KAKAO_API_KEY = load_config_value('KAKAO_API_KEY', 'YOUR_KAKAO_API_KEY')
+KRX_API_KEY = load_config_value('KRX_API_KEY')
 GO_DATA_API_KEY_KR = load_config_value('GO_DATA_API_KEY_KR', 'YOUR_GO_DATA_API_KEY_KR')
 EXIM_API_KEY_KR = load_config_value('EXIM_API_KEY_KR', 'YOUR_EXIM_API_KEY_KR')
 KMA_API_KEY = load_config_value('KMA_API_KEY')
@@ -319,10 +326,16 @@ KRX_BASE_URL = load_config_value('KRX_BASE_URL', "https://apis.data.go.kr/116010
 KMA_BASE_URL = load_config_value('KMA_BASE_URL', "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0")
 EXIM_BASE_URL = load_config_value('EXIM_BASE_URL', "https://www.koreaexim.go.kr/site/program/financial/exchangeJSON")
 
+DISCORD_EMBEDDING_BACKEND = str(
+    load_config_value('DISCORD_EMBEDDING_BACKEND', 'tidb' if DB_BACKEND == 'tidb' else 'sqlite')
+).strip().lower()
+KAKAO_STORE_BACKEND = str(load_config_value('KAKAO_STORE_BACKEND', 'local')).strip().lower()
 DISCORD_EMBEDDING_DB_PATH = EMBED_CONFIG.get("discord_db_path", "database/discord_embeddings.db")
 KAKAO_EMBEDDING_DB_PATH = EMBED_CONFIG.get("kakao_db_path", "database/kakao_embeddings.db")
 KAKAO_EMBEDDING_SERVER_MAP = _normalize_kakao_servers(EMBED_CONFIG.get("kakao_servers", []))
 KAKAO_VECTOR_EXTENSION = EMBED_CONFIG.get("kakao_vector_extension")
+DISCORD_EMBEDDING_TIDB_TABLE = str(load_config_value('DISCORD_EMBEDDING_TIDB_TABLE', 'discord_chat_embeddings')).strip()
+KAKAO_TIDB_TABLE = str(load_config_value('KAKAO_TIDB_TABLE', 'kakao_chunks')).strip()
 
 # 검색 엔진 활성화 설정 (emb_config.json에서 관리)
 EMBEDDING_ENABLED = as_bool(EMBED_CONFIG.get("embedding_enabled", True))
@@ -334,6 +347,27 @@ LOCAL_EMBEDDING_DEVICE = EMBED_CONFIG.get("embedding_device")
 LOCAL_EMBEDDING_NORMALIZE = EMBED_CONFIG.get("normalize_embeddings", True)
 LOCAL_EMBEDDING_QUERY_LIMIT = EMBED_CONFIG.get("query_limit", 200)
 RAG_SIMILARITY_THRESHOLD = as_float(EMBED_CONFIG.get("similarity_threshold"), 0.6)
+STRUCTURED_MEMORY_QUERY_LIMIT = as_int(
+    load_config_value(
+        'STRUCTURED_MEMORY_QUERY_LIMIT',
+        EMBED_CONFIG.get("structured_memory_query_limit", max(800, int(LOCAL_EMBEDDING_QUERY_LIMIT) * 4)),
+    ),
+    max(800, int(LOCAL_EMBEDDING_QUERY_LIMIT) * 4),
+)
+STRUCTURED_MEMORY_FALLBACK_QUERY_LIMIT = as_int(
+    load_config_value(
+        'STRUCTURED_MEMORY_FALLBACK_QUERY_LIMIT',
+        EMBED_CONFIG.get("structured_memory_fallback_query_limit", max(2000, int(LOCAL_EMBEDDING_QUERY_LIMIT) * 10)),
+    ),
+    max(2000, int(LOCAL_EMBEDDING_QUERY_LIMIT) * 10),
+)
+STRUCTURED_MEMORY_SIMILARITY_THRESHOLD = as_float(
+    load_config_value(
+        'STRUCTURED_MEMORY_SIMILARITY_THRESHOLD',
+        EMBED_CONFIG.get("structured_memory_similarity_threshold"),
+    ),
+    min(RAG_SIMILARITY_THRESHOLD, 0.5),
+)
 RAG_STRONG_SIMILARITY_THRESHOLD = as_float(EMBED_CONFIG.get("strong_similarity_threshold"), 0.72)
 RAG_DEBUG_ENABLED = as_bool(load_config_value('RAG_DEBUG_ENABLED', EMBED_CONFIG.get("debug_enabled", False)))
 RAG_HYBRID_TOP_K = int(EMBED_CONFIG.get("hybrid_top_k", 5))
@@ -395,6 +429,9 @@ CONVERSATION_WINDOW_SIZE = as_int(load_config_value('CONVERSATION_WINDOW_SIZE'),
 CONVERSATION_WINDOW_STRIDE = as_int(load_config_value('CONVERSATION_WINDOW_STRIDE'), 6) # 윈도우 이동 간격
 CONVERSATION_WINDOW_MAX_CHARS = as_int(load_config_value('CONVERSATION_WINDOW_MAX_CHARS'), 3000) # 윈도우 최대 문자열 길이 (토큰 제한 대응)
 CONVERSATION_NEIGHBOR_RADIUS = max(1, as_int(load_config_value('CONVERSATION_NEIGHBOR_RADIUS', EMBED_CONFIG.get("conversation_neighbor_radius", 3)), 3))
+STRUCTURED_MEMORY_MAX_SUMMARY_CHARS = max(120, as_int(load_config_value('STRUCTURED_MEMORY_MAX_SUMMARY_CHARS', 320), 320))
+STRUCTURED_MEMORY_MAX_CONTEXT_CHARS = max(300, as_int(load_config_value('STRUCTURED_MEMORY_MAX_CONTEXT_CHARS', 1200), 1200))
+STRUCTURED_USER_MEMORY_MIN_CHARS = max(4, as_int(load_config_value('STRUCTURED_USER_MEMORY_MIN_CHARS', 12), 12))
 
 AI_INTENT_MODEL_NAME = "gemini-2.5-flash-lite"
 AI_RESPONSE_MODEL_NAME = "gemini-2.5-flash"
@@ -511,18 +548,24 @@ KMA_API_DAILY_CALL_LIMIT = 10000
 KMA_API_MAX_RETRIES = int(load_config_value("KMA_API_MAX_RETRIES", 3))
 KMA_API_RETRY_DELAY_SECONDS = int(load_config_value("KMA_API_RETRY_DELAY_SECONDS", 2))
 KMA_API_TIMEOUT = int(load_config_value("KMA_API_TIMEOUT", 30))
-DEFAULT_LOCATION_NAME = "광양"
-DEFAULT_NX = "73"
-DEFAULT_NY = "70"
-ENABLE_RAIN_NOTIFICATION = True
-RAIN_NOTIFICATION_CHANNEL_ID = 912210558122598450
-WEATHER_CHECK_INTERVAL_MINUTES = 60
-RAIN_NOTIFICATION_THRESHOLD_POP = 30
-RAIN_NOTIFICATION_GREETING_THRESHOLD_POP = 60
-ENABLE_GREETING_NOTIFICATION = True
-GREETING_NOTIFICATION_CHANNEL_ID = 912210558122598450
-MORNING_GREETING_TIME = {"hour": 7, "minute": 30}
-EVENING_GREETING_TIME = {"hour": 23, "minute": 50}
+DEFAULT_LOCATION_NAME = str(load_config_value("DEFAULT_LOCATION_NAME", "광양"))
+DEFAULT_NX = str(load_config_value("DEFAULT_NX", "73"))
+DEFAULT_NY = str(load_config_value("DEFAULT_NY", "70"))
+ENABLE_RAIN_NOTIFICATION = as_bool(load_config_value("ENABLE_RAIN_NOTIFICATION", False))
+RAIN_NOTIFICATION_CHANNEL_ID = as_int(load_config_value("RAIN_NOTIFICATION_CHANNEL_ID", 0), 0)
+WEATHER_CHECK_INTERVAL_MINUTES = as_int(load_config_value("WEATHER_CHECK_INTERVAL_MINUTES", 60), 60)
+RAIN_NOTIFICATION_THRESHOLD_POP = as_int(load_config_value("RAIN_NOTIFICATION_THRESHOLD_POP", 30), 30)
+RAIN_NOTIFICATION_GREETING_THRESHOLD_POP = as_int(load_config_value("RAIN_NOTIFICATION_GREETING_THRESHOLD_POP", 60), 60)
+ENABLE_GREETING_NOTIFICATION = as_bool(load_config_value("ENABLE_GREETING_NOTIFICATION", False))
+GREETING_NOTIFICATION_CHANNEL_ID = as_int(load_config_value("GREETING_NOTIFICATION_CHANNEL_ID", 0), 0)
+MORNING_GREETING_TIME = {
+    "hour": as_int(load_config_value("MORNING_GREETING_HOUR", 7), 7),
+    "minute": as_int(load_config_value("MORNING_GREETING_MINUTE", 30), 30),
+}
+EVENING_GREETING_TIME = {
+    "hour": as_int(load_config_value("EVENING_GREETING_HOUR", 23), 23),
+    "minute": as_int(load_config_value("EVENING_GREETING_MINUTE", 50), 50),
+}
 DEFAULT_TSUNDERE_PERSONA = _extract_prompt_value("default_persona", FALLBACK_PERSONA)
 DEFAULT_TSUNDERE_RULES = _extract_prompt_value("default_rules", FALLBACK_RULES)
 

@@ -33,7 +33,13 @@ from newspaper import Article
 from google import genai
 
 import config
+from database.compat_db import TiDBSettings, rewrite_sql_for_tidb
 from logger_config import logger
+
+try:
+    import pymysql
+except ModuleNotFoundError:  # pragma: no cover
+    pymysql = None  # type: ignore
 
 # [Security/Fix] NLTK resources check
 try:
@@ -85,6 +91,17 @@ class FastLLMQuotaManager:
         self.rpd_limit = max(1, int(getattr(config, "COMETAPI_RPD_LIMIT", 3000)))
         self._lock = threading.Lock()
         self._db_unavailable = False
+        self._tidb_settings = None
+        if config.DB_BACKEND == "tidb" and config.TIDB_HOST and config.TIDB_USER:
+            self._tidb_settings = TiDBSettings(
+                host=config.TIDB_HOST,
+                port=config.TIDB_PORT,
+                user=config.TIDB_USER,
+                password=config.TIDB_PASSWORD or "",
+                database=config.TIDB_NAME,
+                ssl_ca=config.TIDB_SSL_CA,
+                ssl_verify_identity=config.TIDB_SSL_VERIFY_IDENTITY,
+            )
 
     def try_consume(self) -> bool:
         if not self.db_path or self._db_unavailable:
@@ -97,45 +114,61 @@ class FastLLMQuotaManager:
 
         try:
             with self._lock:
-                conn = sqlite3.connect(self.db_path, timeout=2)
+                conn = self._open_connection()
                 try:
                     cur = conn.cursor()
-                    cur.execute("DELETE FROM api_call_log WHERE called_at < ?", (one_day_ago,))
+                    cur.execute(self._sql("DELETE FROM api_call_log WHERE called_at < ?"), self._params(one_day_ago))
 
                     cur.execute(
-                        "SELECT COUNT(*) FROM api_call_log WHERE api_type = ? AND called_at >= ?",
-                        ("cometapi", one_day_ago),
+                        self._sql("SELECT COUNT(*) FROM api_call_log WHERE api_type = ? AND called_at >= ?"),
+                        self._params("cometapi", one_day_ago),
                     )
                     if (cur.fetchone() or [0])[0] >= self.rpd_limit:
                         logger.warning("[news_search] CometAPI 일일 호출 제한 도달")
                         return False
 
                     cur.execute(
-                        "SELECT COUNT(*) FROM api_call_log WHERE api_type = ? AND called_at >= ?",
-                        ("cometapi", one_minute_ago),
+                        self._sql("SELECT COUNT(*) FROM api_call_log WHERE api_type = ? AND called_at >= ?"),
+                        self._params("cometapi", one_minute_ago),
                     )
                     if (cur.fetchone() or [0])[0] >= self.rpm_limit:
                         logger.warning("[news_search] CometAPI 분당 호출 제한 도달")
                         return False
 
                     cur.execute(
-                        "INSERT INTO api_call_log (api_type, called_at) VALUES (?, ?)",
-                        ("cometapi", now_iso),
+                        self._sql("INSERT INTO api_call_log (api_type, called_at) VALUES (?, ?)"),
+                        self._params("cometapi", now_iso),
                     )
                     cur.execute(
-                        "INSERT INTO api_call_log (api_type, called_at) VALUES (?, ?)",
-                        ("cometapi_fast_news_search", now_iso),
+                        self._sql("INSERT INTO api_call_log (api_type, called_at) VALUES (?, ?)"),
+                        self._params("cometapi_fast_news_search", now_iso),
                     )
                     conn.commit()
                     return True
                 finally:
                     conn.close()
-        except sqlite3.Error as e:
+        except Exception as e:
             logger.warning(f"[news_search] Fast 모델 DB quota 계측 실패(우회): {e}")
             err_msg = str(e).lower()
             if "no such table" in err_msg or "unable to open database file" in err_msg:
                 self._db_unavailable = True
             return True
+
+    def _open_connection(self):
+        if self._tidb_settings is not None:
+            if pymysql is None:
+                raise RuntimeError("PyMySQL 패키지가 필요합니다.")
+            return pymysql.connect(**self._tidb_settings.to_connect_kwargs())
+        return sqlite3.connect(self.db_path, timeout=2)
+
+    def _sql(self, query: str) -> str:
+        if self._tidb_settings is not None:
+            return rewrite_sql_for_tidb(query)
+        return query
+
+    @staticmethod
+    def _params(*items: Any):
+        return tuple(items)
 
 
 def _get_fast_client() -> genai.Client:

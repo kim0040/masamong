@@ -20,6 +20,7 @@ import aiosqlite
 import logging
 
 import config
+from database.compat_db import TiDBSettings, connect_main_db
 from logger_config import logger, register_discord_logging
 from utils import initial_data
 
@@ -87,7 +88,8 @@ class ReMasamongBot(commands.Bot):
         """
         try:
             # 스키마 파일 실행 (전체 테이블 생성)
-            schema_path = Path("database/schema.sql")
+            schema_filename = "database/schema_tidb.sql" if config.DB_BACKEND == "tidb" else "database/schema.sql"
+            schema_path = Path(schema_filename)
             if schema_path.exists():
                 logger.info(f"스키마 파일 로드 중: {schema_path}")
                 with open(schema_path, "r", encoding="utf-8") as f:
@@ -145,7 +147,18 @@ class ReMasamongBot(commands.Bot):
 
         # 데이터베이스 연결
         try:
-            self.db = await aiosqlite.connect(self.db_path)
+            tidb_settings = None
+            if config.DB_BACKEND == "tidb":
+                tidb_settings = TiDBSettings(
+                    host=config.TIDB_HOST or "",
+                    port=config.TIDB_PORT,
+                    user=config.TIDB_USER or "",
+                    password=config.TIDB_PASSWORD or "",
+                    database=config.TIDB_NAME,
+                    ssl_ca=config.TIDB_SSL_CA,
+                    ssl_verify_identity=config.TIDB_SSL_VERIFY_IDENTITY,
+                )
+            self.db = await connect_main_db(config.DB_BACKEND, sqlite_path=self.db_path, tidb_settings=tidb_settings)
             self.db.row_factory = aiosqlite.Row # 결과를 딕셔너리처럼 접근 가능하게 설정
             logger.info(f"데이터베이스에 성공적으로 연결되었습니다: {self.db_path}")
         except Exception as e:
