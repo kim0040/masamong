@@ -243,28 +243,32 @@ class TiDBConnection:
         self._conn = pymysql.connect(**self.settings.to_connect_kwargs())
         self._connected_at_monotonic = time.monotonic()
 
-    async def _ensure_connected(self) -> None:
+    async def _ensure_connected_locked(self) -> None:
+        """연결 상태 점검/재연결.
+
+        주의: 반드시 `self._lock`을 획득한 상태에서만 호출해야 한다.
+        같은 연결 객체에서 ping/query/commit이 동시에 실행되면
+        PyMySQL packet sequence 오류가 발생할 수 있어 임계구역으로 묶는다.
+        """
         if self._conn is None:
             await self.connect()
             return
         if self._is_connection_stale():
-            async with self._lock:
-                await asyncio.to_thread(self._reconnect_sync)
-                return
+            await asyncio.to_thread(self._reconnect_sync)
+            return
         try:
             await asyncio.to_thread(self._conn.ping, False)
         except Exception as exc:  # pragma: no cover
-            async with self._lock:
-                try:
-                    await asyncio.to_thread(self._reconnect_sync)
-                except Exception as reconnect_exc:
-                    raise CompatOperationalError(str(reconnect_exc)) from reconnect_exc
+            try:
+                await asyncio.to_thread(self._reconnect_sync)
+            except Exception as reconnect_exc:
+                raise CompatOperationalError(str(reconnect_exc)) from reconnect_exc
 
     async def _execute_buffered(self, query: str, params: Iterable[Any] | None = None) -> BufferedCursor:
-        await self._ensure_connected()
         sql = rewrite_sql_for_tidb(query)
         bind = tuple(params or ())
         async with self._lock:
+            await self._ensure_connected_locked()
             try:
                 return await asyncio.to_thread(self._execute_sync, sql, bind)
             except Exception as exc:
@@ -290,10 +294,10 @@ class TiDBConnection:
         return QueryHandle(self, query, params)
 
     async def executemany(self, query: str, seq_of_params: Iterable[Iterable[Any]]) -> None:
-        await self._ensure_connected()
         sql = rewrite_sql_for_tidb(query)
         values = [tuple(item) for item in seq_of_params]
         async with self._lock:
+            await self._ensure_connected_locked()
             try:
                 await asyncio.to_thread(self._executemany_sync, sql, values)
             except Exception as exc:  # pragma: no cover
@@ -319,6 +323,7 @@ class TiDBConnection:
         if self._conn is None:
             return
         async with self._lock:
+            await self._ensure_connected_locked()
             try:
                 await asyncio.to_thread(self._conn.commit)
             except Exception as exc:  # pragma: no cover
@@ -333,6 +338,7 @@ class TiDBConnection:
         if self._conn is None:
             return
         async with self._lock:
+            await self._ensure_connected_locked()
             try:
                 await asyncio.to_thread(self._conn.rollback)
             except Exception as exc:  # pragma: no cover
