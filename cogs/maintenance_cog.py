@@ -7,6 +7,7 @@
   데이터베이스 크기를 관리하고 RAG 검색 성능을 유지합니다.
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 from discord.ext import commands, tasks
@@ -23,6 +24,7 @@ class MaintenanceCog(commands.Cog):
         self.bot = bot
         self._last_conversation_ts: datetime | None = None
         self._last_bm25_rebuild_ts: datetime | None = None
+        self._archive_first_tick_pending = not bool(config.RAG_ARCHIVING_CONFIG.get("run_on_startup", False))
         self._bm25_auto_enabled = (
             bool(config.BM25_AUTO_REBUILD_CONFIG.get("enabled"))
             and bool(config.BM25_DATABASE_PATH)
@@ -61,6 +63,10 @@ class MaintenanceCog(commands.Cog):
     @tasks.loop(hours=24)  # 기본 주기는 24시간이며, __init__에서 동적으로 재설정됩니다.
     async def archive_loop(self):
         """주기적으로 오래된 대화 기록을 아카이빙하는 메인 루프입니다."""
+        if self._archive_first_tick_pending:
+            self._archive_first_tick_pending = False
+            logger.info("RAG 아카이빙 첫 실행을 건너뜁니다. (run_on_startup=false)")
+            return
         logger.info("정기 RAG 아카이빙 작업을 시작합니다...")
         try:
             # db_utils에 정의된 아카이빙 함수를 호출합니다.
@@ -74,6 +80,10 @@ class MaintenanceCog(commands.Cog):
         """루프가 처음 시작되기 전에, 봇이 완전히 준비될 때까지 기다립니다."""
         logger.info("아카이빙 루프가 봇 준비를 기다리고 있습니다...")
         await self.bot.wait_until_ready()
+        startup_delay = max(0, int(config.RAG_ARCHIVING_CONFIG.get("startup_delay_seconds", 0)))
+        if startup_delay:
+            logger.info("아카이빙 루프 시작을 %d초 지연합니다.", startup_delay)
+            await asyncio.sleep(startup_delay)
         logger.info("봇 준비 완료. 아카이빙 루프를 곧 시작합니다.")
 
     @tasks.loop(minutes=15)

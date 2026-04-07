@@ -279,6 +279,7 @@ COMETAPI_KEY = load_config_value('COMETAPI_KEY')
 COMETAPI_BASE_URL = load_config_value('COMETAPI_BASE_URL', 'https://api.cometapi.com/v1')
 COMETAPI_MODEL = load_config_value('COMETAPI_MODEL', 'DeepSeek-V3.2-Exp-nothinking')
 USE_COMETAPI = as_bool(load_config_value('USE_COMETAPI', 'true'))  # CometAPI 우선 사용
+ALLOW_DIRECT_GEMINI_FALLBACK = as_bool(load_config_value('ALLOW_DIRECT_GEMINI_FALLBACK', 'false'))
 
 # Fast 모델 (웹 검색 중간 단계: 의도 분석, 키워드 생성, 기사 요약)
 # news/news_summarizer.py와 동일한 모델 사용
@@ -346,6 +347,9 @@ BM25_DATABASE_PATH = None
 LOCAL_EMBEDDING_MODEL_NAME = EMBED_CONFIG.get("embedding_model_name", "dragonkue/multilingual-e5-small-ko-v2")
 LOCAL_EMBEDDING_DEVICE = EMBED_CONFIG.get("embedding_device")
 LOCAL_EMBEDDING_NORMALIZE = EMBED_CONFIG.get("normalize_embeddings", True)
+LOCAL_EMBEDDING_LOCAL_FILES_ONLY = as_bool(
+    load_config_value('LOCAL_EMBEDDING_LOCAL_FILES_ONLY', EMBED_CONFIG.get("local_files_only", False))
+)
 LOCAL_EMBEDDING_QUERY_LIMIT = EMBED_CONFIG.get("query_limit", 200)
 RAG_SIMILARITY_THRESHOLD = as_float(EMBED_CONFIG.get("similarity_threshold"), 0.6)
 STRUCTURED_MEMORY_QUERY_LIMIT = as_int(
@@ -494,10 +498,15 @@ AI_PROACTIVE_RESPONSE_CONFIG = {
     "min_message_length": 10
 }
 RAG_ARCHIVING_CONFIG = {
-    "enabled": True,
-    "history_limit": 20000,
-    "batch_size": 1000,
-    "check_interval_hours": 24
+    "enabled": as_bool(load_config_value("RAG_ARCHIVING_ENABLED", True)),
+    "history_limit": as_int(load_config_value("RAG_ARCHIVE_HISTORY_LIMIT", 20000), 20000),
+    "batch_size": as_int(load_config_value("RAG_ARCHIVE_BATCH_SIZE", 1000), 1000),
+    "check_interval_hours": as_int(load_config_value("RAG_ARCHIVE_INTERVAL_HOURS", 24), 24),
+    "startup_delay_seconds": as_int(load_config_value("RAG_ARCHIVE_STARTUP_DELAY_SECONDS", 0), 0),
+    "run_on_startup": as_bool(
+        load_config_value("RAG_ARCHIVE_RUN_ON_STARTUP", False if DB_BACKEND == "tidb" else True),
+        False if DB_BACKEND == "tidb" else True,
+    ),
 }
 AI_CREATIVE_PROMPTS = {
     "fortune": "사용자 '{user_name}'를 위한 오늘의 운세를 재치있게 알려줘.",

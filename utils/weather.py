@@ -34,7 +34,13 @@ def get_kma_api_key() -> str | None:
     logger.warning("기상청 API 키(KMA_API_KEY)가 설정되지 않았습니다.")
     return None
 
-async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, api_type: str = 'forecast') -> dict | str | None:
+async def _fetch_kma_api(
+    db: aiosqlite.Connection,
+    endpoint: str,
+    params: dict,
+    api_type: str = 'forecast',
+    timeout: float | None = None,
+) -> dict | str | None:
     """
     기상청 API 엔드포인트를 호출하는 중앙 래퍼 함수입니다.
     api_type에 따라 다른 API 엔드포인트를 사용합니다.
@@ -105,7 +111,7 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
     try:
         for attempt in range(1, max_retries + 1):
             try:
-                timeout_seconds = getattr(config, 'KMA_API_TIMEOUT', 30)
+                timeout_seconds = float(timeout) if timeout is not None else float(getattr(config, 'KMA_API_TIMEOUT', 30))
                 
                 req_start = datetime.now()
                 response = await asyncio.to_thread(session.get, full_url, params=base_params, timeout=timeout_seconds)
@@ -174,12 +180,6 @@ async def _fetch_kma_api(db: aiosqlite.Connection, endpoint: str, params: dict, 
                 logger.error(f"기상청 API 요청 오류: {e}", exc_info=True)
                 return {"error": True, "message": config.MSG_WEATHER_FETCH_ERROR}
 
-            except requests.exceptions.Timeout:
-                if attempt >= max_retries:
-                    logger.error("기상청 API 요청이 재시도 후에도 시간 초과되었습니다.", exc_info=True)
-                    return {"error": True, "message": config.MSG_WEATHER_TIMEOUT}
-                logger.warning(f"기상청 API 요청이 시간 초과되었습니다. 재시도합니다... (시도 {attempt}/{max_retries})")
-                if retry_delay: await asyncio.sleep(retry_delay * attempt)
             except requests.exceptions.RequestException as e:
                 logger.error(f"기상청 API 요청 오류: {e}", exc_info=True)
                 return {"error": True, "message": config.MSG_WEATHER_FETCH_ERROR}
@@ -471,23 +471,35 @@ async def get_recent_earthquakes(db: aiosqlite.Connection) -> list | None:
         return None
         
     try:
-        # Check result code
-        header = res.get('response', {}).get('header', {})
-        if header.get('resultCode') != '00':
-             return None
-             
-        items = res.get('response', {}).get('body', {}).get('items', {}).get('item', [])
+        if res is None:
+            return []
+
+        items: list[dict] = []
+        if isinstance(res, list):
+            items = [item for item in res if isinstance(item, dict)]
+        elif isinstance(res, dict):
+            # _fetch_kma_api(JSON)는 일반적으로 body.items를 반환한다.
+            if "item" in res:
+                item_value = res.get("item", [])
+                if isinstance(item_value, list):
+                    items = [item for item in item_value if isinstance(item, dict)]
+                elif isinstance(item_value, dict):
+                    items = [item_value]
+            # 혹시 모를 원본 response 구조 fallback
+            elif "response" in res:
+                item_value = res.get('response', {}).get('body', {}).get('items', {}).get('item', [])
+                if isinstance(item_value, list):
+                    items = [item for item in item_value if isinstance(item, dict)]
+                elif isinstance(item_value, dict):
+                    items = [item_value]
         
         # Filter Magnitude >= 2.0 (Domestic) and domestic check
         filtered_items = []
-        raw_items = items if isinstance(items, list) else [items]
-        for item in raw_items:
-            # item might be empty or None
+        for item in items:
             if not item: continue
             
             mt_val = item.get('mt')
             rem_val = item.get('rem', '')
-            loc_val = item.get('loc', '')
             
             # 1. '국내영향없음' 필터링 (해외 지진 제외)
             if "국내영향없음" in rem_val:

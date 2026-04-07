@@ -22,8 +22,8 @@ python main.py
 **Behavior Overview**
 - Guild channels: AI responds only when the bot is mentioned.
 - DM: chat without mention, with **30 messages per 5 hours + 100 global DMs per day** limits.
-- Response generation: **CometAPI (optional)** → **Gemini fallback**.
-- Without `GEMINI_API_KEY`, the AI pipeline is not ready.
+- Response generation: **CometAPI (default)**, optional direct Gemini fallback.
+- AI pipeline is ready when at least one LLM provider is available.
 
 **Message Flow (Text Diagram)**
 ```
@@ -35,7 +35,7 @@ python main.py
       ├─ tool execution
       ├─ RAG context search (optional)
       ├─ prompt compose
-      └─ LLM response (CometAPI → Gemini)
+      └─ LLM response (CometAPI, optional Gemini fallback)
 ```
 
 **Pipeline Details**
@@ -54,8 +54,8 @@ python main.py
 
 **3) LLM Selection and Fallback**
 - CometAPI is tried first when enabled.
-- Gemini is used as fallback.
-- Gemini is required for the AI pipeline to be ready.
+- Gemini fallback is used only when `ALLOW_DIRECT_GEMINI_FALLBACK=true`.
+- Gemini is optional if CometAPI is configured.
 
 **4) RAG (Memory) Pipeline**
 1. Messages are stored in `conversation_history`.
@@ -75,7 +75,7 @@ python main.py
 - Earthquake alerts for domestic M≥4.0 events.
 
 **Dependencies by Feature**
-- AI chat: `GEMINI_API_KEY` required, CometAPI optional
+- AI chat: `COMETAPI_KEY` recommended, Gemini optional fallback
 - Image generation: `COMETAPI_KEY` required + `COMETAPI_IMAGE_ENABLED=true`
 - Weather: `KMA_API_KEY`
 - Exchange rates: `EXIM_API_KEY_KR`
@@ -129,4 +129,3 @@ python main.py
 - Stock lookup in yfinance mode depends on CometAPI ticker extraction.
 - Image generation is rate-limited per user and globally.
 - DM usage is strictly rate-limited.
-
