@@ -59,6 +59,17 @@ class HybridSearchEngine:
 
         self.embedding_limit = getattr(config, "LOCAL_EMBEDDING_QUERY_LIMIT", 200)
         self.embedding_threshold = config.RAG_SIMILARITY_THRESHOLD
+        self.structured_memory_limit = getattr(config, "STRUCTURED_MEMORY_QUERY_LIMIT", self.embedding_limit)
+        self.structured_memory_fallback_limit = getattr(
+            config,
+            "STRUCTURED_MEMORY_FALLBACK_QUERY_LIMIT",
+            max(self.structured_memory_limit, self.embedding_limit),
+        )
+        self.structured_memory_threshold = getattr(
+            config,
+            "STRUCTURED_MEMORY_SIMILARITY_THRESHOLD",
+            self.embedding_threshold,
+        )
         self.hybrid_top_k = getattr(config, "RAG_HYBRID_TOP_K", 4)
         self.embedding_top_n = getattr(config, "RAG_EMBEDDING_TOP_N", 8)
         self.bm25_top_n = getattr(config, "RAG_BM25_TOP_N", 8)
@@ -212,64 +223,68 @@ class HybridSearchEngine:
             return []
 
         dispatcher: List[dict[str, Any]] = []
-        discord_rows = await self.discord_store.fetch_recent_embeddings(
+        discord_rows = await self.discord_store.fetch_recent_memory_entries(
             server_id=guild_id,
             channel_id=channel_id,
             user_id=user_id,
-            limit=self.embedding_limit,
+            limit=self.structured_memory_limit,
         )
-
-        for raw_row in discord_rows:
-            row = dict(raw_row)
-            vector = self._to_vector(row.get("embedding"))
-            message = row.get("message") or ""
-            if vector is None or not message.strip():
-                continue
-            similarity = self._cosine_similarity(query_vector, vector)
-            if similarity < self.embedding_threshold:
-                continue
-
-            message_id = row.get("message_id")
-            try:
-                message_id_int = int(message_id)
-            except (TypeError, ValueError):
-                message_id_int = None
-            timestamp = row.get("timestamp") or ""
-
-            focus = {
-                "message_id": message_id_int,
-                "user_id": row.get("user_id"),
-                "user_name": row.get("user_name") or "User",
-                "content": message,
-                "created_at": timestamp,
-                "is_bot": False,
-            }
-            dialogue_messages = await self._resolve_dialogue_messages(
+        use_legacy_discord_rows = not discord_rows
+        if use_legacy_discord_rows:
+            discord_rows = await self.discord_store.fetch_recent_embeddings(
+                server_id=guild_id,
                 channel_id=channel_id,
-                message_id=message_id_int,
-                fallback=row.get("context_window"),
-                focus=focus,
-                cache_namespace="discord",
-                dialogue_cache=dialogue_cache,
+                user_id=user_id,
+                limit=self.embedding_limit,
             )
-            dialogue_block = self._format_dialogue_block(dialogue_messages)
-            if not dialogue_block:
-                dialogue_block = self._clean_content(message)
 
-            dispatcher.append(
-                {
-                    "id": f"discord:{message_id}",
-                    "message_id": message_id,
-                    "message": message,
-                    "origin": "Discord",
-                    "speaker": row.get("user_name"),
-                    "similarity": similarity,
-                    "matched_server_id": str(guild_id),
-                    "timestamp": timestamp,
-                    "source": "embedding",
-                    "dialogue_messages": dialogue_messages,
-                    "dialogue_block": dialogue_block,
-                }
+        dispatcher.extend(
+            await self._score_discord_rows(
+                query_vector,
+                discord_rows,
+                guild_id=guild_id,
+                channel_id=channel_id,
+                dialogue_cache=dialogue_cache,
+                use_legacy_discord_rows=use_legacy_discord_rows,
+            )
+        )
+        if (
+            not dispatcher
+            and not use_legacy_discord_rows
+            and self.structured_memory_fallback_limit > self.structured_memory_limit
+        ):
+            wider_rows = await self.discord_store.fetch_recent_memory_entries(
+                server_id=guild_id,
+                channel_id=channel_id,
+                user_id=user_id,
+                limit=self.structured_memory_fallback_limit,
+            )
+            dispatcher.extend(
+                await self._score_discord_rows(
+                    query_vector,
+                    wider_rows,
+                    guild_id=guild_id,
+                    channel_id=channel_id,
+                    dialogue_cache=dialogue_cache,
+                    use_legacy_discord_rows=False,
+                )
+            )
+        if not dispatcher and not use_legacy_discord_rows:
+            legacy_rows = await self.discord_store.fetch_recent_embeddings(
+                server_id=guild_id,
+                channel_id=channel_id,
+                user_id=user_id,
+                limit=self.embedding_limit,
+            )
+            dispatcher.extend(
+                await self._score_discord_rows(
+                    query_vector,
+                    legacy_rows,
+                    guild_id=guild_id,
+                    channel_id=channel_id,
+                    dialogue_cache=dialogue_cache,
+                    use_legacy_discord_rows=True,
+                )
             )
 
         if self.kakao_store is not None:
@@ -337,6 +352,80 @@ class HybridSearchEngine:
                 )
 
         dispatcher.sort(key=lambda item: item.get("similarity", 0.0), reverse=True)
+        return dispatcher
+
+    async def _score_discord_rows(
+        self,
+        query_vector: np.ndarray,
+        discord_rows: List[dict[str, Any]] | List[Any],
+        *,
+        guild_id: int,
+        channel_id: int,
+        dialogue_cache: Dict[tuple[str, int, int], List[dict[str, Any]]] | None = None,
+        use_legacy_discord_rows: bool,
+    ) -> List[dict[str, Any]]:
+        threshold = self.embedding_threshold if use_legacy_discord_rows else self.structured_memory_threshold
+        dispatcher: List[dict[str, Any]] = []
+
+        for raw_row in discord_rows:
+            row = dict(raw_row)
+            vector = self._to_vector(row.get("embedding"))
+            message = row.get("summary_text") or row.get("message") or ""
+            if vector is None or not message.strip():
+                continue
+            similarity = self._cosine_similarity(query_vector, vector)
+            memory_scope = row.get("memory_scope")
+            memory_type = row.get("memory_type")
+            if not use_legacy_discord_rows and memory_scope == "user":
+                similarity = min(0.999999, similarity + 0.025)
+            if similarity < threshold:
+                continue
+
+            message_id = row.get("message_id")
+            try:
+                message_id_int = int(message_id)
+            except (TypeError, ValueError):
+                message_id_int = None
+            timestamp = row.get("timestamp") or ""
+
+            focus = {
+                "message_id": message_id_int,
+                "user_id": row.get("user_id"),
+                "user_name": row.get("user_name") or "User",
+                "content": row.get("raw_context") or row.get("message") or message,
+                "created_at": timestamp,
+                "is_bot": False,
+            }
+            dialogue_messages = await self._resolve_dialogue_messages(
+                channel_id=channel_id,
+                message_id=message_id_int,
+                fallback=row.get("raw_context") or row.get("context_window"),
+                focus=focus,
+                cache_namespace="discord-memory" if not use_legacy_discord_rows else "discord",
+                dialogue_cache=dialogue_cache,
+            )
+            dialogue_block = self._format_dialogue_block(dialogue_messages)
+            if not dialogue_block:
+                dialogue_block = self._clean_content(row.get("raw_context") or row.get("message") or message)
+
+            dispatcher.append(
+                {
+                    "id": f"discord:{row.get('memory_id') or message_id}",
+                    "message_id": message_id,
+                    "message": message,
+                    "origin": "Discord",
+                    "speaker": row.get("user_name"),
+                    "similarity": similarity,
+                    "matched_server_id": str(guild_id),
+                    "timestamp": timestamp,
+                    "source": "embedding",
+                    "dialogue_messages": dialogue_messages,
+                    "dialogue_block": dialogue_block,
+                    "memory_scope": memory_scope,
+                    "memory_type": memory_type,
+                }
+            )
+
         return dispatcher
 
     async def _bm25_candidates(
@@ -480,7 +569,20 @@ class HybridSearchEngine:
                 )
                 messages = [self._coerce_dialogue_entry(item) for item in neighbors]  # 주변 대화를 직접 조회
 
-        if not messages and fallback:
+        if not messages and isinstance(fallback, str):
+            fallback_text = self._clean_content(fallback)
+            if fallback_text:
+                messages.append(
+                    {
+                        "message_id": message_id,
+                        "user_id": focus.get("user_id") if focus else None,
+                        "user_name": focus.get("user_name") if focus else "User",
+                        "content": fallback_text,
+                        "created_at": focus.get("created_at") if focus else "",
+                        "is_bot": False,
+                    }
+                )
+        elif not messages and fallback:
             for item in fallback:
                 messages.append(self._coerce_dialogue_entry(item))
 

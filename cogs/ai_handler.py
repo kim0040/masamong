@@ -59,6 +59,7 @@ from utils.embeddings import (
     KakaoEmbeddingStore,
     get_embedding,
 )
+from utils.memory_units import build_storage_text, build_structured_memory_units
 from database.bm25_index import BM25IndexManager
 from utils.hybrid_search import HybridSearchEngine
 from utils.reranker import Reranker, RerankerConfig
@@ -624,6 +625,14 @@ class AIHandler(commands.Cog):
                 pass # message.channel has no id? rare.
 
         try:
+            storage_text = build_storage_text(
+                message.content or "",
+                attachment_count=len(getattr(message, "attachments", [])),
+                embed_count=len(getattr(message, "embeds", [])),
+                sticker_count=len(getattr(message, "stickers", [])),
+            )
+            if not storage_text:
+                return
             await self.bot.db.execute(
                 "INSERT INTO conversation_history (message_id, guild_id, channel_id, user_id, user_name, content, is_bot, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
@@ -632,7 +641,7 @@ class AIHandler(commands.Cog):
                     message.channel.id,
                     message.author.id,
                     message.author.display_name,
-                    message.content,
+                    storage_text,
                     message.author.bot,
                     message.created_at.isoformat(),
                 ),
@@ -686,78 +695,57 @@ class AIHandler(commands.Cog):
             return text
 
     async def _create_window_embedding(self, guild_id: int, channel_id: int, payload: list[dict[str, Any]]):
-        """대화 윈도우(청크)를 임베딩하여 로컬 DB에 저장합니다 (E5 passage prefix 적용)."""
+        """대화 윈도우를 구조화 메모리 유닛으로 정제해 저장합니다."""
         if not payload:
             return
 
-        # 1. 청크 텍스트 포맷팅
-        merged_lines = []
-        if payload and payload[0].get('created_at'):
-            merged_lines.append(f"[대화 시간: {payload[0]['created_at']}]")
-        
-        prev_user = None
-        current_block = []
-        
-        for p in payload:
-            user = p.get('user_name', 'Unknown')
-            content = p.get('content', '')
-            
-            if user == prev_user:
-                current_block.append(content)
-            else:
-                if prev_user:
-                    merged_content = " ".join(current_block)
-                    merged_lines.append(f"{prev_user}: {merged_content}")
-                prev_user = user
-                current_block = [content]
-        
-        if prev_user:
-            merged_content = " ".join(current_block)
-            merged_lines.append(f"{prev_user}: {merged_content}")
-            
-        chunk_text = "\n".join(merged_lines)
-        
-        # [NEW] 요약 생성 (임베딩 품질 향상)
-        summary_text = await self._summarize_content(chunk_text)
-        embedding_text = f"passage: {summary_text}"
-        
-        # 2. 메타데이터 결정 (마지막 메시지 기준)
-        last_msg = payload[-1]
-        message_id = last_msg['message_id']
-        timestamp = last_msg['created_at']
-        user_id = last_msg['user_id']
-        
-        log_extra = {'guild_id': guild_id, 'channel_id': channel_id, 'window_id': message_id}
-
-        # 3. 임베딩 생성 (Summary 기반)
-        embedding_vector = await self._generate_local_embedding(
-            embedding_text, 
-            log_extra, 
-            prefix="" # 이미 위에서 passage: 붙임 (혹은 _generate에 맡기려면 위에서 제거)
+        memory_units = build_structured_memory_units(
+            payload,
+            channel_id=channel_id,
+            max_summary_chars=getattr(config, "STRUCTURED_MEMORY_MAX_SUMMARY_CHARS", 320),
+            max_context_chars=getattr(config, "STRUCTURED_MEMORY_MAX_CONTEXT_CHARS", 1200),
+            user_turn_min_chars=getattr(config, "STRUCTURED_USER_MEMORY_MIN_CHARS", 12),
         )
-        # _generate_local_embedding 내부에서 prefix 인자가 있으면 붙임.
-        # 여기서는 중복 방지를 위해 인자 전달 방식을 조정해야 함.
-        # 기존 코드: prefix="passage: " 전달함.
-        # 수정: embedding_text에 이미 passage를 붙였으므로, prefix는 빈 문자열로.
-        
-        if embedding_vector is None:
+        if not memory_units:
             return
 
-        # 4. DB 저장
-        try:
-            # message 컬럼에 '청크 전체 텍스트'를 저장하여 검색 시 원본 문맥 제공
-            await self.discord_embedding_store.upsert_message_embedding(
-                message_id=message_id,
-                server_id=guild_id,
-                channel_id=channel_id,
-                user_id=user_id,
-                user_name="Conversation Summary",  # 요약본임을 명시
-                message=f"📌 [요약] {summary_text}\n\n{chunk_text}", # 요약 + 원본 저장
-                timestamp_iso=timestamp,
-                embedding=embedding_vector,
+        for unit in memory_units:
+            log_extra = {
+                'guild_id': guild_id,
+                'channel_id': channel_id,
+                'window_id': unit.anchor_message_id,
+                'memory_scope': unit.memory_scope,
+                'memory_type': unit.memory_type,
+            }
+            embedding_vector = await self._generate_local_embedding(
+                f"passage: {unit.memory_text}",
+                log_extra,
+                prefix="",
             )
-        except Exception as e:
-            logger.error(f"임베딩 DB 저장 중 오류: {e}", extra=log_extra, exc_info=True)
+            if embedding_vector is None:
+                continue
+
+            try:
+                await self.discord_embedding_store.upsert_memory_entry(
+                    memory_id=unit.memory_id,
+                    anchor_message_id=unit.anchor_message_id,
+                    server_id=guild_id,
+                    channel_id=channel_id,
+                    owner_user_id=unit.owner_user_id,
+                    owner_user_name=unit.owner_user_name,
+                    memory_scope=unit.memory_scope,
+                    memory_type=unit.memory_type,
+                    summary_text=unit.summary_text,
+                    memory_text=unit.memory_text,
+                    raw_context=unit.raw_context,
+                    source_message_ids=unit.source_message_ids,
+                    speaker_names=unit.speaker_names,
+                    keywords=unit.keywords,
+                    timestamp_iso=unit.timestamp_iso,
+                    embedding=embedding_vector,
+                )
+            except Exception as e:
+                logger.error("구조화 메모리 저장 중 오류: %s", e, extra=log_extra, exc_info=True)
 
     async def _update_conversation_windows(self, message: discord.Message) -> None:
         """대화 슬라이딩 윈도우(6개, stride=3)를 누적해 별도 테이블에 저장합니다."""
@@ -775,10 +763,17 @@ class AIHandler(commands.Cog):
             "message_id": int(message.id),
             "user_id": int(message.author.id),
             "user_name": message.author.display_name or message.author.name or str(message.author.id),
-            "content": (message.content or "").strip(),
+            "content": build_storage_text(
+                message.content or "",
+                attachment_count=len(getattr(message, "attachments", [])),
+                embed_count=len(getattr(message, "embeds", [])),
+                sticker_count=len(getattr(message, "stickers", [])),
+            ),
             "is_bot": bool(message.author.bot),
             "created_at": message.created_at.isoformat(),
         }
+        if not entry["content"]:
+            return
         buffer.append(entry)
 
         # stride 계산을 위해 채널별 삽입 횟수를 기록한다.

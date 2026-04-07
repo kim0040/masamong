@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, Optional
 
 import json
 import aiosqlite
+from database.compat_db import TiDBSettings
 
 # numpy/torch 기반 의존성은 저사양 서버에서는 설치하지 않을 수 있으므로, ImportError를 허용한다.
 try:
@@ -22,11 +23,35 @@ try:  # pragma: no cover - optional dependency guard
 except ModuleNotFoundError:  # pragma: no cover
     SentenceTransformer = None  # type: ignore
 
+try:
+    import pymysql
+except ModuleNotFoundError:  # pragma: no cover
+    pymysql = None  # type: ignore
+
 import config
 from logger_config import logger
 
 _MODEL: SentenceTransformer | None = None
 _MODEL_LOCK = asyncio.Lock()
+
+
+def _build_tidb_settings() -> TiDBSettings | None:
+    if not (config.TIDB_HOST and config.TIDB_USER):
+        return None
+    return TiDBSettings(
+        host=config.TIDB_HOST,
+        port=config.TIDB_PORT,
+        user=config.TIDB_USER,
+        password=config.TIDB_PASSWORD or "",
+        database=config.TIDB_NAME,
+        ssl_ca=config.TIDB_SSL_CA,
+        ssl_verify_identity=config.TIDB_SSL_VERIFY_IDENTITY,
+    )
+
+
+def _vector_literal(vector: "np.ndarray") -> str:
+    values = np.asarray(vector, dtype=np.float32).tolist()
+    return "[" + ",".join(f"{float(item):.8f}" for item in values) + "]"
 
 
 @dataclass(frozen=True)
@@ -128,9 +153,37 @@ class DiscordEmbeddingStore:
         "CREATE INDEX IF NOT EXISTS idx_discord_embeddings_scuid ON discord_chat_embeddings (server_id, channel_id, user_id)",
         "CREATE INDEX IF NOT EXISTS idx_discord_embeddings_timestamp ON discord_chat_embeddings (timestamp DESC)"
     )
+    _CREATE_MEMORY_TABLE_SQL = """
+    CREATE TABLE IF NOT EXISTS discord_memory_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        memory_id TEXT UNIQUE,
+        anchor_message_id TEXT NOT NULL,
+        server_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        owner_user_id TEXT,
+        owner_user_name TEXT,
+        memory_scope TEXT NOT NULL,
+        memory_type TEXT NOT NULL,
+        summary_text TEXT NOT NULL,
+        memory_text TEXT NOT NULL,
+        raw_context TEXT,
+        source_message_ids TEXT,
+        speaker_names TEXT,
+        keyword_json TEXT,
+        timestamp TEXT,
+        embedding BLOB NOT NULL
+    );
+    """
+    _CREATE_MEMORY_INDEX_SQL = (
+        "CREATE INDEX IF NOT EXISTS idx_discord_memory_scope ON discord_memory_entries (server_id, channel_id, memory_scope, owner_user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_discord_memory_timestamp ON discord_memory_entries (timestamp DESC)",
+    )
 
     def __init__(self, db_path: str):
         self.db_path = Path(db_path)
+        self.backend = getattr(config, "DISCORD_EMBEDDING_BACKEND", "sqlite")
+        self.tidb_table = getattr(config, "DISCORD_EMBEDDING_TIDB_TABLE", "discord_chat_embeddings")
+        self._tidb_settings = _build_tidb_settings()
         self._init_lock = asyncio.Lock()
         self._initialized = False
 
@@ -143,15 +196,81 @@ class DiscordEmbeddingStore:
             if self._initialized:
                 return
 
+            if self.backend == "tidb":
+                await self._initialize_tidb()
+                self._initialized = True
+                logger.info("Discord 임베딩 TiDB 초기화 완료: %s", self.tidb_table)
+                return
+
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             async with aiosqlite.connect(self.db_path) as db:
                 await db.execute("PRAGMA journal_mode=WAL;")
                 await db.execute(self._CREATE_TABLE_SQL)
                 for sql in self._CREATE_INDEX_SQL:
                     await db.execute(sql)
+                await db.execute(self._CREATE_MEMORY_TABLE_SQL)
+                for sql in self._CREATE_MEMORY_INDEX_SQL:
+                    await db.execute(sql)
                 await db.commit()
             self._initialized = True
             logger.info("Discord 임베딩 DB 초기화 완료: %s", self.db_path)
+
+    async def _initialize_tidb(self) -> None:
+        create_sql = f"""
+        CREATE TABLE IF NOT EXISTS {self.tidb_table} (
+            id BIGINT PRIMARY KEY AUTO_RANDOM,
+            message_id VARCHAR(64) NOT NULL,
+            server_id VARCHAR(64) NOT NULL,
+            channel_id VARCHAR(64) NOT NULL,
+            user_id VARCHAR(64) NOT NULL,
+            user_name VARCHAR(255),
+            message MEDIUMTEXT,
+            timestamp VARCHAR(64),
+            embedding BLOB NOT NULL,
+            UNIQUE KEY uq_discord_embeddings_message (message_id),
+            KEY idx_discord_embeddings_scuid (server_id, channel_id, user_id),
+            KEY idx_discord_embeddings_timestamp (timestamp)
+        )
+        """
+        await asyncio.to_thread(self._tidb_exec, create_sql, ())
+        create_memory_sql = f"""
+        CREATE TABLE IF NOT EXISTS discord_memory_entries (
+            id BIGINT PRIMARY KEY AUTO_RANDOM,
+            memory_id VARCHAR(191) NOT NULL,
+            anchor_message_id VARCHAR(64) NOT NULL,
+            server_id VARCHAR(64) NOT NULL,
+            channel_id VARCHAR(64) NOT NULL,
+            owner_user_id VARCHAR(64),
+            owner_user_name VARCHAR(255),
+            memory_scope VARCHAR(32) NOT NULL,
+            memory_type VARCHAR(64) NOT NULL,
+            summary_text MEDIUMTEXT NOT NULL,
+            memory_text MEDIUMTEXT NOT NULL,
+            raw_context MEDIUMTEXT,
+            source_message_ids MEDIUMTEXT,
+            speaker_names MEDIUMTEXT,
+            keyword_json MEDIUMTEXT,
+            timestamp VARCHAR(64),
+            embedding BLOB NOT NULL,
+            UNIQUE KEY uq_discord_memory_entries_memory_id (memory_id),
+            KEY idx_discord_memory_scope (server_id, channel_id, memory_scope, owner_user_id),
+            KEY idx_discord_memory_timestamp (timestamp)
+        )
+        """
+        await asyncio.to_thread(self._tidb_exec, create_memory_sql, ())
+
+    def _tidb_exec(self, query: str, params: tuple[Any, ...], *, fetch: bool = False) -> list[dict[str, Any]] | None:
+        if pymysql is None or self._tidb_settings is None:
+            raise RuntimeError("TiDB 연결 정보 또는 PyMySQL 패키지가 없습니다.")
+        conn = pymysql.connect(**self._tidb_settings.to_connect_kwargs())
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(query, params)
+                rows = cursor.fetchall() if fetch and cursor.description is not None else None
+            conn.commit()
+            return rows
+        finally:
+            conn.close()
 
     async def upsert_message_embedding(
         self,
@@ -169,6 +288,33 @@ class DiscordEmbeddingStore:
         if np is None:
             raise RuntimeError("numpy가 설치되어 있지 않아 임베딩을 저장할 수 없습니다.")
         embedding_bytes = np.asarray(embedding, dtype=np.float32).tobytes()
+        if self.backend == "tidb":
+            query = f"""
+                INSERT INTO {self.tidb_table} (
+                    message_id, server_id, channel_id, user_id, user_name, message, timestamp, embedding
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    user_name = VALUES(user_name),
+                    message = VALUES(message),
+                    timestamp = VALUES(timestamp),
+                    embedding = VALUES(embedding)
+            """
+            await asyncio.to_thread(
+                self._tidb_exec,
+                query,
+                (
+                    str(message_id),
+                    str(server_id),
+                    str(channel_id),
+                    str(user_id),
+                    user_name,
+                    message,
+                    timestamp_iso,
+                    embedding_bytes,
+                ),
+            )
+            return
+
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
@@ -203,6 +349,20 @@ class DiscordEmbeddingStore:
     ) -> list[aiosqlite.Row]:
         """지정한 범위의 최신 임베딩 레코드를 반환합니다."""
         await self.initialize()
+        if self.backend == "tidb":
+            query = (
+                f"SELECT message_id, user_id, user_name, message, timestamp, embedding "
+                f"FROM {self.tidb_table} WHERE server_id = %s AND channel_id = %s"
+            )
+            params: list[str | int] = [str(server_id), str(channel_id)]
+            if user_id is not None:
+                query += " AND user_id = %s"
+                params.append(str(user_id))
+            query += " ORDER BY timestamp DESC LIMIT %s"
+            params.append(int(limit))
+            rows = await asyncio.to_thread(self._tidb_exec, query, tuple(params), fetch=True)
+            return rows or []
+
         query = (
             "SELECT message_id, user_id, user_name, message, timestamp, embedding "
             "FROM discord_chat_embeddings WHERE server_id = ? AND channel_id = ?"
@@ -220,12 +380,305 @@ class DiscordEmbeddingStore:
                 rows = await cursor.fetchall()
         return rows
 
+    async def upsert_memory_entry(
+        self,
+        *,
+        memory_id: str,
+        anchor_message_id: int,
+        server_id: int,
+        channel_id: int,
+        owner_user_id: int | None,
+        owner_user_name: str,
+        memory_scope: str,
+        memory_type: str,
+        summary_text: str,
+        memory_text: str,
+        raw_context: str,
+        source_message_ids: list[int],
+        speaker_names: list[str],
+        keywords: list[str],
+        timestamp_iso: str,
+        embedding: np.ndarray,
+    ) -> None:
+        await self.initialize()
+        if np is None:
+            raise RuntimeError("numpy가 설치되어 있지 않아 임베딩을 저장할 수 없습니다.")
+        embedding_bytes = np.asarray(embedding, dtype=np.float32).tobytes()
+        source_json = json.dumps([int(item) for item in source_message_ids], ensure_ascii=False)
+        speakers_json = json.dumps(list(speaker_names), ensure_ascii=False)
+        keywords_json = json.dumps(list(keywords), ensure_ascii=False)
+        owner_user_id_str = str(owner_user_id) if owner_user_id is not None else None
+
+        if self.backend == "tidb":
+            query = """
+                INSERT INTO discord_memory_entries (
+                    memory_id, anchor_message_id, server_id, channel_id, owner_user_id, owner_user_name,
+                    memory_scope, memory_type, summary_text, memory_text, raw_context, source_message_ids,
+                    speaker_names, keyword_json, timestamp, embedding
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    owner_user_id = VALUES(owner_user_id),
+                    owner_user_name = VALUES(owner_user_name),
+                    memory_scope = VALUES(memory_scope),
+                    memory_type = VALUES(memory_type),
+                    summary_text = VALUES(summary_text),
+                    memory_text = VALUES(memory_text),
+                    raw_context = VALUES(raw_context),
+                    source_message_ids = VALUES(source_message_ids),
+                    speaker_names = VALUES(speaker_names),
+                    keyword_json = VALUES(keyword_json),
+                    timestamp = VALUES(timestamp),
+                    embedding = VALUES(embedding)
+            """
+            await asyncio.to_thread(
+                self._tidb_exec,
+                query,
+                (
+                    memory_id,
+                    str(anchor_message_id),
+                    str(server_id),
+                    str(channel_id),
+                    owner_user_id_str,
+                    owner_user_name,
+                    memory_scope,
+                    memory_type,
+                    summary_text,
+                    memory_text,
+                    raw_context,
+                    source_json,
+                    speakers_json,
+                    keywords_json,
+                    timestamp_iso,
+                    embedding_bytes,
+                ),
+            )
+            return
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO discord_memory_entries (
+                    memory_id, anchor_message_id, server_id, channel_id, owner_user_id, owner_user_name,
+                    memory_scope, memory_type, summary_text, memory_text, raw_context, source_message_ids,
+                    speaker_names, keyword_json, timestamp, embedding
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(memory_id) DO UPDATE SET
+                    owner_user_id = excluded.owner_user_id,
+                    owner_user_name = excluded.owner_user_name,
+                    memory_scope = excluded.memory_scope,
+                    memory_type = excluded.memory_type,
+                    summary_text = excluded.summary_text,
+                    memory_text = excluded.memory_text,
+                    raw_context = excluded.raw_context,
+                    source_message_ids = excluded.source_message_ids,
+                    speaker_names = excluded.speaker_names,
+                    keyword_json = excluded.keyword_json,
+                    timestamp = excluded.timestamp,
+                    embedding = excluded.embedding
+                """,
+                (
+                    memory_id,
+                    str(anchor_message_id),
+                    str(server_id),
+                    str(channel_id),
+                    owner_user_id_str,
+                    owner_user_name,
+                    memory_scope,
+                    memory_type,
+                    summary_text,
+                    memory_text,
+                    raw_context,
+                    source_json,
+                    speakers_json,
+                    keywords_json,
+                    timestamp_iso,
+                    embedding_bytes,
+                ),
+            )
+            await db.commit()
+
+    async def fetch_recent_memory_entries(
+        self,
+        *,
+        server_id: int,
+        channel_id: int,
+        user_id: int | None = None,
+        limit: int = 200,
+    ) -> list[aiosqlite.Row]:
+        await self.initialize()
+        user_id_str = str(user_id) if user_id is not None else None
+        if self.backend == "tidb":
+            if user_id_str is not None:
+                query = """
+                    SELECT memory_id,
+                           anchor_message_id AS message_id,
+                           owner_user_id AS user_id,
+                           owner_user_name AS user_name,
+                           memory_text AS message,
+                           summary_text,
+                           raw_context,
+                           source_message_ids,
+                           speaker_names,
+                           keyword_json,
+                           timestamp,
+                           embedding,
+                           memory_scope,
+                           memory_type
+                    FROM discord_memory_entries
+                    WHERE server_id = %s
+                      AND channel_id = %s
+                      AND (memory_scope = 'channel' OR (memory_scope = 'user' AND owner_user_id = %s))
+                    ORDER BY CASE WHEN memory_scope = 'user' THEN 0 ELSE 1 END, timestamp DESC
+                    LIMIT %s
+                """
+                params: tuple[Any, ...] = (str(server_id), str(channel_id), user_id_str, int(limit))
+            else:
+                query = """
+                    SELECT memory_id,
+                           anchor_message_id AS message_id,
+                           owner_user_id AS user_id,
+                           owner_user_name AS user_name,
+                           memory_text AS message,
+                           summary_text,
+                           raw_context,
+                           source_message_ids,
+                           speaker_names,
+                           keyword_json,
+                           timestamp,
+                           embedding,
+                           memory_scope,
+                           memory_type
+                    FROM discord_memory_entries
+                    WHERE server_id = %s
+                      AND channel_id = %s
+                      AND memory_scope = 'channel'
+                    ORDER BY timestamp DESC
+                    LIMIT %s
+                """
+                params = (str(server_id), str(channel_id), int(limit))
+            rows = await asyncio.to_thread(self._tidb_exec, query, params, fetch=True)
+            return rows or []
+
+        if user_id_str is not None:
+            query = """
+                SELECT memory_id,
+                       anchor_message_id AS message_id,
+                       owner_user_id AS user_id,
+                       owner_user_name AS user_name,
+                       memory_text AS message,
+                       summary_text,
+                       raw_context,
+                       source_message_ids,
+                       speaker_names,
+                       keyword_json,
+                       timestamp,
+                       embedding,
+                       memory_scope,
+                       memory_type
+                FROM discord_memory_entries
+                WHERE server_id = ?
+                  AND channel_id = ?
+                  AND (memory_scope = 'channel' OR (memory_scope = 'user' AND owner_user_id = ?))
+                ORDER BY CASE WHEN memory_scope = 'user' THEN 0 ELSE 1 END, timestamp DESC
+                LIMIT ?
+            """
+            params: list[str | int] = [str(server_id), str(channel_id), user_id_str, int(limit)]
+        else:
+            query = """
+                SELECT memory_id,
+                       anchor_message_id AS message_id,
+                       owner_user_id AS user_id,
+                       owner_user_name AS user_name,
+                       memory_text AS message,
+                       summary_text,
+                       raw_context,
+                       source_message_ids,
+                       speaker_names,
+                       keyword_json,
+                       timestamp,
+                       embedding,
+                       memory_scope,
+                       memory_type
+                FROM discord_memory_entries
+                WHERE server_id = ?
+                  AND channel_id = ?
+                  AND memory_scope = 'channel'
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """
+            params = [str(server_id), str(channel_id), int(limit)]
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(query, params) as cursor:
+                rows = await cursor.fetchall()
+        return rows
+
+    async def clear_memory_entries(self) -> None:
+        await self.initialize()
+        if self.backend == "tidb":
+            await asyncio.to_thread(self._tidb_exec, "DELETE FROM discord_memory_entries", ())
+            return
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM discord_memory_entries")
+            await db.commit()
+
+    async def delete_memory_entries(self, memory_ids: Iterable[str]) -> None:
+        ids = [str(item) for item in memory_ids if str(item).strip()]
+        if not ids:
+            return
+        await self.initialize()
+        if self.backend == "tidb":
+            placeholders = ",".join(["%s"] * len(ids))
+            query = f"DELETE FROM discord_memory_entries WHERE memory_id IN ({placeholders})"
+            await asyncio.to_thread(self._tidb_exec, query, tuple(ids))
+            return
+        placeholders = ",".join("?" for _ in ids)
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                f"DELETE FROM discord_memory_entries WHERE memory_id IN ({placeholders})",
+                ids,
+            )
+            await db.commit()
+
+    async def count_memory_entries(
+        self,
+        *,
+        server_id: int | None = None,
+        channel_id: int | None = None,
+    ) -> int:
+        await self.initialize()
+        clauses: list[str] = []
+        params: list[Any] = []
+        if server_id is not None:
+            clauses.append("server_id = ?")
+            params.append(str(server_id))
+        if channel_id is not None:
+            clauses.append("channel_id = ?")
+            params.append(str(channel_id))
+        where_sql = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+
+        if self.backend == "tidb":
+            sql = f"SELECT COUNT(*) AS cnt FROM discord_memory_entries{where_sql}".replace("?", "%s")
+            row = await asyncio.to_thread(self._tidb_exec, sql, tuple(params), fetch=True)
+            return int((row or [{}])[0].get("cnt", 0))
+
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(f"SELECT COUNT(*) FROM discord_memory_entries{where_sql}", params) as cursor:
+                row = await cursor.fetchone()
+        return int(row[0] if row else 0)
+
     async def delete_embeddings(self, message_ids: Iterable[int]) -> None:
         """지정한 메시지 ID 목록의 임베딩을 삭제합니다."""
         ids = [str(mid) for mid in message_ids]
         if not ids:
             return
         await self.initialize()
+        if self.backend == "tidb":
+            placeholders = ",".join(["%s"] * len(ids))
+            query = f"DELETE FROM {self.tidb_table} WHERE message_id IN ({placeholders})"
+            await asyncio.to_thread(self._tidb_exec, query, tuple(ids))
+            return
+
         placeholders = ",".join("?" for _ in ids)
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
@@ -239,16 +692,25 @@ class KakaoEmbeddingStore:
     """여러 카카오 채팅방 임베딩 DB를 읽어오는 헬퍼."""
 
     def __init__(self, default_db_path: str | None, server_map: Dict[str, Dict[str, str]]):
+        self.backend = getattr(config, "KAKAO_STORE_BACKEND", "local")
+        self.tidb_table = getattr(config, "KAKAO_TIDB_TABLE", "kakao_chunks")
+        self._tidb_settings = _build_tidb_settings()
         self.default_db_path = Path(default_db_path) if default_db_path else None
         self.server_map: Dict[str, Dict[str, Any]] = {}
         for raw_server_id, meta in (server_map or {}).items():
             server_id = str(raw_server_id)
             db_path = meta.get("db_path") if isinstance(meta, dict) else None
-            if not db_path:
+            room_key = ""
+            if isinstance(meta, dict):
+                room_key = str(meta.get("room_key") or "").strip()
+            if not room_key and db_path:
+                room_key = Path(db_path).name
+            if not db_path and not room_key:
                 continue
             self.server_map[server_id] = {
-                "path": Path(db_path),
+                "path": Path(db_path) if db_path else None,
                 "label": meta.get("label", "") if isinstance(meta, dict) else "",
+                "room_key": room_key,
             }
 
         self._table_meta_cache: Dict[Path, Optional[_KakaoTableMeta]] = {}
@@ -309,6 +771,9 @@ class KakaoEmbeddingStore:
         query_vector: "np.ndarray" | None = None,
     ) -> list[Dict[str, Any]]:
         """서버 ID 후보 목록에 해당하는 Kakao 임베딩 레코드를 읽어옵니다."""
+        if self.backend == "tidb":
+            return await self._fetch_remote_embeddings(server_ids, limit=limit, query_vector=query_vector)
+
         targets: list[tuple[Path, str, str]] = []
         seen_paths: set[Path] = set()
 
@@ -346,6 +811,88 @@ class KakaoEmbeddingStore:
                 row.setdefault("db_path", str(path))
                 results.append(row)
         return results
+
+    async def _fetch_remote_embeddings(
+        self,
+        server_ids: Iterable[str],
+        *,
+        limit: int,
+        query_vector: "np.ndarray" | None,
+    ) -> list[Dict[str, Any]]:
+        if pymysql is None or self._tidb_settings is None:
+            logger.warning("TiDB Kakao 저장소를 사용할 수 없습니다.")
+            return []
+
+        targets: list[tuple[str, str, str]] = []
+        seen_room_keys: set[str] = set()
+        for candidate in server_ids:
+            meta = self.server_map.get(str(candidate))
+            if not meta:
+                continue
+            room_key = str(meta.get("room_key") or "").strip()
+            if not room_key or room_key in seen_room_keys:
+                continue
+            seen_room_keys.add(room_key)
+            targets.append((room_key, meta.get("label", ""), str(candidate)))
+
+        results: list[Dict[str, Any]] = []
+        per_target_limit = max(1, min(int(limit), 50)) if query_vector is not None else max(1, int(limit))
+        for room_key, label, matched_id in targets:
+            if query_vector is not None:
+                rows = await asyncio.to_thread(self._remote_vector_search, room_key, query_vector, per_target_limit)
+            else:
+                rows = await asyncio.to_thread(self._remote_recent_fetch, room_key, per_target_limit)
+            for row in rows:
+                row.setdefault("label", label or room_key)
+                row.setdefault("matched_server_id", matched_id)
+                row.setdefault("db_path", f"tidb:{room_key}")
+                results.append(row)
+        return results
+
+    def _remote_recent_fetch(self, room_key: str, limit: int) -> list[Dict[str, Any]]:
+        conn = pymysql.connect(**self._tidb_settings.to_connect_kwargs())
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT chunk_id AS message_id,
+                           text_long AS message,
+                           start_date AS timestamp,
+                           'Merged Context' AS speaker
+                    FROM {self.tidb_table}
+                    WHERE room_key = %s
+                    ORDER BY start_date DESC, chunk_id DESC
+                    LIMIT %s
+                    """,
+                    (room_key, int(limit)),
+                )
+                rows = cursor.fetchall()
+            return [dict(row, context_window=[]) for row in rows]
+        finally:
+            conn.close()
+
+    def _remote_vector_search(self, room_key: str, query_vector: "np.ndarray", limit: int) -> list[Dict[str, Any]]:
+        vector_literal = _vector_literal(query_vector)
+        sql = f"""
+            SELECT chunk_id AS message_id,
+                   text_long AS message,
+                   start_date AS timestamp,
+                   'Merged Context' AS speaker,
+                   VEC_COSINE_DISTANCE(embedding, %s) AS distance,
+                   1.0 - VEC_COSINE_DISTANCE(embedding, %s) AS score
+            FROM {self.tidb_table}
+            WHERE room_key = %s
+            ORDER BY VEC_COSINE_DISTANCE(embedding, %s) ASC
+            LIMIT %s
+        """
+        conn = pymysql.connect(**self._tidb_settings.to_connect_kwargs())
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, (vector_literal, vector_literal, room_key, vector_literal, int(limit)))
+                rows = cursor.fetchall()
+            return [dict(row, context_window=[]) for row in rows]
+        finally:
+            conn.close()
 
     def _build_vector_extension_candidates(self) -> list[str]:
         candidates: list[str] = []
