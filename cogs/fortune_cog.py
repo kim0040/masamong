@@ -3,6 +3,7 @@
 사용자 개인 운세 및 비서 서비스를 담당하는 Cog입니다.
 명령어 처리와 모닝 브리핑 자동 발송 스케줄러를 포함합니다.
 """
+from __future__ import annotations
 
 import discord
 from discord.ext import commands, tasks
