@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional
@@ -49,6 +50,36 @@ def _build_tidb_settings() -> TiDBSettings | None:
     )
 
 
+def _resolve_local_model_path(model_name: str) -> Path | None:
+    """Hugging Face 캐시에서 모델 snapshot 경로를 찾아 반환합니다."""
+    if not model_name:
+        return None
+    candidate = Path(model_name).expanduser()
+    if candidate.exists():
+        return candidate
+    if "/" not in model_name:
+        return None
+
+    repo_dir = Path.home() / ".cache" / "huggingface" / "hub" / f"models--{model_name.replace('/', '--')}"
+    snapshots_dir = repo_dir / "snapshots"
+    if not snapshots_dir.exists():
+        return None
+
+    main_ref = repo_dir / "refs" / "main"
+    if main_ref.exists():
+        revision = main_ref.read_text(encoding="utf-8").strip()
+        if revision:
+            target = snapshots_dir / revision
+            if target.exists():
+                return target
+
+    snapshot_dirs = [p for p in snapshots_dir.iterdir() if p.is_dir()]
+    if not snapshot_dirs:
+        return None
+    snapshot_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return snapshot_dirs[0]
+
+
 def _vector_literal(vector: "np.ndarray") -> str:
     values = np.asarray(vector, dtype=np.float32).tolist()
     return "[" + ",".join(f"{float(item):.8f}" for item in values) + "]"
@@ -85,10 +116,30 @@ async def _load_model() -> SentenceTransformer:
         loop = asyncio.get_running_loop()
         model_name = getattr(config, "LOCAL_EMBEDDING_MODEL_NAME", "BM-K/KoSimCSE-roberta")
         device = getattr(config, "LOCAL_EMBEDDING_DEVICE", None)
+        local_files_only = bool(getattr(config, "LOCAL_EMBEDDING_LOCAL_FILES_ONLY", False))
 
         def _sync_load():
             load_kwargs = {"device": device} if device else {}
-            return SentenceTransformer(model_name, **load_kwargs)
+            target_model = model_name
+            if local_files_only:
+                load_kwargs["local_files_only"] = True
+                os.environ["HF_HUB_OFFLINE"] = "1"
+                os.environ["TRANSFORMERS_OFFLINE"] = "1"
+                resolved_path = _resolve_local_model_path(model_name)
+                if resolved_path is not None:
+                    target_model = str(resolved_path)
+                    logger.info("로컬 임베딩 캐시 snapshot 경로 사용: %s", target_model)
+            try:
+                return SentenceTransformer(target_model, **load_kwargs)
+            except TypeError:
+                # 구버전 sentence-transformers는 local_files_only 인자를 지원하지 않을 수 있음
+                if local_files_only:
+                    raise RuntimeError(
+                        "현재 sentence-transformers 버전은 LOCAL_EMBEDDING_LOCAL_FILES_ONLY를 지원하지 않습니다. "
+                        "패키지를 업데이트하거나 모델을 사전 캐시한 뒤 옵션을 끄세요."
+                    )
+                load_kwargs.pop("local_files_only", None)
+                return SentenceTransformer(target_model, **load_kwargs)
 
         logger.info("로컬 임베딩 모델 로드 시작: %s", model_name)
         _MODEL = await loop.run_in_executor(None, _sync_load)

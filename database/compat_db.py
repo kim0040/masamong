@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -126,6 +127,10 @@ class TiDBSettings:
     database: str
     ssl_ca: str | None = None
     ssl_verify_identity: bool = True
+    connect_timeout: int = 10
+    read_timeout: int = 30
+    write_timeout: int = 30
+    conn_max_lifetime_seconds: int = 600
 
     @classmethod
     def from_env(cls) -> "TiDBSettings":
@@ -137,6 +142,10 @@ class TiDBSettings:
             database=os.environ.get("MASAMONG_DB_NAME", "masamong").strip() or "masamong",
             ssl_ca=os.environ.get("MASAMONG_DB_SSL_CA", "").strip() or None,
             ssl_verify_identity=os.environ.get("MASAMONG_DB_SSL_VERIFY_IDENTITY", "true").strip().lower() in {"1", "true", "yes", "on"},
+            connect_timeout=max(1, int(os.environ.get("MASAMONG_DB_CONNECT_TIMEOUT", "10"))),
+            read_timeout=max(1, int(os.environ.get("MASAMONG_DB_READ_TIMEOUT", "30"))),
+            write_timeout=max(1, int(os.environ.get("MASAMONG_DB_WRITE_TIMEOUT", "30"))),
+            conn_max_lifetime_seconds=max(60, int(os.environ.get("MASAMONG_DB_CONN_MAX_LIFETIME_SECONDS", "600"))),
         )
 
     def to_connect_kwargs(self) -> dict[str, Any]:
@@ -149,6 +158,9 @@ class TiDBSettings:
             "charset": "utf8mb4",
             "autocommit": False,
             "cursorclass": DictCursor,
+            "connect_timeout": int(self.connect_timeout),
+            "read_timeout": int(self.read_timeout),
+            "write_timeout": int(self.write_timeout),
         }
         if self.ssl_ca:
             kwargs["ssl"] = {"ca": self.ssl_ca}
@@ -193,21 +205,60 @@ class TiDBConnection:
         self._conn: Any = None
         self._lock = asyncio.Lock()
         self.backend = "tidb"
+        self._connected_at_monotonic: float | None = None
 
     async def connect(self) -> "TiDBConnection":
         if pymysql is None:
             raise CompatOperationalError("PyMySQL 패키지가 필요합니다.")
         self._conn = await asyncio.to_thread(pymysql.connect, **self.settings.to_connect_kwargs())
+        self._connected_at_monotonic = time.monotonic()
         return self
+
+    def _is_connection_stale(self) -> bool:
+        if self._connected_at_monotonic is None:
+            return False
+        return (time.monotonic() - self._connected_at_monotonic) >= float(self.settings.conn_max_lifetime_seconds)
+
+    @staticmethod
+    def _is_retryable_disconnect(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        if any(token in msg for token in ("lost connection", "server has gone away", "connection was killed", "connection reset")):
+            return True
+        code = None
+        if getattr(exc, "args", None):
+            try:
+                code = int(exc.args[0])
+            except Exception:
+                code = None
+        return code in {2006, 2013, 2055}
+
+    def _reconnect_sync(self) -> None:
+        if pymysql is None:
+            raise CompatOperationalError("PyMySQL 패키지가 필요합니다.")
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+        self._conn = pymysql.connect(**self.settings.to_connect_kwargs())
+        self._connected_at_monotonic = time.monotonic()
 
     async def _ensure_connected(self) -> None:
         if self._conn is None:
             await self.connect()
             return
+        if self._is_connection_stale():
+            async with self._lock:
+                await asyncio.to_thread(self._reconnect_sync)
+                return
         try:
-            await asyncio.to_thread(self._conn.ping, True)
+            await asyncio.to_thread(self._conn.ping, False)
         except Exception as exc:  # pragma: no cover
-            raise CompatOperationalError(str(exc)) from exc
+            async with self._lock:
+                try:
+                    await asyncio.to_thread(self._reconnect_sync)
+                except Exception as reconnect_exc:
+                    raise CompatOperationalError(str(reconnect_exc)) from reconnect_exc
 
     async def _execute_buffered(self, query: str, params: Iterable[Any] | None = None) -> BufferedCursor:
         await self._ensure_connected()
@@ -216,9 +267,15 @@ class TiDBConnection:
         async with self._lock:
             try:
                 return await asyncio.to_thread(self._execute_sync, sql, bind)
-            except Exception as exc:  # pragma: no cover
+            except Exception as exc:
+                if self._is_retryable_disconnect(exc):
+                    try:
+                        await asyncio.to_thread(self._reconnect_sync)
+                        return await asyncio.to_thread(self._execute_sync, sql, bind)
+                    except Exception as retry_exc:  # pragma: no cover
+                        raise CompatOperationalError(str(retry_exc)) from retry_exc
                 raise CompatOperationalError(str(exc)) from exc
-
+            
     def _execute_sync(self, sql: str, params: tuple[Any, ...]) -> BufferedCursor:
         assert self._conn is not None
         with self._conn.cursor() as cursor:
@@ -240,6 +297,13 @@ class TiDBConnection:
             try:
                 await asyncio.to_thread(self._executemany_sync, sql, values)
             except Exception as exc:  # pragma: no cover
+                if self._is_retryable_disconnect(exc):
+                    try:
+                        await asyncio.to_thread(self._reconnect_sync)
+                        await asyncio.to_thread(self._executemany_sync, sql, values)
+                        return
+                    except Exception as retry_exc:
+                        raise CompatOperationalError(str(retry_exc)) from retry_exc
                 raise CompatOperationalError(str(exc)) from exc
 
     def _executemany_sync(self, sql: str, values: list[tuple[Any, ...]]) -> None:
@@ -258,6 +322,11 @@ class TiDBConnection:
             try:
                 await asyncio.to_thread(self._conn.commit)
             except Exception as exc:  # pragma: no cover
+                if self._is_retryable_disconnect(exc):
+                    await asyncio.to_thread(self._reconnect_sync)
+                    raise CompatOperationalError(
+                        "커밋 중 연결이 끊어졌습니다. 트랜잭션 상태가 불확실하므로 상위 레벨에서 재시도해야 합니다."
+                    ) from exc
                 raise CompatOperationalError(str(exc)) from exc
 
     async def rollback(self) -> None:
@@ -267,6 +336,11 @@ class TiDBConnection:
             try:
                 await asyncio.to_thread(self._conn.rollback)
             except Exception as exc:  # pragma: no cover
+                if self._is_retryable_disconnect(exc):
+                    await asyncio.to_thread(self._reconnect_sync)
+                    raise CompatOperationalError(
+                        "롤백 중 연결이 끊어졌습니다. 연결은 복구되었지만 작업 재시도가 필요합니다."
+                    ) from exc
                 raise CompatOperationalError(str(exc)) from exc
 
     async def close(self) -> None:

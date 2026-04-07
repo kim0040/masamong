@@ -124,7 +124,7 @@ class AIHandler(commands.Cog):
 
         # CometAPI 클라이언트 초기화 (Gemini 대체)
         self.cometapi_client = None
-        self.use_cometapi = config.USE_COMETAPI and config.COMETAPI_KEY
+        self.use_cometapi = bool(config.USE_COMETAPI and config.COMETAPI_KEY)
         if self.use_cometapi:
             if AsyncOpenAI:
                 try:
@@ -139,6 +139,11 @@ class AIHandler(commands.Cog):
             else:
                 logger.warning("openai 패키지가 설치되지 않아 CometAPI를 사용할 수 없습니다.")
                 self.use_cometapi = False
+
+        if self.gemini_configured and not config.ALLOW_DIRECT_GEMINI_FALLBACK:
+            logger.info("Gemini direct fallback이 비활성화되어 CometAPI 우선 경로만 사용합니다.")
+        if not self.use_cometapi and not self._can_use_direct_gemini():
+            logger.warning("사용 가능한 LLM 제공자가 없습니다. COMETAPI_KEY 또는 Gemini fallback 설정을 확인하세요.")
         
         # [NEW] Location Cache from DB
         self.location_cache: set[str] = set()
@@ -152,7 +157,12 @@ class AIHandler(commands.Cog):
     @property
     def is_ready(self) -> bool:
         """AI 핸들러가 모든 의존성(Gemini, DB, ToolsCog)을 포함하여 준비되었는지 확인합니다."""
-        return self.gemini_configured and self.bot.db is not None and self.tools_cog is not None
+        has_llm_provider = bool(self.use_cometapi or self._can_use_direct_gemini())
+        return has_llm_provider and self.bot.db is not None and self.tools_cog is not None
+
+    def _can_use_direct_gemini(self) -> bool:
+        """CometAPI 실패 시 직접 Gemini 호출 허용 여부."""
+        return bool(config.ALLOW_DIRECT_GEMINI_FALLBACK and self.gemini_configured and genai)
 
     def _debug(self, message: str, log_extra: dict[str, Any] | None = None) -> None:
         """디버그 설정이 켜진 경우에만 메시지를 기록합니다."""
@@ -385,8 +395,8 @@ class AIHandler(commands.Cog):
             if res:
                 return res
         
-        # [NEW] Gemini fallback
-        if self.gemini_configured and genai:
+        # [NEW] Gemini fallback (옵션)
+        if self._can_use_direct_gemini():
             try:
                 # Use standard response model by default
                 model_name = model or config.AI_RESPONSE_MODEL_NAME
@@ -397,7 +407,7 @@ class AIHandler(commands.Cog):
             except Exception as e:
                 logger.error(f"get_ai_completion (Gemini Fallback) 오류: {e}", extra=log_extra)
         
-        logger.warning("get_ai_completion: Both CometAPI and Gemini failed or are not configured.", extra=log_extra)
+        logger.warning("get_ai_completion: 사용할 LLM 제공자가 없거나 호출에 실패했습니다.", extra=log_extra)
         return None
 
     async def _safe_generate_content(self, model: genai.GenerativeModel, prompt: Any, log_extra: dict, generation_config: genai.types.GenerationConfig = None) -> genai.types.GenerateContentResponse | None:
@@ -910,8 +920,8 @@ Generate the optimized English image prompt:"""
                 logger.warning(f"CometAPI 생성 프롬프트에 한국어 포함됨, 실패 처리: {image_prompt}", extra=log_extra)
                 image_prompt = None
             
-        # CometAPI 실패/한국어포함 또는 비활성화 시 Gemini 폴백
-        if not image_prompt and self.gemini_configured and genai:
+        # CometAPI 실패/한국어포함 또는 비활성화 시 Gemini 폴백(옵션)
+        if not image_prompt and self._can_use_direct_gemini():
             if self.use_cometapi: # CometAPI 시도 후 실패한 경우에만 로그
                 logger.info("CometAPI 이미지 프롬프트 생성 실패(또는 한국어 포함), Gemini로 시도합니다.", extra=log_extra)
             model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME)
@@ -1056,7 +1066,7 @@ Generate the optimized English image prompt:"""
                 user_prompt,
                 log_extra,
             )
-        elif self.gemini_configured and genai:
+        elif self._can_use_direct_gemini():
             model = genai.GenerativeModel(config.AI_INTENT_MODEL_NAME)
             full_prompt = f"{system_prompt}\n\n{user_prompt}"
             response = await self._safe_generate_content(model, full_prompt, log_extra)
@@ -2310,7 +2320,7 @@ Generate the optimized English image prompt:"""
                 if self.use_cometapi:
                     final_response_text = await self._cometapi_generate_content(system_prompt, main_prompt, log_extra) or ""
 
-                if not final_response_text and self.gemini_configured:
+                if not final_response_text and self._can_use_direct_gemini():
                     main_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, system_instruction=system_prompt)
                     main_response = await self._safe_generate_content(main_model, main_prompt, log_extra)
                     if main_response:
@@ -2698,8 +2708,8 @@ Generate the optimized English image prompt:"""
                     log_extra
                 )
 
-            # 2. 실패 시 Gemini 폴백
-            if not alert_message and self.gemini_configured and genai:
+            # 2. 실패 시 Gemini 폴백(옵션)
+            if not alert_message and self._can_use_direct_gemini():
                 model = genai.GenerativeModel(
                     model_name=config.AI_RESPONSE_MODEL_NAME,
                     system_instruction=system_prompt,
@@ -2753,8 +2763,8 @@ Generate the optimized English image prompt:"""
                     log_extra
                 )
 
-            # 2. 실패 시 Gemini 폴백
-            if not response_text and self.gemini_configured and genai:
+            # 2. 실패 시 Gemini 폴백(옵션)
+            if not response_text and self._can_use_direct_gemini():
                  model = genai.GenerativeModel(model_name=config.AI_RESPONSE_MODEL_NAME, system_instruction=system_prompt)
                  response = await self._safe_generate_content(
                      model, 
