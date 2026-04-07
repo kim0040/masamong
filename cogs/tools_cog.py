@@ -14,6 +14,7 @@ from discord.ext import commands
 import re
 import aiohttp
 import asyncio
+import importlib
 
 import config
 from logger_config import logger
@@ -35,6 +36,8 @@ class ToolsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.weather_cog: WeatherCog = self.bot.get_cog('WeatherCog')
+        self._news_search_pipeline = None
+        self._news_search_loader_lock = asyncio.Lock()
         logger.info("ToolsCog가 성공적으로 초기화되었습니다.")
 
     def cog_unload(self):
@@ -296,13 +299,30 @@ class ToolsCog(commands.Cog):
             또는 {"status": "error", "message": str}
         """
         try:
-            from utils.news_search import run_news_search_pipeline
+            run_news_search_pipeline = await self._load_news_search_pipeline()
             logger.info(f"웹 검색 RAG 파이프라인 실행: '{query}'")
             result = await run_news_search_pipeline(query)
             return result
         except Exception as e:
             logger.error(f"웹 검색 RAG 파이프라인 실행 중 오류: {e}", exc_info=True)
             return {"status": "error", "message": f"외부 검색 중 오류가 발생했습니다: {e}"}
+
+    async def _load_news_search_pipeline(self):
+        """무거운 news_search 모듈 import를 이벤트 루프 밖에서 1회 로딩합니다."""
+        if self._news_search_pipeline is not None:
+            return self._news_search_pipeline
+
+        async with self._news_search_loader_lock:
+            if self._news_search_pipeline is not None:
+                return self._news_search_pipeline
+
+            def _sync_import():
+                module = importlib.import_module("utils.news_search")
+                return module.run_news_search_pipeline
+
+            self._news_search_pipeline = await asyncio.to_thread(_sync_import)
+            logger.info("웹 검색 RAG 파이프라인 모듈 로딩 완료")
+            return self._news_search_pipeline
 
     async def search_news_rag(self, query: str) -> dict:
         """하위 호환용 별칭. 기존 호출은 web_search_rag()로 위임합니다."""
