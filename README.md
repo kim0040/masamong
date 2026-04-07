@@ -383,7 +383,22 @@ PYTHONPATH=. python scripts/smoke_tidb_runtime.py --write-check
 - `discord_write ...`
 - `discord_memory_write ...`
 
-### 10.2 구조화 메모리 재생성
+### 10.2 통합 운영 헬스체크
+
+```bash
+PYTHONPATH=. python scripts/verify_runtime_health.py --write-check --strict
+```
+
+이 스크립트는 다음을 한 번에 검증한다.
+
+- 메인 DB 핵심 테이블 row count
+- 좌표 조회
+- Discord 임베딩/구조화 메모리 적재 상태
+- Discord RAG 검색 회수 여부
+- Kakao 벡터 검색 회수 여부
+- 테스트용 합성 데이터 쓰기/읽기/검색/정리
+
+### 10.3 구조화 메모리 재생성
 
 로컬/운영 로그에서 구조화 메모리를 다시 만들 때:
 
@@ -394,7 +409,7 @@ PYTHONPATH=. python scripts/rebuild_structured_memories.py \
   --clear
 ```
 
-### 10.3 TiDB 적재
+### 10.4 TiDB 적재
 
 ```bash
 PYTHONPATH=. python scripts/migrate_latest_data_to_tidb.py --source-root 임시
@@ -406,7 +421,7 @@ PYTHONPATH=. python scripts/migrate_latest_data_to_tidb.py --source-root 임시
 - `--skip-kakao`
 - `--truncate`
 
-### 10.4 Kakao CSV 추가 적재
+### 10.5 Kakao CSV 추가 적재
 
 ```bash
 PYTHONPATH=. python scripts/append_kakao_csv_to_room_store.py ...
@@ -543,6 +558,7 @@ python -m pip install -r requirements-cpu.txt
 ## 15. 테스트 / 검증 스크립트
 
 - `scripts/smoke_tidb_runtime.py`
+- `scripts/verify_runtime_health.py`
 - `scripts/migrate_latest_data_to_tidb.py`
 - `scripts/rebuild_structured_memories.py`
 - `scripts/verify_tidb_parity.py`

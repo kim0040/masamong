@@ -998,20 +998,20 @@ Generate the optimized English image prompt:"""
         history: list = None
     ) -> dict:
         """
-        DuckDuckGo 기반 범용 탐색 RAG 파이프라인으로 자료를 검색하고,
+        DuckDuckGo 기반 범용 웹 검색 RAG 파이프라인으로 자료를 검색하고,
         마사몽의 채널 페르소나로 최종 답변을 생성합니다.
 
         플로우:
-        1. tools_cog.search_news_rag() 호출 (뉴스/웹/블로그/문서 탐색 + 요약)
+        1. tools_cog.web_search_rag() 호출 (뉴스/웹/블로그/문서 탐색 + 요약)
         2. 마사몽 채널 페르소나 + 탐색 컨텍스트로 LLM 최종 답변 생성
         3. 출처 URL 자동 첨부
         """
         if not self.tools_cog:
             return {"error": "ToolsCog가 초기화되지 않았습니다."}
 
-        # 1. DuckDuckGo 범용 탐색 RAG 파이프라인 실행
-        logger.info(f"[웹탐색] RAG 파이프라인 시작: '{user_query}'", extra=log_extra)
-        news_result = await self.tools_cog.search_news_rag(user_query)
+        # 1. DuckDuckGo 기반 웹 검색 RAG 파이프라인 실행
+        logger.info(f"[웹 검색] RAG 파이프라인 시작: '{user_query}'", extra=log_extra)
+        news_result = await self.tools_cog.web_search_rag(user_query)
 
         if news_result.get("status") != "success":
             error_msg = news_result.get("message", "외부 검색 실패")
@@ -1065,7 +1065,7 @@ Generate the optimized English image prompt:"""
         if summary:
             # 출처 URL 자동 첨부 (LLM 환각 방지)
             final_text = summary  # 출처는 리액션 클릭 시 표시
-            self._debug(f"[웹탐색] 최종 답변 생성 완료", log_extra)
+            self._debug(f"[웹 검색] 최종 답변 생성 완료", log_extra)
             return {
                 "result": final_text,
                 "summary": final_text,
@@ -1199,9 +1199,9 @@ Generate the optimized English image prompt:"""
             "1. get_weather_forecast(location, day_offset): 특정 지역/시간의 날씨.\n"
             "2. search_for_place(query): 맛집, 장소 정보.\n"
             "3. generate_image(user_query): 그림 생성.\n"
-            "4. search_news_rag(query): 외부 정보 탐색(뉴스/웹/블로그/문서/커뮤니티).\n"
+            "4. web_search(query): 외부 웹 검색(뉴스/웹/블로그/문서/커뮤니티).\n"
             "   - 최신 이슈뿐 아니라 사용법/비교/후기/공식 문서 탐색에도 사용.\n"
-            "   - 주식/환율/코인 등 금융 관련 질문도 search_news_rag로 처리.\n\n"
+            "   - 주식/환율/코인 등 금융 관련 질문도 web_search로 처리.\n\n"
             "출력 형식 (유효한 JSON만):\n"
             '{"intent": "의도", "reasoning": "선택 근거", "tools": [{"tool": "이름", "params": {"키": "값"}}]}'
         )
@@ -1219,7 +1219,7 @@ Generate the optimized English image prompt:"""
                 'Response: {"intent": "날씨 조회", "reasoning": "서울 날씨 요청", "tools": [{"tool": "get_weather_forecast", "params": {"location": "서울", "day_offset": 0}}]}\n\n'
                 'Context: User: "미국 이란 전쟁에 대해 알려줘"\\nMasamong: (전쟁 설명...)\n'
                 'User: "군비는 얼마나 썼대?"\n'
-                'Response: {"intent": "상세 수치 검색", "reasoning": "이전 대화인 미국-이란 전쟁의 군비 지출액을 묻는 연계 질문", "tools": [{"tool": "search_news_rag", "params": {"query": "미국 이란 전쟁 군비 지출 및 비용"}}] }\n\n'
+                'Response: {"intent": "상세 수치 검색", "reasoning": "이전 대화인 미국-이란 전쟁의 군비 지출액을 묻는 연계 질문", "tools": [{"tool": "web_search", "params": {"query": "미국 이란 전쟁 군비 지출 및 비용"}}] }\n\n'
                 'Context: User: "서울 날씨 어때?"\\nMasamong: (서울 날씨 답변...)\n'
                 'User: "내일은?"\n'
                 'Response: {"intent": "날씨 연계 질문", "reasoning": "이전 대화의 지역(서울) 유치, 시간만 내일로 변경", "tools": [{"tool": "get_weather_forecast", "params": {"location": "서울", "day_offset": 1}}] }\n\n'
@@ -1251,7 +1251,7 @@ Generate the optimized English image prompt:"""
                 if not isinstance(params, dict):
                     params = {}
 
-                # 금융 도구는 실수 빈도가 높아 뉴스 검색 도구로 일괄 대체
+                # 금융 도구는 실수 빈도가 높아 웹 검색 도구로 일괄 대체
                 if name in self._DEPRECATED_FINANCE_TOOLS:
                     finance_query = (
                         params.get("query")
@@ -1262,8 +1262,8 @@ Generate the optimized English image prompt:"""
                     )
                     result.append(
                         {
-                            "tool_to_use": "search_news_rag",
-                            "tool_name": "search_news_rag",
+                            "tool_to_use": "web_search",
+                            "tool_name": "web_search",
                             "parameters": {"query": self._build_finance_news_query(finance_query)},
                         }
                     )
@@ -1301,12 +1301,12 @@ Generate the optimized English image prompt:"""
             })
             return tools  # 날씨 요청은 단일 도구로 처리
 
-        # 금융 관련 질문은 직접 시세 도구 대신 뉴스 검색으로 대체
+        # 금융 관련 질문은 직접 시세 도구 대신 웹 검색으로 대체
         if any(kw in query_lower for kw in self._FINANCE_KEYWORDS):
-            logger.info(f"금융 관련 질문 감지: '{query}' -> search_news_rag로 대체")
+            logger.info(f"금융 관련 질문 감지: '{query}' -> web_search로 대체")
             tools.append({
-                'tool_to_use': 'search_news_rag',
-                'tool_name': 'search_news_rag',
+                'tool_to_use': 'web_search',
+                'tool_name': 'web_search',
                 'parameters': {'query': self._build_finance_news_query(query)}
             })
             return tools
@@ -1340,7 +1340,7 @@ Generate the optimized English image prompt:"""
 
     @staticmethod
     def _build_finance_news_query(query: str) -> str:
-        """금융 질문을 뉴스 검색 친화 쿼리로 보정합니다."""
+        """금융 질문을 웹 검색 친화 쿼리로 보정합니다."""
         base = (query or "").strip()
         if not base:
             return "국내외 금융 시장 최신 뉴스"
@@ -1984,7 +1984,7 @@ Generate the optimized English image prompt:"""
         if not tool_name: 
             return {"error": "tool_to_use가 지정되지 않았습니다."}
 
-        # 금융 도구는 비활성화하고 뉴스 검색으로 강제 대체
+        # 금융 도구는 비활성화하고 웹 검색으로 강제 대체
         if tool_name in self._DEPRECATED_FINANCE_TOOLS:
             redirected_query = self._build_finance_news_query(
                 parameters.get('query')
@@ -1995,7 +1995,7 @@ Generate the optimized English image prompt:"""
                 or user_query
             )
             logger.info(
-                "금융 도구 '%s' 비활성화: search_news_rag로 대체합니다. query='%s'",
+                "금융 도구 '%s' 비활성화: web_search로 대체합니다. query='%s'",
                 tool_name,
                 redirected_query,
                 extra=log_extra,
@@ -2004,11 +2004,11 @@ Generate the optimized English image prompt:"""
             if search_result.get("result"):
                 search_result["redirected_from"] = tool_name
                 return search_result
-            return {"error": search_result.get("error", "금융 뉴스 검색에 실패했습니다.")}
+            return {"error": search_result.get("error", "금융 웹 검색에 실패했습니다.")}
 
-        # web_search는 Google Custom Search API와 LLM 2-step 처리를 사용합니다.
+        # web_search는 웹 검색 RAG + LLM 2-step 처리를 사용합니다.
         if tool_name == 'web_search':
-            logger.info("특별 도구 실행: web_search (Google Custom Search API)", extra=log_extra)
+            logger.info("특별 도구 실행: web_search (웹 검색 RAG)", extra=log_extra)
             query = parameters.get('query', user_query)
             self._debug(f"[도구:web_search] 쿼리: {self._truncate_for_debug(query)}", log_extra)
             
@@ -2265,7 +2265,7 @@ Generate the optimized English image prompt:"""
             # 도구 결과에서 출처 URL 추출
             source_urls_to_cache = []
             for res in tool_results:
-                if (res.get("tool_name") == "search_news_rag" or res.get("tool_name") == "web_search") and isinstance(res.get("result"), dict):
+                if res.get("tool_name") == "web_search" and isinstance(res.get("result"), dict):
                     urls = res["result"].get("source_urls") or res["result"].get("urls")
                     if urls:
                         source_urls_to_cache.extend(urls)
@@ -2812,7 +2812,7 @@ Generate the optimized English image prompt:"""
         # 📰 이모지 외 무시
         if str(payload.emoji) != "📰":
             return
-        # 캐시에 없으면 무시 (뉴스 검색 결과 아님)
+        # 캐시에 없으면 무시 (웹 검색 결과 아님)
         source_urls = self._news_source_cache.get(payload.message_id)
         if not source_urls:
             return

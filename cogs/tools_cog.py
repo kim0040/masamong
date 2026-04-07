@@ -281,7 +281,7 @@ class ToolsCog(commands.Cog):
             
         return f"'{query}'에 대한 통합 검색 결과 (Kakao):\n\n" + "\n\n".join(output_parts)
 
-    async def search_news_rag(self, query: str) -> dict:
+    async def web_search_rag(self, query: str) -> dict:
         """
         DuckDuckGo 기반 범용 탐색 RAG 파이프라인을 실행합니다.
         utils/news_search.py의 run_news_search_pipeline()을 호출합니다.
@@ -297,12 +297,16 @@ class ToolsCog(commands.Cog):
         """
         try:
             from utils.news_search import run_news_search_pipeline
-            logger.info(f"웹탐색 RAG 파이프라인 실행: '{query}'")
+            logger.info(f"웹 검색 RAG 파이프라인 실행: '{query}'")
             result = await run_news_search_pipeline(query)
             return result
         except Exception as e:
-            logger.error(f"웹탐색 RAG 파이프라인 실행 중 오류: {e}", exc_info=True)
+            logger.error(f"웹 검색 RAG 파이프라인 실행 중 오류: {e}", exc_info=True)
             return {"status": "error", "message": f"외부 검색 중 오류가 발생했습니다: {e}"}
+
+    async def search_news_rag(self, query: str) -> dict:
+        """하위 호환용 별칭. 기존 호출은 web_search_rag()로 위임합니다."""
+        return await self.web_search_rag(query)
 
     async def web_search(self, query: str) -> str:
         """
