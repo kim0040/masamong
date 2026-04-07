@@ -1154,6 +1154,33 @@ Generate the optimized English image prompt:"""
     _NO_SEARCH_PATTERNS = frozenset([
         '내 얘기', '우리 얘기', '너 얘기', '잡담만', '인사만'
     ])
+    _SMALLTALK_PATTERNS = frozenset([
+        '안녕', '하이', 'ㅎㅇ', 'hello', 'hey', 'hi',
+        '뭐해', '뭐하냐', '뭐하네', '뭐함', '잘지내', '잘 지내',
+        '반가워', '반갑다', '심심해', '놀아줘', '근황',
+    ])
+
+    def _is_smalltalk_only_query(self, query: str) -> bool:
+        """외부 도구 호출이 불필요한 인사/잡담성 질문인지 판별합니다."""
+        text = (query or "").strip().lower()
+        if not text:
+            return False
+
+        # 도구 키워드가 섞여 있으면 smalltalk로 보지 않습니다.
+        if (
+            any(kw in text for kw in self._WEATHER_KEYWORDS)
+            or any(kw in text for kw in self._FINANCE_KEYWORDS)
+            or any(kw in text for kw in self._PLACE_KEYWORDS)
+            or any(kw in text for kw in self._WEB_SEARCH_KEYWORDS)
+            or any(kw in text for kw in self._IMAGE_GEN_KEYWORDS)
+        ):
+            return False
+
+        if any(token in text for token in self._SMALLTALK_PATTERNS):
+            return True
+
+        # 매우 짧은 인사 표현
+        return bool(re.fullmatch(r"(안녕+|하이+|ㅎㅇ+|hello+|hey+|hi+)", text))
 
     async def _should_use_web_search(self, query: str, rag_top_score: float, history: list = None) -> bool:
         """외부 정보 탐색(뉴스/웹/블로그/문서) 필요 여부를 판단합니다."""
@@ -1187,6 +1214,11 @@ Generate the optimized English image prompt:"""
         """사용자의 의도와 대화 맥락을 분석하여 가장 적합한 도구와 최적화된 검색 파라미터를 결정합니다."""
         import json as _json
         fast_model = getattr(config, 'FAST_MODEL_NAME', 'gemini-3.1-flash-lite-preview')
+
+        # 인사/잡담은 도구 호출 없이 바로 답변 생성 단계로 보냅니다.
+        if self._is_smalltalk_only_query(query):
+            logger.info("[LLM의도분석] 잡담/인사성 질문 감지: 도구 호출 생략", extra=log_extra)
+            return []
         
         # 히스토리 텍스트 변환
         history_text = ""
@@ -1280,6 +1312,11 @@ Generate the optimized English image prompt:"""
                     continue
 
                 result.append({"tool_to_use": name, "tool_name": name, "parameters": params})
+
+            # LLM이 잡담에 대해 과탐지한 경우 방어적으로 무효화
+            if result and self._is_smalltalk_only_query(query):
+                logger.info("[LLM의도분석] 잡담 질의에 대한 도구 계획 무효화", extra=log_extra)
+                return []
             return result
         except Exception as e:
             logger.warning(f"[LLM도구선택] 실패 → 키워드 fallback: {e}", extra=log_extra)
