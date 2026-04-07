@@ -42,12 +42,21 @@ logging.getLogger('httpx').setLevel(logging.WARNING)
 __version__ = "2.0.0"
 __author__ = "kim0040"
 
+
+def _format_storage_target() -> str:
+    if config.DB_BACKEND == "tidb":
+        return f"TiDB {config.TIDB_NAME}@{config.TIDB_HOST}:{config.TIDB_PORT}"
+    return f"SQLite {config.DATABASE_FILE}"
+
 # --- 1. 시작 로그 및 환경 확인 ---
 logger.info("=" * 70)
 logger.info(f"🤖 마사몽 Discord 봇 v{__version__} 시작 중...")
 logger.info(f"Python 버전: {sys.version.split()[0]}")
 logger.info(f"Discord.py 버전: {discord.__version__}")
 logger.info(f"작업 디렉터리: {os.getcwd()}")
+logger.info(f"메인 DB 백엔드: {config.DB_BACKEND} ({_format_storage_target()})")
+logger.info(f"Discord 메모리 저장소: {config.DISCORD_EMBEDDING_BACKEND}")
+logger.info(f"Kakao 저장소: {config.KAKAO_STORE_BACKEND}")
 logger.info("=" * 70)
 
 # --- 1. 초기 설정 및 API 키 유효성 검사 ---
@@ -91,13 +100,35 @@ class ReMasamongBot(commands.Bot):
             schema_filename = "database/schema_tidb.sql" if config.DB_BACKEND == "tidb" else "database/schema.sql"
             schema_path = Path(schema_filename)
             if schema_path.exists():
-                logger.info(f"스키마 파일 로드 중: {schema_path}")
-                with open(schema_path, "r", encoding="utf-8") as f:
-                    schema_script = f.read()
-                await self.db.executescript(schema_script)
-                await self.db.commit()
+                if config.DB_BACKEND == "tidb":
+                    core_tables = (
+                        "conversation_history",
+                        "guild_settings",
+                        "locations",
+                        "user_profiles",
+                        "discord_chat_embeddings",
+                        "discord_memory_entries",
+                        "kakao_chunks",
+                    )
+                else:
+                    core_tables = (
+                        "conversation_history",
+                        "guild_settings",
+                        "locations",
+                        "user_profiles",
+                    )
+                missing_tables = [name for name in core_tables if not await self._table_exists(name)]
+                if missing_tables:
+                    logger.info("스키마 적용 시작: %s (누락 테이블: %s)", schema_path, ", ".join(missing_tables))
+                    with open(schema_path, "r", encoding="utf-8") as f:
+                        schema_script = f.read()
+                    await self.db.executescript(schema_script)
+                    await self.db.commit()
+                    logger.info("스키마 적용 완료: %s", schema_path)
+                else:
+                    logger.info("핵심 테이블이 이미 존재하여 스키마 재적용을 건너뜁니다: %s", schema_path)
             else:
-                logger.error("database/schema.sql 파일을 찾을 수 없습니다.")
+                logger.error("스키마 파일을 찾을 수 없습니다: %s", schema_path)
             # locations 테이블이 비어있거나 구형 데이터(예: 2만개 미만 또는 주요 별칭 누락)일 경우 재시딩합니다.
             async with self.db.execute("SELECT COUNT(*) FROM locations") as cursor:
                 existing_count = (await cursor.fetchone())[0]
@@ -133,6 +164,24 @@ class ReMasamongBot(commands.Bot):
         except Exception as e:
             logger.error(f"데이터베이스 마이그레이션 중 심각한 오류 발생: {e}", exc_info=True)
 
+    async def _table_exists(self, table_name: str) -> bool:
+        backend = getattr(self.db, "backend", config.DB_BACKEND)
+        if backend == "tidb":
+            query = """
+                SELECT 1
+                FROM information_schema.TABLES
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                LIMIT 1
+            """
+            params = (table_name,)
+        else:
+            query = "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1"
+            params = (table_name,)
+
+        async with self.db.execute(query, params) as cursor:
+            row = await cursor.fetchone()
+        return bool(row)
+
     async def setup_hook(self):
         """Discord 로그인 직전에 실행되어 필수 리소스를 초기화합니다.
 
@@ -160,7 +209,7 @@ class ReMasamongBot(commands.Bot):
                 )
             self.db = await connect_main_db(config.DB_BACKEND, sqlite_path=self.db_path, tidb_settings=tidb_settings)
             self.db.row_factory = aiosqlite.Row # 결과를 딕셔너리처럼 접근 가능하게 설정
-            logger.info(f"데이터베이스에 성공적으로 연결되었습니다: {self.db_path}")
+            logger.info("데이터베이스 연결 완료: backend=%s target=%s", config.DB_BACKEND, _format_storage_target())
         except Exception as e:
             logger.critical(f"데이터베이스 연결 실패. 봇을 종료합니다: {e}", exc_info=True)
             await self.close()

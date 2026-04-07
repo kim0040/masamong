@@ -1,12 +1,16 @@
 # 마사몽 (Masamong)
 
-Discord 서버용 AI 보조 봇입니다.  
-멘션 기반 대화, 날씨/재난 정보, 웹 탐색 RAG, 이미지 생성, 운세, 커뮤니티 유틸리티를 제공합니다.
+마사몽은 Discord 서버에서 동작하는 한국어 중심 AI 보조 봇이다.  
+멘션 기반 대화, 서버/유저 메모리, Kakao 대화 RAG, 날씨/재난/금융 도구, 운세, 커뮤니티 기능을 하나의 런타임으로 묶어 운영한다.
+
+현재 운영 기준으로는 **메인 데이터와 메모리 저장소를 TiDB로 중앙화**했고, 로컬 SQLite/파일 저장소는 개발용 백업 또는 마이그레이션 소스로만 사용한다.
 
 - 기본 언어: 한국어
 - 런타임: Python 3.9+
-- DB: SQLite (`database/remasamong.db`)
-- 아키텍처: `discord.py` + Cog 모듈 + 로컬 RAG + 외부 API 툴
+- 프레임워크: `discord.py`
+- 메인 DB: TiDB 또는 SQLite
+- Discord 메모리 저장소: TiDB 또는 SQLite
+- Kakao 저장소: TiDB 또는 로컬 `vectors.npy + metadata.json`
 
 ## 문서 언어
 - 한국어 (이 문서)
@@ -15,201 +19,443 @@ Discord 서버용 AI 보조 봇입니다.
 
 ---
 
-## 1. 핵심 기능
+## 1. 현재 아키텍처 요약
+
+### 메인 저장소
+- `conversation_history`
+- `conversation_windows`
+- `conversation_history_archive`
+- `guild_settings`
+- `user_activity`
+- `user_profiles`
+- `locations`
+- `api_call_log`
+- `analytics_log`
+- `dm_usage_logs`
+
+### 메모리 저장소
+- `discord_chat_embeddings`
+  - 기존 Discord 임베딩 저장소
+- `discord_memory_entries`
+  - 구조화 메모리 저장소
+  - `channel` / `user` scope 분리
+  - 요약문과 원문 맥락을 함께 저장
+
+### Kakao 저장소
+- `kakao_chunks`
+  - `room_key` 단위 저장
+  - `VECTOR(384)` 기반 임베딩
+  - `room1`, `room2` 등 서버/그룹별 데이터 분리
+
+### 핵심 운영 방향
+- 메인 운영 데이터는 TiDB `masamong` DB 기준
+- Discord 구조화 메모리도 TiDB 기준
+- Kakao 검색도 TiDB 기준
+- BM25는 운영 정책상 비활성
+
+---
+
+## 2. 핵심 기능
 
 ### AI 대화
-- 서버: `@멘션`이 있는 메시지에만 응답
-- DM: 멘션 없이 대화 가능 (사용량 제한 적용)
-- 채널별 페르소나/규칙 적용 (`prompts.json`의 `channels`)
-- 도구 자동 선택(LLM + 키워드 fallback)
+- 서버: 멘션 또는 허용된 AI 채널 정책에 따라 응답
+- DM: 멘션 없이 대화 가능
+- 채널별 페르소나/규칙 적용
+- 대화 히스토리 저장
+- 구조화 메모리 기반 회상
 
-### 외부 정보 탐색
-- `search_news_rag` 기반 범용 탐색
-- 뉴스뿐 아니라 웹/블로그/문서/커뮤니티 결과를 수집/요약
-- 페이지 크롤링 실패 시 snippet/title 기반 fallback 요약
-- 동일 질의 단기 캐시 및 Fast LLM 호출 예산 제한
+### 메모리 / RAG
+- 최근 Discord 대화를 구조화 메모리로 축적
+- 유저별 기억과 채널 공동 기억 분리
+- Kakao 대화방 벡터 검색 지원
+- 원문 로그 + 정제 메모리 병행 사용
 
-### 날씨/재난
-- 현재/단기/중기 예보
-- `!날씨 이번주` 종합 요약
-- 강수 알림, 아침/저녁 인사, 지진 알림 루프
+### 외부 정보 도구
+- 뉴스/웹 검색
+- 장소 검색
+- 날씨/재난
+- 금융/환율
+- 이미지 생성
 
-### 금융/생활 도구
-- 주식(yfinance 우선, KRX/Finnhub 경로 보유)
-- 환율(수출입은행)
-- 장소/웹/이미지 검색(카카오)
-- 이미지 생성(CometAPI Gemini-compatible 이미지 엔드포인트)
-
-### 운세/커뮤니티
-- `!운세` 그룹(등록/구독/상세/삭제)
-- 별자리 운세/순위
-- 대화 요약(`!요약`) 증분 요약 + 컨텍스트 압축
-- 활동 랭킹, 투표
+### 커뮤니티 기능
+- 운세 등록/조회/구독
+- 대화 요약
+- 활동 랭킹
+- 투표
+- 설정 슬래시 커맨드
 
 ---
 
-## 2. 실제 동작 정책 (코드 기준)
+## 3. 저장 구조 설명
 
-- AI 준비 상태(`AIHandler.is_ready`)는 `GEMINI_API_KEY` 설정을 전제로 합니다.
-  - CometAPI를 사용하더라도 Gemini 키가 없으면 AI 경로가 준비 상태가 되지 않습니다.
-- 금융 질문은 운영 정책상 AI 라우팅에서 `search_news_rag`로 우선 처리되도록 구성되어 있습니다.
-  - 기존 금융 툴 이름이 들어와도 내부에서 웹 탐색 경로로 리다이렉트될 수 있습니다.
-- BM25는 현재 설정상 비활성 (`config.BM25_ENABLED = False`)입니다.
+### 3.1 원본 로그와 구조화 메모리의 차이
+
+마사몽은 같은 대화를 두 층으로 다룬다.
+
+- 원본 로그
+  - 감사 추적과 문맥 복원용
+  - `conversation_history`
+- 구조화 메모리
+  - 회상 검색 최적화용
+  - `discord_memory_entries`
+
+구조화 메모리는 다음 원칙을 따른다.
+
+- `channel` 공동 기억 생성
+- `user` 개인 기억 생성
+- 요약과 키워드 저장
+- 원문 맥락 별도 저장
+- 임베딩은 요약만이 아니라 `요약 + 원문 맥락`을 함께 반영
+
+이 구조 덕분에:
+- 답변은 더 정돈되고
+- 유저별 기억은 더 명확해지고
+- 필요한 경우 원문 문맥도 복원 가능하다
+
+### 3.2 Kakao 데이터
+
+기존 Kakao 저장소는 로컬 디렉터리 기반이었다.
+
+- `vectors.npy`
+- `metadata.json`
+
+현재 운영 구조에서는 `kakao_chunks`로 올려서 중앙화했다.  
+질의 임베딩은 봇 프로세스가 만들고, 벡터 검색은 TiDB가 담당한다.
 
 ---
 
-## 3. 프로젝트 구조
+## 4. 프로젝트 구조
 
 ```text
 masamong/
-├─ main.py                     # 엔트리포인트, DB 연결, Cog 로딩, 메시지 라우팅
-├─ config.py                   # 환경변수/config.json/기본값 로더
-├─ prompts.json                # 채널별 페르소나/규칙 및 프롬프트
-├─ emb_config.json             # RAG/임베딩 상세 설정
+├─ main.py
+├─ config.py
+├─ prompts.json
+├─ emb_config.json
 ├─ cogs/
-│  ├─ ai_handler.py            # 에이전트 메인 파이프라인
-│  ├─ tools_cog.py             # 외부 API 툴
-│  ├─ weather_cog.py           # 날씨 명령/알림 루프
-│  ├─ fortune_cog.py           # 운세/별자리/구독
-│  ├─ fun_cog.py               # !요약
-│  ├─ activity_cog.py          # !랭킹
-│  ├─ poll_cog.py              # !투표
-│  ├─ settings_cog.py          # 슬래시 설정 커맨드
-│  ├─ maintenance_cog.py       # 아카이빙/BM25 유지보수
-│  ├─ events.py                # 이벤트 리스너
-│  └─ help_cog.py              # 커스텀 도움말
+│  ├─ ai_handler.py
+│  ├─ weather_cog.py
+│  ├─ tools_cog.py
+│  ├─ fortune_cog.py
+│  ├─ activity_cog.py
+│  ├─ fun_cog.py
+│  ├─ poll_cog.py
+│  ├─ settings_cog.py
+│  ├─ maintenance_cog.py
+│  ├─ proactive_assistant.py
+│  ├─ events.py
+│  ├─ commands.py
+│  └─ help_cog.py
 ├─ utils/
-│  ├─ news_search.py           # 범용 웹 탐색 RAG 파이프라인
-│  ├─ weather.py               # 기상청 API 래퍼
-│  ├─ db.py                    # 레이트리밋/로그/보조 DB 유틸
-│  ├─ hybrid_search.py         # 로컬 RAG 검색
-│  ├─ embeddings.py            # 임베딩 저장/조회
-│  └─ api_handlers/            # 카카오/금융/환율 등 API 핸들러
+│  ├─ db.py
+│  ├─ coords.py
+│  ├─ embeddings.py
+│  ├─ hybrid_search.py
+│  ├─ memory_units.py
+│  ├─ news_search.py
+│  ├─ weather.py
+│  └─ api_handlers/
 ├─ database/
-│  ├─ schema.sql               # DB 스키마
-│  └─ init_db.py               # 수동 초기화 스크립트
-├─ requirements.txt            # 공통 의존성
-├─ requirements-cpu.txt        # 서버 CPU용 RAG 의존성
-└─ requirements-gpu.txt        # 로컬 GPU용 RAG 의존성
+│  ├─ compat_db.py
+│  ├─ schema.sql
+│  └─ schema_tidb.sql
+├─ scripts/
+│  ├─ migrate_latest_data_to_tidb.py
+│  ├─ rebuild_structured_memories.py
+│  ├─ smoke_tidb_runtime.py
+│  ├─ verify_tidb_parity.py
+│  └─ append_kakao_csv_to_room_store.py
+├─ requirements.txt
+├─ requirements-cpu.txt
+└─ requirements-gpu.txt
 ```
 
 ---
 
-## 4. 설치
+## 5. 설치
 
-### 4.1 사전 요구사항
+### 5.1 사전 요구사항
 - Python 3.9+
-- pip / virtualenv
+- `venv` 또는 `virtualenv`
 - Discord Bot Token
-- Gemini API Key (필수)
+- Gemini API Key
 
-### 4.2 가상환경 + 의존성
+### 5.2 가상환경 생성
 
 ```bash
-git clone <your-repo-url>
+git clone <repo-url>
 cd masamong
 
-python3 -m venv .venv
-source .venv/bin/activate
-
-pip install -r requirements.txt
+python3 -m venv venv
+source venv/bin/activate
 ```
 
-RAG 임베딩까지 쓸 경우:
+### 5.3 공통 의존성
 
 ```bash
-# 서버 CPU
-pip install -r requirements-cpu.txt
+python -m pip install -r requirements.txt
+```
 
-# 로컬 GPU
-pip install -r requirements-gpu.txt
+### 5.4 CPU 서버
+
+```bash
+python -m pip install -r requirements-cpu.txt
+```
+
+### 5.5 GPU 개발 환경
+
+```bash
+python -m pip install -r requirements-gpu.txt
 ```
 
 ---
 
-## 5. 설정
+## 6. 설정
 
-## 5.1 설정 로드 우선순위
+## 6.1 설정 로드 우선순위
 `config.py` 기준:
-1. 환경변수 (`.env` 포함)
+1. 환경변수 (`.env`)
 2. `config.json`
 3. 코드 기본값
 
-### 5.2 최소 필수 `.env`
+### 6.2 최소 필수 `.env`
 
 ```env
 DISCORD_BOT_TOKEN=...
 GEMINI_API_KEY=...
 ```
 
-### 5.3 권장 `.env` (자주 쓰는 값)
+### 6.3 TiDB 중앙화 운영 예시
 
 ```env
-# AI
+MASAMONG_DB_BACKEND=tidb
+MASAMONG_DB_HOST=gateway01.ap-northeast-1.prod.aws.tidbcloud.com
+MASAMONG_DB_PORT=4000
+MASAMONG_DB_NAME=masamong
+MASAMONG_DB_USER=...
+MASAMONG_DB_PASSWORD=...
+MASAMONG_DB_SSL_CA=/etc/ssl/certs/ca-certificates.crt
+MASAMONG_DB_SSL_VERIFY_IDENTITY=true
+
+DISCORD_EMBEDDING_BACKEND=tidb
+KAKAO_STORE_BACKEND=tidb
+DISCORD_EMBEDDING_TIDB_TABLE=discord_chat_embeddings
+KAKAO_TIDB_TABLE=kakao_chunks
+```
+
+### 6.4 검색/외부 API 관련 예시
+
+```env
 USE_COMETAPI=true
 COMETAPI_KEY=...
 COMETAPI_BASE_URL=https://api.cometapi.com/v1
-COMETAPI_MODEL=DeepSeek-V3.2-Exp-nothinking
-FAST_MODEL_NAME=gemini-3.1-flash-lite-preview
 
-# 외부 검색
-DDGS_ENABLED=true
-KAKAO_API_KEY=...
-GOOGLE_API_KEY=...
-GOOGLE_CX=...
-SERPAPI_KEY=...
-
-# 날씨/재난
 KMA_API_KEY=...
-# KMA 키가 없으면 GO_DATA_API_KEY_KR를 fallback으로 사용 가능
-GO_DATA_API_KEY_KR=...
-
-# 금융/환율
 FINNHUB_API_KEY=...
-EXIM_API_KEY_KR=...
+KAKAO_API_KEY=...
 
-# 이미지
-COMETAPI_IMAGE_ENABLED=true
-IMAGE_MODEL=gemini-3.1-flash-image
-IMAGE_ASPECT_RATIO=1:1
-IMAGE_USER_LIMIT=10
-IMAGE_GLOBAL_DAILY_LIMIT=50
+GOOGLE_CX=...
+# GOOGLE_API_KEY=...
 ```
 
-### 5.4 RAG/메모리 설정 파일
-- `emb_config.json`
-  - 임베딩 모델/디바이스/threshold
-  - 윈도우 크기/stride
-  - query rewrite/reranker 옵션
-- 현재 기본 정책상 BM25는 비활성 상태
+주의:
+- `GOOGLE_API_KEY`는 **Gemini 키가 아니다**
+- `GOOGLE_API_KEY` + `GOOGLE_CX`는 Google Custom Search fallback용
+- 없어도 핵심 TiDB/RAG 구동은 가능하다
 
-### 5.5 프롬프트/채널 페르소나
-- `prompts.json`
-  - `prompts`: 시스템 프롬프트 템플릿
-  - `channels`: 채널별 `allowed/persona/rules`
+### 6.5 구조화 메모리 관련 `.env`
+
+```env
+STRUCTURED_MEMORY_QUERY_LIMIT=800
+STRUCTURED_MEMORY_FALLBACK_QUERY_LIMIT=2000
+STRUCTURED_MEMORY_SIMILARITY_THRESHOLD=0.5
+```
+
+### 6.6 서버 전용 설정 파일
+
+운영 서버에서는 Git 추적 파일 대신 별도 설정 파일을 쓰는 것을 권장한다.
+
+- `EMB_CONFIG_PATH`
+- `PROMPT_CONFIG_PATH`
+
+예시:
+
+```env
+EMB_CONFIG_PATH=/mnt/block-storage/masamong/tmp/server_config/emb_config.server.json
+PROMPT_CONFIG_PATH=/mnt/block-storage/masamong/tmp/server_config/prompts.server.json
+```
 
 ---
 
-## 6. 실행
+## 7. `emb_config.server.json` 역할
+
+이 파일은 검색/RAG 세부 정책을 담당한다.
+
+- 임베딩 모델 이름
+- CPU/GPU 선택
+- normalize 여부
+- similarity threshold
+- query limit
+- conversation window size / stride
+- Kakao `room_key` 매핑
+
+운영 기준 권장:
+- `embedding_model_name`: `dragonkue/multilingual-e5-small-ko-v2`
+- `embedding_device`: `cpu`
+- `bm25_enabled`: `false`
+
+---
+
+## 8. `prompts.server.json` 역할
+
+이 파일은 채널별 페르소나와 응답 규칙을 담당한다.
+
+- 시스템 프롬프트 템플릿
+- 채널 허용 여부
+- 채널별 말투/규칙
+- 툴 사용 가이드
+
+운영에서 채널 설정을 Git 추적 파일에 두지 않으려면 이 파일로 분리하는 것이 맞다.
+
+---
+
+## 9. 실행
+
+### 9.1 로컬/일반 실행
 
 ```bash
-python3 main.py
+PYTHONPATH=. python main.py
 ```
 
-- 첫 실행 시 `main.py`에서 스키마 적용 및 필요한 테이블/컬럼 점검 수행
-- `database/init_db.py`는 수동 초기화가 필요할 때만 실행
+### 9.2 `screen`으로 서버 실행
+
+```bash
+cd /mnt/block-storage/masamong
+source venv/bin/activate
+screen -S masamong
+PYTHONPATH=. python main.py
+```
+
+분리:
+- `Ctrl + A`, `D`
+
+재접속:
+
+```bash
+screen -r masamong
+```
+
+### 9.3 실행 로그에서 정상으로 봐야 하는 항목
+
+- 메인 DB 백엔드가 `tidb`로 표시됨
+- Discord 메모리 저장소가 `tidb`
+- Kakao 저장소가 `tidb`
+- `데이터베이스 연결 완료: backend=tidb ...`
+- Cog 로드 성공
+- `봇 준비 완료`
+
+### 9.4 음성 경고
+
+다음 경고는 음성 기능을 안 쓰면 치명적이지 않다.
+
+- `PyNaCl is not installed`
+- `davey is not installed`
+
+즉, 음성 기능이 필요 없으면 무시 가능하다.
 
 ---
 
-## 7. 명령어
+## 10. 운영 검증
 
-모든 텍스트 명령어 prefix는 기본 `!`입니다.
+### 10.1 TiDB smoke test
+
+```bash
+PYTHONPATH=. python scripts/smoke_tidb_runtime.py --write-check
+```
+
+정상 예시:
+- `conversation_history ...`
+- `discord_rows ...`
+- `discord_memory_rows ...`
+- `kakao_rows ...`
+- `guild_setting_write ...`
+- `user_profile_write ...`
+- `discord_write ...`
+- `discord_memory_write ...`
+
+### 10.2 구조화 메모리 재생성
+
+로컬/운영 로그에서 구조화 메모리를 다시 만들 때:
+
+```bash
+PYTHONPATH=. python scripts/rebuild_structured_memories.py \
+  --source-db 임시/remasamong.db \
+  --target-db 임시/discord_embeddings.db \
+  --clear
+```
+
+### 10.3 TiDB 적재
+
+```bash
+PYTHONPATH=. python scripts/migrate_latest_data_to_tidb.py --source-root 임시
+```
+
+옵션:
+- `--skip-main`
+- `--skip-discord`
+- `--skip-kakao`
+- `--truncate`
+
+### 10.4 Kakao CSV 추가 적재
+
+```bash
+PYTHONPATH=. python scripts/append_kakao_csv_to_room_store.py ...
+```
+
+이 스크립트는 기존 Kakao room 데이터에 새 CSV를 append하는 용도다.
+
+---
+
+## 11. 데이터베이스
+
+### 11.1 SQLite 개발용 파일
+- `database/remasamong.db`
+- `database/discord_embeddings.db`
+- `data/.../vectors.npy`
+
+### 11.2 TiDB 운영 테이블
+- `guild_settings`
+- `user_activity`
+- `conversation_history`
+- `conversation_windows`
+- `conversation_history_archive`
+- `system_counters`
+- `api_call_log`
+- `analytics_log`
+- `user_preferences`
+- `locations`
+- `user_profiles`
+- `dm_usage_logs`
+- `discord_chat_embeddings`
+- `discord_memory_entries`
+- `kakao_chunks`
+
+### 11.3 현재 운영 정책
+- BM25 비활성
+- 메인 DB와 메모리는 TiDB 중앙화
+- Kakao 벡터도 TiDB 기준
+
+---
+
+## 12. 명령어
 
 ### 일반
-- `!도움`, `!help`, `!도움말`, `!h`
-- `!이미지 <프롬프트>` (`image`, `img`, `그림`, `생성`)
-- `!업데이트` (`update`, `패치노트`)
-- `!delete_log` (`로그삭제`) - 관리자, 서버 전용
+- `!도움`
+- `!help`
+- `!도움말`
+- `!h`
+- `!업데이트`
+- `!이미지 <프롬프트>`
 
 ### 날씨
 - `!날씨`
@@ -219,14 +465,13 @@ python3 main.py
 
 ### 운세
 - `!운세`
-- `!운세 등록` (DM 권장)
+- `!운세 등록`
 - `!운세 상세`
 - `!운세 구독 HH:MM`
 - `!운세 구독취소`
 - `!운세 삭제`
-- `!구독 HH:MM` (`구독시간`, `알림시간`)
-- `!이번달운세` (`이번달`)
-- `!올해운세` (`올해`, `신년운세`)
+- `!이번달운세`
+- `!올해운세`
 
 ### 별자리
 - `!별자리`
@@ -234,122 +479,80 @@ python3 main.py
 - `!별자리 순위`
 
 ### 커뮤니티
-- `!요약` (`summarize`, `summary`, `3줄요약`, `sum`)
-- `!랭킹` (`수다왕`, `ranking`)
-- `!투표 "주제" "항목1" ...` (`poll`)
+- `!요약`
+- `!랭킹`
+- `!투표 "주제" "항목1" ...`
 
-### 슬래시(설정)
+### 슬래시
 - `/config set_ai`
 - `/config channel`
 - `/persona view`
 - `/persona set`
 
-참고: 슬래시 커맨드는 운영 환경에서 command tree sync가 선행되어야 표시됩니다.
-
 ---
 
-## 8. 운영 안전장치
-
-### 8.1 레이트리밋/쿨다운
-- 사용자 쿨다운
-- 사용자 일일 LLM 제한
-- 글로벌 일일 LLM 제한
-- DM 개별/전역 제한
-- 이미지 생성 개별/전역 제한
-- CometAPI RPM/RPD 제한 + 프롬프트/토큰 상한
-- 웹탐색 Fast LLM 호출 예산 제한
-
-### 8.2 검색/요약 비용 최적화
-- `search_news_rag` 질의 결과 단기 캐시
-- 후보 URL 수/요약 페이지 수 상한
-- 문맥 길이 상한 (`WEB_RAG_CONTEXT_MAX_CHARS`)
-- 요약 컨텍스트 압축(최근 대화 + 과거 샘플)
-
----
-
-## 9. 데이터베이스
-
-기본 DB 파일: `database/remasamong.db`
-
-주요 테이블:
-- `conversation_history`, `conversation_windows`, `conversation_history_archive`
-- `guild_settings`, `user_activity`, `user_profiles`
-- `api_call_log`, `system_counters`, `analytics_log`, `dm_usage_logs`, `locations`
-
-스키마 원본: `database/schema.sql`
-
----
-
-## 10. 배포/업데이트 (기존 서버 DB 보호)
-
-요청하신 조건처럼 **기존 누적 DB 영향 최소화**를 기준으로 운영하세요.
-
-### 권장 절차
+## 13. 서버 업데이트 절차
 
 ```bash
-# 1) 코드만 업데이트
-git pull origin <branch>
-
-# 2) 의존성 동기화 (필요 시)
-source .venv/bin/activate
-pip install -r requirements.txt
-# RAG 사용 환경이면 CPU/GPU 파일 추가 설치
-
-# 3) DB 백업 (강력 권장)
-cp database/remasamong.db database/remasamong.db.bak.$(date +%Y%m%d_%H%M%S)
-
-# 4) 봇 재시작
-python3 main.py
+cd /mnt/block-storage/masamong
+source venv/bin/activate
+git pull origin main
+python -m pip install -r requirements.txt
+python -m pip install -r requirements-cpu.txt
+PYTHONPATH=. python scripts/smoke_tidb_runtime.py --write-check
 ```
 
-### 주의
-- 코드가 DB를 강제로 초기화하거나 삭제하는 동작은 기본 경로에 없습니다.
-- `database/init_db.py`는 필요 시에만 수동 실행하세요.
-- 운영 DB를 건드리지 않는 검증이 필요하면 `/tmp` 임시 DB로 별도 테스트 하네스를 돌리세요.
-
----
-
-## 11. 테스트
-
-### 기본 문법 점검
+통과 후:
 
 ```bash
-python3 -m compileall -q cogs utils main.py
+screen -r masamong
+# 기존 프로세스 종료 후
+PYTHONPATH=. python main.py
 ```
 
-### 제공 스크립트
-- `scripts/test_all_features.py`: 외부 API 중심 종합 점검
-- `scripts/test_context_aware.py`: 도구 선택/쿼리 정제 점검
-- `tests/verify_fortune.py`: 운세 계산 로직 점검
+---
 
-실환경 API 검증 시에는 실제 키/네트워크 상태에 따라 결과가 달라질 수 있습니다.
+## 14. 트러블슈팅
+
+### `PyMySQL가 필요합니다`
+- `requirements-cpu.txt` 또는 `requirements-gpu.txt` 재설치
+
+```bash
+python -m pip install -r requirements-cpu.txt
+```
+
+### `Discord 임베딩 TiDB 초기화 완료`는 나오는데 봇이 멈춘 것 같음
+- 임베딩 모델 로딩 중일 수 있다
+- CPU 서버에서는 첫 질의/첫 검색 시 수 초 이상 걸릴 수 있다
+
+### `Lost connection to MySQL server during query`
+- 오래 살아 있는 연결 재사용 문제일 수 있다
+- 현재 TiDB 운영 기준으로 FortuneCog의 개별 컬럼 점검은 건너뛰도록 수정되어야 한다
+- 최신 코드로 `git pull` 후 재시작 권장
+
+### `GOOGLE_API_KEY`가 없는데 문제인가
+- 필수 아님
+- Google Custom Search fallback만 비활성화됨
+- TiDB, Gemini, Discord 메모리, Kakao 벡터 구동에는 직접 필수 아님
+
+### `PyNaCl is not installed`
+- 음성 기능 미사용이면 무시 가능
 
 ---
 
-## 12. 트러블슈팅
+## 15. 테스트 / 검증 스크립트
 
-### 봇이 응답하지 않음
-- `DISCORD_BOT_TOKEN`, `GEMINI_API_KEY` 설정 확인
-- Discord Developer Portal에서 Message Content Intent 확인
-- 채널 허용 설정(`prompts.json` 또는 DB `guild_settings.ai_allowed_channels`) 확인
-
-### 날씨 API 실패
-- `KMA_API_KEY` 유효성 확인
-- 필요 시 `GO_DATA_API_KEY_KR` fallback 사용
-- 기상청 API 자체 장애/지연 가능성 확인
-
-### KRX 주식 조회 실패
-- 실제 런타임 키는 `GO_DATA_API_KEY_KR` 경로를 확인
-- 키 권한/호출 제한/엔드포인트 상태 점검
-
-### 이미지 생성 실패
-- `COMETAPI_KEY`/`COMETAPI_IMAGE_ENABLED` 확인
-- 사용자/전역 이미지 제한 도달 여부 확인
-- 안전 필터(NSFW) 차단 여부 확인
+- `scripts/smoke_tidb_runtime.py`
+- `scripts/migrate_latest_data_to_tidb.py`
+- `scripts/rebuild_structured_memories.py`
+- `scripts/verify_tidb_parity.py`
+- `scripts/append_kakao_csv_to_room_store.py`
+- `tests/verify_fortune.py`
 
 ---
 
-## 13. 추가 문서
+## 16. 추가 문서
+
 - 아키텍처: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - 퀵스타트: [docs/QUICKSTART.md](docs/QUICKSTART.md)
 - 변경 이력: [docs/CHANGELOG.md](docs/CHANGELOG.md)
@@ -357,6 +560,6 @@ python3 -m compileall -q cogs utils main.py
 
 ---
 
-## 14. 라이선스
+## 17. 라이선스
 
 Private repository / 내부 운영 프로젝트.
