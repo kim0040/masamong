@@ -124,7 +124,7 @@ class FastLLMQuotaManager:
                         self._params("cometapi", one_day_ago),
                     )
                     if (cur.fetchone() or [0])[0] >= self.rpd_limit:
-                        logger.warning("[news_search] CometAPI 일일 호출 제한 도달")
+                        logger.warning("[web_search] CometAPI 일일 호출 제한 도달")
                         return False
 
                     cur.execute(
@@ -132,7 +132,7 @@ class FastLLMQuotaManager:
                         self._params("cometapi", one_minute_ago),
                     )
                     if (cur.fetchone() or [0])[0] >= self.rpm_limit:
-                        logger.warning("[news_search] CometAPI 분당 호출 제한 도달")
+                        logger.warning("[web_search] CometAPI 분당 호출 제한 도달")
                         return False
 
                     cur.execute(
@@ -148,7 +148,7 @@ class FastLLMQuotaManager:
                 finally:
                     conn.close()
         except Exception as e:
-            logger.warning(f"[news_search] Fast 모델 DB quota 계측 실패(우회): {e}")
+            logger.warning(f"[web_search] Fast 모델 DB quota 계측 실패(우회): {e}")
             err_msg = str(e).lower()
             if "no such table" in err_msg or "unable to open database file" in err_msg:
                 self._db_unavailable = True
@@ -200,10 +200,10 @@ def _call_fast_model(
     max_prompt_chars = int(getattr(config, "WEB_RAG_FAST_PROMPT_MAX_CHARS", 5000))
     normalized_prompt = (prompt or "")[:max_prompt_chars]
     if budget is not None and not budget.consume():
-        logger.info("[news_search] Fast 모델 호출 예산 소진으로 LLM 단계를 건너뜁니다.")
+        logger.info("[web_search] Fast 모델 호출 예산 소진으로 LLM 단계를 건너뜁니다.")
         return ""
     if quota_manager is not None and not quota_manager.try_consume():
-        logger.info("[news_search] CometAPI 중앙 호출 제한으로 Fast 모델 단계를 건너뜁니다.")
+        logger.info("[web_search] CometAPI 중앙 호출 제한으로 Fast 모델 단계를 건너뜁니다.")
         return ""
     try:
         client = _get_fast_client()
@@ -213,7 +213,7 @@ def _call_fast_model(
         )
         return response.text.strip()
     except Exception as e:
-        logger.warning(f"[news_search] Fast 모델 호출 실패: {e}")
+        logger.warning(f"[web_search] Fast 모델 호출 실패: {e}")
         return ""
 
 
@@ -275,10 +275,10 @@ def _is_safe_url(url: str) -> bool:
         
         # 1. 내부/루프백 IP 및 호스트 차단
         if hostname in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
-            logger.warning(f"[news_search] 차단된 로컬 호스트: {hostname}")
+            logger.warning(f"[web_search] 차단된 로컬 호스트: {hostname}")
             return False
         if hostname.startswith("192.168.") or hostname.startswith("10.") or hostname.startswith("172.16."):
-            logger.warning(f"[news_search] 차단된 내부 IP 대역: {hostname}")
+            logger.warning(f"[web_search] 차단된 내부 IP 대역: {hostname}")
             return False
 
         # 2. HEAD 요청으로 메타데이터 확인 (최대 2MB)
@@ -289,18 +289,18 @@ def _is_safe_url(url: str) -> bool:
         # Content-Type 체크
         content_type = response.headers.get("Content-Type", "").lower()
         if "text/html" not in content_type and "text/plain" not in content_type:
-            logger.warning(f"[news_search] 허용되지 않는 Content-Type: {content_type} ({url})")
+            logger.warning(f"[web_search] 허용되지 않는 Content-Type: {content_type} ({url})")
             return False
             
         # Content-Length 체크
         content_length = response.headers.get("Content-Length")
         if content_length and int(content_length) > 2 * 1024 * 1024:
-            logger.warning(f"[news_search] 파일 크기 초과: {content_length} bytes ({url})")
+            logger.warning(f"[web_search] 파일 크기 초과: {content_length} bytes ({url})")
             return False
             
         return True
     except Exception as e:
-        logger.warning(f"[news_search] URL 안전성 검사 중 오류 (건너뜀): {e}")
+        logger.warning(f"[web_search] URL 안전성 검사 중 오류 (건너뜀): {e}")
         return True # 오류 시 본문 추출 단계에서 처리되도록 허용
 
 
@@ -345,7 +345,7 @@ def _extract_article_text(url: str) -> tuple[str | None, str]:
             article.parse()
             text = article.text.strip()
         except Exception as e:
-            logger.warning(f"[news_search] Newspaper4k 파싱 실패: {e}")
+            logger.warning(f"[web_search] Newspaper4k 파싱 실패: {e}")
             text = ""
 
         # 단계 2: Trafilatura 표준
@@ -413,7 +413,7 @@ def _analyze_intent(
                 "scope": scope if scope in ("LOCAL", "GLOBAL", "BOTH") else "BOTH"
             }
     except Exception as e:
-        logger.warning(f"[news_search] 의도 분석 파싱 실패: {e}")
+        logger.warning(f"[web_search] 의도 분석 파싱 실패: {e}")
     
     return {"category": "GENERAL", "scope": "BOTH"}
 
@@ -425,7 +425,7 @@ def _search_web_sync(user_query: str, region: str = "kr-kr", *, keywords: list[s
     """
     label = "국내/웹" if region == "kr-kr" else "해외/웹"
 
-    logger.info(f"[news_search] [{label}] 검색어: {keywords}")
+    logger.info(f"[web_search] [{label}] 검색어: {keywords}")
 
     all_raw: list[dict] = []
     seen_urls: set[str] = set()
@@ -446,7 +446,7 @@ def _search_web_sync(user_query: str, region: str = "kr-kr", *, keywords: list[s
                         })
                         seen_urls.add(url)
         except Exception as e:
-            logger.warning(f"[news_search] DDGS Web 오류 ({kw[:30]}): {e}")
+            logger.warning(f"[web_search] DDGS Web 오류 ({kw[:30]}): {e}")
 
     if not all_raw:
         return None, f"[{label}] 검색 결과가 없습니다."
@@ -461,7 +461,7 @@ def _search_web_sync(user_query: str, region: str = "kr-kr", *, keywords: list[s
         }
         for r in all_raw
     ]
-    logger.info(f"[news_search] [{label}] 총 {len(results)}개 웹 후보 확보")
+    logger.info(f"[web_search] [{label}] 총 {len(results)}개 웹 후보 확보")
     return results, "성공"
 
 
@@ -593,7 +593,7 @@ def _search_news_sync(user_query: str, region: str = "kr-kr", *, keywords: list[
     """
     label = "국내" if region == "kr-kr" else "해외"
 
-    logger.info(f"[news_search] [{label}] 검색어: {keywords}")
+    logger.info(f"[web_search] [{label}] 검색어: {keywords}")
 
     all_raw: list[dict] = []
     seen_urls: set[str] = set()
@@ -611,7 +611,7 @@ def _search_news_sync(user_query: str, region: str = "kr-kr", *, keywords: list[
                     )
                 )
         except Exception as e:
-            logger.warning(f"[news_search] DDGS 오류 ({keyword[:30]}): {e}")
+            logger.warning(f"[web_search] DDGS 오류 ({keyword[:30]}): {e}")
             return []
 
     # 1차: 최근 1개월 검색
@@ -624,7 +624,7 @@ def _search_news_sync(user_query: str, region: str = "kr-kr", *, keywords: list[
 
     # 2차: 결과 부족 시 기간 제한 없이 보충
     if len(all_raw) < 5:
-        logger.info(f"[news_search] [{label}] 결과 부족({len(all_raw)}개) → 기간 제한 없이 재검색")
+        logger.info(f"[web_search] [{label}] 결과 부족({len(all_raw)}개) → 기간 제한 없이 재검색")
         for kw in keywords:
             for r in _search(kw, timelimit=None):
                 url = r.get("url", "")
@@ -645,7 +645,7 @@ def _search_news_sync(user_query: str, region: str = "kr-kr", *, keywords: list[
         }
         for r in all_raw
     ]
-    logger.info(f"[news_search] [{label}] 총 {len(results)}개 후보 확보")
+    logger.info(f"[web_search] [{label}] 총 {len(results)}개 후보 확보")
     return results, "성공"
 
 
@@ -742,7 +742,7 @@ def _process_single_article(
     본문 추출 실패 시 DDGS snippet을 fallback으로 활용합니다.
     """
     if not _is_safe_url(url):
-        logger.warning(f"[news_search] URL 안전성 검사 실패로 건너뜀: {url}")
+        logger.warning(f"[web_search] URL 안전성 검사 실패로 건너뜀: {url}")
         if snippet or title:
             return {"url": url, "summary": _snippet_fallback_summary(user_query, title, snippet, url), "mode": "snippet"}
         return None
@@ -751,9 +751,9 @@ def _process_single_article(
 
     if not text:
         if snippet or title:
-            logger.info(f"[news_search] 본문 추출 실패 → snippet/title 기반 폴백: {url[:50]}")
+            logger.info(f"[web_search] 본문 추출 실패 → snippet/title 기반 폴백: {url[:50]}")
             return {"url": url, "summary": _snippet_fallback_summary(user_query, title, snippet, url), "mode": "snippet"}
-        logger.warning(f"[news_search] 본문 추출 실패({url[:50]}): {msg}")
+        logger.warning(f"[web_search] 본문 추출 실패({url[:50]}): {msg}")
         return None
 
     summary_prompt = (
@@ -783,12 +783,12 @@ async def run_news_search_pipeline(user_query: str) -> dict[str, Any]:
     if not getattr(config, "DDGS_ENABLED", True):
         return {"status": "error", "message": "검색 기능이 비활성화되어 있습니다."}
 
-    logger.info(f"[news_search] 파이프라인 시작: \"{user_query}\"")
+    logger.info(f"[web_search] 파이프라인 시작: \"{user_query}\"")
 
     cached = _load_pipeline_cache(user_query)
     if cached:
         cached["cached"] = True
-        logger.info("[news_search] 캐시 히트: 외부 검색/LLM 호출을 생략합니다.")
+        logger.info("[web_search] 캐시 히트: 외부 검색/LLM 호출을 생략합니다.")
         return cached
 
     fast_budget = FastLLMBudget(getattr(config, "WEB_RAG_FAST_LLM_MAX_CALLS", 5))
@@ -799,7 +799,7 @@ async def run_news_search_pipeline(user_query: str) -> dict[str, Any]:
     url_match = re.search(r"https?://[^\s<>\"']+", user_query)
     if url_match:
         target_url = url_match.group()
-        logger.info(f"[news_search] 직접 URL 감지: {target_url}")
+        logger.info(f"[web_search] 직접 URL 감지: {target_url}")
         
         # 바로 요약 단계로 진행
         res = await asyncio.to_thread(
@@ -833,7 +833,7 @@ async def run_news_search_pipeline(user_query: str) -> dict[str, Any]:
     )
     category = intent_data["category"]
     scope = intent_data["scope"]
-    logger.info(f"[news_search] 분석 결과: Category=[{category}], Scope=[{scope}]")
+    logger.info(f"[web_search] 분석 결과: Category=[{category}], Scope=[{scope}]")
 
     # ── 단계 1.5: 검색어 생성 (언어별 1회만) ──
     keywords_ko, keywords_en = await asyncio.gather(
@@ -854,10 +854,10 @@ async def run_news_search_pipeline(user_query: str) -> dict[str, Any]:
             quota_manager=quota_manager,
         ),
     )
-    logger.info(f"[news_search] 생성된 키워드(ko): {keywords_ko}")
-    logger.info(f"[news_search] 생성된 키워드(en): {keywords_en}")
+    logger.info(f"[web_search] 생성된 키워드(ko): {keywords_ko}")
+    logger.info(f"[web_search] 생성된 키워드(en): {keywords_en}")
 
-    # ── 단계 2: 검색 (NEWS면 뉴스 검색, GENERAL이면 웹 검색) ──
+    # ── 단계 2: 검색 (NEWS면 뉴스 우선, GENERAL이면 일반 웹 우선) ──
     all_results: list[dict] = []
 
     async def _perform_search(cat: str, target_scope: str):
@@ -882,10 +882,10 @@ async def run_news_search_pipeline(user_query: str) -> dict[str, Any]:
 
     # NEWS 검색 실패 시 GENERAL로 자동 폴백
     if not all_results and category == "NEWS":
-        logger.info(f"[news_search] 뉴스 결과 없음 → 일반 웹 검색으로 폴백 시도")
+        logger.info(f"[web_search] 뉴스 결과 없음 → 일반 웹 검색으로 폴백 시도")
         all_results = await _perform_search("GENERAL", scope)
     elif not all_results and category == "GENERAL":
-        logger.info(f"[news_search] 일반 웹 결과 없음 → 뉴스 검색으로 폴백 시도")
+        logger.info(f"[web_search] 일반 웹 결과 없음 → 뉴스 소스 검색으로 폴백 시도")
         all_results = await _perform_search("NEWS", scope)
 
     if not all_results:
@@ -918,7 +918,7 @@ async def run_news_search_pipeline(user_query: str) -> dict[str, Any]:
     # ── 단계 4: 병렬 요약 ──
     max_summarized = int(getattr(config, "WEB_RAG_MAX_SUMMARIZED_ARTICLES", 3))
     target_urls = best_urls[:max_summarized]
-    logger.info(f"[news_search] {len(target_urls)}개 페이지 병렬 분석 중... (선정 {len(best_urls)}개 중)")
+    logger.info(f"[web_search] {len(target_urls)}개 페이지 병렬 분석 중... (선정 {len(best_urls)}개 중)")
 
     def _parallel_summarize() -> list[dict]:
         worker_count = max(1, min(3, len(target_urls)))
@@ -940,7 +940,7 @@ async def run_news_search_pipeline(user_query: str) -> dict[str, Any]:
                 try:
                     result = fut.result()
                 except Exception as e:
-                    logger.warning(f"[news_search] 병렬 요약 워커 예외: {e}")
+                    logger.warning(f"[web_search] 병렬 요약 워커 예외: {e}")
                     continue
                 if result:
                     collected.append(result)
@@ -973,7 +973,7 @@ async def run_news_search_pipeline(user_query: str) -> dict[str, Any]:
         "fast_llm_calls": fast_budget.used_calls,
     }
     logger.info(
-        "[news_search] 파이프라인 완료. 분석 페이지: %d개, Fast LLM 호출: %d회",
+        "[web_search] 파이프라인 완료. 분석 페이지: %d개, Fast LLM 호출: %d회",
         len(individual_results),
         fast_budget.used_calls,
     )
