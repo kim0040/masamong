@@ -280,11 +280,11 @@ COMETAPI_BASE_URL = load_config_value('COMETAPI_BASE_URL', 'https://api.cometapi
 COMETAPI_MODEL = load_config_value('COMETAPI_MODEL', 'DeepSeek-V3.2-Exp-nothinking')
 USE_COMETAPI = as_bool(load_config_value('USE_COMETAPI', 'true'))  # CometAPI 우선 사용
 
-# Fast 모델 (뉴스 검색 중간 단계: 의도 분석, 키워드 생성, 기사 요약)
+# Fast 모델 (웹 검색 중간 단계: 의도 분석, 키워드 생성, 기사 요약)
 # news/news_summarizer.py와 동일한 모델 사용
 FAST_MODEL_NAME = load_config_value('FAST_MODEL_NAME', 'gemini-3.1-flash-lite-preview')
 
-# DuckDuckGo 뉴스 검색 활성화 여부 (기본: 활성화)
+# DuckDuckGo 웹 검색 활성화 여부 (기본: 활성화)
 DDGS_ENABLED = as_bool(load_config_value('DDGS_ENABLED', 'true'))
 # 범용 웹 탐색 파이프라인 예산/캐시 설정
 WEB_RAG_FAST_LLM_MAX_CALLS = max(0, as_int(load_config_value('WEB_RAG_FAST_LLM_MAX_CALLS', 5), 5))
