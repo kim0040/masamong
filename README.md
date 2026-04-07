@@ -234,6 +234,7 @@ USE_COMETAPI=true
 
 ```env
 MASAMONG_DB_BACKEND=tidb
+MASAMONG_DB_STRICT_REMOTE_ONLY=true
 MASAMONG_DB_HOST=gateway01.ap-northeast-1.prod.aws.tidbcloud.com
 MASAMONG_DB_PORT=4000
 MASAMONG_DB_NAME=masamong
@@ -247,6 +248,11 @@ KAKAO_STORE_BACKEND=tidb
 DISCORD_EMBEDDING_TIDB_TABLE=discord_chat_embeddings
 KAKAO_TIDB_TABLE=kakao_chunks
 ```
+
+`MASAMONG_DB_STRICT_REMOTE_ONLY=true`를 켜면:
+- `MASAMONG_DB_BACKEND`가 `tidb`가 아니면 시작 시 즉시 실패한다.
+- Discord/Kakao 저장소를 강제로 `tidb`로 고정한다.
+- 서버에 `database/*.db` 파일이 남아 있어도 운영 경로에서는 사용하지 않는다.
 
 ### 6.4 검색/외부 API 관련 예시
 
