@@ -32,6 +32,8 @@ logs/
 *.sqlite
 *.sqlite3
 *.db-journal
+*.db-wal
+*.db-shm
 
 # 데이터베이스 백업
 *.db.bak

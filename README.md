@@ -222,8 +222,13 @@ python -m pip install -r requirements-gpu.txt
 
 ```env
 DISCORD_BOT_TOKEN=...
-GEMINI_API_KEY=...
+COMETAPI_KEY=...
+USE_COMETAPI=true
 ```
+
+옵션:
+- `ALLOW_DIRECT_GEMINI_FALLBACK=true`를 켠 경우에만 `GEMINI_API_KEY`가 실사용된다.
+- 기본값은 `false`이며, 이때는 CometAPI만 사용한다.
 
 ### 6.3 TiDB 중앙화 운영 예시
 
@@ -249,6 +254,7 @@ KAKAO_TIDB_TABLE=kakao_chunks
 USE_COMETAPI=true
 COMETAPI_KEY=...
 COMETAPI_BASE_URL=https://api.cometapi.com/v1
+ALLOW_DIRECT_GEMINI_FALLBACK=false
 
 KMA_API_KEY=...
 FINNHUB_API_KEY=...
@@ -263,12 +269,29 @@ GOOGLE_CX=...
 - `GOOGLE_API_KEY` + `GOOGLE_CX`는 Google Custom Search fallback용
 - 없어도 핵심 TiDB/RAG 구동은 가능하다
 
+### 6.7 TiDB 연결 안정화 권장값
+
+```env
+MASAMONG_DB_CONNECT_TIMEOUT=10
+MASAMONG_DB_READ_TIMEOUT=30
+MASAMONG_DB_WRITE_TIMEOUT=30
+MASAMONG_DB_CONN_MAX_LIFETIME_SECONDS=600
+
+RAG_ARCHIVE_RUN_ON_STARTUP=false
+RAG_ARCHIVE_STARTUP_DELAY_SECONDS=120
+```
+
+의미:
+- TiDB free tier의 유휴 연결 종료(약 30분) 대응을 위해 연결을 주기적으로 교체한다.
+- 부팅 직후 아카이빙 1회 실행을 건너뛰어 초기화 충돌 가능성을 낮춘다.
+
 ### 6.5 구조화 메모리 관련 `.env`
 
 ```env
 STRUCTURED_MEMORY_QUERY_LIMIT=800
 STRUCTURED_MEMORY_FALLBACK_QUERY_LIMIT=2000
 STRUCTURED_MEMORY_SIMILARITY_THRESHOLD=0.5
+LOCAL_EMBEDDING_LOCAL_FILES_ONLY=false
 ```
 
 ### 6.6 서버 전용 설정 파일
@@ -386,16 +409,19 @@ PYTHONPATH=. python scripts/smoke_tidb_runtime.py --write-check
 ### 10.2 통합 운영 헬스체크
 
 ```bash
-PYTHONPATH=. python scripts/verify_runtime_health.py --write-check --strict
+PYTHONPATH=. python scripts/verify_runtime_health.py --backend tidb --write-check --strict
 ```
 
 이 스크립트는 다음을 한 번에 검증한다.
 
 - 메인 DB 핵심 테이블 row count
 - 좌표 조회
+- 아카이빙 루프 단일 실행
+- 임베딩 사전검사(모델 로드/벡터 생성)
 - Discord 임베딩/구조화 메모리 적재 상태
 - Discord RAG 검색 회수 여부
 - Kakao 벡터 검색 회수 여부
+- 프롬프트 주입(RAG/도구/질문 섹션) 확인
 - 테스트용 합성 데이터 쓰기/읽기/검색/정리
 
 ### 10.3 구조화 메모리 재생성
@@ -542,8 +568,17 @@ python -m pip install -r requirements-cpu.txt
 
 ### `Lost connection to MySQL server during query`
 - 오래 살아 있는 연결 재사용 문제일 수 있다
-- 현재 TiDB 운영 기준으로 FortuneCog의 개별 컬럼 점검은 건너뛰도록 수정되어야 한다
-- 최신 코드로 `git pull` 후 재시작 권장
+- 최신 코드에서는 TiDB 연결 자동 재연결/재시도 로직이 포함되어 있다
+- 아래 값을 `.env`에 명시하면 안정성이 높다:
+
+```env
+MASAMONG_DB_CONN_MAX_LIFETIME_SECONDS=600
+MASAMONG_DB_CONNECT_TIMEOUT=10
+MASAMONG_DB_READ_TIMEOUT=30
+MASAMONG_DB_WRITE_TIMEOUT=30
+RAG_ARCHIVE_RUN_ON_STARTUP=false
+RAG_ARCHIVE_STARTUP_DELAY_SECONDS=120
+```
 
 ### `GOOGLE_API_KEY`가 없는데 문제인가
 - 필수 아님

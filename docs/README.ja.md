@@ -22,8 +22,8 @@ python main.py
 **動作概要**
 - サーバー: `@マサモン` メンションがある場合のみAIが応答。
 - DM: メンション不要。ただし **5時間あたり30回 + 全体で1日100回** の制限あり。
-- 応答生成: **CometAPI（任意）** → **Gemini フォールバック**。
-- `GEMINI_API_KEY` がない場合、AIパイプラインは準備状態になりません。
+- 応答生成: **CometAPI（既定）**、必要時のみ Gemini フォールバック。
+- LLMプロバイダが1つ以上有効ならAIパイプラインは準備状態になります。
 
 **メッセージ処理フロー（テキスト図）**
 ```
@@ -35,7 +35,7 @@ python main.py
       ├─ tool execution
       ├─ RAG context search (optional)
       ├─ prompt compose
-      └─ LLM response (CometAPI → Gemini)
+      └─ LLM response (CometAPI, 必要時のみGemini)
 ```
 
 **パイプライン詳細**
@@ -54,8 +54,8 @@ python main.py
 
 **3) LLM選択とフォールバック**
 - CometAPIが有効なら先に利用。
-- 失敗時はGeminiへフォールバック。
-- Geminiキーが必須条件。
+- `ALLOW_DIRECT_GEMINI_FALLBACK=true` のときのみGeminiへフォールバック。
+- CometAPIが有効ならGeminiキーは必須ではない。
 
 **4) RAG（記憶）パイプライン**
 1. メッセージは `conversation_history` に保存。
@@ -75,7 +75,7 @@ python main.py
 - 国内影響圏 M4.0以上の地震アラート
 
 **機能別依存関係**
-- AI会話: `GEMINI_API_KEY` 必須、CometAPI任意
+- AI会話: `COMETAPI_KEY` 推奨、Geminiは任意フォールバック
 - 画像生成: `COMETAPI_KEY` 必須 + `COMETAPI_IMAGE_ENABLED=true`
 - 天気: `KMA_API_KEY`
 - 為替: `EXIM_API_KEY_KR`
@@ -129,4 +129,3 @@ python main.py
 - yfinanceモードの株価はCometAPIのティッカー抽出に依存します。
 - 画像生成はユーザー/全体の制限があります。
 - DMは厳格な使用制限が適用されます。
-

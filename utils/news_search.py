@@ -123,7 +123,7 @@ class FastLLMQuotaManager:
                         self._sql("SELECT COUNT(*) FROM api_call_log WHERE api_type = ? AND called_at >= ?"),
                         self._params("cometapi", one_day_ago),
                     )
-                    if (cur.fetchone() or [0])[0] >= self.rpd_limit:
+                    if self._extract_count(cur.fetchone()) >= self.rpd_limit:
                         logger.warning("[web_search] CometAPI 일일 호출 제한 도달")
                         return False
 
@@ -131,7 +131,7 @@ class FastLLMQuotaManager:
                         self._sql("SELECT COUNT(*) FROM api_call_log WHERE api_type = ? AND called_at >= ?"),
                         self._params("cometapi", one_minute_ago),
                     )
-                    if (cur.fetchone() or [0])[0] >= self.rpm_limit:
+                    if self._extract_count(cur.fetchone()) >= self.rpm_limit:
                         logger.warning("[web_search] CometAPI 분당 호출 제한 도달")
                         return False
 
@@ -153,6 +153,33 @@ class FastLLMQuotaManager:
             if "no such table" in err_msg or "unable to open database file" in err_msg:
                 self._db_unavailable = True
             return True
+
+    @staticmethod
+    def _extract_count(row: Any) -> int:
+        if row is None:
+            return 0
+        if isinstance(row, dict):
+            for key in ("cnt", "COUNT(*)", "count", "COUNT(1)"):
+                if key in row:
+                    try:
+                        return int(row[key])
+                    except Exception:
+                        return 0
+            for value in row.values():
+                try:
+                    return int(value)
+                except Exception:
+                    continue
+            return 0
+        if isinstance(row, (list, tuple)):
+            try:
+                return int(row[0])
+            except Exception:
+                return 0
+        try:
+            return int(row)
+        except Exception:
+            return 0
 
     def _open_connection(self):
         if self._tidb_settings is not None:

@@ -18,6 +18,7 @@ import numpy as np
 import pymysql
 
 import config
+from cogs.ai_handler import AIHandler
 from database.compat_db import TiDBSettings, connect_main_db
 from utils import db as db_utils
 from utils.coords import get_coords_from_db
@@ -42,6 +43,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--write-check", action="store_true", help="합성 데이터 적재/검색/정리까지 검증")
     parser.add_argument("--json", action="store_true", help="JSON 결과만 출력")
     parser.add_argument("--strict", action="store_true", help="하나라도 실패하면 exit code 1")
+    parser.add_argument("--backend", choices=["auto", "sqlite", "tidb"], default="auto", help="DB 백엔드 강제 지정")
+    parser.add_argument("--embedding-timeout", type=int, default=90, help="임베딩 생성 타임아웃(초)")
     parser.add_argument("--discord-probes", type=int, default=4, help="Discord 검색 질의 개수")
     parser.add_argument("--kakao-probes", type=int, default=3, help="Kakao 검색 질의 개수")
     return parser.parse_args()
@@ -69,6 +72,11 @@ async def _select_count(db: Any, table_name: str) -> int:
     async with db.execute(f"SELECT COUNT(*) AS cnt FROM {table_name}") as cursor:
         row = await cursor.fetchone()
     return int(row[0] if row else 0)
+
+
+def _current_timestamp_sql(db: Any) -> str:
+    backend = getattr(db, "backend", "sqlite")
+    return "CURRENT_TIMESTAMP(6)" if backend == "tidb" else "CURRENT_TIMESTAMP"
 
 
 async def _discover_discord_scope(store: DiscordEmbeddingStore) -> tuple[str, str] | None:
@@ -268,7 +276,7 @@ async def _run_write_pipeline_check(
             )
 
         await db.execute(
-            "REPLACE INTO user_profiles (user_id, birth_date, birth_time, gender, birth_place, created_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP(6))",
+            f"REPLACE INTO user_profiles (user_id, birth_date, birth_time, gender, birth_place, created_at) VALUES (?, ?, ?, ?, ?, {_current_timestamp_sql(db)})",
             (test_user_id, "1990-01-01", "07:30", "M", "서울"),
         )
         await db.executemany(
@@ -394,12 +402,136 @@ async def _run_write_pipeline_check(
             pass
 
 
+async def _run_archive_cycle_check(db: Any) -> CheckResult:
+    try:
+        before_count = await _select_count(db, "conversation_history")
+        await db_utils.archive_old_conversations(db)
+        after_count = await _select_count(db, "conversation_history")
+        return CheckResult(
+            name="archive_cycle",
+            ok=True,
+            details="RAG 아카이빙 루프 단일 사이클 실행 성공",
+            metrics={"before_count": before_count, "after_count": after_count},
+        )
+    except Exception as exc:
+        return CheckResult(
+            name="archive_cycle",
+            ok=False,
+            details="RAG 아카이빙 루프 실행 실패",
+            metrics={"error": str(exc)},
+        )
+
+
+async def _run_prompt_injection_check(channel_id: int = 0) -> CheckResult:
+    class _DummyBot:
+        db = None
+
+        @staticmethod
+        def get_cog(_name: str):
+            return None
+
+    class _DummyChannel:
+        def __init__(self, cid: int):
+            self.id = cid
+
+    class _DummyMessage:
+        def __init__(self, cid: int):
+            self.channel = _DummyChannel(cid)
+
+    handler = AIHandler(_DummyBot())
+    tool_block = handler._format_tool_results_for_prompt(
+        [
+            {
+                "tool_name": "web_search",
+                "result": {
+                    "summary": "테스트 웹 검색 요약",
+                    "source_urls": ["https://example.com"],
+                },
+            }
+        ]
+    )
+    rag_blocks = [
+        "[health-user][2026-04-07T15:00:00+09:00] RAG 주입 검증용 문장",
+    ]
+    prompt = handler._compose_main_prompt(
+        _DummyMessage(channel_id),
+        user_query="RAG 프롬프트 주입이 정상인지 확인해줘",
+        rag_blocks=rag_blocks,
+        tool_results_block=tool_block,
+        recent_history=[
+            {"role": "user", "parts": ["이전 메시지"]},
+            {"role": "model", "parts": ["이전 응답"]},
+        ],
+    )
+
+    required_markers = [
+        "[현재 시간]",
+        "[최근 대화 흐름 (단기 기억)]",
+        "[과거 대화 기억 (참고용)]",
+        "[도구 실행 결과 (최우선 정보)]",
+        "[현재 질문]",
+        "RAG 주입 검증용 문장",
+        "테스트 웹 검색 요약",
+    ]
+    missing = [marker for marker in required_markers if marker not in prompt]
+    ok = not missing
+    return CheckResult(
+        name="prompt_injection",
+        ok=ok,
+        details="RAG/도구/질문 섹션 주입 확인" if ok else "프롬프트 주입 누락 섹션이 있습니다.",
+        metrics={
+            "channel_id": channel_id,
+            "prompt_chars": len(prompt),
+            "missing_markers": missing,
+        },
+    )
+
+
+async def _run_embedding_preflight(timeout_seconds: int) -> CheckResult:
+    timeout_seconds = max(5, int(timeout_seconds))
+    try:
+        vector = await asyncio.wait_for(
+            get_embedding("헬스체크 임베딩 사전검사", prefix="query: "),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        return CheckResult(
+            name="embedding_preflight",
+            ok=False,
+            details="임베딩 모델 로드/생성 타임아웃",
+            metrics={"timeout_seconds": timeout_seconds},
+        )
+    except Exception as exc:
+        return CheckResult(
+            name="embedding_preflight",
+            ok=False,
+            details="임베딩 모델 사전검사 실패",
+            metrics={"error": str(exc)},
+        )
+
+    if vector is None:
+        return CheckResult(
+            name="embedding_preflight",
+            ok=False,
+            details="임베딩 생성 결과가 비어 있습니다.",
+            metrics={},
+        )
+
+    return CheckResult(
+        name="embedding_preflight",
+        ok=True,
+        details="임베딩 모델 사전검사 성공",
+        metrics={"dimension": int(len(vector))},
+    )
+
+
 async def main() -> int:
     args = parse_args()
     results: list[CheckResult] = []
+    selected_backend = config.DB_BACKEND if args.backend == "auto" else args.backend
 
     db = await connect_main_db(
-        config.DB_BACKEND,
+        selected_backend,
         sqlite_path=config.DATABASE_FILE,
         tidb_settings=TiDBSettings(
             host=config.TIDB_HOST or "",
@@ -433,10 +565,14 @@ async def main() -> int:
             "main_db",
             db_ok,
             "메인 DB 테이블/좌표 조회 확인" if db_ok else "메인 DB 핵심 데이터 조회 실패",
-            backend=config.DB_BACKEND,
+            backend=selected_backend,
             counts=table_counts,
             coords=coords,
         )
+        results.append(await _run_archive_cycle_check(db))
+        embedding_preflight = await _run_embedding_preflight(args.embedding_timeout)
+        results.append(embedding_preflight)
+        embedding_ready = embedding_preflight.ok
 
         discord_scope = await _discover_discord_scope(discord_store)
         if discord_scope is None:
@@ -472,22 +608,32 @@ async def main() -> int:
 
             engine = HybridSearchEngine(discord_store, None, None)
             discord_query_results: list[dict[str, Any]] = []
-            for query in discord_queries:
-                result = await engine.search(
-                    query,
-                    guild_id=int(server_id),
-                    channel_id=int(channel_id),
-                    user_id=user_id,
-                    recent_messages=None,
-                )
+            if embedding_ready:
+                for query in discord_queries:
+                    result = await engine.search(
+                        query,
+                        guild_id=int(server_id),
+                        channel_id=int(channel_id),
+                        user_id=user_id,
+                        recent_messages=None,
+                    )
+                    discord_query_results.append(
+                        {
+                            "query": query,
+                            "entries": len(result.entries),
+                            "top_score": round(float(result.top_score), 4),
+                        }
+                    )
+            else:
                 discord_query_results.append(
                     {
-                        "query": query,
-                        "entries": len(result.entries),
-                        "top_score": round(float(result.top_score), 4),
+                        "query": "(skipped)",
+                        "entries": 0,
+                        "top_score": 0.0,
+                        "error": "embedding_preflight_failed",
                     }
                 )
-            search_ok = all(item["entries"] > 0 for item in discord_query_results)
+            search_ok = embedding_ready and all(item["entries"] > 0 for item in discord_query_results)
             _append(
                 results,
                 "discord_rag",
@@ -507,6 +653,16 @@ async def main() -> int:
                 keywords = ["운전면허", "사진", "초대"][: max(1, args.kakao_probes)]
             query_results: list[dict[str, Any]] = []
             for query in keywords:
+                if not embedding_ready:
+                    query_results.append(
+                        {
+                            "query": query,
+                            "rows": 0,
+                            "top_message_id": None,
+                            "error": "embedding_preflight_failed",
+                        }
+                    )
+                    continue
                 vector = await get_embedding(query, prefix="query: ")
                 if vector is None:
                     query_results.append(
@@ -526,7 +682,7 @@ async def main() -> int:
                         "top_message_id": rows[0].get("message_id") if rows else None,
                     }
                 )
-            room_ok = bool(recent_rows) and all(item["rows"] > 0 for item in query_results)
+            room_ok = embedding_ready and bool(recent_rows) and all(item["rows"] > 0 for item in query_results)
             if not room_ok:
                 kakao_failures += 1
             kakao_metrics.append(
@@ -546,8 +702,20 @@ async def main() -> int:
             rooms=kakao_metrics,
         )
 
+        prompt_channel_id = int(discord_scope[1]) if 'discord_scope' in locals() and discord_scope else 0
+        results.append(await _run_prompt_injection_check(prompt_channel_id))
+
         if args.write_check:
-            results.append(await _run_write_pipeline_check(db, discord_store))
+            if embedding_ready:
+                results.append(await _run_write_pipeline_check(db, discord_store))
+            else:
+                _append(
+                    results,
+                    "write_pipeline",
+                    False,
+                    "임베딩 사전검사 실패로 write_check를 건너뜁니다.",
+                    reason="embedding_preflight_failed",
+                )
 
     finally:
         await db.close()
