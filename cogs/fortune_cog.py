@@ -33,6 +33,10 @@ class FortuneCog(commands.Cog):
     async def _ensure_db_schema(self):
         """pending_payload 컬럼이 없으면 추가합니다."""
         await self.bot.wait_until_ready()
+        if config.DB_BACKEND == "tidb":
+            logger.info("FortuneCog 스키마 점검을 건너뜁니다. TiDB 스키마는 중앙 스키마 파일 기준으로 관리됩니다.")
+            self._ready = True
+            return
         try:
             columns = await get_table_columns(self.bot.db, "user_profiles")
                 
