@@ -242,6 +242,24 @@ TIDB_USER = load_config_value('MASAMONG_DB_USER')
 TIDB_PASSWORD = load_config_value('MASAMONG_DB_PASSWORD')
 TIDB_SSL_CA = load_config_value('MASAMONG_DB_SSL_CA')
 TIDB_SSL_VERIFY_IDENTITY = as_bool(load_config_value('MASAMONG_DB_SSL_VERIFY_IDENTITY', 'true'))
+REMOTE_DB_STRICT_MODE = as_bool(load_config_value('MASAMONG_DB_STRICT_REMOTE_ONLY', 'false'))
+if REMOTE_DB_STRICT_MODE:
+    if DB_BACKEND != "tidb":
+        raise RuntimeError(
+            "MASAMONG_DB_STRICT_REMOTE_ONLY=true 인 경우 MASAMONG_DB_BACKEND=tidb 여야 합니다."
+        )
+    _missing_tidb = []
+    if not TIDB_HOST:
+        _missing_tidb.append("MASAMONG_DB_HOST")
+    if not TIDB_USER:
+        _missing_tidb.append("MASAMONG_DB_USER")
+    if not TIDB_NAME:
+        _missing_tidb.append("MASAMONG_DB_NAME")
+    if _missing_tidb:
+        raise RuntimeError(
+            "MASAMONG_DB_STRICT_REMOTE_ONLY=true 이지만 TiDB 필수 설정이 누락되었습니다: "
+            + ", ".join(_missing_tidb)
+        )
 GEMINI_API_KEY = load_config_value('GEMINI_API_KEY')
 GOOGLE_API_KEY = load_config_value('GOOGLE_API_KEY')
 GOOGLE_CX = load_config_value('GOOGLE_CX')
@@ -332,6 +350,10 @@ DISCORD_EMBEDDING_BACKEND = str(
     load_config_value('DISCORD_EMBEDDING_BACKEND', 'tidb' if DB_BACKEND == 'tidb' else 'sqlite')
 ).strip().lower()
 KAKAO_STORE_BACKEND = str(load_config_value('KAKAO_STORE_BACKEND', 'local')).strip().lower()
+if REMOTE_DB_STRICT_MODE:
+    # 원격 DB 강제 모드에서는 로컬 파일 기반 저장소를 사용하지 않는다.
+    DISCORD_EMBEDDING_BACKEND = "tidb"
+    KAKAO_STORE_BACKEND = "tidb"
 DISCORD_EMBEDDING_DB_PATH = EMBED_CONFIG.get("discord_db_path", "database/discord_embeddings.db")
 KAKAO_EMBEDDING_DB_PATH = EMBED_CONFIG.get("kakao_db_path", "database/kakao_embeddings.db")
 KAKAO_EMBEDDING_SERVER_MAP = _normalize_kakao_servers(EMBED_CONFIG.get("kakao_servers", []))
