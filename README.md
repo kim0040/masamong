@@ -262,9 +262,17 @@ COMETAPI_KEY=...
 COMETAPI_BASE_URL=https://api.cometapi.com/v1
 ALLOW_DIRECT_GEMINI_FALLBACK=false
 
+# 의도 분석 LLM 호출 제어 (과호출 방지)
+INTENT_LLM_ENABLED=true
+INTENT_LLM_RAG_STRONG_BYPASS=true
+AUTO_WEB_SEARCH_COOLDOWN_SECONDS=90
+AUTO_WEB_SEARCH_ALLOW_SHORT_FOLLOWUP=false
+
 KMA_API_KEY=...
 FINNHUB_API_KEY=...
 KAKAO_API_KEY=...
+ENABLE_EARTHQUAKE_ALERT=true
+EARTHQUAKE_CHECK_INTERVAL_MINUTES=1
 
 GOOGLE_CX=...
 # GOOGLE_API_KEY=...
@@ -274,6 +282,7 @@ GOOGLE_CX=...
 - `GOOGLE_API_KEY`는 **Gemini 키가 아니다**
 - `GOOGLE_API_KEY` + `GOOGLE_CX`는 Google Custom Search fallback용
 - 없어도 핵심 TiDB/RAG 구동은 가능하다
+- `AUTO_WEB_SEARCH_COOLDOWN_SECONDS`는 도구 계획이 없을 때의 자동 웹검색 fallback에만 적용된다 (명시적 웹검색 요청에는 미적용).
 
 ### 6.7 TiDB 연결 안정화 권장값
 

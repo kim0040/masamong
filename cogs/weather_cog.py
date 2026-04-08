@@ -53,9 +53,14 @@ class WeatherCog(commands.Cog):
             self.morning_greeting_loop.start()
             self.evening_greeting_loop.start()
         
-        # Earthquake Alert Loop (Always active if notification channel exists)
-        if config.RAIN_NOTIFICATION_CHANNEL_ID: # Reuse rain channel for disasters
-            logger.info("지진 알림 모니터링 루프를 시작합니다.")
+        # Earthquake Alert Loop
+        has_fallback_channel = bool(getattr(config, "RAIN_NOTIFICATION_CHANNEL_ID", 0))
+        has_ai_channels = bool(getattr(config, "CHANNEL_AI_CONFIG", {}))
+        if getattr(config, "ENABLE_EARTHQUAKE_ALERT", True) and (has_fallback_channel or has_ai_channels):
+            logger.info(
+                "지진 알림 모니터링 루프를 시작합니다. 주기: %d분",
+                getattr(config, "EARTHQUAKE_CHECK_INTERVAL_MINUTES", 1),
+            )
             self.earthquake_alert_loop.start()
 
     def cog_unload(self):
@@ -419,9 +424,9 @@ class WeatherCog(commands.Cog):
         """매일 저녁 지정된 시간에 날씨 정보와 함께 인사말을 보냅니다."""
         await self._send_greeting_notification("저녁")
 
-    @tasks.loop(minutes=1)
+    @tasks.loop(minutes=config.EARTHQUAKE_CHECK_INTERVAL_MINUTES)
     async def earthquake_alert_loop(self):
-        """1분마다 최근 지진 정보를 확인하고 새로운 지진 발생 시 알립니다."""
+        """설정된 주기마다 최근 지진 정보를 확인하고 새로운 지진 발생 시 알립니다."""
         await self.bot.wait_until_ready()
         if not weather_utils.get_kma_api_key(): return
 
