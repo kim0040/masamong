@@ -2020,13 +2020,24 @@ Generate the optimized English image prompt:"""
 
         return "```debug\n" + "\n".join(lines) + "\n```"
 
-    async def _execute_tool(self, tool_call: dict, guild_id: int, user_query: str) -> dict:
+    async def _execute_tool(
+        self,
+        tool_call: dict,
+        guild_id: int,
+        user_query: str,
+        channel_id: int | None = None,
+    ) -> dict:
         """파싱된 단일 도구 호출 계획을 실제로 실행하고 결과를 반환합니다."""
         tool_name = tool_call.get('tool_to_use') or tool_call.get('tool_name')
         if tool_name and 'tool_to_use' not in tool_call:
             tool_call['tool_to_use'] = tool_name
         parameters = tool_call.get('parameters', {})
-        log_extra = {'guild_id': guild_id, 'tool_name': tool_name, 'parameters': parameters}
+        log_extra = {
+            'guild_id': guild_id,
+            'channel_id': channel_id,
+            'tool_name': tool_name,
+            'parameters': parameters,
+        }
 
         if not tool_name: 
             return {"error": "tool_to_use가 지정되지 않았습니다."}
@@ -2247,7 +2258,12 @@ Generate the optimized English image prompt:"""
                         tool_call.setdefault('parameters', {})['user_id'] = message.author.id
                         await status_msg.edit(content="🎨 멋진 이미지를 그려내고 있어! (최대 1분 30초 정도 걸릴 수 있으니 잠시만 기다려줘...)")
                     
-                    result = await self._execute_tool(tool_call, guild_id_safe, user_query)
+                    result = await self._execute_tool(
+                        tool_call,
+                        guild_id_safe,
+                        user_query,
+                        channel_id=message.channel.id,
+                    )
                     
                     # 이미지 생성 성공 시 처리
                     if tool_name == 'generate_image' and (result.get('image_data') or result.get('image_url')):
@@ -2319,7 +2335,8 @@ Generate the optimized English image prompt:"""
 
             # 도구 결과 포맷팅 및 프롬프트 구성
             tool_results_str = self._format_tool_results_for_prompt(tool_results)
-            system_prompt = config.AGENT_SYSTEM_PROMPT
+            channel_persona_prompt = self._get_channel_system_prompt(message.channel.id)
+            system_prompt = f"{channel_persona_prompt}\n\n{config.AGENT_SYSTEM_PROMPT}"
             
             # [NEW] 커스텀 이모지 지시문 추가 (최적화: 필요한 경우에만 샘플링하여 주입)
             emoji_instruction = self._get_custom_emoji_instruction(message.guild, user_query)
