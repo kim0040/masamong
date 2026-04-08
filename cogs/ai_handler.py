@@ -1138,16 +1138,18 @@ Generate the optimized English image prompt:"""
         'generate image', 'create image', 'draw me', 'make an image',
     ])
 
-    # 범용 정보 탐색 트리거 키워드 (뉴스 + 웹/블로그/문서)
+    # 범용 정보 탐색 트리거 키워드 (의도적으로 보수적으로 유지)
+    # 너무 넓은 키워드는 잡담까지 웹검색으로 오탐지할 수 있어 제외한다.
     _WEB_SEARCH_KEYWORDS = frozenset([
-        '뉴스', '소식', '최신', '최근', '실시간', '오늘 무슨', '오늘 뭔',
-        '요즘', '이슈', '이번 주', '이번달', '요새', '근래',
-        '어떻게 됐어', '어떻게 됨', '결과 어떻게', '현재 상황', '지금 어떻게',
-        '사건', '사고', '발표', '결과', '현황',
-        '찾아줘', '검색해줘', '탐색', '조사', '정리',
-        '블로그', '후기', '리뷰', '사용기', '비교', '추천',
-        '공식 문서', '문서', '레퍼런스', '위키', '출처',
-        '사용법', '가이드', '튜토리얼', '설정 방법',
+        '웹검색', '검색', '검색해줘', '찾아줘', '조사해줘', '탐색해줘',
+        '뉴스', '최신', '최근', '실시간', '속보', '이슈', '현황', '상황',
+        '어떻게 됐어', '어떻게 됨', '출처', '링크', '기사',
+        '공식 문서', '레퍼런스', '가이드', '튜토리얼', '사용법',
+        '리뷰', '사용기', '비교',
+    ])
+
+    _WEB_SEARCH_FOLLOWUP_KEYWORDS = frozenset([
+        '그거', '그건', '그건데', '그건데요', '더', '자세히', '근거', '링크', '출처',
     ])
 
 
@@ -1182,9 +1184,122 @@ Generate the optimized English image prompt:"""
         # 매우 짧은 인사 표현
         return bool(re.fullmatch(r"(안녕+|하이+|ㅎㅇ+|hello+|hey+|hi+)", text))
 
+    def _has_explicit_web_search_intent(self, query: str) -> bool:
+        """질문이 명시적으로 외부 웹 탐색을 요구하는지 판별합니다."""
+        query_lower = (query or "").lower()
+        return any(kw in query_lower for kw in self._WEB_SEARCH_KEYWORDS)
+
+    def _sanitize_tool_plan(
+        self,
+        query: str,
+        tool_plan: list[dict],
+        *,
+        rag_top_score: float,
+        log_extra: dict | None = None,
+    ) -> list[dict]:
+        """LLM 도구 계획을 운영 정책(과도한 웹검색 방지) 기준으로 보정합니다."""
+        if not tool_plan:
+            return []
+
+        query_lower = (query or "").lower()
+        explicit_web = self._has_explicit_web_search_intent(query)
+        finance_query = any(kw in query_lower for kw in self._FINANCE_KEYWORDS)
+        weather_query = any(kw in query_lower for kw in self._WEATHER_KEYWORDS)
+        place_query = any(kw in query_lower for kw in self._PLACE_KEYWORDS)
+        rag_is_strong = rag_top_score >= config.RAG_STRONG_SIMILARITY_THRESHOLD
+
+        normalized: list[dict[str, Any]] = []
+        seen_keys: set[tuple[str, str]] = set()
+
+        for raw in tool_plan:
+            name = raw.get("tool_to_use") or raw.get("tool_name")
+            params = raw.get("parameters")
+            if not isinstance(params, dict):
+                params = {}
+
+            # 이름 정규화
+            if not name:
+                continue
+
+            # 잡담 질문은 도구 자체를 차단
+            if self._is_smalltalk_only_query(query):
+                logger.info("[도구보정] 잡담성 질의로 도구 계획을 모두 무효화합니다.", extra=log_extra)
+                return []
+
+            if name == "web_search":
+                # 날씨/장소는 전용 도구 우선 (웹검색 남용 방지)
+                if weather_query:
+                    location = self._extract_location_from_query(query) or "광양"
+                    day_offset = 0
+                    if "내일" in query:
+                        day_offset = 1
+                    elif "모레" in query:
+                        day_offset = 2
+                    elif "글피" in query:
+                        day_offset = 3
+                    elif any(token in query for token in ("다음주", "이번주", "주말", "일주일")):
+                        day_offset = 3
+                    candidate = {
+                        "tool_to_use": "get_weather_forecast",
+                        "tool_name": "get_weather_forecast",
+                        "parameters": {"location": location, "day_offset": day_offset},
+                    }
+                    key = (candidate["tool_to_use"], json.dumps(candidate["parameters"], sort_keys=True, ensure_ascii=False))
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        normalized.append(candidate)
+                    logger.info("[도구보정] web_search -> get_weather_forecast 전환", extra=log_extra)
+                    continue
+
+                if place_query:
+                    candidate = {
+                        "tool_to_use": "search_for_place",
+                        "tool_name": "search_for_place",
+                        "parameters": {"query": query.strip()},
+                    }
+                    key = (candidate["tool_to_use"], json.dumps(candidate["parameters"], sort_keys=True, ensure_ascii=False))
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        normalized.append(candidate)
+                    logger.info("[도구보정] web_search -> search_for_place 전환", extra=log_extra)
+                    continue
+
+                # 명시적 외부탐색 요청/금융 질문이 아니고 RAG가 강하면 웹검색 생략
+                if not explicit_web and not finance_query and rag_is_strong:
+                    logger.info(
+                        "[도구보정] RAG 강한 질의에서 web_search 제거 (score=%.3f)",
+                        rag_top_score,
+                        extra=log_extra,
+                    )
+                    continue
+
+                # 명시적 탐색 의도도 없고 금융도 아니며 짧은 일반질문이면 웹검색 차단
+                if not explicit_web and not finance_query and len(query.strip()) <= 16:
+                    logger.info("[도구보정] 명시적 탐색 의도 부족으로 web_search 제거", extra=log_extra)
+                    continue
+
+            candidate = {
+                "tool_to_use": name,
+                "tool_name": name,
+                "parameters": params,
+            }
+            key = (name, json.dumps(params, sort_keys=True, ensure_ascii=False))
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            normalized.append(candidate)
+
+        return normalized
+
     async def _should_use_web_search(self, query: str, rag_top_score: float, history: list = None) -> bool:
         """외부 정보 탐색(뉴스/웹/블로그/문서) 필요 여부를 판단합니다."""
         query_lower = query.lower()
+        explicit_web = self._has_explicit_web_search_intent(query)
+        finance_query = any(kw in query_lower for kw in self._FINANCE_KEYWORDS)
+
+        # 인사/잡담은 항상 검색하지 않는다.
+        if self._is_smalltalk_only_query(query):
+            return False
         
         # 명시적인 검색 방지 패턴
         if any(pat in query_lower for pat in self._NO_SEARCH_PATTERNS):
@@ -1192,20 +1307,20 @@ Generate the optimized English image prompt:"""
 
         # RAG 점수가 매우 높으면 검색 생략 (이미 알고 있는 정보)
         if rag_top_score >= config.RAG_STRONG_SIMILARITY_THRESHOLD:
-            # 최신/외부탐색 키워드가 없으면 검색 생략
-            if not any(kw in query_lower for kw in ["오늘", "최근", "요즘", "뉴스", "검색", "블로그", "리뷰", "문서", "사용법"]):
+            # 최신/외부탐색/금융 키워드가 없으면 검색 생략
+            if not explicit_web and not finance_query:
                 return False
 
-        # 1. 키워드 기반 판단
-        if any(kw in query_lower for kw in self._WEB_SEARCH_KEYWORDS):
+        # 1. 명시 키워드 기반 판단
+        if explicit_web or finance_query:
             return True
 
         # 2. 맥락 기반 판단 (연계 질문)
-        if history:
+        if history and rag_top_score < config.RAG_SIMILARITY_THRESHOLD:
             last_msg = history[-1]['parts'][0] if isinstance(history[-1]['parts'], list) else str(history[-1]['parts'])
             # 이전 답변에 뉴스/검색 안내가 있었고, 이번 질문이 짧거나 지시 대명사를 포함하면 검색 시도
             if "뉴스" in last_msg or "출처" in last_msg or "검색" in last_msg:
-                if len(query_lower) < 15 or any(dw in query_lower for dw in ["그거", "더", "자세히", "얼마나", "누가"]):
+                if len(query_lower) < 15 or any(dw in query_lower for dw in self._WEB_SEARCH_FOLLOWUP_KEYWORDS):
                     return True
 
         return False
@@ -1236,7 +1351,10 @@ Generate the optimized English image prompt:"""
             "핵심 규칙:\n"
             "1. 대화 맥락 고려: 사용자가 '그거', '그때 말한 거' 등 지시 대명사를 쓰거나 주어를 생략하면 이전 대화에서 대상을 찾아 검색 쿼리에 포함하세요.\n"
             "2. 독립적 쿼리 생성: 도구 파라미터(특히 query)를 설정할 때, 이전 맥락 없이도 검색 엔진에서 정확한 결과를 얻을 수 있도록 완성된 문장/키워드로 변환하세요.\n"
-            "3. 멀티 도구 선택: 여러 질문이 섞여 있다면 도구를 여러 개 선택할 수 있습니다.\n\n"
+            "3. 멀티 도구 선택: 여러 질문이 섞여 있다면 도구를 여러 개 선택할 수 있습니다.\n"
+            "4. web_search는 '최신/실시간/뉴스/출처/웹검색 요청/금융 시황'이 분명할 때만 선택하세요.\n"
+            "5. 인사/잡담/봇 상태 질문(예: '뭐해', '안녕')에는 절대 web_search를 선택하지 마세요.\n"
+            "6. 날씨는 web_search 대신 get_weather_forecast를 우선 선택하세요.\n\n"
             "사용 가능 도구:\n"
             "1. get_weather_forecast(location, day_offset): 특정 지역/시간의 날씨.\n"
             "2. search_for_place(query): 맛집, 장소 정보.\n"
@@ -1265,6 +1383,8 @@ Generate the optimized English image prompt:"""
                 'Context: User: "서울 날씨 어때?"\\nMasamong: (서울 날씨 답변...)\n'
                 'User: "내일은?"\n'
                 'Response: {"intent": "날씨 연계 질문", "reasoning": "이전 대화의 지역(서울) 유치, 시간만 내일로 변경", "tools": [{"tool": "get_weather_forecast", "params": {"location": "서울", "day_offset": 1}}] }\n\n'
+                'Context: (None)\nUser: "사몽아 뭐하냐"\n'
+                'Response: {"intent": "인사/잡담", "reasoning": "도구 불필요한 일반 대화", "tools": []}\n\n'
                 f"--- Current Context ---\n{history_text}\n"
                 f"User Message: {query}\n\n"
                 "Response:"
@@ -2232,7 +2352,13 @@ Generate the optimized English image prompt:"""
             rag_is_strong = bool(rag_blocks) and rag_top_score >= config.RAG_STRONG_SIMILARITY_THRESHOLD
             
             # 도구 계획 수립 (LLM 기반, 히스토리 주입)
-            tool_plan = await self._detect_tools_by_llm(user_query, log_extra, history=history)
+            raw_tool_plan = await self._detect_tools_by_llm(user_query, log_extra, history=history)
+            tool_plan = self._sanitize_tool_plan(
+                user_query,
+                raw_tool_plan,
+                rag_top_score=rag_top_score,
+                log_extra=log_extra,
+            )
             
             tool_results: list[dict[str, Any]] = []
             executed_plan: list[dict[str, Any]] = []
