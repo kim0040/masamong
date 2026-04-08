@@ -80,6 +80,7 @@ class AIHandler(commands.Cog):
         self.tools_cog = bot.get_cog('ToolsCog')
         self.ai_user_cooldowns: Dict[int, datetime] = {}
         self.proactive_cooldowns: Dict[int, float] = {}
+        self._auto_web_search_last_used: Dict[int, float] = {}
         # 뉴스 출처 리액션 캐시: {메시지ID: [URL, ...]} — 📰 리액션 클릭 시 출처 표시
         self._news_source_cache: Dict[int, list] = {}
         self._updating_news_sources: set[int] = set() # [NEW] 동시성 방어용: 현재 업데이트 중인 메시지 ID 세트
@@ -1149,7 +1150,7 @@ Generate the optimized English image prompt:"""
     ])
 
     _WEB_SEARCH_FOLLOWUP_KEYWORDS = frozenset([
-        '그거', '그건', '그건데', '그건데요', '더', '자세히', '근거', '링크', '출처',
+        '자세히', '근거', '링크', '출처', '원문', '기사', '팩트체크',
     ])
 
     _REALTIME_WEB_QUERY_HINTS = frozenset([
@@ -1227,6 +1228,123 @@ Generate the optimized English image prompt:"""
         if not any(token in lower for token in ("오늘", "현재", "실시간", "최신", "최근")):
             cleaned = f"{cleaned} {anchor}".strip()
         return cleaned
+
+    def _has_tool_keyword_signal(self, query: str) -> bool:
+        """질문에 도구 호출이 필요한 명시적 신호가 있는지 판별합니다."""
+        query_lower = (query or "").lower()
+        if not query_lower:
+            return False
+        return any(kw in query_lower for kw in self._WEATHER_KEYWORDS) or any(
+            kw in query_lower for kw in self._FINANCE_KEYWORDS
+        ) or any(kw in query_lower for kw in self._PLACE_KEYWORDS) or any(
+            kw in query_lower for kw in self._IMAGE_GEN_KEYWORDS
+        ) or any(
+            kw in query_lower for kw in self._WEB_SEARCH_KEYWORDS
+        )
+
+    def _select_tool_plan_without_intent_llm(
+        self,
+        query: str,
+        *,
+        rag_top_score: float,
+        log_extra: dict | None = None,
+    ) -> list[dict[str, Any]] | None:
+        """
+        의도 분석 LLM 호출 없이 처리 가능한 도구 계획을 우선 선택합니다.
+        - 명확한 키워드 도구(날씨/장소/이미지/금융)는 즉시 라우팅
+        - 강한 RAG + 도구 신호 없음이면 intent LLM 호출 자체를 생략
+        """
+        if self._is_smalltalk_only_query(query):
+            return []
+
+        keyword_plan = self._detect_tools_by_keyword(query)
+        if keyword_plan:
+            tool_name = keyword_plan[0].get("tool_to_use") or keyword_plan[0].get("tool_name")
+            if tool_name and tool_name != "web_search":
+                logger.info(
+                    "[도구보정] 키워드 기반 라우팅으로 intent LLM 호출을 생략합니다. tool=%s",
+                    tool_name,
+                    extra=log_extra,
+                )
+                return keyword_plan
+            # web_search는 명시적 탐색/금융 질문일 때만 키워드 라우팅
+            if tool_name == "web_search":
+                query_lower = (query or "").lower()
+                finance_query = any(kw in query_lower for kw in self._FINANCE_KEYWORDS)
+                explicit_web = self._has_explicit_web_search_intent(query)
+                if finance_query or explicit_web:
+                    if self._is_realtime_web_query(query):
+                        params = keyword_plan[0].setdefault("parameters", {})
+                        source_query = str(params.get("query") or query).strip()
+                        if source_query:
+                            params["query"] = self._normalize_realtime_web_query(source_query)
+                    logger.info(
+                        "[도구보정] 키워드 기반 web_search 라우팅으로 intent LLM 호출을 생략합니다.",
+                        extra=log_extra,
+                    )
+                    return keyword_plan
+
+        if (
+            getattr(config, "INTENT_LLM_RAG_STRONG_BYPASS", True)
+            and rag_top_score >= config.RAG_STRONG_SIMILARITY_THRESHOLD
+            and not self._has_tool_keyword_signal(query)
+            and not self._has_explicit_web_search_intent(query)
+        ):
+            logger.info(
+                "[도구보정] 강한 RAG 질의로 intent LLM 호출을 생략합니다. (score=%.3f)",
+                rag_top_score,
+                extra=log_extra,
+            )
+            return []
+
+        return None
+
+    @staticmethod
+    def _auto_web_search_scope_key(message: discord.Message) -> int:
+        """자동 웹검색 쿨다운을 적용할 스코프 키를 계산합니다."""
+        if message.guild:
+            return int(message.channel.id)
+        # DM은 사용자 단위로 쿨다운 적용
+        return -int(message.author.id)
+
+    def _can_run_auto_web_search(self, message: discord.Message, query: str, log_extra: dict | None = None) -> bool:
+        """
+        자동 웹검색(도구 계획이 없을 때의 fallback) 실행 가능 여부를 판단합니다.
+        명시적 웹검색 요청은 쿨다운을 적용하지 않습니다.
+        """
+        if self._has_explicit_web_search_intent(query):
+            return True
+
+        cooldown_seconds = max(0, int(getattr(config, "AUTO_WEB_SEARCH_COOLDOWN_SECONDS", 90)))
+        if cooldown_seconds <= 0:
+            return True
+
+        key = self._auto_web_search_scope_key(message)
+        now_mono = time.monotonic()
+        last_mono = self._auto_web_search_last_used.get(key)
+        if last_mono is None:
+            return True
+
+        elapsed = now_mono - last_mono
+        if elapsed >= cooldown_seconds:
+            return True
+
+        remaining = cooldown_seconds - elapsed
+        logger.info(
+            "[도구보정] 자동 web_search 쿨다운으로 생략합니다. 남은 시간=%.1fs",
+            remaining,
+            extra=log_extra,
+        )
+        return False
+
+    def _mark_auto_web_search_used(self, message: discord.Message) -> None:
+        key = self._auto_web_search_scope_key(message)
+        self._auto_web_search_last_used[key] = time.monotonic()
+        if len(self._auto_web_search_last_used) > 2048:
+            # 오래된 엔트리 절반 정리
+            sorted_items = sorted(self._auto_web_search_last_used.items(), key=lambda item: item[1])
+            for old_key, _ in sorted_items[:1024]:
+                self._auto_web_search_last_used.pop(old_key, None)
 
     def _sanitize_tool_plan(
         self,
@@ -1370,9 +1488,11 @@ Generate the optimized English image prompt:"""
         # 2. 맥락 기반 판단 (연계 질문)
         if history and rag_top_score < config.RAG_SIMILARITY_THRESHOLD:
             last_msg = history[-1]['parts'][0] if isinstance(history[-1]['parts'], list) else str(history[-1]['parts'])
-            # 이전 답변에 뉴스/검색 안내가 있었고, 이번 질문이 짧거나 지시 대명사를 포함하면 검색 시도
+            # 이전 답변이 탐색 맥락일 때만, 출처/근거/자세히 같은 명시적 후속 요청에 한해 검색 시도
             if "뉴스" in last_msg or "출처" in last_msg or "검색" in last_msg:
-                if len(query_lower) < 15 or any(dw in query_lower for dw in self._WEB_SEARCH_FOLLOWUP_KEYWORDS):
+                if any(dw in query_lower for dw in self._WEB_SEARCH_FOLLOWUP_KEYWORDS):
+                    return True
+                if getattr(config, "AUTO_WEB_SEARCH_ALLOW_SHORT_FOLLOWUP", False) and len(query_lower) < 15:
                     return True
 
         return False
@@ -1381,6 +1501,9 @@ Generate the optimized English image prompt:"""
         """사용자의 의도와 대화 맥락을 분석하여 가장 적합한 도구와 최적화된 검색 파라미터를 결정합니다."""
         import json as _json
         fast_model = getattr(config, 'FAST_MODEL_NAME', 'gemini-3.1-flash-lite-preview')
+
+        if not getattr(config, "INTENT_LLM_ENABLED", True):
+            return self._detect_tools_by_keyword(query)
 
         # 인사/잡담은 도구 호출 없이 바로 답변 생성 단계로 보냅니다.
         if self._is_smalltalk_only_query(query):
@@ -2402,10 +2525,17 @@ Generate the optimized English image prompt:"""
             )
             # [Move Up] 히스토리를 도구 선택 이전에 가져옴
             history = await self._get_recent_history(message, rag_prompt)
-            rag_is_strong = bool(rag_blocks) and rag_top_score >= config.RAG_STRONG_SIMILARITY_THRESHOLD
             
-            # 도구 계획 수립 (LLM 기반, 히스토리 주입)
-            raw_tool_plan = await self._detect_tools_by_llm(user_query, log_extra, history=history)
+            # 도구 계획 수립:
+            # 1) 키워드/강한 RAG 기반 우선 라우팅으로 불필요한 intent LLM 호출 방지
+            # 2) 필요할 때만 intent LLM 호출
+            raw_tool_plan = self._select_tool_plan_without_intent_llm(
+                user_query,
+                rag_top_score=rag_top_score,
+                log_extra=log_extra,
+            )
+            if raw_tool_plan is None:
+                raw_tool_plan = await self._detect_tools_by_llm(user_query, log_extra, history=history)
             tool_plan = self._sanitize_tool_plan(
                 user_query,
                 raw_tool_plan,
@@ -2470,36 +2600,38 @@ Generate the optimized English image prompt:"""
 
             # 도구 계획이 없을 때만 웹 검색 자동 판단 (중복 탐색/과호출 방지)
             if not tool_plan and await self._should_use_web_search(user_query, rag_top_score, history=history):
-                await status_msg.edit(content="🌐 웹에서 정보를 찾아보는 중이야...")
+                if self._can_run_auto_web_search(message, user_query, log_extra):
+                    await status_msg.edit(content="🌐 웹에서 정보를 찾아보는 중이야...")
 
-                # [NEW] 히스토리를 바탕으로 검색 쿼리 정제
-                refined_query = user_query
-                if history and getattr(config, "WEB_SEARCH_REFINE_WITH_LLM", False):
-                    refined_query = await self._refine_search_query_with_llm(user_query, history, log_extra)
-                    logger.info(f"자동 웹검색 쿼리 정제: '{user_query}' -> '{refined_query}'", extra=log_extra)
+                    # [NEW] 히스토리를 바탕으로 검색 쿼리 정제
+                    refined_query = user_query
+                    if history and getattr(config, "WEB_SEARCH_REFINE_WITH_LLM", False):
+                        refined_query = await self._refine_search_query_with_llm(user_query, history, log_extra)
+                        logger.info(f"자동 웹검색 쿼리 정제: '{user_query}' -> '{refined_query}'", extra=log_extra)
 
-                web_result = await self._execute_web_search_with_llm(refined_query, log_extra, history=history)
+                    web_result = await self._execute_web_search_with_llm(refined_query, log_extra, history=history)
+                    self._mark_auto_web_search_used(message)
 
-                if web_result.get("summary"):
-                    source_urls = web_result.get("source_urls", [])
-                    final_response_text = web_result["summary"]
-                    if source_urls:
-                        if self.NEWS_SOURCE_FOOTER.strip() not in final_response_text:
-                            final_response_text += self.NEWS_SOURCE_FOOTER
+                    if web_result.get("summary"):
+                        source_urls = web_result.get("source_urls", [])
+                        final_response_text = web_result["summary"]
+                        if source_urls:
+                            if self.NEWS_SOURCE_FOOTER.strip() not in final_response_text:
+                                final_response_text += self.NEWS_SOURCE_FOOTER
 
-                    await status_msg.edit(content=final_response_text)
-                    if source_urls:
-                        self._news_source_cache[status_msg.id] = source_urls
-                        if len(self._news_source_cache) > 50:
-                            self._news_source_cache.pop(next(iter(self._news_source_cache)))
-                        try:
-                            await status_msg.add_reaction("📰")
-                        except:
-                            pass
+                        await status_msg.edit(content=final_response_text)
+                        if source_urls:
+                            self._news_source_cache[status_msg.id] = source_urls
+                            if len(self._news_source_cache) > 50:
+                                self._news_source_cache.pop(next(iter(self._news_source_cache)))
+                            try:
+                                await status_msg.add_reaction("📰")
+                            except:
+                                pass
 
-                    await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
-                    await db_utils.log_api_call(self.bot.db, "llm_global")
-                    return
+                        await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
+                        await db_utils.log_api_call(self.bot.db, "llm_global")
+                        return
 
             # 답변 작성 단계
             await status_msg.edit(content="✍️ 답변을 정리하고 있어...")

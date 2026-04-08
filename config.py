@@ -284,6 +284,8 @@ HISTORY_LIMIT_WITH_RAG = as_int(load_config_value('HISTORY_LIMIT_WITH_RAG', 6), 
 HISTORY_LIMIT_WITHOUT_RAG = as_int(load_config_value('HISTORY_LIMIT_WITHOUT_RAG', 10), 10)
 # 도구 의도 분석 시 참고할 이전 대화 개수
 INTENT_HISTORY_LIMIT = as_int(load_config_value('INTENT_HISTORY_LIMIT', 5), 5)
+INTENT_LLM_ENABLED = as_bool(load_config_value('INTENT_LLM_ENABLED', 'true'))
+INTENT_LLM_RAG_STRONG_BYPASS = as_bool(load_config_value('INTENT_LLM_RAG_STRONG_BYPASS', 'true'))
 
 # 메시지 1개당 최대 글자수 (프롬프트 포함 시)
 MAX_MESSAGE_CHARS = as_int(load_config_value('MAX_MESSAGE_CHARS', 1500), 1500)
@@ -315,6 +317,8 @@ WEB_RAG_CACHE_MAX_ENTRIES = max(1, as_int(load_config_value('WEB_RAG_CACHE_MAX_E
 WEB_RAG_FAST_PROMPT_MAX_CHARS = max(800, as_int(load_config_value('WEB_RAG_FAST_PROMPT_MAX_CHARS', 5000), 5000))
 WEB_RAG_CONTEXT_MAX_CHARS = max(800, as_int(load_config_value('WEB_RAG_CONTEXT_MAX_CHARS', 2200), 2200))
 WEB_SEARCH_REFINE_WITH_LLM = as_bool(load_config_value('WEB_SEARCH_REFINE_WITH_LLM', 'false'))
+AUTO_WEB_SEARCH_COOLDOWN_SECONDS = max(0, as_int(load_config_value('AUTO_WEB_SEARCH_COOLDOWN_SECONDS', 90), 90))
+AUTO_WEB_SEARCH_ALLOW_SHORT_FOLLOWUP = as_bool(load_config_value('AUTO_WEB_SEARCH_ALLOW_SHORT_FOLLOWUP', 'false'))
 
 
 # CometAPI 이미지 생성 설정 (Gemini via CometAPI Gemini-compatible)
@@ -590,6 +594,11 @@ RAIN_NOTIFICATION_THRESHOLD_POP = as_int(load_config_value("RAIN_NOTIFICATION_TH
 RAIN_NOTIFICATION_GREETING_THRESHOLD_POP = as_int(load_config_value("RAIN_NOTIFICATION_GREETING_THRESHOLD_POP", 60), 60)
 ENABLE_GREETING_NOTIFICATION = as_bool(load_config_value("ENABLE_GREETING_NOTIFICATION", False))
 GREETING_NOTIFICATION_CHANNEL_ID = as_int(load_config_value("GREETING_NOTIFICATION_CHANNEL_ID", 0), 0)
+ENABLE_EARTHQUAKE_ALERT = as_bool(load_config_value("ENABLE_EARTHQUAKE_ALERT", True))
+EARTHQUAKE_CHECK_INTERVAL_MINUTES = max(
+    1,
+    as_int(load_config_value("EARTHQUAKE_CHECK_INTERVAL_MINUTES", 1), 1),
+)
 MORNING_GREETING_TIME = {
     "hour": as_int(load_config_value("MORNING_GREETING_HOUR", 7), 7),
     "minute": as_int(load_config_value("MORNING_GREETING_MINUTE", 30), 30),
