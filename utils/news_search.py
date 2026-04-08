@@ -41,6 +41,32 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     pymysql = None  # type: ignore
 
+# 실시간 질의 처리 기준 시간대
+KST = timezone(timedelta(hours=9))
+
+# 질문에 아래 힌트가 있으면 "실시간성"이 중요하다고 판단합니다.
+_REALTIME_HINTS = (
+    "오늘",
+    "지금",
+    "현재",
+    "실시간",
+    "최신",
+    "최근",
+    "속보",
+    "방금",
+    "요즘",
+    "급등",
+    "급락",
+    "떡상",
+    "떡락",
+    "코스피",
+    "코스닥",
+    "주가",
+    "환율",
+    "뉴스",
+    "동향",
+)
+
 # [Security/Fix] NLTK resources check
 try:
     import nltk
@@ -247,6 +273,90 @@ def _call_fast_model(
 def _build_cache_key(user_query: str) -> str:
     norm = re.sub(r"\s+", " ", (user_query or "").strip().lower())
     return hashlib.sha1(norm.encode("utf-8")).hexdigest()
+
+
+def _is_realtime_query(user_query: str) -> bool:
+    lowered = (user_query or "").strip().lower()
+    if not lowered:
+        return False
+    return any(token in lowered for token in _REALTIME_HINTS)
+
+
+def _strip_explicit_date_tokens(text: str) -> str:
+    """검색어에서 특정 연/월/일 토큰을 제거해 실시간 질문 날짜 오염을 방지합니다."""
+    cleaned = str(text or "")
+    patterns = (
+        r"(?:19|20)\d{2}\s*년\s*\d{1,2}\s*월\s*\d{0,2}\s*일?",
+        r"(?:19|20)\d{2}\s*년\s*\d{1,2}\s*월",
+        r"(?:19|20)\d{2}\s*년",
+        r"(?:19|20)\d{2}[./-]\d{1,2}[./-]\d{1,2}",
+        r"(?:19|20)\d{2}[./-]\d{1,2}",
+    )
+    for pat in patterns:
+        cleaned = re.sub(pat, " ", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+    return cleaned
+
+
+def _sanitize_realtime_keywords(user_query: str, keywords: list[str], *, lang: str, now_kst: datetime) -> list[str]:
+    """실시간 질의에서 키워드에 현재 날짜 앵커를 부여합니다."""
+    cleaned_base = _strip_explicit_date_tokens(user_query).strip() or (user_query or "").strip()
+    cleaned_keywords = [_strip_explicit_date_tokens(k).strip() for k in keywords if str(k or "").strip()]
+
+    if lang == "ko":
+        date_anchor = f"{now_kst.year}년 {now_kst.month}월"
+        realtime_tokens = ("오늘", "현재", "실시간", "최신", "최근")
+    else:
+        date_anchor = f"{now_kst.year}-{now_kst.month:02d}"
+        realtime_tokens = ("today", "current", "real-time", "realtime", "latest", "recent")
+
+    out: list[str] = []
+    for item in cleaned_keywords:
+        candidate = item
+        lower = candidate.lower()
+        if date_anchor not in candidate and not any(token in lower for token in realtime_tokens):
+            candidate = f"{candidate} {date_anchor}".strip()
+        out.append(candidate)
+
+    if not out:
+        fallback = cleaned_base
+        lower = fallback.lower()
+        if date_anchor not in fallback and not any(token in lower for token in realtime_tokens):
+            fallback = f"{fallback} {date_anchor}".strip()
+        out.append(fallback)
+
+    deduped = list(dict.fromkeys([item for item in out if item]))
+    return deduped[:2]
+
+
+def _parse_result_datetime(raw: Any) -> datetime | None:
+    """검색 결과의 date 문자열을 UTC datetime으로 파싱합니다."""
+    text = str(raw or "").strip()
+    if not text:
+        return None
+
+    iso_candidate = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(iso_candidate)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        pass
+
+    for pattern in (
+        r"((?:19|20)\d{2})[./-](\d{1,2})[./-](\d{1,2})",
+        r"((?:19|20)\d{2})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일",
+    ):
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        try:
+            year, month, day = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+            return datetime(year, month, day, tzinfo=timezone.utc)
+        except Exception:
+            continue
+    return None
 
 
 def _load_pipeline_cache(user_query: str) -> dict[str, Any] | None:
@@ -469,13 +579,26 @@ def _infer_scope_fallback(user_query: str) -> str:
     return "BOTH"
 
 
-def _plan_search_fallback(user_query: str) -> dict[str, Any]:
+def _plan_search_fallback(
+    user_query: str,
+    *,
+    now_kst: datetime | None = None,
+    realtime: bool = False,
+) -> dict[str, Any]:
     category = _infer_category_fallback(user_query)
+    if realtime:
+        category = "NEWS"
+    ko_keywords = _build_keywords_fallback(user_query, "ko", category)
+    en_keywords = _build_keywords_fallback(user_query, "en", category)
+    if realtime:
+        ts = now_kst or datetime.now(KST)
+        ko_keywords = _sanitize_realtime_keywords(user_query, ko_keywords, lang="ko", now_kst=ts)
+        en_keywords = _sanitize_realtime_keywords(user_query, en_keywords, lang="en", now_kst=ts)
     return {
         "category": category,
         "scope": _infer_scope_fallback(user_query),
-        "keywords_ko": _build_keywords_fallback(user_query, "ko", category),
-        "keywords_en": _build_keywords_fallback(user_query, "en", category),
+        "keywords_ko": ko_keywords,
+        "keywords_en": en_keywords,
     }
 
 
@@ -484,10 +607,15 @@ def _plan_search(
     *,
     budget: FastLLMBudget | None = None,
     quota_manager: FastLLMQuotaManager | None = None,
+    now_kst: datetime | None = None,
+    realtime: bool = False,
 ) -> dict[str, Any]:
     """검색 전략과 다국어 키워드를 한 번에 생성합니다."""
+    ts = now_kst or datetime.now(KST)
+    today_anchor = ts.strftime("%Y-%m-%d")
     prompt = (
         "당신은 웹 검색 전략가입니다. 사용자 질문을 보고 검색 계획을 JSON으로만 출력하세요.\n"
+        f"[시간 기준] 오늘 날짜(KST): {today_anchor}\n"
         "반드시 아래 형식을 지키세요.\n"
         "{"
         "\"category\":\"GENERAL 또는 NEWS\","
@@ -500,6 +628,7 @@ def _plan_search(
         "- scope: 국내 중심 LOCAL, 해외 중심 GLOBAL, 둘 다면 BOTH\n"
         "- keywords_ko: 핵심 검색어와 확장 검색어 2개\n"
         "- keywords_en: 영문 검색어 2개\n"
+        "- 질문에 '오늘/현재/실시간/최신/최근'이 포함되면 과거 특정 연월(예: 2024년 5월)을 임의로 넣지 말고 오늘 기준 검색어를 만들 것\n"
         "- 다른 설명, 코드블록, 마크다운 없이 JSON만 출력\n\n"
         f"질문: {user_query}"
     )
@@ -507,7 +636,7 @@ def _plan_search(
     try:
         match = re.search(r"\{.*\}", raw, re.DOTALL)
         if not match:
-            return _plan_search_fallback(user_query)
+            return _plan_search_fallback(user_query, now_kst=ts, realtime=realtime)
         data = json.loads(match.group())
         category = str(data.get("category", "GENERAL")).upper()
         scope = str(data.get("scope", "BOTH")).upper()
@@ -521,6 +650,11 @@ def _plan_search(
             keywords_ko = _build_keywords_fallback(user_query, "ko", category)
         if not keywords_en:
             keywords_en = _build_keywords_fallback(user_query, "en", category)
+        if realtime:
+            # 실시간 질문은 뉴스 탐색 우선 + 현재 시점 키워드 강제
+            category = "NEWS"
+            keywords_ko = _sanitize_realtime_keywords(user_query, keywords_ko, lang="ko", now_kst=ts)
+            keywords_en = _sanitize_realtime_keywords(user_query, keywords_en, lang="en", now_kst=ts)
         return {
             "category": category,
             "scope": scope,
@@ -529,7 +663,7 @@ def _plan_search(
         }
     except Exception as e:
         logger.warning(f"[web_search] 검색 계획 파싱 실패: {e}")
-        return _plan_search_fallback(user_query)
+        return _plan_search_fallback(user_query, now_kst=ts, realtime=realtime)
 
 
 def _search_web_sync(user_query: str, region: str = "kr-kr", *, keywords: list[str]) -> tuple[list | None, str]:
@@ -629,8 +763,9 @@ def _domain(url: str) -> str:
         return ""
 
 
-def _rank_candidates(results: list[dict]) -> list[dict]:
+def _rank_candidates(results: list[dict], *, now_utc: datetime | None = None) -> list[dict]:
     """도메인/스니펫 품질을 반영해 기본 정렬합니다."""
+    now_ref = now_utc or datetime.now(timezone.utc)
     ranked: list[tuple[float, dict]] = []
     for item in results:
         url = item.get("url", "")
@@ -645,6 +780,20 @@ def _rank_candidates(results: list[dict]) -> list[dict]:
             score += 0.15
         if any(token in dom for token in ("dcinside", "reddit", "quora")):
             score += 0.1
+
+        # 날짜 정보가 있으면 최신성 점수를 부여 (실시간 질의 품질 개선)
+        published_at = _parse_result_datetime(item.get("date"))
+        if published_at is not None:
+            age_hours = max(0.0, (now_ref - published_at).total_seconds() / 3600.0)
+            if age_hours <= 12:
+                score += 0.45
+            elif age_hours <= 24:
+                score += 0.35
+            elif age_hours <= 72:
+                score += 0.20
+            elif age_hours <= 24 * 7:
+                score += 0.10
+
         ranked.append((score, item))
     ranked.sort(key=lambda x: x[0], reverse=True)
     return [item for _, item in ranked]
@@ -697,13 +846,20 @@ def _format_ddgs_results_for_llm(results: list[dict]) -> str:
     return "\n\n".join(lines)
 
 
-def _search_news_sync(user_query: str, region: str = "kr-kr", *, keywords: list[str]) -> tuple[list | None, str]:
+def _search_news_sync(
+    user_query: str,
+    region: str = "kr-kr",
+    *,
+    keywords: list[str],
+    realtime: bool = False,
+) -> tuple[list | None, str]:
     """
     [동기] DuckDuckGo News에서 뉴스를 검색합니다 (API 키 불필요, 완전 무료).
 
     멀티키워드 전략:
     - LLM이 생성한 2가지 검색어로 각각 검색하여 결과를 합산
-    - 먼저 최근 1개월(m) 기간으로 검색 → 결과 부족 시 기간 제한 없이 재검색
+    - 실시간 질의면 일/주 단위 우선 검색 후 월/무제한으로 단계 폴백
+    - 일반 질의면 최근 1개월(m) 우선 후 무제한으로 폴백
     """
     label = "국내" if region == "kr-kr" else "해외"
 
@@ -728,19 +884,26 @@ def _search_news_sync(user_query: str, region: str = "kr-kr", *, keywords: list[
             logger.warning(f"[web_search] DDGS 오류 ({keyword[:30]}): {e}")
             return []
 
-    # 1차: 최근 1개월 검색
-    for kw in keywords:
-        for r in _search(kw, timelimit="m"):
-            url = r.get("url", "")
-            if url and url not in seen_urls:
-                all_raw.append(r)
-                seen_urls.add(url)
+    if realtime:
+        phases: list[tuple[str | None, int, str]] = [
+            ("d", 3, "일 단위"),
+            ("w", 5, "주 단위"),
+            ("m", 6, "월 단위"),
+            (None, 6, "무제한"),
+        ]
+    else:
+        phases = [
+            ("m", 5, "월 단위"),
+            (None, 5, "무제한"),
+        ]
 
-    # 2차: 결과 부족 시 기간 제한 없이 보충
-    if len(all_raw) < 5:
-        logger.info(f"[web_search] [{label}] 결과 부족({len(all_raw)}개) → 기간 제한 없이 재검색")
+    for timelimit, minimum, phase_label in phases:
+        if len(all_raw) >= minimum:
+            continue
+        if timelimit is None:
+            logger.info(f"[web_search] [{label}] 결과 부족({len(all_raw)}개) → {phase_label} 재검색")
         for kw in keywords:
-            for r in _search(kw, timelimit=None):
+            for r in _search(kw, timelimit=timelimit):
                 url = r.get("url", "")
                 if url and url not in seen_urls:
                     all_raw.append(r)
@@ -898,6 +1061,13 @@ async def run_news_search_pipeline(user_query: str) -> dict[str, Any]:
         return {"status": "error", "message": "검색 기능이 비활성화되어 있습니다."}
 
     logger.info(f"[web_search] 파이프라인 시작: \"{user_query}\"")
+    now_kst = datetime.now(KST)
+    realtime_query = _is_realtime_query(user_query)
+    if realtime_query:
+        logger.info(
+            "[web_search] 실시간 질의 감지: KST 기준 날짜 앵커 적용 (%s)",
+            now_kst.strftime("%Y-%m-%d"),
+        )
 
     cached = _load_pipeline_cache(user_query)
     if cached:
@@ -944,6 +1114,8 @@ async def run_news_search_pipeline(user_query: str) -> dict[str, Any]:
         user_query,
         budget=fast_budget,
         quota_manager=quota_manager,
+        now_kst=now_kst,
+        realtime=realtime_query,
     )
     category = plan["category"]
     scope = plan["scope"]
@@ -960,10 +1132,22 @@ async def run_news_search_pipeline(user_query: str) -> dict[str, Any]:
         results = []
         if cat == "NEWS":
             if target_scope in ("LOCAL", "BOTH"):
-                res, _ = await asyncio.to_thread(_search_news_sync, user_query, "kr-kr", keywords=keywords_ko)
+                res, _ = await asyncio.to_thread(
+                    _search_news_sync,
+                    user_query,
+                    "kr-kr",
+                    keywords=keywords_ko,
+                    realtime=realtime_query,
+                )
                 if res: results.extend(res)
             if target_scope in ("GLOBAL", "BOTH"):
-                res, _ = await asyncio.to_thread(_search_news_sync, user_query, "wt-wt", keywords=keywords_en)
+                res, _ = await asyncio.to_thread(
+                    _search_news_sync,
+                    user_query,
+                    "wt-wt",
+                    keywords=keywords_en,
+                    realtime=realtime_query,
+                )
                 if res: results.extend(res)
         else: # GENERAL
             if target_scope in ("LOCAL", "BOTH"):
@@ -994,6 +1178,11 @@ async def run_news_search_pipeline(user_query: str) -> dict[str, Any]:
     candidates = _diversify_domains(ranked, candidate_limit)
     if not candidates:
         return {"status": "error", "message": "탐색 가능한 후보를 확보하지 못했습니다."}
+
+    if realtime_query:
+        dated_count = sum(1 for item in candidates if _parse_result_datetime(item.get("date")) is not None)
+        if dated_count == 0:
+            logger.warning("[web_search] 실시간 질의지만 후보 날짜 메타데이터가 부족합니다. 답변 시 최신성 주의 필요.")
 
     # ── 단계 3: 기사/페이지 선정 ──
     selected_count = int(getattr(config, "WEB_RAG_MAX_SELECTED_URLS", 4))
