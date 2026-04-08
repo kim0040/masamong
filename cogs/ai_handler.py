@@ -1152,6 +1152,11 @@ Generate the optimized English image prompt:"""
         '그거', '그건', '그건데', '그건데요', '더', '자세히', '근거', '링크', '출처',
     ])
 
+    _REALTIME_WEB_QUERY_HINTS = frozenset([
+        '오늘', '지금', '현재', '실시간', '최신', '최근', '속보',
+        '급등', '급락', '떡상', '떡락', '코스피', '코스닥', '주가', '환율',
+    ])
+
 
     _NO_SEARCH_PATTERNS = frozenset([
         '내 얘기', '우리 얘기', '너 얘기', '잡담만', '인사만'
@@ -1188,6 +1193,40 @@ Generate the optimized English image prompt:"""
         """질문이 명시적으로 외부 웹 탐색을 요구하는지 판별합니다."""
         query_lower = (query or "").lower()
         return any(kw in query_lower for kw in self._WEB_SEARCH_KEYWORDS)
+
+    def _is_realtime_web_query(self, query: str) -> bool:
+        query_lower = (query or "").lower()
+        if not query_lower:
+            return False
+        return any(token in query_lower for token in self._REALTIME_WEB_QUERY_HINTS)
+
+    @staticmethod
+    def _normalize_realtime_web_query(query: str) -> str:
+        """실시간 질의에서 과거 연/월 오염 토큰을 제거하고 현재 날짜 앵커를 부여합니다."""
+        raw = str(query or "").strip()
+        if not raw:
+            return raw
+
+        cleaned = raw
+        patterns = (
+            r"(?:19|20)\d{2}\s*년\s*\d{1,2}\s*월\s*\d{0,2}\s*일?",
+            r"(?:19|20)\d{2}\s*년\s*\d{1,2}\s*월",
+            r"(?:19|20)\d{2}\s*년",
+            r"(?:19|20)\d{2}[./-]\d{1,2}[./-]\d{1,2}",
+            r"(?:19|20)\d{2}[./-]\d{1,2}",
+        )
+        for pat in patterns:
+            cleaned = re.sub(pat, " ", cleaned)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+        if not cleaned:
+            cleaned = raw
+
+        now_kst = datetime.now(timezone(timedelta(hours=9)))
+        anchor = f"{now_kst.year}년 {now_kst.month}월 {now_kst.day}일"
+        lower = cleaned.lower()
+        if not any(token in lower for token in ("오늘", "현재", "실시간", "최신", "최근")):
+            cleaned = f"{cleaned} {anchor}".strip()
+        return cleaned
 
     def _sanitize_tool_plan(
         self,
@@ -1227,6 +1266,19 @@ Generate the optimized English image prompt:"""
                 return []
 
             if name == "web_search":
+                # 실시간형 질문은 과거 날짜 오염 토큰을 제거하고 현재 시점으로 앵커링한다.
+                if self._is_realtime_web_query(query):
+                    source_query = str(params.get("query") or query).strip()
+                    if source_query:
+                        normalized_query = self._normalize_realtime_web_query(source_query)
+                        params["query"] = normalized_query
+                        logger.info(
+                            "[도구보정] 실시간 web_search 쿼리 정규화: '%s' -> '%s'",
+                            source_query,
+                            normalized_query,
+                            extra=log_extra,
+                        )
+
                 # 날씨/장소는 전용 도구 우선 (웹검색 남용 방지)
                 if weather_query:
                     location = self._extract_location_from_query(query) or "광양"
@@ -1355,6 +1407,7 @@ Generate the optimized English image prompt:"""
             "4. web_search는 '최신/실시간/뉴스/출처/웹검색 요청/금융 시황'이 분명할 때만 선택하세요.\n"
             "5. 인사/잡담/봇 상태 질문(예: '뭐해', '안녕')에는 절대 web_search를 선택하지 마세요.\n"
             "6. 날씨는 web_search 대신 get_weather_forecast를 우선 선택하세요.\n\n"
+            "7. 사용자가 '오늘/현재/실시간/최신/최근'을 말하면, 검색 query에 과거 특정 연월(예: 2024년 5월)을 임의로 넣지 마세요.\n\n"
             "사용 가능 도구:\n"
             "1. get_weather_forecast(location, day_offset): 특정 지역/시간의 날씨.\n"
             "2. search_for_place(query): 맛집, 장소 정보.\n"
