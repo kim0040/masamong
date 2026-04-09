@@ -1193,7 +1193,12 @@ Generate the optimized English image prompt:"""
     def _has_explicit_web_search_intent(self, query: str) -> bool:
         """질문이 명시적으로 외부 웹 탐색을 요구하는지 판별합니다."""
         query_lower = (query or "").lower()
-        return any(kw in query_lower for kw in self._WEB_SEARCH_KEYWORDS)
+        explicit_terms = (
+            '웹검색', '검색해줘', '검색해', '검색 좀', '찾아줘', '찾아봐', '조사해줘', '탐색해줘',
+            '뉴스', '소식', '출처', '링크', '기사', '공식 문서', '레퍼런스', '가이드', '튜토리얼', '사용법',
+            '리뷰', '사용기', '비교',
+        )
+        return any(kw in query_lower for kw in explicit_terms)
 
     def _is_realtime_web_query(self, query: str) -> bool:
         query_lower = (query or "").lower()
@@ -1238,8 +1243,6 @@ Generate the optimized English image prompt:"""
             kw in query_lower for kw in self._FINANCE_KEYWORDS
         ) or any(kw in query_lower for kw in self._PLACE_KEYWORDS) or any(
             kw in query_lower for kw in self._IMAGE_GEN_KEYWORDS
-        ) or any(
-            kw in query_lower for kw in self._WEB_SEARCH_KEYWORDS
         )
 
     def _select_tool_plan_without_intent_llm(
@@ -1283,6 +1286,31 @@ Generate the optimized English image prompt:"""
                         extra=log_extra,
                     )
                     return keyword_plan
+
+        # 명시적 외부 탐색 요청은 intent LLM을 거치지 않고 web_search로 직접 라우팅한다.
+        if self._has_explicit_web_search_intent(query):
+            normalized_query = query
+            if self._is_realtime_web_query(query):
+                normalized_query = self._normalize_realtime_web_query(query)
+            logger.info(
+                "[도구보정] 명시적 web_search 의도로 intent LLM 호출을 생략합니다.",
+                extra=log_extra,
+            )
+            return [
+                {
+                    "tool_to_use": "web_search",
+                    "tool_name": "web_search",
+                    "parameters": {"query": normalized_query},
+                }
+            ]
+
+        # 기본 대화(명시적 도구 신호 없음)는 intent LLM을 생략하고 로컬 기억 기반 응답으로 처리한다.
+        if not self._has_tool_keyword_signal(query):
+            logger.info(
+                "[도구보정] 도구 신호가 없어 intent LLM 호출을 생략합니다.",
+                extra=log_extra,
+            )
+            return []
 
         if (
             getattr(config, "INTENT_LLM_RAG_STRONG_BYPASS", True)
@@ -1384,6 +1412,11 @@ Generate the optimized English image prompt:"""
                 return []
 
             if name == "web_search":
+                # 기본 대화/회상형 문맥에서 LLM이 web_search를 과탐지하면 방어적으로 차단한다.
+                if not explicit_web and not finance_query and not self._has_tool_keyword_signal(query):
+                    logger.info("[도구보정] 일반 대화 문맥으로 판단해 web_search 제거", extra=log_extra)
+                    continue
+
                 # 실시간형 질문은 과거 날짜 오염 토큰을 제거하고 현재 시점으로 앵커링한다.
                 if self._is_realtime_web_query(query):
                     source_query = str(params.get("query") or query).strip()
@@ -2121,6 +2154,10 @@ Generate the optimized English image prompt:"""
                                 "(⚠️ 주의: 위 내용은 과거의 기억일 뿐입니다. 현재 대화가 아닙니다. "
                                 "사용자가 과거에 비슷한 질문을 했더라도, '아까 말했잖아'라고 하지 말고 "
                                 "마치 처음 듣는 것처럼 친절하게 답변하세요.)")
+                sections.append(
+                    "(보조 지침: 과거 대화 기억은 현재 질문/검색결과와 직접 관련이 있을 때만 자연스럽게 반영하고, "
+                    "관련이 약하면 굳이 언급하지 마세요.)"
+                )
 
         # 도구 실행 결과 - 누락 복구
         # 도구 실행 결과 - 누락 복구
@@ -2257,6 +2294,21 @@ Generate the optimized English image prompt:"""
                     # Fallback: Unknown dict structure
                     lines.append(f"[{name}] {str(result)}")
                     continue
+
+            # [Optimization] 웹 검색 결과는 요약 중심으로 전달해 후속 합성 품질을 높입니다.
+            if name == "web_search" and isinstance(result, dict):
+                summary = str(result.get("summary") or result.get("result") or "").strip()
+                if summary:
+                    max_summary_len = 900
+                    if len(summary) > max_summary_len:
+                        summary = summary[:max_summary_len].rstrip() + "...(생략)"
+                    lines.append(f"[{name}] 요약: {summary}")
+                urls = result.get("source_urls") or result.get("urls") or []
+                if isinstance(urls, list) and urls:
+                    lines.append(f"[{name}] 출처 수: {len(urls)}")
+                if not summary and not urls:
+                    lines.append(f"[{name}] {str(result)}")
+                continue
             
             # [Optimization] 나머지 도구는 문자열 길이 제한
             if isinstance(result, dict):
@@ -2670,18 +2722,30 @@ Generate the optimized English image prompt:"""
                 recent_history=history,
             )
 
-            # 답변 생성 (웹 검색 단독 결과는 재합성하지 않고 바로 사용)
+            # 답변 생성
             final_response_text = ""
             non_local_tool_results = [res for res in tool_results if res.get("tool_name") != "local_rag"]
+            web_only_summary = ""
             if (
                 len(non_local_tool_results) == 1
                 and non_local_tool_results[0].get("tool_name") == "web_search"
                 and isinstance(non_local_tool_results[0].get("result"), dict)
                 and non_local_tool_results[0]["result"].get("summary")
             ):
-                final_response_text = str(non_local_tool_results[0]["result"]["summary"]).strip()
+                web_only_summary = str(non_local_tool_results[0]["result"]["summary"]).strip()
+
+            # 웹 검색 단독이면서 RAG가 없으면 기존처럼 요약을 그대로 재사용한다.
+            # 단, RAG가 있으면 최종 모델에서 검색결과+기억을 함께 보고 관련될 때만 반영하도록 재합성한다.
+            if web_only_summary and not rag_blocks:
+                final_response_text = web_only_summary
                 logger.info("웹 검색 단독 결과를 최종 답변으로 재사용합니다.", extra=log_extra)
             else:
+                if web_only_summary and rag_blocks:
+                    logger.info(
+                        "웹 검색 단독 + RAG 컨텍스트가 있어 최종 답변을 재합성합니다. (rag_blocks=%d)",
+                        len(rag_blocks),
+                        extra=log_extra,
+                    )
                 if self.use_cometapi:
                     final_response_text = await self._cometapi_generate_content(system_prompt, main_prompt, log_extra) or ""
 
