@@ -79,7 +79,7 @@ class UserCommands(commands.Cog):
         - `!이미지 사이버펑크 스타일의 서울 야경`
 
         참고:
-        - 이미지 생성은 `COMETAPI_KEY`가 필요합니다.
+        - 이미지 생성은 `COMETAPI_IMAGE_API_KEY`(미설정 시 `COMETAPI_KEY` fallback)가 필요합니다.
         - 유저/전역 생성 횟수 제한이 있습니다.
         """
         log_extra = {'guild_id': ctx.guild.id, 'author_id': ctx.author.id}

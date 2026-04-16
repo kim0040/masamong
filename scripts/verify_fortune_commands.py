@@ -222,8 +222,9 @@ async def case_fortune_guild_summary(cog: FortuneHarness, ai: FakeAIHandler) -> 
     before = len(ai.calls)
     await FortuneCog.fortune.callback(cog, ctx, option=None)
     assert len(ai.calls) == before + 1, "AI 호출 누락"
-    assert ai.calls[-1]["model"] == "DeepSeek-V3.2-Exp-nothinking"
-    assert "[mock:DeepSeek-V3.2-Exp-nothinking]" in (ctx.channel.messages[-1].content or "")
+    expected_lite = getattr(config, "FORTUNE_MODEL_LITE", "DeepSeek-V3.2-Exp-nothinking")
+    assert ai.calls[-1]["model"] == expected_lite
+    assert f"[mock:{expected_lite}]" in (ctx.channel.messages[-1].content or "")
 
 
 async def case_fortune_dm_detail_and_limit(cog: FortuneHarness, db: aiosqlite.Connection, ai: FakeAIHandler) -> None:
@@ -236,7 +237,8 @@ async def case_fortune_dm_detail_and_limit(cog: FortuneHarness, db: aiosqlite.Co
     before = len(ai.calls)
     await FortuneCog.fortune.callback(cog, ctx, option="상세")
     assert len(ai.calls) == before + 1, "상세 AI 호출 누락"
-    assert ai.calls[-1]["model"] == "DeepSeek-V3.2-Exp-thinking"
+    expected_pro = getattr(config, "FORTUNE_MODEL_PRO", "DeepSeek-V3.2-Exp-thinking")
+    assert ai.calls[-1]["model"] == expected_pro
     assert any("남은 일일 조회 횟수: 2회" in (m.content or "") for m in dm.messages), "잔여 횟수 안내 누락"
 
     # 추가 2회 사용량 적재 -> 총 3회로 한도 도달 상태 구성

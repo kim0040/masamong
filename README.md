@@ -262,6 +262,41 @@ COMETAPI_KEY=...
 COMETAPI_BASE_URL=https://api.cometapi.com/v1
 ALLOW_DIRECT_GEMINI_FALLBACK=false
 
+# 레인1: 판단/웹검색(의도 분석, 쿼리 정제, 웹 RAG)
+LLM_ROUTING_PRIMARY_PROVIDER=gemini_compat
+LLM_ROUTING_PRIMARY_MODEL=gemini-3.1-flash-lite-preview
+LLM_ROUTING_PRIMARY_BASE_URL=https://api.cometapi.com
+LLM_ROUTING_PRIMARY_API_KEY=...
+LLM_ROUTING_FALLBACK_PROVIDER=none
+
+# 레인2: 최종 답변/요약/명령어 생성
+LLM_MAIN_PRIMARY_PROVIDER=openai_compat
+LLM_MAIN_PRIMARY_MODEL=DeepSeek-V3.2-Exp-nothinking
+LLM_MAIN_PRIMARY_BASE_URL=https://api.cometapi.com/v1
+LLM_MAIN_PRIMARY_API_KEY=...
+LLM_MAIN_FALLBACK_PROVIDER=none
+
+# direct Gemini fallback 경로 모델/호출 제한
+AI_INTENT_MODEL_NAME=gemini-2.5-flash-lite
+AI_RESPONSE_MODEL_NAME=gemini-2.5-flash
+RPM_LIMIT_INTENT=15
+RPM_LIMIT_RESPONSE=15
+RPD_LIMIT_INTENT=250
+RPD_LIMIT_RESPONSE=250
+
+# 운세 전용 모델 (기본값 유지 가능)
+FORTUNE_MODEL_LITE=DeepSeek-V3.2-Exp-nothinking
+FORTUNE_MODEL_PRO=DeepSeek-V3.2-Exp-thinking
+
+# 이미지 생성 전용 키/엔드포인트
+COMETAPI_IMAGE_API_KEY=...
+COMETAPI_IMAGE_BASE_URL=https://api.cometapi.com
+IMAGE_MODEL=gemini-3.1-flash-image
+
+# 카카오 요약 임베딩 스크립트 전용 키/엔드포인트
+KAKAO_SUMMARY_API_KEY=...
+KAKAO_SUMMARY_BASE_URL=https://api.cometapi.com/v1
+
 # 의도 분석 LLM 호출 제어 (과호출 방지)
 INTENT_LLM_ENABLED=true
 INTENT_LLM_RAG_STRONG_BYPASS=true
@@ -283,6 +318,9 @@ GOOGLE_CX=...
 - `GOOGLE_API_KEY` + `GOOGLE_CX`는 Google Custom Search fallback용
 - 없어도 핵심 TiDB/RAG 구동은 가능하다
 - `AUTO_WEB_SEARCH_COOLDOWN_SECONDS`는 도구 계획이 없을 때의 자동 웹검색 fallback에만 적용된다 (명시적 웹검색 요청에는 미적용).
+- `LLM_ROUTING_*`, `LLM_MAIN_*`를 쓰면 모델/엔드포인트/키를 레인별로 즉시 교체할 수 있다.
+- `COMETAPI_IMAGE_API_KEY`, `KAKAO_SUMMARY_API_KEY`를 따로 지정하면 이미지/스크립트 경로를 메인 레인과 독립적으로 교체할 수 있다.
+- `USE_COMETAPI=false`일 때는 레인 기본값이 비활성화되며, 레인 변수를 명시하면 해당 값으로만 동작한다.
 
 ### 6.7 TiDB 연결 안정화 권장값
 

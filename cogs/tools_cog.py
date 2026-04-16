@@ -424,7 +424,7 @@ class ToolsCog(commands.Cog):
     async def generate_image(self, prompt: str, user_id: int, aspect_ratio: str = None) -> dict:
         """CometAPI(Gemini-compatible)를 사용하여 이미지를 생성합니다.
 
-        gemini-3.1-flash-image 모델을 사용하며 최대 4K 품질을 지원합니다.
+        기본 모델은 `IMAGE_MODEL` 설정값을 사용하며 최대 4K 품질을 지원합니다.
 
         Args:
             prompt: 이미지 생성 프롬프트 (영문 권장)
@@ -442,9 +442,9 @@ class ToolsCog(commands.Cog):
             return {"error": "이미지 생성 기능이 현재 비활성화되어 있어요."}
 
         # 2. API 키 확인
-        api_key = getattr(config, 'COMETAPI_KEY', None)
+        api_key = getattr(config, 'COMETAPI_IMAGE_API_KEY', None) or getattr(config, 'COMETAPI_KEY', None)
         if not api_key:
-            logger.error("COMETAPI_KEY가 설정되지 않았습니다.", extra=log_extra)
+            logger.error("COMETAPI_IMAGE_API_KEY(COMETAPI_KEY fallback 포함)가 설정되지 않았습니다.", extra=log_extra)
             return {"error": "이미지 생성 API 키가 설정되지 않았어요."}
 
         # 3. 프롬프트 안전성 검사 (NSFW 차단)
@@ -465,7 +465,7 @@ class ToolsCog(commands.Cog):
             return {"error": "오늘 마사몽이 생성할 수 있는 이미지가 다 끝났어... 내일 다시 불러줘!"}
 
         model_name = getattr(config, 'IMAGE_MODEL', 'gemini-3.1-flash-image')
-        base_url = getattr(config, 'COMETAPI_IMAGE_BASE_URL', 'https://api.cometapi.com')
+        base_url = str(getattr(config, 'COMETAPI_IMAGE_BASE_URL', 'https://api.cometapi.com')).rstrip("/")
         ratio = aspect_ratio or getattr(config, 'IMAGE_ASPECT_RATIO', '1:1')
 
         logger.info(
