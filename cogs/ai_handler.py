@@ -112,6 +112,8 @@ class AIHandler(commands.Cog):
         self._window_counts: dict[tuple[int, int], int] = {}
         self.debug_enabled = config.AI_DEBUG_ENABLED
         self._debug_log_len = getattr(config, "AI_DEBUG_LOG_MAX_LEN", 400)
+        self._openai_clients: dict[tuple[str, str], Any] = {}
+        self._gemini_compat_clients: dict[tuple[str, str], Any] = {}
 
         if config.GEMINI_API_KEY and genai:
             try:
@@ -123,28 +125,20 @@ class AIHandler(commands.Cog):
         elif config.GEMINI_API_KEY and not genai:
             logger.critical("google-generativeai 패키지를 찾을 수 없어 Gemini 기능을 초기화하지 못했습니다.")
 
-        # CometAPI 클라이언트 초기화 (Gemini 대체)
-        self.cometapi_client = None
-        self.use_cometapi = bool(config.USE_COMETAPI and config.COMETAPI_KEY)
-        if self.use_cometapi:
-            if AsyncOpenAI:
-                try:
-                    self.cometapi_client = AsyncOpenAI(
-                        base_url=config.COMETAPI_BASE_URL,
-                        api_key=config.COMETAPI_KEY,
-                    )
-                    logger.info(f"CometAPI 클라이언트가 초기화되었습니다. 모델: {config.COMETAPI_MODEL}")
-                except Exception as e:
-                    logger.error(f"CometAPI 클라이언트 초기화 실패: {e}")
-                    self.use_cometapi = False
-            else:
-                logger.warning("openai 패키지가 설치되지 않아 CometAPI를 사용할 수 없습니다.")
-                self.use_cometapi = False
+        # 레인 기반 LLM 라우팅 준비 상태
+        routing_targets = self._get_lane_targets("routing")
+        main_targets = self._get_lane_targets("main")
+        self.use_cometapi = bool(routing_targets or main_targets)
+        logger.info(
+            "LLM 레인 구성: routing=%s, main=%s",
+            [f"{t['provider']}:{t['model']}" for t in routing_targets] or ["none"],
+            [f"{t['provider']}:{t['model']}" for t in main_targets] or ["none"],
+        )
 
         if self.gemini_configured and not config.ALLOW_DIRECT_GEMINI_FALLBACK:
-            logger.info("Gemini direct fallback이 비활성화되어 CometAPI 우선 경로만 사용합니다.")
+            logger.info("Gemini direct fallback이 비활성화되어 레인(primary/fallback) 경로만 사용합니다.")
         if not self.use_cometapi and not self._can_use_direct_gemini():
-            logger.warning("사용 가능한 LLM 제공자가 없습니다. COMETAPI_KEY 또는 Gemini fallback 설정을 확인하세요.")
+            logger.warning("사용 가능한 LLM 제공자가 없습니다. LLM 레인 키/엔드포인트 또는 Gemini fallback 설정을 확인하세요.")
         
         # [NEW] Location Cache from DB
         self.location_cache: set[str] = set()
@@ -164,6 +158,187 @@ class AIHandler(commands.Cog):
     def _can_use_direct_gemini(self) -> bool:
         """CometAPI 실패 시 직접 Gemini 호출 허용 여부."""
         return bool(config.ALLOW_DIRECT_GEMINI_FALLBACK and self.gemini_configured and genai)
+
+    @staticmethod
+    def _normalize_provider(provider: Any) -> str:
+        return str(provider or "").strip().lower()
+
+    def _get_lane_targets(self, lane: str, *, model_override: str | None = None) -> list[dict[str, str]]:
+        """레인별(primary/fallback) LLM 타깃 목록을 반환합니다."""
+        lane_key = str(lane or "").strip().lower()
+        if lane_key == "routing":
+            candidates = [
+                {
+                    "provider": config.LLM_ROUTING_PRIMARY_PROVIDER,
+                    "base_url": config.LLM_ROUTING_PRIMARY_BASE_URL,
+                    "api_key": config.LLM_ROUTING_PRIMARY_API_KEY,
+                    "model": config.LLM_ROUTING_PRIMARY_MODEL,
+                    "name": "routing.primary",
+                },
+                {
+                    "provider": config.LLM_ROUTING_FALLBACK_PROVIDER,
+                    "base_url": config.LLM_ROUTING_FALLBACK_BASE_URL,
+                    "api_key": config.LLM_ROUTING_FALLBACK_API_KEY,
+                    "model": config.LLM_ROUTING_FALLBACK_MODEL,
+                    "name": "routing.fallback",
+                },
+            ]
+        else:
+            candidates = [
+                {
+                    "provider": config.LLM_MAIN_PRIMARY_PROVIDER,
+                    "base_url": config.LLM_MAIN_PRIMARY_BASE_URL,
+                    "api_key": config.LLM_MAIN_PRIMARY_API_KEY,
+                    "model": config.LLM_MAIN_PRIMARY_MODEL,
+                    "name": "main.primary",
+                },
+                {
+                    "provider": config.LLM_MAIN_FALLBACK_PROVIDER,
+                    "base_url": config.LLM_MAIN_FALLBACK_BASE_URL,
+                    "api_key": config.LLM_MAIN_FALLBACK_API_KEY,
+                    "model": config.LLM_MAIN_FALLBACK_MODEL,
+                    "name": "main.fallback",
+                },
+            ]
+
+        targets: list[dict[str, str]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for raw in candidates:
+            provider = self._normalize_provider(raw.get("provider"))
+            if provider in {"", "none", "off", "disabled"}:
+                continue
+            base_url = str(raw.get("base_url") or "").strip().rstrip("/")
+            api_key = str(raw.get("api_key") or "").strip()
+            model_name = str(model_override or raw.get("model") or "").strip()
+            if not model_name:
+                continue
+            if provider == "openai_compat":
+                if not AsyncOpenAI or not base_url or not api_key:
+                    continue
+            elif provider == "gemini_compat":
+                if not google_genai or not base_url or not api_key:
+                    continue
+            else:
+                continue
+
+            sig = (provider, base_url, model_name, api_key[:8])
+            if sig in seen:
+                continue
+            seen.add(sig)
+            targets.append(
+                {
+                    "provider": provider,
+                    "base_url": base_url,
+                    "api_key": api_key,
+                    "model": model_name,
+                    "name": str(raw.get("name") or lane_key),
+                }
+            )
+        return targets
+
+    def _get_openai_client(self, base_url: str, api_key: str) -> Any | None:
+        if not AsyncOpenAI:
+            return None
+        cache_key = (base_url.rstrip("/"), api_key)
+        client = self._openai_clients.get(cache_key)
+        if client is None:
+            client = AsyncOpenAI(base_url=cache_key[0], api_key=cache_key[1])
+            self._openai_clients[cache_key] = client
+        return client
+
+    def _get_gemini_compat_client(self, base_url: str, api_key: str) -> Any | None:
+        if not google_genai:
+            return None
+        cache_key = (base_url.rstrip("/"), api_key)
+        client = self._gemini_compat_clients.get(cache_key)
+        if client is None:
+            client = google_genai.Client(
+                http_options={"api_version": "v1beta", "base_url": cache_key[0]},
+                api_key=cache_key[1],
+            )
+            self._gemini_compat_clients[cache_key] = client
+        return client
+
+    async def _call_main_lane_target(
+        self,
+        target: dict[str, str],
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        log_extra: dict,
+        max_tokens: int,
+    ) -> str | None:
+        provider = target["provider"]
+        if provider == "openai_compat":
+            client = self._get_openai_client(target["base_url"], target["api_key"])
+            if client is None:
+                return None
+            completion = await client.chat.completions.create(
+                model=target["model"],
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                max_tokens=max_tokens,
+                temperature=config.AI_TEMPERATURE,
+                frequency_penalty=config.AI_FREQUENCY_PENALTY,
+                presence_penalty=config.AI_PRESENCE_PENALTY,
+                timeout=config.AI_REQUEST_TIMEOUT,
+            )
+            response_text = completion.choices[0].message.content
+            reasoning_text = getattr(completion.choices[0].message, "reasoning_content", None)
+            if not response_text and reasoning_text:
+                return f"Thinking Process:\n{reasoning_text}"
+            return response_text.strip() if response_text else None
+
+        if provider == "gemini_compat":
+            client = self._get_gemini_compat_client(target["base_url"], target["api_key"])
+            if client is None:
+                return None
+            merged_prompt = f"[System]\n{system_prompt}\n\n[User]\n{user_prompt}"
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model=target["model"],
+                contents=merged_prompt,
+            )
+            return (getattr(response, "text", "") or "").strip() or None
+
+        return None
+
+    async def _call_routing_lane_target(
+        self,
+        target: dict[str, str],
+        *,
+        prompt: str,
+        log_extra: dict,
+    ) -> str | None:
+        provider = target["provider"]
+        if provider == "openai_compat":
+            client = self._get_openai_client(target["base_url"], target["api_key"])
+            if client is None:
+                return None
+            completion = await client.chat.completions.create(
+                model=target["model"],
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=int(getattr(config, "ROUTING_LLM_MAX_TOKENS", 1024)),
+                temperature=0.0,
+                timeout=config.AI_REQUEST_TIMEOUT,
+            )
+            response_text = completion.choices[0].message.content
+            return response_text.strip() if response_text else None
+
+        if provider == "gemini_compat":
+            client = self._get_gemini_compat_client(target["base_url"], target["api_key"])
+            if client is None:
+                return None
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model=target["model"],
+                contents=prompt,
+            )
+            return (getattr(response, "text", "") or "").strip() or None
+
+        return None
 
     def _debug(self, message: str, log_extra: dict[str, Any] | None = None) -> None:
         """디버그 설정이 켜진 경우에만 메시지를 기록합니다."""
@@ -464,7 +639,7 @@ class AIHandler(commands.Cog):
         log_extra: dict,
         model: str | None = None,
     ) -> str | None:
-        """CometAPI(OpenAI 호환)를 통해 응답을 생성합니다.
+        """메인 레인(primary/fallback)을 통해 응답을 생성합니다.
 
         Args:
             system_prompt: 시스템 프롬프트
@@ -475,8 +650,9 @@ class AIHandler(commands.Cog):
         Returns:
             생성된 응답 텍스트, 실패 시 None
         """
-        if not self.cometapi_client:
-            logger.warning("CometAPI 클라이언트가 초기화되지 않았습니다.", extra=log_extra)
+        targets = self._get_lane_targets("main", model_override=model)
+        if not targets:
+            logger.warning("메인 레인 LLM 타깃이 설정되지 않았습니다.", extra=log_extra)
             return None
 
         try:
@@ -501,40 +677,28 @@ class AIHandler(commands.Cog):
                 self._debug(f"[CometAPI] system={self._truncate_for_debug(system_prompt)}", log_extra)
                 self._debug(f"[CometAPI] user={self._truncate_for_debug(user_prompt)}", log_extra)
 
-            # [modified] Apply Timeout
-            completion = await self.cometapi_client.chat.completions.create(
-                model=model or config.COMETAPI_MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                max_tokens=int(getattr(config, "COMETAPI_MAX_TOKENS", 2048)),
-                temperature=config.AI_TEMPERATURE,
-                frequency_penalty=config.AI_FREQUENCY_PENALTY,
-                presence_penalty=config.AI_PRESENCE_PENALTY,
-                timeout=config.AI_REQUEST_TIMEOUT,  # <-- Timeout 적용
-            )
-
-            response_text = completion.choices[0].message.content
-            reasoning_text = getattr(completion.choices[0].message, 'reasoning_content', None)
-            
-            # [CometAPI Debug] Raw Response: ... (omitted for brevity, keep existing logic)
-            # ... (Logic to return final_response) ...
-            
-            if self.debug_enabled:
-                self._debug(f"[CometAPI Debug] Raw Response: {response_text!r}", log_extra)
+            final_response = None
+            for target in targets:
                 try:
-                    self._debug(f"[CometAPI Debug] Message Obj: {completion.choices[0].message}", log_extra)
-                except Exception:
-                    pass
-
-            await db_utils.log_api_call(self.bot.db, "cometapi")
-
-            # 만약 content가 비어있는데 reasoning_content가 있다면 그것을 반환 (Thinking 모델 대응)
-            final_response = response_text
-            if not final_response and reasoning_text:
-                logger.warning("[CometAPI] Content is empty but reasoning_content exists. Using reasoning as fallback.", extra=log_extra)
-                final_response = f"Thinking Process:\n{reasoning_text}" # 혹은 그냥 reasoning_text
+                    final_response = await self._call_main_lane_target(
+                        target,
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        log_extra=log_extra,
+                        max_tokens=int(getattr(config, "MAIN_LLM_MAX_TOKENS", config.COMETAPI_MAX_TOKENS)),
+                    )
+                except Exception as lane_exc:
+                    logger.warning(
+                        "[MainLLM:%s] 호출 실패: %s",
+                        target.get("name"),
+                        lane_exc,
+                        extra=log_extra,
+                    )
+                    final_response = None
+                if final_response:
+                    if self.bot.db:
+                        await db_utils.log_api_call(self.bot.db, "cometapi")
+                    break
 
             # [Security] Prompt Leakage Filter
             if final_response:
@@ -563,13 +727,14 @@ class AIHandler(commands.Cog):
     async def _cometapi_fast_generate_text(
         self,
         prompt: str,
-        model: str,
+        model: str | None,
         log_extra: dict,
         *,
         trace_key: str = "cometapi_fast",
     ) -> str | None:
-        """CometAPI Fast 모델 호출을 중앙 rate-limit/log 체계와 함께 수행합니다."""
-        if not (self.use_cometapi and config.COMETAPI_KEY and google_genai):
+        """판단/웹검색 레인 Fast 모델 호출을 중앙 rate-limit/log 체계와 함께 수행합니다."""
+        targets = self._get_lane_targets("routing", model_override=model)
+        if not targets:
             return None
 
         try:
@@ -578,25 +743,34 @@ class AIHandler(commands.Cog):
                 "cometapi",
                 config.COMETAPI_RPM_LIMIT,
                 config.COMETAPI_RPD_LIMIT,
-            ):
+                ):
                 logger.warning("[CometAPI-Fast] 호출 차단 - rate limit 도달", extra=log_extra)
                 return None
 
-            _client = google_genai.Client(
-                http_options={"api_version": "v1beta", "base_url": "https://api.cometapi.com"},
-                api_key=config.COMETAPI_KEY,
-            )
-            response = await asyncio.to_thread(
-                _client.models.generate_content,
-                model=model,
-                contents=prompt,
-            )
+            response_text = None
+            for target in targets:
+                try:
+                    response_text = await self._call_routing_lane_target(
+                        target,
+                        prompt=prompt,
+                        log_extra=log_extra,
+                    )
+                except Exception as lane_exc:
+                    logger.warning(
+                        "[RoutingLLM:%s] 호출 실패: %s",
+                        target.get("name"),
+                        lane_exc,
+                        extra=log_extra,
+                    )
+                    response_text = None
+                if response_text:
+                    break
 
             if self.bot.db:
                 await db_utils.log_api_call(self.bot.db, "cometapi")
                 await db_utils.log_api_call(self.bot.db, trace_key)
 
-            return (response.text or "").strip() or None
+            return response_text.strip() if response_text else None
         except Exception as e:
             logger.warning(f"[CometAPI-Fast] 호출 실패: {e}", extra=log_extra)
             return None
@@ -966,8 +1140,6 @@ Generate the optimized English image prompt:"""
 
     async def _refine_search_query_with_llm(self, query: str, history: list, log_extra: dict) -> str:
         """대화 히스토리를 바탕으로 사용자의 모호한 질문을 명확한 검색어로 정제합니다."""
-        fast_model = getattr(config, 'FAST_MODEL_NAME', 'gemini-3.1-flash-lite-preview')
-        
         # 히스토리 텍스트 변환 (최근 3개)
         history_text = ""
         if history:
@@ -990,10 +1162,11 @@ Generate the optimized English image prompt:"""
             "Result:"
         )
         try:
-            if not (self.use_cometapi and config.COMETAPI_KEY): return query
+            if not self.use_cometapi:
+                return query
             refined = await self._cometapi_fast_generate_text(
                 prompt,
-                fast_model,
+                None,
                 log_extra,
                 trace_key="cometapi_fast_refine",
             )
@@ -1533,7 +1706,6 @@ Generate the optimized English image prompt:"""
     async def _detect_tools_by_llm(self, query: str, log_extra: dict, history: list = None) -> list[dict]:
         """사용자의 의도와 대화 맥락을 분석하여 가장 적합한 도구와 최적화된 검색 파라미터를 결정합니다."""
         import json as _json
-        fast_model = getattr(config, 'FAST_MODEL_NAME', 'gemini-3.1-flash-lite-preview')
 
         if not getattr(config, "INTENT_LLM_ENABLED", True):
             return self._detect_tools_by_keyword(query)
@@ -1575,10 +1747,7 @@ Generate the optimized English image prompt:"""
             '{"intent": "의도", "reasoning": "선택 근거", "tools": [{"tool": "이름", "params": {"키": "값"}}]}'
         )
         try:
-            if not (self.use_cometapi and config.COMETAPI_KEY):
-                return self._detect_tools_by_keyword(query)
-            
-            if google_genai is None:
+            if not self.use_cometapi:
                 return self._detect_tools_by_keyword(query)
 
             prompt = (
@@ -1600,7 +1769,7 @@ Generate the optimized English image prompt:"""
             )
             raw = await self._cometapi_fast_generate_text(
                 prompt,
-                fast_model,
+                None,
                 log_extra,
                 trace_key="cometapi_fast_intent",
             )

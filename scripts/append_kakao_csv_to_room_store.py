@@ -8,7 +8,6 @@ import asyncio
 import argparse
 import hashlib
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +19,8 @@ from scripts.generate_kakao_embeddings_v2 import (
     DEFAULT_MODEL_NAME,
     SUMMARIZATION_MODELS,
     KakaoSessionEmbedder,
+    resolve_summary_api_key,
+    resolve_summary_base_url,
 )
 
 
@@ -49,6 +50,16 @@ def parse_args() -> argparse.Namespace:
         help="Summary model profile key from generate_kakao_embeddings_v2.py.",
     )
     parser.add_argument(
+        "--summary-key",
+        default=None,
+        help="Summary LLM API key (OpenAI-compatible).",
+    )
+    parser.add_argument(
+        "--summary-base-url",
+        default=None,
+        help="Summary LLM base URL (OpenAI-compatible).",
+    )
+    parser.add_argument(
         "--tidb-table",
         default=getattr(config, "KAKAO_TIDB_TABLE", "kakao_chunks"),
         help="TiDB table name for Kakao chunks.",
@@ -57,15 +68,16 @@ def parse_args() -> argparse.Namespace:
 
 
 async def build_chunks_with_v2(args: argparse.Namespace) -> list[dict[str, Any]]:
-    api_key = os.environ.get("COMETAPI_KEY") or getattr(config, "COMETAPI_KEY", None)
+    api_key = resolve_summary_api_key(getattr(args, "summary_key", None))
     if not api_key:
-        raise RuntimeError("COMETAPI_KEY가 없어 기존 Kakao V2 요약 파이프라인을 실행할 수 없습니다.")
+        raise RuntimeError("요약용 LLM API 키(KAKAO_SUMMARY_API_KEY 또는 LLM_MAIN_PRIMARY_API_KEY)가 필요합니다.")
 
     summary_model_config = SUMMARIZATION_MODELS[str(args.summary_model)]
+    summary_base_url = resolve_summary_base_url(getattr(args, "summary_base_url", None))
     embedder = KakaoSessionEmbedder(
         args.model,
         api_key,
-        os.environ.get("COMETAPI_BASE_URL") or getattr(config, "COMETAPI_BASE_URL", "https://api.cometapi.com/v1"),
+        summary_base_url,
         summary_model_config,
     )
 
@@ -257,8 +269,8 @@ def main() -> None:
 
     model = KakaoSessionEmbedder(
         args.model,
-        os.environ.get("COMETAPI_KEY") or getattr(config, "COMETAPI_KEY", "dummy-key"),
-        os.environ.get("COMETAPI_BASE_URL") or getattr(config, "COMETAPI_BASE_URL", "https://api.cometapi.com/v1"),
+        resolve_summary_api_key(getattr(args, "summary_key", None)) or "dummy-key",
+        resolve_summary_base_url(getattr(args, "summary_base_url", None)),
         SUMMARIZATION_MODELS[str(args.summary_model)],
     )
     model.load_model()
