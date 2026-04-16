@@ -422,14 +422,13 @@ class ToolsCog(commands.Cog):
         return True, None
 
     async def generate_image(self, prompt: str, user_id: int, aspect_ratio: str = None) -> dict:
-        """CometAPI(Gemini-compatible)를 사용하여 이미지를 생성합니다.
-
-        기본 모델은 `IMAGE_MODEL` 설정값을 사용하며 최대 4K 품질을 지원합니다.
+        """이미지 생성 도구입니다. 
+        설정된 Base URL에 따라 OpenAI 규격(NanoGPT 등) 혹은 Gemini 규격(CometAPI 등)으로 자동 분기합니다.
 
         Args:
             prompt: 이미지 생성 프롬프트 (영문 권장)
             user_id: 요청한 유저 ID (Rate limiting용)
-            aspect_ratio: 이미지 비율 (예: "1:1", "16:9", "9:16" 등). None이면 config 기본값 사용.
+            aspect_ratio: 이미지 비율 (예: "1:1", "16:9" 등). None이면 config 기본값 사용.
 
         Returns:
             {'image_data': bytes, 'remaining': int} 또는 {'error': str}
@@ -476,21 +475,43 @@ class ToolsCog(commands.Cog):
 
         # 6. CometAPI 호출 (Gemini-compatible Endpoint / aiohttp)
         try:
-            # google-genai SDK 대신 aiohttp를 사용하여 직접 REST API 호출 (서버 ImportError 방지)
-            endpoint = f"{base_url}/v1beta/models/{model_name}:generateContent"
+            # 프로토콜 판별
+            is_openai_style = "nano-gpt" in base_url.lower() or "openai" in base_url.lower() or "qwen" in model_name.lower()
             
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {
-                    "responseModalities": ["IMAGE"],
-                    "imageConfig": {"aspectRatio": ratio}
+            # 엔드포인트 설정
+            if is_openai_style:
+                endpoint = f"{base_url}/images/generations"
+            else:
+                endpoint = f"{base_url}/v1beta/models/{model_name}:generateContent"
+            
+            if is_openai_style:
+                # OpenAI 규격 페이로드 및 헤더
+                size_map = {"1:1": "1024x1024", "16:9": "1792x1024", "9:16": "1024x1792"}
+                target_size = size_map.get(ratio, "1024x1024")
+                payload = {
+                    "model": model_name,
+                    "prompt": prompt,
+                    "size": target_size,
+                    "n": 1,
+                    "response_format": "b64_json"
                 }
-            }
-            
-            headers = {
-                "Content-Type": "application/json",
-                "x-goog-api-key": api_key
-            }
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                }
+            else:
+                # Gemini 규격 페이로드 및 헤더
+                payload = {
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {
+                        "responseModalities": ["IMAGE"],
+                        "imageConfig": {"aspectRatio": ratio}
+                    }
+                }
+                headers = {
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": api_key
+                }
 
             async with aiohttp.ClientSession() as session:
                 async with session.post(endpoint, json=payload, headers=headers, timeout=600) as resp:
@@ -500,34 +521,44 @@ class ToolsCog(commands.Cog):
                         return {"error": f"API 서버가 오류를 반환했습니다. ({resp.status})"}
                     
                     data = await resp.json()
-                    
-                    # 응답 파싱
-                    for candidate in data.get("candidates", []):
-                        for part in candidate.get("content", {}).get("parts", []):
-                            if "inlineData" in part:
-                                # base64 데이터 추출하여 bytes로 변환
-                                import base64
-                                image_b64 = part["inlineData"].get("data")
-                                if image_b64:
-                                    image_binary = base64.b64decode(image_b64)
-                                    
-                                    # 사용량 기록
-                                    await db_utils.log_image_generation(self.bot.db, user_id)
-                                    logger.info(f"이미지 생성 완료: {len(image_binary):,} bytes", extra=log_extra)
-                                    return {
-                                        "image_data": image_binary,
-                                        "remaining": user_remaining - 1,
-                                    }
-                    
-                    raise ValueError("응답에서 이미지 데이터를 찾을 수 없습니다.")
+                    image_binary = None
 
-            # 사용량 기록
-            await db_utils.log_image_generation(self.bot.db, user_id)
-            logger.info(f"이미지 생성 완료: {len(image_binary):,} bytes", extra=log_extra)
-            return {
-                "image_data": image_binary,
-                "remaining": user_remaining - 1,
-            }
+                    if is_openai_style:
+                        # OpenAI 응답 파싱
+                        image_data_list = data.get("data", [])
+                        if image_data_list:
+                            image_b64 = image_data_list[0].get("b64_json")
+                            if image_b64:
+                                import base64
+                                image_binary = base64.b64decode(image_b64)
+                            else:
+                                # URL로 왔을 경우 처리
+                                image_url = image_data_list[0].get("url")
+                                if image_url:
+                                    async with session.get(image_url) as img_resp:
+                                        image_binary = await img_resp.read()
+                    else:
+                        # Gemini 응답 파싱
+                        for candidate in data.get("candidates", []):
+                            for part in candidate.get("content", {}).get("parts", []):
+                                if "inlineData" in part:
+                                    import base64
+                                    image_b64 = part["inlineData"].get("data")
+                                    if image_b64:
+                                        image_binary = base64.b64decode(image_b64)
+                                        break
+                            if image_binary: break
+
+                    if image_binary:
+                        # 사용량 기록
+                        await db_utils.log_image_generation(self.bot.db, user_id)
+                        logger.info(f"이미지 생성 완료: {len(image_binary):,} bytes (Model: {model_name})", extra=log_extra)
+                        return {
+                            "image_data": image_binary,
+                            "remaining": user_remaining - 1,
+                        }
+                    
+                    raise ValueError("응답에서 유효한 이미지 데이터를 찾을 수 없습니다.")
 
         except asyncio.TimeoutError:
             logger.error("이미지 API 타임아웃 (600s)", extra=log_extra)
