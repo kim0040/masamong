@@ -72,6 +72,39 @@ def as_int(value, default: int) -> int:
         return default
 
 
+def as_str(value, default: str = "") -> str:
+    """입력값을 문자열로 변환하되, None이면 기본값을 반환합니다."""
+    if value is None:
+        return default
+    try:
+        rendered = str(value).strip()
+    except Exception:
+        return default
+    return rendered if rendered else default
+
+
+def normalize_llm_provider(value: Any, default: str = "none") -> str:
+    """LLM provider 식별자를 정규화합니다."""
+    raw = as_str(value, default).lower()
+    aliases = {
+        "": "none",
+        "none": "none",
+        "off": "none",
+        "disabled": "none",
+        "openai": "openai_compat",
+        "openai_compat": "openai_compat",
+        "openai-compatible": "openai_compat",
+        "openai_compatible": "openai_compat",
+        "cometapi": "openai_compat",
+        "gemini": "gemini_compat",
+        "gemini_compat": "gemini_compat",
+        "gemini-compatible": "gemini_compat",
+        "gemini_compatible": "gemini_compat",
+        "google_genai": "gemini_compat",
+    }
+    return aliases.get(raw, "none")
+
+
 EMBED_CONFIG_PATH = os.environ.get('EMB_CONFIG_PATH', 'emb_config.json')
 
 
@@ -305,6 +338,96 @@ ALLOW_DIRECT_GEMINI_FALLBACK = as_bool(load_config_value('ALLOW_DIRECT_GEMINI_FA
 # news/news_summarizer.py와 동일한 모델 사용
 FAST_MODEL_NAME = load_config_value('FAST_MODEL_NAME', 'gemini-3.1-flash-lite-preview')
 
+# ========== LLM 레인 구성 (Primary/Fallback) ==========
+# 레인1: 판단/웹검색(의도 분석, 쿼리 정제, 웹 RAG 요약)
+LLM_ROUTING_PRIMARY_PROVIDER = normalize_llm_provider(
+    load_config_value('LLM_ROUTING_PRIMARY_PROVIDER', 'gemini_compat' if USE_COMETAPI else 'none')
+)
+LLM_ROUTING_PRIMARY_MODEL = as_str(
+    load_config_value('LLM_ROUTING_PRIMARY_MODEL', FAST_MODEL_NAME),
+    FAST_MODEL_NAME,
+)
+LLM_ROUTING_PRIMARY_BASE_URL = as_str(
+    load_config_value('LLM_ROUTING_PRIMARY_BASE_URL', 'https://api.cometapi.com'),
+    'https://api.cometapi.com',
+)
+LLM_ROUTING_PRIMARY_API_KEY = as_str(
+    load_config_value('LLM_ROUTING_PRIMARY_API_KEY', COMETAPI_KEY),
+    '',
+)
+
+LLM_ROUTING_FALLBACK_PROVIDER = normalize_llm_provider(
+    load_config_value('LLM_ROUTING_FALLBACK_PROVIDER', 'none')
+)
+LLM_ROUTING_FALLBACK_MODEL = as_str(
+    load_config_value('LLM_ROUTING_FALLBACK_MODEL', FAST_MODEL_NAME),
+    FAST_MODEL_NAME,
+)
+LLM_ROUTING_FALLBACK_BASE_URL = as_str(
+    load_config_value('LLM_ROUTING_FALLBACK_BASE_URL', COMETAPI_BASE_URL),
+    COMETAPI_BASE_URL,
+)
+LLM_ROUTING_FALLBACK_API_KEY = as_str(
+    load_config_value('LLM_ROUTING_FALLBACK_API_KEY', COMETAPI_KEY),
+    '',
+)
+ROUTING_LLM_MAX_TOKENS = max(64, as_int(load_config_value('ROUTING_LLM_MAX_TOKENS', 1024), 1024))
+
+# 레인2: 최종 답변/요약/명령어 생성
+LLM_MAIN_PRIMARY_PROVIDER = normalize_llm_provider(
+    load_config_value('LLM_MAIN_PRIMARY_PROVIDER', 'openai_compat' if USE_COMETAPI else 'none')
+)
+LLM_MAIN_PRIMARY_MODEL = as_str(
+    load_config_value('LLM_MAIN_PRIMARY_MODEL', COMETAPI_MODEL),
+    COMETAPI_MODEL,
+)
+LLM_MAIN_PRIMARY_BASE_URL = as_str(
+    load_config_value('LLM_MAIN_PRIMARY_BASE_URL', COMETAPI_BASE_URL),
+    COMETAPI_BASE_URL,
+)
+LLM_MAIN_PRIMARY_API_KEY = as_str(
+    load_config_value('LLM_MAIN_PRIMARY_API_KEY', COMETAPI_KEY),
+    '',
+)
+
+LLM_MAIN_FALLBACK_PROVIDER = normalize_llm_provider(
+    load_config_value('LLM_MAIN_FALLBACK_PROVIDER', 'none')
+)
+LLM_MAIN_FALLBACK_MODEL = as_str(
+    load_config_value('LLM_MAIN_FALLBACK_MODEL', COMETAPI_MODEL),
+    COMETAPI_MODEL,
+)
+LLM_MAIN_FALLBACK_BASE_URL = as_str(
+    load_config_value('LLM_MAIN_FALLBACK_BASE_URL', COMETAPI_BASE_URL),
+    COMETAPI_BASE_URL,
+)
+LLM_MAIN_FALLBACK_API_KEY = as_str(
+    load_config_value('LLM_MAIN_FALLBACK_API_KEY', COMETAPI_KEY),
+    '',
+)
+MAIN_LLM_MAX_TOKENS = max(128, as_int(load_config_value('MAIN_LLM_MAX_TOKENS', 2048), 2048))
+
+# Kakao 임베딩/요약 스크립트용 LLM 설정
+# 기본값은 메인 레인 Primary를 따르고, 미설정 시 COMETAPI_*로 후순위 fallback
+_DEFAULT_KAKAO_SUMMARY_API_KEY = LLM_MAIN_PRIMARY_API_KEY or COMETAPI_KEY or ""
+_DEFAULT_KAKAO_SUMMARY_BASE_URL = LLM_MAIN_PRIMARY_BASE_URL or COMETAPI_BASE_URL or "https://api.cometapi.com/v1"
+KAKAO_SUMMARY_API_KEY = as_str(
+    load_config_value('KAKAO_SUMMARY_API_KEY', _DEFAULT_KAKAO_SUMMARY_API_KEY),
+    '',
+)
+KAKAO_SUMMARY_BASE_URL = as_str(
+    load_config_value('KAKAO_SUMMARY_BASE_URL', _DEFAULT_KAKAO_SUMMARY_BASE_URL),
+    _DEFAULT_KAKAO_SUMMARY_BASE_URL,
+)
+KAKAO_SUMMARY_MODEL_STANDARD = as_str(
+    load_config_value('KAKAO_SUMMARY_MODEL_STANDARD', 'DeepSeek-V3.2-Exp-nothinking'),
+    'DeepSeek-V3.2-Exp-nothinking',
+)
+KAKAO_SUMMARY_MODEL_BUDGET = as_str(
+    load_config_value('KAKAO_SUMMARY_MODEL_BUDGET', 'gpt-5-nano-2025-08-07'),
+    'gpt-5-nano-2025-08-07',
+)
+
 # DuckDuckGo 웹 검색 활성화 여부 (기본: 활성화)
 DDGS_ENABLED = as_bool(load_config_value('DDGS_ENABLED', 'true'))
 # 범용 웹 탐색 파이프라인 예산/캐시 설정
@@ -323,11 +446,18 @@ AUTO_WEB_SEARCH_ALLOW_SHORT_FOLLOWUP = as_bool(load_config_value('AUTO_WEB_SEARC
 
 # CometAPI 이미지 생성 설정 (Gemini via CometAPI Gemini-compatible)
 COMETAPI_IMAGE_ENABLED = as_bool(load_config_value('COMETAPI_IMAGE_ENABLED', 'true'))
-COMETAPI_IMAGE_BASE_URL = "https://api.cometapi.com"
+COMETAPI_IMAGE_API_KEY = as_str(
+    load_config_value('COMETAPI_IMAGE_API_KEY', COMETAPI_KEY),
+    '',
+)
+COMETAPI_IMAGE_BASE_URL = as_str(
+    load_config_value('COMETAPI_IMAGE_BASE_URL', 'https://api.cometapi.com'),
+    'https://api.cometapi.com',
+)
 # 사용 모델: 'gemini-3.1-flash-image' (preview 제외, 일반 버전)
-IMAGE_MODEL = load_config_value('IMAGE_MODEL', 'gemini-3.1-flash-image')
+IMAGE_MODEL = as_str(load_config_value('IMAGE_MODEL', 'gemini-3.1-flash-image'), 'gemini-3.1-flash-image')
 # 이미지 가로세로 비율: "1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9"
-IMAGE_ASPECT_RATIO = load_config_value('IMAGE_ASPECT_RATIO', '1:1')
+IMAGE_ASPECT_RATIO = as_str(load_config_value('IMAGE_ASPECT_RATIO', '1:1'), '1:1')
 
 # 이미지 생성 사용량 제한
 IMAGE_USER_LIMIT = as_int(load_config_value('IMAGE_USER_LIMIT', 10), 10)  # 유저당 6시간 내 최대 10장
@@ -353,7 +483,9 @@ EXIM_BASE_URL = load_config_value('EXIM_BASE_URL', "https://www.koreaexim.go.kr/
 DISCORD_EMBEDDING_BACKEND = str(
     load_config_value('DISCORD_EMBEDDING_BACKEND', 'tidb' if DB_BACKEND == 'tidb' else 'sqlite')
 ).strip().lower()
-KAKAO_STORE_BACKEND = str(load_config_value('KAKAO_STORE_BACKEND', 'local')).strip().lower()
+KAKAO_STORE_BACKEND = str(
+    load_config_value('KAKAO_STORE_BACKEND', 'tidb' if DB_BACKEND == 'tidb' else 'local')
+).strip().lower()
 if REMOTE_DB_STRICT_MODE:
     # 원격 DB 강제 모드에서는 로컬 파일 기반 저장소를 사용하지 않는다.
     DISCORD_EMBEDDING_BACKEND = "tidb"
@@ -464,12 +596,14 @@ STRUCTURED_MEMORY_MAX_SUMMARY_CHARS = max(120, as_int(load_config_value('STRUCTU
 STRUCTURED_MEMORY_MAX_CONTEXT_CHARS = max(300, as_int(load_config_value('STRUCTURED_MEMORY_MAX_CONTEXT_CHARS', 1200), 1200))
 STRUCTURED_USER_MEMORY_MIN_CHARS = max(4, as_int(load_config_value('STRUCTURED_USER_MEMORY_MIN_CHARS', 12), 12))
 
-AI_INTENT_MODEL_NAME = "gemini-2.5-flash-lite"
-AI_RESPONSE_MODEL_NAME = "gemini-2.5-flash"
-RPM_LIMIT_INTENT = 15
-RPM_LIMIT_RESPONSE = 15
-RPD_LIMIT_INTENT = 250
-RPD_LIMIT_RESPONSE = 250
+AI_INTENT_MODEL_NAME = as_str(load_config_value('AI_INTENT_MODEL_NAME', 'gemini-2.5-flash-lite'), 'gemini-2.5-flash-lite')
+AI_RESPONSE_MODEL_NAME = as_str(load_config_value('AI_RESPONSE_MODEL_NAME', 'gemini-2.5-flash'), 'gemini-2.5-flash')
+FORTUNE_MODEL_LITE = as_str(load_config_value('FORTUNE_MODEL_LITE', 'DeepSeek-V3.2-Exp-nothinking'), 'DeepSeek-V3.2-Exp-nothinking')
+FORTUNE_MODEL_PRO = as_str(load_config_value('FORTUNE_MODEL_PRO', 'DeepSeek-V3.2-Exp-thinking'), 'DeepSeek-V3.2-Exp-thinking')
+RPM_LIMIT_INTENT = max(1, as_int(load_config_value('RPM_LIMIT_INTENT', 15), 15))
+RPM_LIMIT_RESPONSE = max(1, as_int(load_config_value('RPM_LIMIT_RESPONSE', 15), 15))
+RPD_LIMIT_INTENT = max(1, as_int(load_config_value('RPD_LIMIT_INTENT', 250), 250))
+RPD_LIMIT_RESPONSE = max(1, as_int(load_config_value('RPD_LIMIT_RESPONSE', 250), 250))
 FINNHUB_API_RPM_LIMIT = 50
 AI_TEMPERATURE = 0.0
 AI_FREQUENCY_PENALTY = 0.0

@@ -417,9 +417,9 @@ class FortuneCog(commands.Cog):
                 await ctx.send("AI 모듈을 불러올 수 없습니다.")
                 return
             
-            # 모델명 매핑
-            MODEL_LITE = "DeepSeek-V3.2-Exp-nothinking"
-            MODEL_PRO = "DeepSeek-V3.2-Exp-thinking"
+            # 모델명 매핑 (환경변수/설정으로 오버라이드 가능)
+            MODEL_LITE = getattr(config, "FORTUNE_MODEL_LITE", "DeepSeek-V3.2-Exp-nothinking")
+            MODEL_PRO = getattr(config, "FORTUNE_MODEL_PRO", "DeepSeek-V3.2-Exp-thinking")
 
             # 별자리 데이터 추가
             try:

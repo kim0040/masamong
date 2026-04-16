@@ -4,8 +4,8 @@ utils/news_search.py — 마사몽용 DuckDuckGo 범용 탐색 RAG 파이프라�
 
 news/news_summarizer.py에서 이식, 마사몽 아키텍처에 맞게 수정:
 - synthesize_final_answer() 제거 → ai_handler가 채널 페르소나로 최종 답변 생성
-- call_smart_model() 제거 → 마사몽의 CometAPI 클라이언트 사용
-- call_fast_model() → 마사몽의 config (COMETAPI_KEY, FAST_MODEL_NAME) 사용
+- call_smart_model() 제거 → ai_handler가 처리
+- call_fast_model() → 레인 기반(primary/fallback) LLM 구성 사용
 - 동기 함수들을 asyncio.to_thread()로 감싸 async 호환성 확보
 
 [모델]
@@ -30,7 +30,14 @@ import requests
 import trafilatura
 from ddgs import DDGS
 from newspaper import Article
-from google import genai
+try:
+    from google import genai as google_genai
+except ImportError:  # pragma: no cover
+    google_genai = None  # type: ignore
+try:
+    from openai import OpenAI
+except ImportError:  # pragma: no cover
+    OpenAI = None  # type: ignore
 
 import config
 from database.compat_db import TiDBSettings, rewrite_sql_for_tidb
@@ -82,7 +89,9 @@ except ImportError:
 # ─────────────────────────────────────────────
 # Fast 모델 클라이언트 (의도 분석 / 키워드 / 기사 요약 전용)
 # ─────────────────────────────────────────────
-_fast_client: genai.Client | None = None
+_fast_openai_clients: dict[tuple[str, str], Any] = {}
+_fast_gemini_clients: dict[tuple[str, str], Any] = {}
+_fast_client_lock = threading.Lock()
 _pipeline_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _pipeline_cache_lock = threading.Lock()
 
@@ -224,18 +233,91 @@ class FastLLMQuotaManager:
         return tuple(items)
 
 
-def _get_fast_client() -> genai.Client:
-    """Fast 모델 클라이언트를 싱글턴으로 반환합니다."""
-    global _fast_client
-    if _fast_client is None:
-        _fast_client = genai.Client(
-            http_options={
-                "api_version": "v1beta",
-                "base_url": "https://api.cometapi.com",
-            },
-            api_key=config.COMETAPI_KEY,
+def _normalize_provider(provider: Any) -> str:
+    return str(provider or "").strip().lower()
+
+
+def _routing_targets() -> list[dict[str, str]]:
+    """웹검색 Fast 레인의 primary/fallback 타깃을 반환합니다."""
+    base_model = getattr(config, "FAST_MODEL_NAME", "gemini-3.1-flash-lite-preview")
+    candidates = [
+        {
+            "provider": getattr(config, "LLM_ROUTING_PRIMARY_PROVIDER", "none"),
+            "base_url": getattr(config, "LLM_ROUTING_PRIMARY_BASE_URL", ""),
+            "api_key": getattr(config, "LLM_ROUTING_PRIMARY_API_KEY", ""),
+            "model": getattr(config, "LLM_ROUTING_PRIMARY_MODEL", base_model),
+            "name": "routing.primary",
+        },
+        {
+            "provider": getattr(config, "LLM_ROUTING_FALLBACK_PROVIDER", "none"),
+            "base_url": getattr(config, "LLM_ROUTING_FALLBACK_BASE_URL", ""),
+            "api_key": getattr(config, "LLM_ROUTING_FALLBACK_API_KEY", ""),
+            "model": getattr(config, "LLM_ROUTING_FALLBACK_MODEL", base_model),
+            "name": "routing.fallback",
+        },
+    ]
+
+    targets: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for raw in candidates:
+        provider = _normalize_provider(raw.get("provider"))
+        if provider in {"", "none", "off", "disabled"}:
+            continue
+        model_name = str(raw.get("model") or "").strip()
+        base_url = str(raw.get("base_url") or "").strip().rstrip("/")
+        api_key = str(raw.get("api_key") or "").strip()
+        if not model_name:
+            continue
+        if provider == "openai_compat":
+            if not OpenAI or not base_url or not api_key:
+                continue
+        elif provider == "gemini_compat":
+            if not google_genai or not base_url or not api_key:
+                continue
+        else:
+            continue
+
+        sig = (provider, base_url, model_name, api_key[:8])
+        if sig in seen:
+            continue
+        seen.add(sig)
+        targets.append(
+            {
+                "provider": provider,
+                "base_url": base_url,
+                "api_key": api_key,
+                "model": model_name,
+                "name": str(raw.get("name") or "routing"),
+            }
         )
-    return _fast_client
+    return targets
+
+
+def _get_fast_openai_client(base_url: str, api_key: str) -> Any | None:
+    if not OpenAI:
+        return None
+    key = (base_url.rstrip("/"), api_key)
+    with _fast_client_lock:
+        client = _fast_openai_clients.get(key)
+        if client is None:
+            client = OpenAI(base_url=key[0], api_key=key[1])
+            _fast_openai_clients[key] = client
+        return client
+
+
+def _get_fast_gemini_client(base_url: str, api_key: str) -> Any | None:
+    if not google_genai:
+        return None
+    key = (base_url.rstrip("/"), api_key)
+    with _fast_client_lock:
+        client = _fast_gemini_clients.get(key)
+        if client is None:
+            client = google_genai.Client(
+                http_options={"api_version": "v1beta", "base_url": key[0]},
+                api_key=key[1],
+            )
+            _fast_gemini_clients[key] = client
+        return client
 
 
 def _call_fast_model(
@@ -245,11 +327,14 @@ def _call_fast_model(
     quota_manager: FastLLMQuotaManager | None = None,
 ) -> str:
     """
-    [동기] Fast 모델 호출 (gemini-3.1-flash-lite-preview).
+    [동기] Fast 모델 호출 (판단/웹검색 레인 primary/fallback).
     의도 분석, 키워드 생성, 개별 기사 요약에 사용합니다.
     실패 시 빈 문자열 반환.
     """
-    fast_model = getattr(config, "FAST_MODEL_NAME", "gemini-3.1-flash-lite-preview")
+    targets = _routing_targets()
+    if not targets:
+        logger.warning("[web_search] routing LLM 타깃이 설정되지 않았습니다.")
+        return ""
     max_prompt_chars = int(getattr(config, "WEB_RAG_FAST_PROMPT_MAX_CHARS", 5000))
     normalized_prompt = (prompt or "")[:max_prompt_chars]
     if budget is not None and not budget.consume():
@@ -258,16 +343,46 @@ def _call_fast_model(
     if quota_manager is not None and not quota_manager.try_consume():
         logger.info("[web_search] CometAPI 중앙 호출 제한으로 Fast 모델 단계를 건너뜁니다.")
         return ""
-    try:
-        client = _get_fast_client()
-        response = client.models.generate_content(
-            model=fast_model,
-            contents=normalized_prompt,
-        )
-        return response.text.strip()
-    except Exception as e:
-        logger.warning(f"[web_search] Fast 모델 호출 실패: {e}")
-        return ""
+
+    for target in targets:
+        try:
+            if target["provider"] == "openai_compat":
+                client = _get_fast_openai_client(target["base_url"], target["api_key"])
+                if client is None:
+                    continue
+                completion = client.chat.completions.create(
+                    model=target["model"],
+                    messages=[{"role": "user", "content": normalized_prompt}],
+                    max_tokens=int(getattr(config, "ROUTING_LLM_MAX_TOKENS", 1024)),
+                    temperature=0.0,
+                    timeout=config.AI_REQUEST_TIMEOUT,
+                )
+                text = completion.choices[0].message.content
+                if text:
+                    return text.strip()
+                continue
+
+            if target["provider"] == "gemini_compat":
+                client = _get_fast_gemini_client(target["base_url"], target["api_key"])
+                if client is None:
+                    continue
+                response = client.models.generate_content(
+                    model=target["model"],
+                    contents=normalized_prompt,
+                )
+                text = getattr(response, "text", "") or ""
+                if text:
+                    return text.strip()
+                continue
+        except Exception as e:
+            logger.warning(
+                "[web_search] Fast 모델 호출 실패 (%s): %s",
+                target.get("name"),
+                e,
+            )
+            continue
+
+    return ""
 
 
 def _build_cache_key(user_query: str) -> str:

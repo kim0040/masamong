@@ -4,7 +4,7 @@ KakaoTalk Embedding Generator V2.1 (Chunked Session Edition)
 
 This script upgrades the embedding generation process by:
 1. Grouping messages into 'Sessions' based on a 1-hour silence gap.
-2. Summarizing each session using DeepSeek (via CometAPI) to extract key points and context.
+2. Summarizing each session using configurable LLM(OpenAI-compatible) to extract key points and context.
 3. [NEW V2.1] Chunking the session's original text into smaller pieces.
 4. [NEW V2.1] Embedding each CHUNK instead of just the summary.
    - Metadata includes: [Session Summary] + [Chunk Original Text]
@@ -60,19 +60,46 @@ CHUNK_OVERLAP = 50       # Context overlap
 # Summarization Model Configs
 SUMMARIZATION_MODELS = {
     "1": {
-        "name": "DeepSeek-V3.2-Exp-nothinking",
+        "name": getattr(config, "KAKAO_SUMMARY_MODEL_STANDARD", "DeepSeek-V3.2-Exp-nothinking"),
         "price_input": 0.27,
         "price_output": 0.432,
         "desc": "표준형 (DeepSeek V3.2)"
     },
     "2": {
-        "name": "gpt-5-nano-2025-08-07",
+        "name": getattr(config, "KAKAO_SUMMARY_MODEL_BUDGET", "gpt-5-nano-2025-08-07"),
         "price_input": 0.05,
         "price_output": 0.40,
         "desc": "절약형 (GPT-5 Nano)"
     }
 }
 EXCHANGE_RATE = 1470 
+
+
+def resolve_summary_api_key(cli_key: str | None = None) -> str | None:
+    """요약용 LLM API 키를 우선순위에 따라 결정합니다."""
+    return (
+        cli_key
+        or os.environ.get("KAKAO_SUMMARY_API_KEY")
+        or os.environ.get("LLM_MAIN_PRIMARY_API_KEY")
+        or os.environ.get("COMETAPI_KEY")
+        or getattr(config, "KAKAO_SUMMARY_API_KEY", None)
+        or getattr(config, "LLM_MAIN_PRIMARY_API_KEY", None)
+        or getattr(config, "COMETAPI_KEY", None)
+    )
+
+
+def resolve_summary_base_url(cli_base_url: str | None = None) -> str:
+    """요약용 LLM Base URL을 우선순위에 따라 결정합니다."""
+    return (
+        cli_base_url
+        or os.environ.get("KAKAO_SUMMARY_BASE_URL")
+        or os.environ.get("LLM_MAIN_PRIMARY_BASE_URL")
+        or os.environ.get("COMETAPI_BASE_URL")
+        or getattr(config, "KAKAO_SUMMARY_BASE_URL", None)
+        or getattr(config, "LLM_MAIN_PRIMARY_BASE_URL", None)
+        or getattr(config, "COMETAPI_BASE_URL", None)
+        or "https://api.cometapi.com/v1"
+    )
 
 class KakaoSessionEmbedder:
     def __init__(self, embedding_model_name: str, api_key: str, base_url: str, summary_model_config: Dict[str, Any]):
@@ -471,14 +498,15 @@ def main():
     parser.add_argument("--input", "-i", type=str, default="data/kakao_raw/kakao_chat.csv")
     parser.add_argument("--output", "-o", type=str, default="data/kakao_store_v2")
     parser.add_argument("--model", "-m", type=str, default=DEFAULT_MODEL_NAME)
-    parser.add_argument("--key", "-k", type=str, help="CometAPI Key")
+    parser.add_argument("--key", "-k", type=str, help="Summary LLM API key (OpenAI-compatible)")
+    parser.add_argument("--base-url", type=str, help="Summary LLM base URL (OpenAI-compatible)")
     parser.add_argument("--migrate-v2", action="store_true", help="Migrate from existing V2 data (skips summary)")
     parser.add_argument("--migrate-path", type=str, default="data/kakao_store_v2", help="Path to existing V2 data")
     
     args = parser.parse_args()
     
-    api_key = args.key or os.environ.get("COMETAPI_KEY") or getattr(config, 'COMETAPI_KEY', None)
-    base_url = os.environ.get("COMETAPI_BASE_URL") or getattr(config, 'COMETAPI_BASE_URL', "https://api.cometapi.com/v1")
+    api_key = resolve_summary_api_key(args.key)
+    base_url = resolve_summary_base_url(args.base_url)
     
     # Auto-detect migration if flag is not set but path is default and exists
     migrate_path = None
