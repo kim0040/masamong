@@ -2283,6 +2283,16 @@ Generate the optimized English image prompt:"""
         # 시스템 프롬프트 (페르소나 + 규칙)
         system_part = self._get_channel_system_prompt(message.channel.id)
 
+        # [FIX] DM일 경우 프롬프트에 섞여 들어간 멘션 제한 정책 제거 및 예외 규칙 주입
+        if not message.guild:
+            system_part = system_part.replace(config.MENTION_GUARD_SNIPPET, "")
+            system_part += (
+                "\n\n### [중요 예외 규칙]\n"
+                "현재 사용자와 당신은 1:1 개인 창(DM)에서 대화 중입니다. "
+                "따라서 멘션(@) 여부와 상관없이 모든 대화에 즉각적이고 정상적으로 응답해야 합니다. "
+                "기존의 '멘션이 없으면 응답하지 않는다'는 정책을 완전히 잊어버리세요."
+            )
+
         sections: list[str] = [system_part]
 
         # 서버 현재 시간 (KST) - 항상 포함
@@ -2593,17 +2603,20 @@ Generate the optimized English image prompt:"""
                 return search_result
             return {"error": search_result.get("error", "웹 검색을 통해 정보를 찾는 데 실패했습니다.")}
 
-        # generate_image는 프롬프트 생성 + CometAPI 호출 2-step 처리를 사용합니다.
+        # generate_image는 프롬프트 생성 + AI 호출 2-step 처리를 사용합니다.
         if tool_name == 'generate_image':
-            logger.info("특별 도구 실행: generate_image (CometAPI Gemini 3.1 Flash Image)", extra=log_extra)
+            logger.info("특별 도구 실행: generate_image", extra=log_extra)
             original_query = parameters.get('user_query', user_query)
             user_id = parameters.get('user_id')
+            rag_context = parameters.get('rag_context')
             
             if user_id is None:
                 return {"error": "이미지 생성에 필요한 사용자 정보가 없습니다."}
             
-            # Seedream 5.0은 자체적인 프롬프트 이해 및 추론 능력이 뛰어나므로 번역/최적화 (LLM 1회 호출) 단계를 생략합니다.
-            image_prompt = original_query
+            # [FIX] qwen-image 등 고품질 영문 프롬프트가 필요한 모델을 위해 프롬프트 번역/최적화 단계 복원
+            image_prompt = await self._generate_image_prompt(original_query, log_extra, rag_context=rag_context)
+            if not image_prompt:
+                image_prompt = original_query
             
             # ToolsCog의 generate_image 도구 호출
             result = await self.tools_cog.generate_image(prompt=image_prompt, user_id=user_id)
@@ -2786,6 +2799,8 @@ Generate the optimized English image prompt:"""
                     # generate_image 도구 특수 처리
                     if tool_name == 'generate_image':
                         tool_call.setdefault('parameters', {})['user_id'] = message.author.id
+                        if rag_blocks:
+                            tool_call['parameters']['rag_context'] = "\n\n".join(rag_blocks)
                         await status_msg.edit(content="🎨 멋진 이미지를 그려내고 있어! (최대 1분 30초 정도 걸릴 수 있으니 잠시만 기다려줘...)")
                     
                     result = await self._execute_tool(
