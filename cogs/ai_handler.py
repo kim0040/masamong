@@ -2299,6 +2299,10 @@ Generate the optimized English image prompt:"""
         current_time = db_utils.get_current_time()
         sections.append(f"[현재 시간]\n{current_time}")
 
+        # [NEW] 상대방 정보 주입 (호칭 문제 해결)
+        user_name = message.author.display_name
+        sections.append(f"[상대방 정보]\n- 이름/닉네임: {user_name}\n- 지시사항: 상대방을 지칭할 때 '@사용자'라고 부르지 말고, 위 이름을 사용하거나 페르소나(오빠, 아재 등)에 맞춰서 불러줘.")
+
         if fortune_context:
              # [Optimization] 설명문 간소화
              sections.append(f"[운세 참고]\n{fortune_context}")
