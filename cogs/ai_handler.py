@@ -2504,33 +2504,58 @@ Generate the optimized English image prompt:"""
 
         return "\n".join(lines)
 
+    @staticmethod
+    def _split_message_chunks(text: str, chunk_size: int = 1900) -> list[str]:
+        """Discord 메시지 제한보다 작은 단위로 텍스트를 나눕니다."""
+        if not text:
+            return []
+
+        chunks: list[str] = []
+        remaining = str(text).strip()
+        while remaining:
+            if len(remaining) <= chunk_size:
+                chunks.append(remaining)
+                break
+
+            split_at = max(
+                remaining.rfind("\n\n", 0, chunk_size),
+                remaining.rfind("\n", 0, chunk_size),
+                remaining.rfind(" ", 0, chunk_size),
+            )
+            if split_at < chunk_size // 2:
+                split_at = chunk_size
+
+            chunk = remaining[:split_at].rstrip()
+            if not chunk:
+                chunk = remaining[:chunk_size]
+                split_at = chunk_size
+            chunks.append(chunk)
+            remaining = remaining[split_at:].lstrip()
+
+        return chunks
+
     async def _send_split_message(self, message: discord.Message, text: str):
         """
         2000자가 넘는 메시지를 안전하게 나누어 전송합니다.
         Discord의 메시지 길이 제한(2000자)을 준수합니다.
         """
-        if not text:
-            return
-
-        # 1900자로 여유 있게 설정 (기타 포맷팅 고려)
-        chunk_size = 1900
-        
-        # 텍스트가 짧으면 바로 전송
-        if len(text) <= chunk_size:
-            await message.channel.send(text)
-            return
-
-        # 긴 텍스트 분할 전송
-        chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
-        
-        for i, chunk in enumerate(chunks):
-            # 첫 번째 메시지는 reply로, 나머지는 일반 메시지로 전송하여 스레드처럼 보이게 함
-            if i == 0:
-                await message.channel.send(chunk)
-            else:
-                await message.channel.send(chunk)
+        for chunk in self._split_message_chunks(text):
+            await message.channel.send(chunk)
             # 순서 보장을 위한 짧은 텀
             await asyncio.sleep(0.5)
+
+    async def _edit_status_with_split_response(self, status_msg: discord.Message, text: str) -> list[discord.Message]:
+        """진행 상태 메시지를 최종 응답으로 바꾸되, 길면 후속 메시지로 나눠 보냅니다."""
+        chunks = self._split_message_chunks(text)
+        if not chunks:
+            return []
+
+        await status_msg.edit(content=chunks[0])
+        sent_messages = [status_msg]
+        for chunk in chunks[1:]:
+            sent_messages.append(await status_msg.channel.send(chunk))
+            await asyncio.sleep(0.5)
+        return sent_messages
 
     @staticmethod
     def _build_rag_debug_block(entries: list[dict]) -> str:
@@ -2856,7 +2881,7 @@ Generate the optimized English image prompt:"""
                             if self.NEWS_SOURCE_FOOTER.strip() not in final_response_text:
                                 final_response_text += self.NEWS_SOURCE_FOOTER
 
-                        await status_msg.edit(content=final_response_text)
+                        await self._edit_status_with_split_response(status_msg, final_response_text)
                         if source_urls:
                             self._news_source_cache[status_msg.id] = source_urls
                             if len(self._news_source_cache) > 50:
@@ -2949,7 +2974,7 @@ Generate the optimized English image prompt:"""
                     if self.NEWS_SOURCE_FOOTER.strip() not in final_response_text:
                         final_response_text += self.NEWS_SOURCE_FOOTER
 
-                await status_msg.edit(content=final_response_text)
+                await self._edit_status_with_split_response(status_msg, final_response_text)
 
                 # 출처 캐시 저장 및 리액션 추가
                 if source_urls_to_cache:
