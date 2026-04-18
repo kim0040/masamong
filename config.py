@@ -313,15 +313,15 @@ SPAM_PREVENTION_SECONDS = as_int(load_config_value('SPAM_PREVENTION_SECONDS', 10
 
 # --- 대화 히스토리 및 RAG 제한 설정 ---
 # 메인 답변 시 가져올 이전 대화 개수 (RAG 사용 시 / 미사용 시)
-HISTORY_LIMIT_WITH_RAG = as_int(load_config_value('HISTORY_LIMIT_WITH_RAG', 6), 6)
-HISTORY_LIMIT_WITHOUT_RAG = as_int(load_config_value('HISTORY_LIMIT_WITHOUT_RAG', 10), 10)
+HISTORY_LIMIT_WITH_RAG = as_int(load_config_value('HISTORY_LIMIT_WITH_RAG', 10), 10)
+HISTORY_LIMIT_WITHOUT_RAG = as_int(load_config_value('HISTORY_LIMIT_WITHOUT_RAG', 12), 12)
 # 도구 의도 분석 시 참고할 이전 대화 개수
 INTENT_HISTORY_LIMIT = as_int(load_config_value('INTENT_HISTORY_LIMIT', 5), 5)
 INTENT_LLM_ENABLED = as_bool(load_config_value('INTENT_LLM_ENABLED', 'true'))
 INTENT_LLM_RAG_STRONG_BYPASS = as_bool(load_config_value('INTENT_LLM_RAG_STRONG_BYPASS', 'true'))
 
 # 메시지 1개당 최대 글자수 (프롬프트 포함 시)
-MAX_MESSAGE_CHARS = as_int(load_config_value('MAX_MESSAGE_CHARS', 1500), 1500)
+MAX_MESSAGE_CHARS = as_int(load_config_value('MAX_MESSAGE_CHARS', 1800), 1800)
 # RAG 결과 1개당 최대 글자수
 MAX_RAG_BLOCK_CHARS = as_int(load_config_value('MAX_RAG_BLOCK_CHARS', 500), 500)
 # RAG 컨텍스트 최대 개수
@@ -405,7 +405,7 @@ LLM_MAIN_FALLBACK_API_KEY = as_str(
     load_config_value('LLM_MAIN_FALLBACK_API_KEY', COMETAPI_KEY),
     '',
 )
-MAIN_LLM_MAX_TOKENS = max(128, as_int(load_config_value('MAIN_LLM_MAX_TOKENS', 2048), 2048))
+MAIN_LLM_MAX_TOKENS = max(128, as_int(load_config_value('MAIN_LLM_MAX_TOKENS', 10000), 10000))
 
 # Kakao 임베딩/요약 스크립트용 LLM 설정
 # 기본값은 메인 레인 Primary를 따르고, 미설정 시 COMETAPI_*로 후순위 fallback
@@ -432,13 +432,13 @@ KAKAO_SUMMARY_MODEL_BUDGET = as_str(
 DDGS_ENABLED = as_bool(load_config_value('DDGS_ENABLED', 'true'))
 # 범용 웹 탐색 파이프라인 예산/캐시 설정
 WEB_RAG_FAST_LLM_MAX_CALLS = max(0, as_int(load_config_value('WEB_RAG_FAST_LLM_MAX_CALLS', 3), 3))
-WEB_RAG_MAX_SELECTED_URLS = max(1, as_int(load_config_value('WEB_RAG_MAX_SELECTED_URLS', 4), 4))
-WEB_RAG_MAX_SUMMARIZED_ARTICLES = max(1, as_int(load_config_value('WEB_RAG_MAX_SUMMARIZED_ARTICLES', 3), 3))
+WEB_RAG_MAX_SELECTED_URLS = max(1, as_int(load_config_value('WEB_RAG_MAX_SELECTED_URLS', 5), 5))
+WEB_RAG_MAX_SUMMARIZED_ARTICLES = max(1, as_int(load_config_value('WEB_RAG_MAX_SUMMARIZED_ARTICLES', 4), 4))
 WEB_RAG_MAX_CANDIDATES = max(5, as_int(load_config_value('WEB_RAG_MAX_CANDIDATES', 24), 24))
 WEB_RAG_CACHE_TTL_SECONDS = max(0, as_int(load_config_value('WEB_RAG_CACHE_TTL_SECONDS', 300), 300))
 WEB_RAG_CACHE_MAX_ENTRIES = max(1, as_int(load_config_value('WEB_RAG_CACHE_MAX_ENTRIES', 128), 128))
-WEB_RAG_FAST_PROMPT_MAX_CHARS = max(800, as_int(load_config_value('WEB_RAG_FAST_PROMPT_MAX_CHARS', 5000), 5000))
-WEB_RAG_CONTEXT_MAX_CHARS = max(800, as_int(load_config_value('WEB_RAG_CONTEXT_MAX_CHARS', 2200), 2200))
+WEB_RAG_FAST_PROMPT_MAX_CHARS = max(800, as_int(load_config_value('WEB_RAG_FAST_PROMPT_MAX_CHARS', 8000), 8000))
+WEB_RAG_CONTEXT_MAX_CHARS = max(800, as_int(load_config_value('WEB_RAG_CONTEXT_MAX_CHARS', 3500), 3500))
 WEB_SEARCH_REFINE_WITH_LLM = as_bool(load_config_value('WEB_SEARCH_REFINE_WITH_LLM', 'false'))
 AUTO_WEB_SEARCH_COOLDOWN_SECONDS = max(0, as_int(load_config_value('AUTO_WEB_SEARCH_COOLDOWN_SECONDS', 90), 90))
 AUTO_WEB_SEARCH_ALLOW_SHORT_FOLLOWUP = as_bool(load_config_value('AUTO_WEB_SEARCH_ALLOW_SHORT_FOLLOWUP', 'false'))
@@ -533,8 +533,8 @@ STRUCTURED_MEMORY_SIMILARITY_THRESHOLD = as_float(
 )
 RAG_STRONG_SIMILARITY_THRESHOLD = as_float(EMBED_CONFIG.get("strong_similarity_threshold"), 0.72)
 RAG_DEBUG_ENABLED = as_bool(load_config_value('RAG_DEBUG_ENABLED', EMBED_CONFIG.get("debug_enabled", False)))
-RAG_HYBRID_TOP_K = int(EMBED_CONFIG.get("hybrid_top_k", 5))
-RAG_EMBEDDING_TOP_N = int(EMBED_CONFIG.get("embedding_top_n", 8))
+RAG_HYBRID_TOP_K = int(EMBED_CONFIG.get("hybrid_top_k", 8))
+RAG_EMBEDDING_TOP_N = int(EMBED_CONFIG.get("embedding_top_n", 14))
 RAG_BM25_TOP_N = int(EMBED_CONFIG.get("bm25_top_n", 8))
 RAG_RRF_K = float(EMBED_CONFIG.get("rrf_constant", 60))
 RAG_QUERY_REWRITE_ENABLED = as_bool(
@@ -615,13 +615,13 @@ KAKAO_API_TIMEOUT_SECONDS = max(1, as_int(load_config_value('KAKAO_API_TIMEOUT_S
 KRX_API_RPD_LIMIT = 9000
 AI_RESPONSE_LENGTH_LIMIT = 300
 AI_COOLDOWN_SECONDS = 3
-AI_REQUEST_TIMEOUT = as_int(load_config_value('AI_REQUEST_TIMEOUT', 45), 45)  # AI 응답 제한 시간 (초)
+AI_REQUEST_TIMEOUT = as_int(load_config_value('AI_REQUEST_TIMEOUT', 120), 120)  # AI 응답 제한 시간 (초)
 # CometAPI 보호장치 (외부 LLM 과호출/과토큰 방지)
 COMETAPI_RPM_LIMIT = max(1, as_int(load_config_value('COMETAPI_RPM_LIMIT', 40), 40))
 COMETAPI_RPD_LIMIT = max(1, as_int(load_config_value('COMETAPI_RPD_LIMIT', 3000), 3000))
 COMETAPI_MAX_TOKENS = max(128, as_int(load_config_value('COMETAPI_MAX_TOKENS', 2048), 2048))
 COMETAPI_SYSTEM_PROMPT_MAX_CHARS = max(400, as_int(load_config_value('COMETAPI_SYSTEM_PROMPT_MAX_CHARS', 6000), 6000))
-COMETAPI_USER_PROMPT_MAX_CHARS = max(800, as_int(load_config_value('COMETAPI_USER_PROMPT_MAX_CHARS', 12000), 12000))
+COMETAPI_USER_PROMPT_MAX_CHARS = max(800, as_int(load_config_value('COMETAPI_USER_PROMPT_MAX_CHARS', 40000), 40000))
 # !요약 전용 컨텍스트 압축 설정 (긴 이력을 보되 입력 토큰은 고정 예산으로 제한)
 SUMMARY_MAX_LOOKBACK = max(20, as_int(load_config_value('SUMMARY_MAX_LOOKBACK', 120), 120))
 SUMMARY_MAX_CONTEXT_CHARS = max(1200, as_int(load_config_value('SUMMARY_MAX_CONTEXT_CHARS', 3200), 3200))
