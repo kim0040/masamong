@@ -109,7 +109,7 @@ def default_reasoning_effort_for_model(model: Any) -> str:
     """추론 effort 파라미터가 필요한 OpenAI 호환 모델의 기본값을 반환합니다."""
     model_name = as_str(model, "").lower()
     if "gpt-oss" in model_name:
-        return "high"
+        return "low"
     return ""
 
 
