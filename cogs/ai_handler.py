@@ -173,6 +173,7 @@ class AIHandler(commands.Cog):
                     "base_url": config.LLM_ROUTING_PRIMARY_BASE_URL,
                     "api_key": config.LLM_ROUTING_PRIMARY_API_KEY,
                     "model": config.LLM_ROUTING_PRIMARY_MODEL,
+                    "reasoning_effort": config.LLM_ROUTING_PRIMARY_REASONING_EFFORT,
                     "name": "routing.primary",
                 },
                 {
@@ -180,6 +181,7 @@ class AIHandler(commands.Cog):
                     "base_url": config.LLM_ROUTING_FALLBACK_BASE_URL,
                     "api_key": config.LLM_ROUTING_FALLBACK_API_KEY,
                     "model": config.LLM_ROUTING_FALLBACK_MODEL,
+                    "reasoning_effort": config.LLM_ROUTING_FALLBACK_REASONING_EFFORT,
                     "name": "routing.fallback",
                 },
             ]
@@ -190,6 +192,7 @@ class AIHandler(commands.Cog):
                     "base_url": config.LLM_MAIN_PRIMARY_BASE_URL,
                     "api_key": config.LLM_MAIN_PRIMARY_API_KEY,
                     "model": config.LLM_MAIN_PRIMARY_MODEL,
+                    "reasoning_effort": config.LLM_MAIN_PRIMARY_REASONING_EFFORT,
                     "name": "main.primary",
                 },
                 {
@@ -197,6 +200,7 @@ class AIHandler(commands.Cog):
                     "base_url": config.LLM_MAIN_FALLBACK_BASE_URL,
                     "api_key": config.LLM_MAIN_FALLBACK_API_KEY,
                     "model": config.LLM_MAIN_FALLBACK_MODEL,
+                    "reasoning_effort": config.LLM_MAIN_FALLBACK_REASONING_EFFORT,
                     "name": "main.fallback",
                 },
             ]
@@ -231,6 +235,7 @@ class AIHandler(commands.Cog):
                     "base_url": base_url,
                     "api_key": api_key,
                     "model": model_name,
+                    "reasoning_effort": str(raw.get("reasoning_effort") or "").strip(),
                     "name": str(raw.get("name") or lane_key),
                 }
             )
@@ -273,18 +278,23 @@ class AIHandler(commands.Cog):
             client = self._get_openai_client(target["base_url"], target["api_key"])
             if client is None:
                 return None
-            completion = await client.chat.completions.create(
-                model=target["model"],
-                messages=[
+            request_kwargs: dict[str, Any] = {
+                "model": target["model"],
+                "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                max_tokens=max_tokens,
-                temperature=config.AI_TEMPERATURE,
-                frequency_penalty=config.AI_FREQUENCY_PENALTY,
-                presence_penalty=config.AI_PRESENCE_PENALTY,
-                timeout=config.AI_REQUEST_TIMEOUT,
-            )
+                "max_tokens": max_tokens,
+                "temperature": config.AI_TEMPERATURE,
+                "frequency_penalty": config.AI_FREQUENCY_PENALTY,
+                "presence_penalty": config.AI_PRESENCE_PENALTY,
+                "timeout": config.AI_REQUEST_TIMEOUT,
+                "stream": False,
+            }
+            reasoning_effort = str(target.get("reasoning_effort") or "").strip()
+            if reasoning_effort:
+                request_kwargs["reasoning_effort"] = reasoning_effort
+            completion = await client.chat.completions.create(**request_kwargs)
             response_text = completion.choices[0].message.content
             reasoning_text = getattr(completion.choices[0].message, "reasoning_content", None)
             if not response_text and reasoning_text:
@@ -317,13 +327,18 @@ class AIHandler(commands.Cog):
             client = self._get_openai_client(target["base_url"], target["api_key"])
             if client is None:
                 return None
-            completion = await client.chat.completions.create(
-                model=target["model"],
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=int(getattr(config, "ROUTING_LLM_MAX_TOKENS", 1024)),
-                temperature=0.0,
-                timeout=config.AI_REQUEST_TIMEOUT,
-            )
+            request_kwargs: dict[str, Any] = {
+                "model": target["model"],
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": int(getattr(config, "ROUTING_LLM_MAX_TOKENS", 1024)),
+                "temperature": 0.0,
+                "timeout": config.AI_REQUEST_TIMEOUT,
+                "stream": False,
+            }
+            reasoning_effort = str(target.get("reasoning_effort") or "").strip()
+            if reasoning_effort:
+                request_kwargs["reasoning_effort"] = reasoning_effort
+            completion = await client.chat.completions.create(**request_kwargs)
             response_text = completion.choices[0].message.content
             return response_text.strip() if response_text else None
 
@@ -2333,17 +2348,15 @@ Generate the optimized English image prompt:"""
             
             if filtered_rag:
                 rag_content = "\n\n".join(filtered_rag)
-                sections.append(f"[과거 대화 기억 (참고용)]\n{rag_content}\n"
-                                "(⚠️ 주의: 위 내용은 과거의 기억일 뿐입니다. 현재 대화가 아닙니다. "
-                                "사용자가 과거에 비슷한 질문을 했더라도, '아까 말했잖아'라고 하지 말고 "
-                                "마치 처음 듣는 것처럼 친절하게 답변하세요.)")
                 sections.append(
-                    "(보조 지침: 과거 대화 기억은 현재 질문/검색결과와 직접 관련이 있을 때만 자연스럽게 반영하고, "
-                    "관련이 약하면 굳이 언급하지 마세요.)"
+                    "[과거 대화 기억 (관련성 검토 후 선택 사용)]\n"
+                    "아래 기억은 검색으로 회수된 후보일 뿐이고, 현재 질문의 사실로 간주하지 마세요.\n"
+                    "답변 전에 현재 질문과 각 기억이 직접 같은 대상/사건/요청을 다루는지 판단하세요.\n"
+                    "직접 관련이 없으면 기억을 완전히 무시하고, 기억 속 이름/행동/사건을 답변에 넣지 마세요.\n"
+                    "직접 관련이 있어도 현재 상태를 아는 것처럼 단정하지 말고, 참고 가능한 배경 정도로만 다루세요.\n\n"
+                    f"{rag_content}"
                 )
 
-        # 도구 실행 결과 - 누락 복구
-        # 도구 실행 결과 - 누락 복구
         if tool_results_block:
             sections.append(f"[도구 실행 결과 (최우선 정보)]\n{tool_results_block}")
             sections.append("(⚠️ 절대적 지침: 위 [도구 실행 결과]는 방금 조회한 **실시간 사실**입니다. \n"
@@ -2359,9 +2372,10 @@ Generate the optimized English image prompt:"""
         # 지시사항 - RAG 데이터를 배경 지식으로 취급하도록 명시
         if rag_blocks:
             sections.append(
-                "위 기억은 과거 대화에서 가져온 배경 정보야. "
-                "'아까', '전에', '방금' 같은 시간 표현 없이 자연스럽게 답변해. "
-                "같은 주제라도 처음 듣는 것처럼 새롭게, 네 주관과 감정을 섞어서 대답해줘."
+                "최종 답변 지침: [과거 대화 기억]은 필수 사용 자료가 아닙니다. "
+                "현재 질문에 직접 답하는 데 필요하지 않으면 언급하지 마세요. "
+                "기억 속 인물, 장소, 행동, 사건을 잡담 소재로 끌어오지 마세요. "
+                "도구 실행 결과가 있으면 도구 결과를 우선하고, 없으면 현재 질문 자체에만 답하세요."
             )
         else:
             sections.append("관련 기억은 없지만, 너만의 주관적인 의견이나 리액션을 섞어서 완전한 친구처럼 자연스럽게 답변해줘.")
@@ -2402,25 +2416,8 @@ Generate the optimized English image prompt:"""
 
             # [Optimization] RAG 결과 포맷팅 (기존 유지 확인)
             if name == "local_rag":
-                # ... (RAG 처리는 위 메서드와 동일하게 유지되었어야 함, 아래 덮어쓰므로 주의)
-                # 여기서는 RAG를 제외한 나머지 도구만 최적화하고 RAG는 기존 로직을 가져와야 함.
-                # 편의상 RAG 로직은 그대로 두고, 일반 도구 포맷팅만 개선
-                entries = []
-                if isinstance(result, dict):
-                    raw_entries = result.get("entries")
-                    if isinstance(raw_entries, list):
-                        entries = [item for item in raw_entries if isinstance(item, dict)]
-                if entries:
-                    for idx, rag_entry in enumerate(entries, start=1):
-                        block = (rag_entry.get("dialogue_block") or rag_entry.get("message") or "").strip()
-                        if not block: continue
-                        score = rag_entry.get("combined_score")
-                        header = f"[local_rag #{idx}]"
-                        if isinstance(score, (int, float)):
-                            header += f" score={float(score):.3f}"
-                        lines.append(header)
-                        for line in block.splitlines():
-                            lines.append(f"  {line}")
+                # local RAG는 _compose_main_prompt의 기억 섹션에서만 다룹니다.
+                # 도구 결과에 섞으면 과거 기억이 "방금 조회한 최우선 사실"처럼 과대 반영됩니다.
                 continue
 
             # [Optimization] 날씨 도구 결과 최적화
@@ -2505,7 +2502,7 @@ Generate the optimized English image prompt:"""
             
             lines.append(f"[{name}] {result_text}")
 
-        return "\n".join(lines) if lines else "도구 실행 결과 없음"
+        return "\n".join(lines)
 
     async def _send_split_message(self, message: discord.Message, text: str):
         """

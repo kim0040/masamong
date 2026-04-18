@@ -467,7 +467,7 @@ async def _run_prompt_injection_check(channel_id: int = 0) -> CheckResult:
     required_markers = [
         "[현재 시간]",
         "[최근 대화 흐름 (단기 기억)]",
-        "[과거 대화 기억 (참고용)]",
+        "[과거 대화 기억 (관련성 검토 후 선택 사용)]",
         "[도구 실행 결과 (최우선 정보)]",
         "[현재 질문]",
         "RAG 주입 검증용 문장",
