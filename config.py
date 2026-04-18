@@ -105,6 +105,14 @@ def normalize_llm_provider(value: Any, default: str = "none") -> str:
     return aliases.get(raw, "none")
 
 
+def default_reasoning_effort_for_model(model: Any) -> str:
+    """추론 effort 파라미터가 필요한 OpenAI 호환 모델의 기본값을 반환합니다."""
+    model_name = as_str(model, "").lower()
+    if "gpt-oss" in model_name:
+        return "high"
+    return ""
+
+
 EMBED_CONFIG_PATH = os.environ.get('EMB_CONFIG_PATH', 'emb_config.json')
 
 
@@ -355,6 +363,16 @@ LLM_ROUTING_PRIMARY_API_KEY = as_str(
     load_config_value('LLM_ROUTING_PRIMARY_API_KEY', COMETAPI_KEY),
     '',
 )
+LLM_ROUTING_PRIMARY_REASONING_EFFORT = as_str(
+    load_config_value(
+        'LLM_ROUTING_PRIMARY_REASONING_EFFORT',
+        load_config_value(
+            'LLM_ROUTING_REASONING_EFFORT',
+            default_reasoning_effort_for_model(LLM_ROUTING_PRIMARY_MODEL),
+        ),
+    ),
+    '',
+)
 
 LLM_ROUTING_FALLBACK_PROVIDER = normalize_llm_provider(
     load_config_value('LLM_ROUTING_FALLBACK_PROVIDER', 'none')
@@ -369,6 +387,16 @@ LLM_ROUTING_FALLBACK_BASE_URL = as_str(
 )
 LLM_ROUTING_FALLBACK_API_KEY = as_str(
     load_config_value('LLM_ROUTING_FALLBACK_API_KEY', COMETAPI_KEY),
+    '',
+)
+LLM_ROUTING_FALLBACK_REASONING_EFFORT = as_str(
+    load_config_value(
+        'LLM_ROUTING_FALLBACK_REASONING_EFFORT',
+        load_config_value(
+            'LLM_ROUTING_REASONING_EFFORT',
+            default_reasoning_effort_for_model(LLM_ROUTING_FALLBACK_MODEL),
+        ),
+    ),
     '',
 )
 ROUTING_LLM_MAX_TOKENS = max(64, as_int(load_config_value('ROUTING_LLM_MAX_TOKENS', 1024), 1024))
@@ -389,6 +417,16 @@ LLM_MAIN_PRIMARY_API_KEY = as_str(
     load_config_value('LLM_MAIN_PRIMARY_API_KEY', COMETAPI_KEY),
     '',
 )
+LLM_MAIN_PRIMARY_REASONING_EFFORT = as_str(
+    load_config_value(
+        'LLM_MAIN_PRIMARY_REASONING_EFFORT',
+        load_config_value(
+            'LLM_MAIN_REASONING_EFFORT',
+            default_reasoning_effort_for_model(LLM_MAIN_PRIMARY_MODEL),
+        ),
+    ),
+    '',
+)
 
 LLM_MAIN_FALLBACK_PROVIDER = normalize_llm_provider(
     load_config_value('LLM_MAIN_FALLBACK_PROVIDER', 'none')
@@ -403,6 +441,16 @@ LLM_MAIN_FALLBACK_BASE_URL = as_str(
 )
 LLM_MAIN_FALLBACK_API_KEY = as_str(
     load_config_value('LLM_MAIN_FALLBACK_API_KEY', COMETAPI_KEY),
+    '',
+)
+LLM_MAIN_FALLBACK_REASONING_EFFORT = as_str(
+    load_config_value(
+        'LLM_MAIN_FALLBACK_REASONING_EFFORT',
+        load_config_value(
+            'LLM_MAIN_REASONING_EFFORT',
+            default_reasoning_effort_for_model(LLM_MAIN_FALLBACK_MODEL),
+        ),
+    ),
     '',
 )
 MAIN_LLM_MAX_TOKENS = max(128, as_int(load_config_value('MAIN_LLM_MAX_TOKENS', 10000), 10000))
