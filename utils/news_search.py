@@ -246,6 +246,7 @@ def _routing_targets() -> list[dict[str, str]]:
             "base_url": getattr(config, "LLM_ROUTING_PRIMARY_BASE_URL", ""),
             "api_key": getattr(config, "LLM_ROUTING_PRIMARY_API_KEY", ""),
             "model": getattr(config, "LLM_ROUTING_PRIMARY_MODEL", base_model),
+            "reasoning_effort": getattr(config, "LLM_ROUTING_PRIMARY_REASONING_EFFORT", ""),
             "name": "routing.primary",
         },
         {
@@ -253,6 +254,7 @@ def _routing_targets() -> list[dict[str, str]]:
             "base_url": getattr(config, "LLM_ROUTING_FALLBACK_BASE_URL", ""),
             "api_key": getattr(config, "LLM_ROUTING_FALLBACK_API_KEY", ""),
             "model": getattr(config, "LLM_ROUTING_FALLBACK_MODEL", base_model),
+            "reasoning_effort": getattr(config, "LLM_ROUTING_FALLBACK_REASONING_EFFORT", ""),
             "name": "routing.fallback",
         },
     ]
@@ -287,6 +289,7 @@ def _routing_targets() -> list[dict[str, str]]:
                 "base_url": base_url,
                 "api_key": api_key,
                 "model": model_name,
+                "reasoning_effort": str(raw.get("reasoning_effort") or "").strip(),
                 "name": str(raw.get("name") or "routing"),
             }
         )
@@ -350,13 +353,18 @@ def _call_fast_model(
                 client = _get_fast_openai_client(target["base_url"], target["api_key"])
                 if client is None:
                     continue
-                completion = client.chat.completions.create(
-                    model=target["model"],
-                    messages=[{"role": "user", "content": normalized_prompt}],
-                    max_tokens=int(getattr(config, "ROUTING_LLM_MAX_TOKENS", 1024)),
-                    temperature=0.0,
-                    timeout=config.AI_REQUEST_TIMEOUT,
-                )
+                request_kwargs: dict[str, Any] = {
+                    "model": target["model"],
+                    "messages": [{"role": "user", "content": normalized_prompt}],
+                    "max_tokens": int(getattr(config, "ROUTING_LLM_MAX_TOKENS", 1024)),
+                    "temperature": 0.0,
+                    "timeout": config.AI_REQUEST_TIMEOUT,
+                    "stream": False,
+                }
+                reasoning_effort = str(target.get("reasoning_effort") or "").strip()
+                if reasoning_effort:
+                    request_kwargs["reasoning_effort"] = reasoning_effort
+                completion = client.chat.completions.create(**request_kwargs)
                 text = completion.choices[0].message.content
                 if text:
                     return text.strip()
