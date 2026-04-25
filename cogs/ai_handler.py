@@ -2356,6 +2356,16 @@ Generate the optimized English image prompt:"""
             
             if history_text_lines:
                 recent_context_str = "\n".join(history_text_lines)
+                
+                # [FIX] 너무 긴 단기 기억 텍스트가 API 토큰 제한을 넘지 않도록 자름
+                max_history_chars = int(getattr(config, "CONVERSATION_WINDOW_MAX_CHARS", 3000)) * 2
+                if len(recent_context_str) > max_history_chars:
+                    recent_context_str = recent_context_str[-max_history_chars:]
+                    # 잘린 문자열의 첫 줄이 중간에 잘리지 않도록 다음 개행문자부터 시작
+                    first_newline = recent_context_str.find("\n")
+                    if first_newline != -1:
+                        recent_context_str = recent_context_str[first_newline+1:]
+                        
                 sections.append(f"[최근 대화 흐름 (단기 기억)]\n{recent_context_str}\n(위 대화 흐름을 반드시 참고하여 이어지는 답변을 하세요.)")
 
         # RAG 컨텍스트 (과거 대화 기억) - 단기 기억과 중복되면 제외
