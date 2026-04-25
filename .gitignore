@@ -176,3 +176,7 @@ test_*.py
 notes.md
 TODO.md
 NOTES.md
+
+# 벤치마크 테스트 파일 제외
+model_benchmark*.json
+scripts/model_benchmark*.py
