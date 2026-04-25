@@ -453,7 +453,7 @@ LLM_MAIN_FALLBACK_REASONING_EFFORT = as_str(
     ),
     '',
 )
-MAIN_LLM_MAX_TOKENS = max(128, as_int(load_config_value('MAIN_LLM_MAX_TOKENS', 10000), 10000))
+MAIN_LLM_MAX_TOKENS = max(128, as_int(load_config_value('MAIN_LLM_MAX_TOKENS', 8192), 8192))
 
 # Kakao 임베딩/요약 스크립트용 LLM 설정
 # 기본값은 메인 레인 Primary를 따르고, 미설정 시 COMETAPI_*로 후순위 fallback
