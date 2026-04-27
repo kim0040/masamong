@@ -98,3 +98,61 @@ async def test_detect_tools_by_llm_runs_for_smalltalk_when_always_run_enabled(mo
 
     assert called["value"] is True
     assert plan == []
+
+
+def test_detect_tools_by_keyword_place_routes_to_web_search():
+    handler = _build_handler_without_init()
+
+    plan = handler._detect_tools_by_keyword("홍대 근처 맛집 추천해줘")
+
+    assert isinstance(plan, list)
+    assert plan
+    assert plan[0]["tool_to_use"] == "web_search"
+    assert "맛집" in plan[0]["parameters"]["query"]
+
+
+def test_sanitize_tool_plan_filters_out_non_allowed_tools():
+    handler = _build_handler_without_init()
+
+    plan = handler._sanitize_tool_plan(
+        "홍대 맛집 추천해줘",
+        [
+            {"tool_to_use": "search_for_place", "parameters": {"query": "홍대 맛집"}},
+            {"tool_to_use": "generate_image", "parameters": {"user_query": "고양이"}},
+            {"tool_to_use": "web_search", "parameters": {"query": "홍대 맛집"}},
+        ],
+        rag_top_score=0.2,
+        log_extra=None,
+    )
+
+    assert len(plan) == 1
+    assert plan[0]["tool_to_use"] == "web_search"
+
+
+def test_sanitize_tool_plan_keeps_place_web_search_even_when_rag_is_strong():
+    handler = _build_handler_without_init()
+
+    plan = handler._sanitize_tool_plan(
+        "홍대 근처 맛집 추천해줘",
+        [{"tool_to_use": "web_search", "parameters": {"query": "홍대 근처 맛집 추천"}}],
+        rag_top_score=config.RAG_STRONG_SIMILARITY_THRESHOLD + 0.1,
+        log_extra=None,
+    )
+
+    assert plan
+    assert plan[0]["tool_to_use"] == "web_search"
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_rejects_disabled_tool():
+    handler = _build_handler_without_init()
+    handler.tools_cog = type("DummyTools", (), {})()
+
+    result = await handler._execute_tool(
+        {"tool_to_use": "generate_image", "parameters": {"user_query": "고양이"}},
+        guild_id=0,
+        user_query="고양이 그려줘",
+        channel_id=0,
+    )
+
+    assert "비활성화" in result.get("error", "")
