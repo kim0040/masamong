@@ -36,6 +36,8 @@ class ToolsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.weather_cog: WeatherCog = self.bot.get_cog('WeatherCog')
+        self._linkup_search_pipeline = None
+        self._linkup_search_loader_lock = asyncio.Lock()
         self._news_search_pipeline = None
         self._news_search_loader_lock = asyncio.Lock()
         logger.info("ToolsCog가 성공적으로 초기화되었습니다.")
@@ -286,8 +288,9 @@ class ToolsCog(commands.Cog):
 
     async def web_search_rag(self, query: str) -> dict:
         """
-        DuckDuckGo 기반 범용 탐색 RAG 파이프라인을 실행합니다.
-        utils/news_search.py의 run_news_search_pipeline()을 호출합니다.
+        범용 탐색 RAG 파이프라인을 실행합니다.
+        - 기본: Linkup (`utils/linkup_search.py`)
+        - 폴백: 레거시 DuckDuckGo 파이프라인 (`utils/news_search.py`)
 
         반환값:
             {
@@ -298,17 +301,50 @@ class ToolsCog(commands.Cog):
             }
             또는 {"status": "error", "message": str}
         """
+        provider = str(getattr(config, "WEB_SEARCH_PROVIDER", "legacy") or "legacy").strip().lower()
+        prefer_linkup = provider == "linkup"
+
+        if prefer_linkup:
+            try:
+                run_linkup_search_pipeline = await self._load_linkup_search_pipeline()
+                logger.info(f"웹 검색 RAG(Linkup) 실행: '{query}'")
+                linkup_result = await run_linkup_search_pipeline(query)
+                if linkup_result.get("status") == "success":
+                    return linkup_result
+                logger.warning(
+                    "Linkup 검색 실패로 레거시 파이프라인 폴백: %s",
+                    linkup_result.get("message"),
+                )
+            except Exception as e:
+                logger.warning("Linkup 파이프라인 실행 실패, 레거시 파이프라인으로 폴백합니다: %s", e)
+
         try:
             run_news_search_pipeline = await self._load_news_search_pipeline()
-            logger.info(f"웹 검색 RAG 파이프라인 실행: '{query}'")
-            result = await run_news_search_pipeline(query)
-            return result
+            logger.info(f"웹 검색 RAG(legacy) 실행: '{query}'")
+            return await run_news_search_pipeline(query)
         except Exception as e:
             logger.error(f"웹 검색 RAG 파이프라인 실행 중 오류: {e}", exc_info=True)
             return {"status": "error", "message": f"외부 검색 중 오류가 발생했습니다: {e}"}
 
+    async def _load_linkup_search_pipeline(self):
+        """Linkup 검색 파이프라인 모듈을 지연 import 합니다."""
+        if self._linkup_search_pipeline is not None:
+            return self._linkup_search_pipeline
+
+        async with self._linkup_search_loader_lock:
+            if self._linkup_search_pipeline is not None:
+                return self._linkup_search_pipeline
+
+            def _sync_import():
+                module = importlib.import_module("utils.linkup_search")
+                return module.run_linkup_search_pipeline
+
+            self._linkup_search_pipeline = await asyncio.to_thread(_sync_import)
+            logger.info("Linkup 검색 파이프라인 모듈 로딩 완료")
+            return self._linkup_search_pipeline
+
     async def _load_news_search_pipeline(self):
-        """무거운 news_search 모듈 import를 이벤트 루프 밖에서 1회 로딩합니다."""
+        """레거시 news_search 모듈 import를 이벤트 루프 밖에서 1회 로딩합니다."""
         if self._news_search_pipeline is not None:
             return self._news_search_pipeline
 
@@ -330,15 +366,27 @@ class ToolsCog(commands.Cog):
 
     async def web_search(self, query: str) -> str:
         """
-        Google/SerpAPI를 사용하여 웹 검색을 수행하고, 실패 시 Kakao 검색으로 폴백합니다.
+        웹 검색을 수행합니다.
+        우선 web_search_rag()를 사용하고, 실패 시 Google/Kakao 레거시 경로로 폴백합니다.
         
         우선순위:
-          1) Google Custom Search API (config.GOOGLE_API_KEY & config.GOOGLE_CX)
-          2) SerpAPI (config.SERPAPI_KEY)
+          1) web_search_rag() (Linkup 우선 + legacy 폴백 내장)
+          2) Google Custom Search API (config.GOOGLE_API_KEY & config.GOOGLE_CX)
           3) kakao_web_search()로 폴백
         """
         logger.info(f"웹 검색 실행: '{query}'")
         try:
+            rag_result = await self.web_search_rag(query)
+            if rag_result.get("status") == "success":
+                summary = str(rag_result.get("context") or "").strip()
+                urls = rag_result.get("source_urls") or []
+                lines = [summary] if summary else []
+                if isinstance(urls, list) and urls:
+                    lines.append("\n[출처]")
+                    lines.extend([f"{idx}. {url}" for idx, url in enumerate(urls[:8], 1)])
+                if lines:
+                    return "\n".join(lines)
+
             # 1. Google Custom Search API
             if getattr(config, 'GOOGLE_API_KEY', None) and getattr(config, 'GOOGLE_CX', None):
                 params = {'key': config.GOOGLE_API_KEY, 'cx': config.GOOGLE_CX, 'q': query, 'num': 3}
