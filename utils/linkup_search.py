@@ -20,6 +20,7 @@ import aiohttp
 
 import config
 from logger_config import logger
+from utils import db as db_utils
 
 
 KST = timezone(timedelta(hours=9))
@@ -97,6 +98,7 @@ _FETCH_HINTS = (
 
 _pipeline_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _pipeline_cache_lock = asyncio.Lock()
+_linkup_budget_lock = asyncio.Lock()
 
 
 def _cache_key(query: str) -> str:
@@ -368,6 +370,26 @@ def _format_linkup_error(status: int, body: str) -> str:
     return default
 
 
+def _estimate_linkup_cost(endpoint: str, *, depth: str | None = None, render_js: bool | None = None) -> float:
+    ep = str(endpoint or "").strip().lower()
+    if ep == "search":
+        depth_key = str(depth or "standard").strip().lower()
+        if depth_key == "deep":
+            return 0.05
+        return 0.005  # fast / standard
+    if ep == "fetch":
+        return 0.005 if bool(render_js) else 0.001
+    return 0.0
+
+
+def _build_budget_exceeded_message(used: float, limit: float, cost: float) -> str:
+    month_label = datetime.now(KST).strftime("%Y-%m")
+    return (
+        "Linkup 월 예산 한도에 도달해 외부 검색을 중단했어요. "
+        f"(기준월: {month_label}, 사용: €{used:.3f}, 한도: €{limit:.3f}, 요청비용: €{cost:.3f})"
+    )
+
+
 async def _linkup_post_json(endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
     api_key = str(getattr(config, "LINKUP_API_KEY", "") or "").strip()
     base_url = str(getattr(config, "LINKUP_BASE_URL", "https://api.linkup.so/v1") or "").strip().rstrip("/")
@@ -393,14 +415,67 @@ async def _linkup_post_json(endpoint: str, payload: dict[str, Any]) -> dict[str,
                 return {}
 
 
-async def _run_fetch_pipeline(url: str) -> dict[str, Any]:
+async def _execute_billed_linkup_call(
+    *,
+    endpoint: str,
+    payload: dict[str, Any],
+    db_conn=None,
+    depth: str | None = None,
+    render_js: bool | None = None,
+) -> dict[str, Any]:
+    """
+    Linkup API 호출 전 월 예산을 확인하고, 성공 호출은 비용을 기록합니다.
+    """
+    estimated_cost = _estimate_linkup_cost(endpoint, depth=depth, render_js=render_js)
+    enforce_budget = bool(getattr(config, "LINKUP_MONTHLY_BUDGET_ENFORCED", True))
+    budget_limit = float(getattr(config, "LINKUP_MONTHLY_BUDGET_EUR", 4.5))
+
+    if db_conn is None or not enforce_budget:
+        data = await _linkup_post_json(endpoint, payload)
+        if db_conn is not None and estimated_cost > 0:
+            await db_utils.log_linkup_usage(
+                db_conn,
+                endpoint=endpoint,
+                depth=depth,
+                render_js=render_js,
+                cost_eur=estimated_cost,
+            )
+        return data
+
+    async with _linkup_budget_lock:
+        allowed, used, limit = await db_utils.can_spend_linkup_budget(
+            db_conn,
+            estimated_cost,
+            budget_limit_eur=budget_limit,
+        )
+        if not allowed:
+            raise RuntimeError(_build_budget_exceeded_message(used, limit, estimated_cost))
+
+        data = await _linkup_post_json(endpoint, payload)
+        if estimated_cost > 0:
+            await db_utils.log_linkup_usage(
+                db_conn,
+                endpoint=endpoint,
+                depth=depth,
+                render_js=render_js,
+                cost_eur=estimated_cost,
+            )
+        return data
+
+
+async def _run_fetch_pipeline(url: str, db_conn=None) -> dict[str, Any]:
     payload = {
         "url": url,
         "renderJs": bool(getattr(config, "LINKUP_FETCH_RENDER_JS", True)),
         "includeRawHtml": False,
         "extractImages": False,
     }
-    data = await _linkup_post_json("fetch", payload)
+    data = await _execute_billed_linkup_call(
+        endpoint="fetch",
+        payload=payload,
+        db_conn=db_conn,
+        render_js=bool(payload.get("renderJs")),
+    )
     markdown = str(data.get("markdown") or "").strip()
     if not markdown:
         return {"status": "error", "message": "Linkup /fetch 응답에 markdown이 없습니다."}
@@ -416,9 +491,14 @@ async def _run_fetch_pipeline(url: str) -> dict[str, Any]:
     }
 
 
-async def _run_search_pipeline(user_query: str, depth: str) -> dict[str, Any]:
+async def _run_search_pipeline(user_query: str, depth: str, db_conn=None) -> dict[str, Any]:
     payload = _build_search_payload(user_query, depth)
-    data = await _linkup_post_json("search", payload)
+    data = await _execute_billed_linkup_call(
+        endpoint="search",
+        payload=payload,
+        db_conn=db_conn,
+        depth=depth,
+    )
 
     answer = str(data.get("answer") or "").strip()
     sources = _normalize_sources(data)
@@ -433,7 +513,13 @@ async def _run_search_pipeline(user_query: str, depth: str) -> dict[str, Any]:
             and _is_low_quality_for_output(user_query, answer, sources, source_urls)
         )
     if should_retry:
-        retry_data = await _linkup_post_json("search", _build_search_payload(user_query, "deep"))
+        retry_payload = _build_search_payload(user_query, "deep")
+        retry_data = await _execute_billed_linkup_call(
+            endpoint="search",
+            payload=retry_payload,
+            db_conn=db_conn,
+            depth="deep",
+        )
         retry_answer = str(retry_data.get("answer") or "").strip()
         retry_sources = _normalize_sources(retry_data)
         retry_urls = _collect_source_urls(retry_sources)
@@ -462,7 +548,7 @@ async def _run_search_pipeline(user_query: str, depth: str) -> dict[str, Any]:
     }
 
 
-async def run_linkup_search_pipeline(user_query: str) -> dict[str, Any]:
+async def run_linkup_search_pipeline(user_query: str, db_conn=None) -> dict[str, Any]:
     """
     Linkup 기반 범용 웹 검색 파이프라인 진입점.
     반환 형식은 tools_cog.web_search_rag() 계약을 따릅니다.
@@ -486,11 +572,11 @@ async def run_linkup_search_pipeline(user_query: str) -> dict[str, Any]:
         url = _extract_first_url(query)
         if url and _should_fetch_first(query, url):
             logger.info("[web_search] Linkup /fetch 경로 사용: %s", url)
-            result = await _run_fetch_pipeline(url)
+            result = await _run_fetch_pipeline(url, db_conn=db_conn)
         else:
             depth = infer_linkup_depth(query)
             logger.info("[web_search] Linkup /search 실행 (depth=%s): %s", depth, query)
-            result = await _run_search_pipeline(query, depth)
+            result = await _run_search_pipeline(query, depth, db_conn=db_conn)
 
         if result.get("status") == "success":
             await _save_cache(query, result)

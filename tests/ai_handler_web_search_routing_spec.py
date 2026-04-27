@@ -1,5 +1,6 @@
 import pytest
 
+import config
 from cogs.ai_handler import AIHandler
 
 
@@ -74,3 +75,26 @@ async def test_fast_thinking_path_uses_routing_lane_only():
     assert lane_calls == [("routing", None)]
     assert routing_calls
     assert routing_calls[0][0] == "routing.primary"
+
+
+@pytest.mark.asyncio
+async def test_detect_tools_by_llm_runs_for_smalltalk_when_always_run_enabled(monkeypatch):
+    handler = _build_handler_without_init()
+    handler.use_cometapi = True
+
+    monkeypatch.setattr(config, "INTENT_LLM_ENABLED", True)
+    monkeypatch.setattr(config, "INTENT_LLM_ALWAYS_RUN", True)
+
+    called = {"value": False}
+
+    async def _fake_fast(prompt, model, log_extra, trace_key="cometapi_fast"):
+        _ = prompt, model, log_extra, trace_key
+        called["value"] = True
+        return '{"intent":"인사/잡담","reasoning":"일반 대화","tools":[]}'
+
+    handler._cometapi_fast_generate_text = _fake_fast
+
+    plan = await handler._detect_tools_by_llm("안녕 마사몽", {"trace_id": "s1"}, history=None)
+
+    assert called["value"] is True
+    assert plan == []

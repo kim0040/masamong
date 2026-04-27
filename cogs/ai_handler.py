@@ -1877,8 +1877,8 @@ Generate the optimized English image prompt:"""
         if not getattr(config, "INTENT_LLM_ENABLED", True):
             return self._detect_tools_by_keyword(query)
 
-        # 인사/잡담은 도구 호출 없이 바로 답변 생성 단계로 보냅니다.
-        if self._is_smalltalk_only_query(query):
+        # 운영 모드(INTENT_LLM_ALWAYS_RUN=false)에서는 잡담 질의를 LLM 호출 없이 단축 처리합니다.
+        if self._is_smalltalk_only_query(query) and not getattr(config, "INTENT_LLM_ALWAYS_RUN", True):
             logger.info("[LLM의도분석] 잡담/인사성 질문 감지: 도구 호출 생략", extra=log_extra)
             return []
         
@@ -2954,15 +2954,22 @@ Generate the optimized English image prompt:"""
             history = await self._get_recent_history(message, rag_prompt)
             
             # 도구 계획 수립:
-            # 1) 키워드/강한 RAG 기반 우선 라우팅으로 불필요한 intent LLM 호출 방지
-            # 2) 필요할 때만 intent LLM 호출
-            raw_tool_plan = self._select_tool_plan_without_intent_llm(
+            # - 기본 정책: fast 라우팅 LLM을 항상 1회 실행해 thinking 결과를 확보
+            # - 이후 휴리스틱 보정으로 과도한 도구 호출을 억제
+            llm_tool_plan = await self._detect_tools_by_llm(user_query, log_extra, history=history)
+            heuristic_plan = self._select_tool_plan_without_intent_llm(
                 user_query,
                 rag_top_score=rag_top_score,
                 log_extra=log_extra,
             )
-            if raw_tool_plan is None:
-                raw_tool_plan = await self._detect_tools_by_llm(user_query, log_extra, history=history)
+            raw_tool_plan = heuristic_plan if heuristic_plan is not None else llm_tool_plan
+            if heuristic_plan is not None:
+                logger.info(
+                    "[도구계획] 휴리스틱 보정 적용 (llm=%d, heuristic=%d)",
+                    len(llm_tool_plan or []),
+                    len(heuristic_plan or []),
+                    extra=log_extra,
+                )
             tool_plan = self._sanitize_tool_plan(
                 user_query,
                 raw_tool_plan,

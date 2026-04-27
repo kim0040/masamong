@@ -108,6 +108,7 @@ class ReMasamongBot(commands.Bot):
                         "locations",
                         "user_profiles",
                         "user_activity_log",
+                        "linkup_usage_log",
                         "discord_chat_embeddings",
                         "discord_memory_entries",
                         "kakao_chunks",
@@ -119,6 +120,7 @@ class ReMasamongBot(commands.Bot):
                         "locations",
                         "user_profiles",
                         "user_activity_log",
+                        "linkup_usage_log",
                     )
                 missing_tables = [name for name in core_tables if not await self._table_exists(name)]
                 if missing_tables:

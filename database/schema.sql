@@ -34,6 +34,17 @@ CREATE TABLE IF NOT EXISTS user_activity_log (
 CREATE INDEX IF NOT EXISTS idx_user_activity_log_scope_time ON user_activity_log (guild_id, channel_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_user_activity_log_user_time ON user_activity_log (guild_id, channel_id, user_id, created_at DESC);
 
+-- Linkup 사용량/비용 추적 (월 예산 제한)
+CREATE TABLE IF NOT EXISTS linkup_usage_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    used_at TEXT NOT NULL,
+    endpoint TEXT NOT NULL, -- search | fetch
+    depth TEXT, -- fast | standard | deep (search 전용)
+    render_js BOOLEAN, -- fetch 전용
+    cost_eur REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_linkup_usage_time ON linkup_usage_log (used_at DESC);
+
 -- 모든 대화 내용을 순차적으로 저장하는 테이블
 CREATE TABLE IF NOT EXISTS conversation_history (
     message_id INTEGER PRIMARY KEY,
