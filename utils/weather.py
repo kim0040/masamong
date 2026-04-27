@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timedelta
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import pytz
 import requests
 import aiosqlite
@@ -19,6 +20,55 @@ from . import http
 from . import kma_codes
 
 KST = pytz.timezone('Asia/Seoul')
+_SENSITIVE_QUERY_KEYS = frozenset({
+    "authkey",
+    "servicekey",
+    "apikey",
+    "api_key",
+    "key",
+    "token",
+})
+
+
+def _mask_sensitive_url(url: str | None) -> str:
+    """URL 쿼리 문자열의 민감 키를 마스킹합니다."""
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+
+    try:
+        parsed = urlsplit(raw)
+        if not parsed.query:
+            return raw
+
+        redacted: list[tuple[str, str]] = []
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            if str(key).lower() in _SENSITIVE_QUERY_KEYS:
+                redacted.append((key, "REDACTED"))
+            else:
+                redacted.append((key, value))
+
+        return urlunsplit((
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urlencode(redacted, doseq=True),
+            parsed.fragment,
+        ))
+    except Exception:
+        return raw
+
+
+def _masked_request_url(full_url: str, error: Exception) -> str:
+    request = getattr(error, "request", None)
+    request_url = getattr(request, "url", None) or full_url
+    return _mask_sensitive_url(request_url)
+
+
+def _http_status(error: Exception) -> int | None:
+    response = getattr(error, "response", None)
+    return getattr(response, "status_code", None)
+
 
 def get_kma_api_key() -> str | None:
     """설정에서 기상청 API 키를 안전하게 가져옵니다."""
@@ -172,16 +222,37 @@ async def _fetch_kma_api(
                 logger.warning(f"기상청 API 요청이 시간 초과되었습니다. 재시도합니다... (시도 {attempt}/{max_retries})")
                 if retry_delay: await asyncio.sleep(retry_delay * attempt)
             except requests.exceptions.HTTPError as e:
+                status_code = _http_status(e)
+                safe_url = _masked_request_url(full_url, e)
                 # 5xx Errors (Server Side) -> Optional features can just skip without loud errors
-                if 500 <= e.response.status_code < 600 and api_type in ['typhoon', 'mid', 'warning', 'impact', 'alert']:
-                    logger.warning(f"기상청 부가 서비스 일시적 장애 ({e.response.status_code}): {api_type} - {e}")
+                if (
+                    status_code is not None
+                    and 500 <= status_code < 600
+                    and api_type in ['typhoon', 'mid', 'warning', 'impact', 'alert']
+                ):
+                    logger.warning(
+                        "기상청 부가 서비스 일시적 장애 (status=%s, type=%s): %s",
+                        status_code,
+                        api_type,
+                        safe_url,
+                    )
                     return None # Return None to silently fail for optional data
                 
-                logger.error(f"기상청 API 요청 오류: {e}", exc_info=True)
+                logger.error(
+                    "기상청 API 요청 오류(status=%s, type=%s): %s",
+                    status_code if status_code is not None else "unknown",
+                    api_type,
+                    safe_url,
+                )
                 return {"error": True, "message": config.MSG_WEATHER_FETCH_ERROR}
 
             except requests.exceptions.RequestException as e:
-                logger.error(f"기상청 API 요청 오류: {e}", exc_info=True)
+                logger.error(
+                    "기상청 API 요청 오류(type=%s, exc=%s): %s",
+                    api_type,
+                    e.__class__.__name__,
+                    _masked_request_url(full_url, e),
+                )
                 return {"error": True, "message": config.MSG_WEATHER_FETCH_ERROR}
 
     except Exception as e:

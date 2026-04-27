@@ -156,3 +156,21 @@ async def test_execute_tool_rejects_disabled_tool():
     )
 
     assert "비활성화" in result.get("error", "")
+
+
+def test_finance_disambiguation_does_not_treat_apple_music_as_finance():
+    handler = _build_handler_without_init()
+
+    assert handler._looks_like_finance_query("애플 뮤직 호환성 문제에 대해 알려줘") is False
+    assert handler._looks_like_external_fact_query("애플 뮤직 호환성 문제에 대해 알려줘") is True
+    assert handler._detect_tools_by_keyword("애플 뮤직 호환성 문제에 대해 알려줘") == []
+
+
+def test_finance_disambiguation_still_routes_real_stock_questions():
+    handler = _build_handler_without_init()
+
+    assert handler._looks_like_finance_query("애플 주가 알려줘") is True
+    plan = handler._detect_tools_by_keyword("애플 주가 알려줘")
+    assert plan
+    assert plan[0]["tool_to_use"] == "web_search"
+    assert "금융 뉴스" in plan[0]["parameters"]["query"]
