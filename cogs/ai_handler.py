@@ -1401,6 +1401,10 @@ Generate the optimized English image prompt:"""
         'get_company_news',
         'get_exchange_rate',
     ])
+    _ALLOWED_RUNTIME_TOOLS = frozenset([
+        "web_search",
+        "get_weather_forecast",
+    ])
     _PLACE_KEYWORDS = frozenset(['맛집', '카페', '음식점', '식당', '근처', '주변', '가볼만한', '핫플레이스'])
     _LOCATION_KEYWORDS = []  # Deprecated: DB 캐시로 대체
 
@@ -1429,6 +1433,7 @@ Generate the optimized English image prompt:"""
     _REALTIME_WEB_QUERY_HINTS = frozenset([
         '오늘', '지금', '현재', '실시간', '최신', '최근', '속보',
         '급등', '급락', '떡상', '떡락', '코스피', '코스닥', '주가', '환율',
+        '이번', '올해', '라인업', '일정', '축제', '행사',
     ])
 
     _FACTUAL_WEB_QUERY_HINTS = frozenset([
@@ -1552,9 +1557,7 @@ Generate the optimized English image prompt:"""
             return False
         return any(kw in query_lower for kw in self._WEATHER_KEYWORDS) or any(
             kw in query_lower for kw in self._FINANCE_KEYWORDS
-        ) or any(kw in query_lower for kw in self._PLACE_KEYWORDS) or any(
-            kw in query_lower for kw in self._IMAGE_GEN_KEYWORDS
-        )
+        ) or any(kw in query_lower for kw in self._PLACE_KEYWORDS)
 
     def _select_tool_plan_without_intent_llm(
         self,
@@ -1565,7 +1568,7 @@ Generate the optimized English image prompt:"""
     ) -> list[dict[str, Any]] | None:
         """
         의도 분석 LLM 호출 없이 처리 가능한 도구 계획을 우선 선택합니다.
-        - 명확한 키워드 도구(날씨/장소/이미지/금융)는 즉시 라우팅
+        - 명확한 키워드 도구(날씨/웹검색/금융)는 즉시 라우팅
         - 강한 RAG + 도구 신호 없음이면 intent LLM 호출 자체를 생략
         """
         if self._is_smalltalk_only_query(query):
@@ -1586,7 +1589,8 @@ Generate the optimized English image prompt:"""
                 query_lower = (query or "").lower()
                 finance_query = any(kw in query_lower for kw in self._FINANCE_KEYWORDS)
                 explicit_web = self._has_explicit_web_search_intent(query)
-                if finance_query or explicit_web:
+                place_query = any(kw in query_lower for kw in self._PLACE_KEYWORDS)
+                if finance_query or explicit_web or place_query:
                     if self._is_realtime_web_query(query):
                         params = keyword_plan[0].setdefault("parameters", {})
                         source_query = str(params.get("query") or query).strip()
@@ -1619,7 +1623,10 @@ Generate the optimized English image prompt:"""
         if not self._has_tool_keyword_signal(query):
             if (
                 self._looks_like_external_fact_query(query)
-                and rag_top_score < config.RAG_SIMILARITY_THRESHOLD
+                and (
+                    rag_top_score < config.RAG_SIMILARITY_THRESHOLD
+                    or self._is_realtime_web_query(query)
+                )
             ):
                 logger.info(
                     "[도구보정] 사실형 질의로 판단해 intent LLM 없이 web_search로 직접 라우팅합니다.",
@@ -1736,6 +1743,24 @@ Generate the optimized English image prompt:"""
             if not name:
                 continue
 
+            # 비활성화된 금융 도구는 web_search로 강제 변환
+            if name in self._DEPRECATED_FINANCE_TOOLS:
+                finance_query_text = (
+                    params.get("query")
+                    or params.get("user_query")
+                    or params.get("symbol")
+                    or params.get("stock_name")
+                    or params.get("currency_code")
+                    or query
+                )
+                name = "web_search"
+                params = {"query": self._build_finance_news_query(finance_query_text)}
+
+            # 실행 가능한 도구는 web_search / get_weather_forecast만 허용
+            if name not in self._ALLOWED_RUNTIME_TOOLS:
+                logger.info("[도구보정] 허용되지 않은 도구 제거: %s", name, extra=log_extra)
+                continue
+
             # 잡담 질문은 도구 자체를 차단
             if self._is_smalltalk_only_query(query):
                 logger.info("[도구보정] 잡담성 질의로 도구 계획을 모두 무효화합니다.", extra=log_extra)
@@ -1789,21 +1814,14 @@ Generate the optimized English image prompt:"""
                     logger.info("[도구보정] web_search -> get_weather_forecast 전환", extra=log_extra)
                     continue
 
-                if place_query:
-                    candidate = {
-                        "tool_to_use": "search_for_place",
-                        "tool_name": "search_for_place",
-                        "parameters": {"query": query.strip()},
-                    }
-                    key = (candidate["tool_to_use"], json.dumps(candidate["parameters"], sort_keys=True, ensure_ascii=False))
-                    if key not in seen_keys:
-                        seen_keys.add(key)
-                        normalized.append(candidate)
-                    logger.info("[도구보정] web_search -> search_for_place 전환", extra=log_extra)
-                    continue
-
                 # 명시적 외부탐색 요청/금융 질문이 아니고 RAG가 강하면 웹검색 생략
-                if not explicit_web and not finance_query and rag_is_strong:
+                if (
+                    not explicit_web
+                    and not finance_query
+                    and not place_query
+                    and not factual_query
+                    and rag_is_strong
+                ):
                     logger.info(
                         "[도구보정] RAG 강한 질의에서 web_search 제거 (score=%.3f)",
                         rag_top_score,
@@ -1812,7 +1830,13 @@ Generate the optimized English image prompt:"""
                     continue
 
                 # 명시적 탐색 의도도 없고 금융도 아니며 짧은 일반질문이면 웹검색 차단
-                if not explicit_web and not finance_query and not factual_query and len(query.strip()) <= 16:
+                if (
+                    not explicit_web
+                    and not finance_query
+                    and not place_query
+                    and not factual_query
+                    and len(query.strip()) <= 16
+                ):
                     logger.info("[도구보정] 명시적 탐색 의도 부족으로 web_search 제거", extra=log_extra)
                     continue
 
@@ -1834,6 +1858,7 @@ Generate the optimized English image prompt:"""
         query_lower = query.lower()
         explicit_web = self._has_explicit_web_search_intent(query)
         finance_query = any(kw in query_lower for kw in self._FINANCE_KEYWORDS)
+        place_query = any(kw in query_lower for kw in self._PLACE_KEYWORDS)
         factual_query = self._looks_like_external_fact_query(query)
 
         # 인사/잡담은 항상 검색하지 않는다.
@@ -1847,11 +1872,19 @@ Generate the optimized English image prompt:"""
         # RAG 점수가 매우 높으면 검색 생략 (이미 알고 있는 정보)
         if rag_top_score >= config.RAG_STRONG_SIMILARITY_THRESHOLD:
             # 최신/외부탐색/금융 키워드가 없으면 검색 생략
-            if not explicit_web and not finance_query:
+            if (
+                not explicit_web
+                and not finance_query
+                and not place_query
+                and not (factual_query and self._is_realtime_web_query(query))
+            ):
                 return False
 
         # 1. 명시 키워드 기반 판단
-        if explicit_web or finance_query:
+        if explicit_web or finance_query or place_query:
+            return True
+
+        if factual_query and self._is_realtime_web_query(query):
             return True
 
         # 1-1. RAG가 약하고 사실형 질의면 자동 웹검색
@@ -1905,10 +1938,9 @@ Generate the optimized English image prompt:"""
             "7. 사용자가 '오늘/현재/실시간/최신/최근'을 말하면, 검색 query에 과거 특정 연월(예: 2024년 5월)을 임의로 넣지 마세요.\n\n"
             "사용 가능 도구:\n"
             "1. get_weather_forecast(location, day_offset): 특정 지역/시간의 날씨.\n"
-            "2. search_for_place(query): 맛집, 장소 정보.\n"
-            "3. generate_image(user_query): 그림 생성.\n"
-            "4. web_search(query): 외부 웹 검색(뉴스/웹/블로그/문서/커뮤니티).\n"
+            "2. web_search(query): 외부 웹 검색(뉴스/웹/블로그/문서/커뮤니티).\n"
             "   - 최신 이슈뿐 아니라 사용법/비교/후기/공식 문서 탐색에도 사용.\n"
+            "   - 맛집/장소 추천도 web_search로 처리.\n"
             "   - 주식/환율/코인 등 금융 관련 질문도 web_search로 처리.\n\n"
             "출력 형식 (유효한 JSON만):\n"
             '{"intent": "의도", "reasoning": "선택 근거", "tools": [{"tool": "이름", "params": {"키": "값"}}]}'
@@ -1976,6 +2008,10 @@ Generate the optimized English image prompt:"""
                     )
                     continue
 
+                if name not in self._ALLOWED_RUNTIME_TOOLS:
+                    logger.info("[LLM의도분석] 비허용 도구 계획 제거: %s", name, extra=log_extra)
+                    continue
+
                 result.append({"tool_to_use": name, "tool_name": name, "parameters": params})
 
             # LLM이 잡담에 대해 과탐지한 경우 방어적으로 무효화
@@ -2023,27 +2059,12 @@ Generate the optimized English image prompt:"""
             })
             return tools
 
-        # 장소 검색 감지
+        # 장소 관련 질문도 web_search로 통합 처리
         if any(kw in query_lower for kw in self._PLACE_KEYWORDS):
-            # 위치 정보가 있고 쿼리에 아직 없으면 추가
-            location = self._extract_location_from_query(query) or ''
-            # 이미 쿼리에 위치가 포함되어 있으면 그대로 사용
-            search_query = query if location in query else f"{location} {query}".strip()
             tools.append({
-                'tool_to_use': 'search_for_place',
-                'tool_name': 'search_for_place',
-                'parameters': {'query': search_query}
-            })
-            return tools
-
-        # 이미지 생성 감지 (CometAPI flux-2-flex)
-        if any(kw in query_lower for kw in self._IMAGE_GEN_KEYWORDS):
-            # 이미지 생성은 특별 처리가 필요하므로 user_query를 그대로 전달
-            # AI가 프롬프트를 생성하고, generate_image 도구를 호출
-            tools.append({
-                'tool_to_use': 'generate_image',
-                'tool_name': 'generate_image',
-                'parameters': {'user_query': query}  # 프롬프트 생성 필요
+                'tool_to_use': 'web_search',
+                'tool_name': 'web_search',
+                'parameters': {'query': query.strip()}
             })
             return tools
 
@@ -2529,7 +2550,7 @@ Generate the optimized English image prompt:"""
                             "1. 결과에 데이터(주가, 날씨 등)가 있다면, **무조건** 이 데이터를 사용하여 답변해.\n"
                             "2. '정보를 가져오지 못했다'고 거짓말하지 마.\n"
                             "3. 만약 결과에 'Error'나 '실패'라고 적혀있다면, 그때만 실패했다고 말해.\n"
-                            "4. 주가 정보의 경우, '현재가', '등락율', '시가총액'을 꼭 언급해줘.)")
+                            "4. 결과 데이터가 여러 항목이면 핵심 수치/날짜를 우선 정리해서 전달해줘.)")
 
 
         # 현재 질문
@@ -2778,11 +2799,15 @@ Generate the optimized English image prompt:"""
                 redirected_query,
                 extra=log_extra,
             )
-            search_result = await self._execute_web_search_with_llm(redirected_query, log_extra)
-            if search_result.get("result"):
-                search_result["redirected_from"] = tool_name
-                return search_result
-            return {"error": search_result.get("error", "금융 웹 검색에 실패했습니다.")}
+            tool_name = "web_search"
+            parameters = {"query": redirected_query}
+            tool_call["tool_to_use"] = tool_name
+            tool_call["tool_name"] = tool_name
+            tool_call["parameters"] = parameters
+
+        if tool_name not in self._ALLOWED_RUNTIME_TOOLS:
+            logger.warning("비활성화된 도구 실행 시도 차단: %s", tool_name, extra=log_extra)
+            return {"error": f"'{tool_name}' 도구는 현재 비활성화되어 있습니다."}
 
         # web_search는 웹 검색 RAG + LLM 2-step 처리를 사용합니다.
         if tool_name == 'web_search':
@@ -2796,41 +2821,20 @@ Generate the optimized English image prompt:"""
                 return search_result
             return {"error": search_result.get("error", "웹 검색을 통해 정보를 찾는 데 실패했습니다.")}
 
-        # generate_image는 프롬프트 생성 + AI 호출 2-step 처리를 사용합니다.
-        if tool_name == 'generate_image':
-            logger.info("특별 도구 실행: generate_image", extra=log_extra)
-            original_query = parameters.get('user_query', user_query)
-            user_id = parameters.get('user_id')
-            rag_context = parameters.get('rag_context')
-            
-            if user_id is None:
-                return {"error": "이미지 생성에 필요한 사용자 정보가 없습니다."}
-            
-            # [FIX] qwen-image 등 고품질 영문 프롬프트가 필요한 모델을 위해 프롬프트 번역/최적화 단계 복원
-            image_prompt = await self._generate_image_prompt(original_query, log_extra, rag_context=rag_context)
-            if not image_prompt:
-                image_prompt = original_query
-            
-            # ToolsCog의 generate_image 도구 호출
-            result = await self.tools_cog.generate_image(prompt=image_prompt, user_id=user_id)
-            return result
+        if tool_name == "get_weather_forecast":
+            try:
+                logger.info(f"일반 도구 실행: {tool_name} with params: {parameters}", extra=log_extra)
+                self._debug(f"[도구:{tool_name}] 파라미터: {self._truncate_for_debug(parameters)}", log_extra)
+                result = await self.tools_cog.get_weather_forecast(**parameters)
+                self._debug(f"[도구:{tool_name}] 결과: {self._truncate_for_debug(result)}", log_extra)
+                if not isinstance(result, dict):
+                    return {"result": str(result)}
+                return result
+            except Exception as e:
+                logger.error(f"도구 '{tool_name}' 실행 중 예기치 않은 오류: {e}", exc_info=True, extra=log_extra)
+                return {"error": "도구 실행 중 예상치 못한 오류가 발생했습니다."}
 
-        # 그 외 일반 도구들은 ToolsCog에서 찾아 실행합니다.
-        try:
-            tool_method = getattr(self.tools_cog, tool_name)
-            logger.info(f"일반 도구 실행: {tool_name} with params: {parameters}", extra=log_extra)
-            self._debug(f"[도구:{tool_name}] 파라미터: {self._truncate_for_debug(parameters)}", log_extra)
-            result = await tool_method(**parameters)
-            self._debug(f"[도구:{tool_name}] 결과: {self._truncate_for_debug(result)}", log_extra)
-            if not isinstance(result, dict):
-                return {"result": str(result)}
-            return result
-        except AttributeError:
-            logger.error(f"도구 '{tool_name}'을(를) 찾을 수 없습니다.", extra=log_extra)
-            return {"error": f"'{tool_name}'이라는 도구는 존재하지 않습니다."}
-        except Exception as e:
-            logger.error(f"도구 '{tool_name}' 실행 중 예기치 않은 오류: {e}", exc_info=True, extra=log_extra)
-            return {"error": "도구 실행 중 예상치 못한 오류가 발생했습니다."}
+        return {"error": f"'{tool_name}' 도구는 현재 비활성화되어 있습니다."}
 
 
     async def process_agent_message(self, message: discord.Message):
@@ -2995,36 +2999,13 @@ Generate the optimized English image prompt:"""
                 for idx, tool_call in enumerate(tool_plan, start=1):
                     tool_name = tool_call.get('tool_to_use')
                     await status_msg.edit(content=f"🔍 {tool_name} 실행 중... ({idx}/{len(tool_plan)})")
-                    
-                    # generate_image 도구 특수 처리
-                    if tool_name == 'generate_image':
-                        tool_call.setdefault('parameters', {})['user_id'] = message.author.id
-                        if rag_blocks:
-                            tool_call['parameters']['rag_context'] = "\n\n".join(rag_blocks)
-                        await status_msg.edit(content="🎨 멋진 이미지를 그려내고 있어! (최대 1분 30초 정도 걸릴 수 있으니 잠시만 기다려줘...)")
-                    
+
                     result = await self._execute_tool(
                         tool_call,
                         guild_id_safe,
                         user_query,
                         channel_id=message.channel.id,
                     )
-                    
-                    # 이미지 생성 성공 시 처리
-                    if tool_name == 'generate_image' and (result.get('image_data') or result.get('image_url')):
-                        # ... (기존 이미지 전송 로직 유지하되 status_msg 활용) ...
-                        remaining = result.get('remaining', 0)
-                        if result.get('image_data'):
-                            import io
-                            image_file = discord.File(io.BytesIO(result['image_data']), filename="generated_image.jpg")
-                            await message.channel.send(f"짜잔~ 이미지 생성했어! 🎨\n(남은 생성 횟수: {remaining}장)", file=image_file)
-                        else:
-                            await message.channel.send(f"짜잔~ 이미지 생성했어! 🎨\n{result['image_url']}\n(남은 생성 횟수: {remaining}장)")
-                        
-                        await status_msg.delete()
-                        await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
-                        await db_utils.log_api_call(self.bot.db, "llm_global")
-                        return
 
                     tool_results.append({
                         "step": idx,
