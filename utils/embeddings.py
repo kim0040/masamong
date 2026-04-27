@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional
@@ -34,6 +35,7 @@ from logger_config import logger
 
 _MODEL: SentenceTransformer | None = None
 _MODEL_LOCK = asyncio.Lock()
+_WHITESPACE_TOKEN_RE = re.compile(r"\S+")
 
 
 def _build_tidb_settings() -> TiDBSettings | None:
@@ -145,6 +147,117 @@ async def _load_model() -> SentenceTransformer:
         _MODEL = await loop.run_in_executor(None, _sync_load)
         logger.info("로컬 임베딩 모델 로드 완료: %s", model_name)
         return _MODEL
+
+
+def _fallback_token_count(text: str) -> int:
+    return len(_WHITESPACE_TOKEN_RE.findall(text or ""))
+
+
+async def get_embedding_token_limit(*, reserve_tokens: int = 32) -> int:
+    """임베딩 모델 max_seq_length를 기준으로 안전 토큰 한계를 반환합니다."""
+    fallback_limit = max(64, int(getattr(config, "LOCAL_EMBEDDING_MAX_TOKENS", 512)))
+    reserve = max(0, int(reserve_tokens))
+    usable_fallback = max(32, fallback_limit - reserve)
+
+    try:
+        model = await _load_model()
+    except Exception:
+        return usable_fallback
+
+    raw_max_len = getattr(model, "max_seq_length", None)
+    try:
+        max_len = int(raw_max_len)
+    except (TypeError, ValueError):
+        max_len = fallback_limit
+    if max_len <= 0:
+        max_len = fallback_limit
+
+    return max(32, max_len - reserve)
+
+
+async def count_embedding_tokens(text: str, *, add_special_tokens: bool = True) -> int:
+    """임베딩 모델 토크나이저 기준 토큰 수를 계산합니다."""
+    payload = str(text or "").strip()
+    if not payload:
+        return 0
+
+    try:
+        model = await _load_model()
+    except Exception:
+        return _fallback_token_count(payload)
+
+    tokenizer = getattr(model, "tokenizer", None)
+    if tokenizer is None:
+        return _fallback_token_count(payload)
+
+    def _sync_count() -> int:
+        encoded = tokenizer(
+            payload,
+            add_special_tokens=add_special_tokens,
+            truncation=False,
+            return_attention_mask=False,
+            return_token_type_ids=False,
+        )
+        input_ids = encoded.get("input_ids") if isinstance(encoded, dict) else None
+        if input_ids is None:
+            return _fallback_token_count(payload)
+        if isinstance(input_ids, list) and input_ids and isinstance(input_ids[0], list):
+            return len(input_ids[0])
+        return len(input_ids)
+
+    try:
+        loop = asyncio.get_running_loop()
+        return int(await loop.run_in_executor(None, _sync_count))
+    except Exception:
+        return _fallback_token_count(payload)
+
+
+async def trim_text_to_embedding_token_limit(text: str, token_limit: int) -> str:
+    """토큰 수가 한계를 넘으면 모델 토크나이저 기준으로 안전하게 축약합니다."""
+    payload = str(text or "").strip()
+    limit = max(8, int(token_limit))
+    if not payload:
+        return ""
+
+    try:
+        model = await _load_model()
+    except Exception:
+        approx_tokens = _fallback_token_count(payload)
+        if approx_tokens <= limit:
+            return payload
+        ratio = max(0.1, min(1.0, limit / max(1, approx_tokens)))
+        return payload[: max(32, int(len(payload) * ratio))].strip()
+
+    tokenizer = getattr(model, "tokenizer", None)
+    if tokenizer is None:
+        return payload
+
+    def _sync_trim() -> str:
+        encoded = tokenizer(
+            payload,
+            add_special_tokens=True,
+            truncation=False,
+            return_attention_mask=False,
+            return_token_type_ids=False,
+        )
+        input_ids = encoded.get("input_ids") if isinstance(encoded, dict) else None
+        if not isinstance(input_ids, list):
+            return payload
+        if input_ids and isinstance(input_ids[0], list):
+            ids = list(input_ids[0])
+        else:
+            ids = list(input_ids)
+        if len(ids) <= limit:
+            return payload
+        trimmed_ids = ids[:limit]
+        return tokenizer.decode(trimmed_ids, skip_special_tokens=True).strip()
+
+    try:
+        loop = asyncio.get_running_loop()
+        trimmed = await loop.run_in_executor(None, _sync_trim)
+        return trimmed or payload
+    except Exception:
+        return payload
 
 
 async def get_embedding(text: str, prefix: str = "") -> np.ndarray | None:
