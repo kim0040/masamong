@@ -306,6 +306,11 @@ GOOGLE_API_KEY = load_config_value('GOOGLE_API_KEY')
 GOOGLE_CX = load_config_value('GOOGLE_CX')
 GOOGLE_CUSTOM_SEARCH_DAILY_LIMIT = as_int(load_config_value('GOOGLE_CUSTOM_SEARCH_DAILY_LIMIT', 100), 100)
 SERPAPI_KEY = load_config_value('SERPAPI_KEY')
+LINKUP_API_KEY = as_str(load_config_value('LINKUP_API_KEY', ''), '')
+LINKUP_BASE_URL = as_str(
+    load_config_value('LINKUP_BASE_URL', 'https://api.linkup.so/v1'),
+    'https://api.linkup.so/v1',
+).rstrip("/")
 
 # ========== API 안전장치 설정 ==========
 # 사용자별 쿨다운 (초) - 한 사용자가 연속 요청 시 대기 시간
@@ -478,6 +483,32 @@ KAKAO_SUMMARY_MODEL_BUDGET = as_str(
 
 # DuckDuckGo 웹 검색 활성화 여부 (기본: 활성화)
 DDGS_ENABLED = as_bool(load_config_value('DDGS_ENABLED', 'true'))
+# 웹 검색 제공자 선택 (linkup | legacy)
+WEB_SEARCH_PROVIDER = as_str(
+    load_config_value('WEB_SEARCH_PROVIDER', 'linkup' if LINKUP_API_KEY else 'legacy'),
+    'legacy',
+).lower()
+if WEB_SEARCH_PROVIDER not in {"linkup", "legacy"}:
+    WEB_SEARCH_PROVIDER = "legacy"
+
+# Linkup 검색 설정
+LINKUP_ENABLED = as_bool(load_config_value('LINKUP_ENABLED', 'true'))
+LINKUP_TIMEOUT_SECONDS = max(5, as_int(load_config_value('LINKUP_TIMEOUT_SECONDS', 40), 40))
+LINKUP_FETCH_RENDER_JS = as_bool(load_config_value('LINKUP_FETCH_RENDER_JS', 'true'))
+LINKUP_OUTPUT_TYPE = as_str(load_config_value('LINKUP_OUTPUT_TYPE', 'searchResults'), 'searchResults')
+if LINKUP_OUTPUT_TYPE not in {"searchResults", "sourcedAnswer", "structured"}:
+    LINKUP_OUTPUT_TYPE = "searchResults"
+LINKUP_FAST_MAX_RESULTS = max(1, as_int(load_config_value('LINKUP_FAST_MAX_RESULTS', 5), 5))
+LINKUP_STANDARD_MAX_RESULTS = max(1, as_int(load_config_value('LINKUP_STANDARD_MAX_RESULTS', 8), 8))
+LINKUP_DEEP_MAX_RESULTS = max(1, as_int(load_config_value('LINKUP_DEEP_MAX_RESULTS', 10), 10))
+LINKUP_REALTIME_LOOKBACK_DAYS = max(1, as_int(load_config_value('LINKUP_REALTIME_LOOKBACK_DAYS', 30), 30))
+LINKUP_QUALITY_RETRY_ENABLED = as_bool(load_config_value('LINKUP_QUALITY_RETRY_ENABLED', 'true'))
+LINKUP_DEEP_RETRY_MIN_SOURCES = max(1, as_int(load_config_value('LINKUP_DEEP_RETRY_MIN_SOURCES', 2), 2))
+LINKUP_MIN_ANSWER_CHARS = max(20, as_int(load_config_value('LINKUP_MIN_ANSWER_CHARS', 120), 120))
+LINKUP_CONTEXT_MAX_CHARS = max(800, as_int(load_config_value('LINKUP_CONTEXT_MAX_CHARS', 3200), 3200))
+LINKUP_CONTEXT_SOURCE_BLOCKS = max(1, as_int(load_config_value('LINKUP_CONTEXT_SOURCE_BLOCKS', 4), 4))
+LINKUP_CONTEXT_SNIPPET_MAX_CHARS = max(80, as_int(load_config_value('LINKUP_CONTEXT_SNIPPET_MAX_CHARS', 300), 300))
+
 # 범용 웹 탐색 파이프라인 예산/캐시 설정
 WEB_RAG_FAST_LLM_MAX_CALLS = max(0, as_int(load_config_value('WEB_RAG_FAST_LLM_MAX_CALLS', 3), 3))
 WEB_RAG_MAX_SELECTED_URLS = max(1, as_int(load_config_value('WEB_RAG_MAX_SELECTED_URLS', 5), 5))

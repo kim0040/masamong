@@ -1354,7 +1354,7 @@ Generate the optimized English image prompt:"""
         '뉴스', '최신', '최근', '실시간', '속보', '이슈', '현황', '상황',
         '어떻게 됐어', '어떻게 됨', '출처', '링크', '기사',
         '공식 문서', '레퍼런스', '가이드', '튜토리얼', '사용법',
-        '리뷰', '사용기', '비교',
+        '리뷰', '사용기', '비교', '업데이트', '버전', '변경사항', '패치노트', '릴리즈', '발표',
     ])
 
     _WEB_SEARCH_FOLLOWUP_KEYWORDS = frozenset([
@@ -1364,6 +1364,21 @@ Generate the optimized English image prompt:"""
     _REALTIME_WEB_QUERY_HINTS = frozenset([
         '오늘', '지금', '현재', '실시간', '최신', '최근', '속보',
         '급등', '급락', '떡상', '떡락', '코스피', '코스닥', '주가', '환율',
+    ])
+
+    _FACTUAL_WEB_QUERY_HINTS = frozenset([
+        '누가', '언제', '어디', '왜', '무엇', '몇', '얼마', '정의', '의미', '차이',
+        '비교', '장단점', '순위', '통계', '수치', '근거', '출처', '링크',
+        '공식', '문서', '가이드', '튜토리얼', '사용법',
+        '발표', '업데이트', '버전', '릴리즈', '변경사항', '패치노트',
+        '라인업', '일정', '개최', '행사', '축제',
+        'latest', 'update', 'release', 'version', 'docs', 'documentation',
+    ])
+
+    _LOCAL_MEMORY_HINTS = frozenset([
+        '내가 어제 말', '내가 아까 말', '내가 방금 말', '내가 전에 말',
+        '우리 대화', '이전 대화', '방금 얘기', '아까 얘기', '기억나',
+        '내 얘기', '우리 얘기', '저번에 말한', '앞에서 말한',
     ])
 
 
@@ -1404,9 +1419,32 @@ Generate the optimized English image prompt:"""
         explicit_terms = (
             '웹검색', '검색해줘', '검색해', '검색 좀', '찾아줘', '찾아봐', '조사해줘', '탐색해줘',
             '뉴스', '소식', '출처', '링크', '기사', '공식 문서', '레퍼런스', '가이드', '튜토리얼', '사용법',
-            '리뷰', '사용기', '비교',
+            '리뷰', '사용기', '비교', '업데이트', '버전', '변경사항', '패치노트', '릴리즈', '발표',
         )
         return any(kw in query_lower for kw in explicit_terms)
+
+    def _looks_like_external_fact_query(self, query: str) -> bool:
+        """
+        웹에서 사실 확인이 필요한 질의인지 휴리스틱으로 판별합니다.
+        (명시적 웹검색 키워드가 없어도 외부 정보가 필요한 질문을 놓치지 않기 위한 보정)
+        """
+        text = (query or "").strip().lower()
+        if not text:
+            return False
+        if self._is_smalltalk_only_query(text):
+            return False
+        if any(kw in text for kw in self._WEATHER_KEYWORDS):
+            return False
+        if any(kw in text for kw in self._PLACE_KEYWORDS):
+            return False
+        if any(kw in text for kw in self._IMAGE_GEN_KEYWORDS):
+            return False
+        # 로컬/이전 대화 회상성 질문은 외부 웹검색 대상으로 보지 않는다.
+        if any(kw in text for kw in self._LOCAL_MEMORY_HINTS):
+            return False
+        if any(kw in text for kw in self._FACTUAL_WEB_QUERY_HINTS):
+            return True
+        return False
 
     def _is_realtime_web_query(self, query: str) -> bool:
         query_lower = (query or "").lower()
@@ -1514,6 +1552,24 @@ Generate the optimized English image prompt:"""
 
         # 기본 대화(명시적 도구 신호 없음)는 intent LLM을 생략하고 로컬 기억 기반 응답으로 처리한다.
         if not self._has_tool_keyword_signal(query):
+            if (
+                self._looks_like_external_fact_query(query)
+                and rag_top_score < config.RAG_SIMILARITY_THRESHOLD
+            ):
+                logger.info(
+                    "[도구보정] 사실형 질의로 판단해 intent LLM 없이 web_search로 직접 라우팅합니다.",
+                    extra=log_extra,
+                )
+                normalized_query = query
+                if self._is_realtime_web_query(query):
+                    normalized_query = self._normalize_realtime_web_query(query)
+                return [
+                    {
+                        "tool_to_use": "web_search",
+                        "tool_name": "web_search",
+                        "parameters": {"query": normalized_query},
+                    }
+                ]
             logger.info(
                 "[도구보정] 도구 신호가 없어 intent LLM 호출을 생략합니다.",
                 extra=log_extra,
@@ -1597,6 +1653,7 @@ Generate the optimized English image prompt:"""
         query_lower = (query or "").lower()
         explicit_web = self._has_explicit_web_search_intent(query)
         finance_query = any(kw in query_lower for kw in self._FINANCE_KEYWORDS)
+        factual_query = self._looks_like_external_fact_query(query)
         weather_query = any(kw in query_lower for kw in self._WEATHER_KEYWORDS)
         place_query = any(kw in query_lower for kw in self._PLACE_KEYWORDS)
         rag_is_strong = rag_top_score >= config.RAG_STRONG_SIMILARITY_THRESHOLD
@@ -1621,7 +1678,12 @@ Generate the optimized English image prompt:"""
 
             if name == "web_search":
                 # 기본 대화/회상형 문맥에서 LLM이 web_search를 과탐지하면 방어적으로 차단한다.
-                if not explicit_web and not finance_query and not self._has_tool_keyword_signal(query):
+                if (
+                    not explicit_web
+                    and not finance_query
+                    and not factual_query
+                    and not self._has_tool_keyword_signal(query)
+                ):
                     logger.info("[도구보정] 일반 대화 문맥으로 판단해 web_search 제거", extra=log_extra)
                     continue
 
@@ -1685,7 +1747,7 @@ Generate the optimized English image prompt:"""
                     continue
 
                 # 명시적 탐색 의도도 없고 금융도 아니며 짧은 일반질문이면 웹검색 차단
-                if not explicit_web and not finance_query and len(query.strip()) <= 16:
+                if not explicit_web and not finance_query and not factual_query and len(query.strip()) <= 16:
                     logger.info("[도구보정] 명시적 탐색 의도 부족으로 web_search 제거", extra=log_extra)
                     continue
 
@@ -1707,6 +1769,7 @@ Generate the optimized English image prompt:"""
         query_lower = query.lower()
         explicit_web = self._has_explicit_web_search_intent(query)
         finance_query = any(kw in query_lower for kw in self._FINANCE_KEYWORDS)
+        factual_query = self._looks_like_external_fact_query(query)
 
         # 인사/잡담은 항상 검색하지 않는다.
         if self._is_smalltalk_only_query(query):
@@ -1724,6 +1787,10 @@ Generate the optimized English image prompt:"""
 
         # 1. 명시 키워드 기반 판단
         if explicit_web or finance_query:
+            return True
+
+        # 1-1. RAG가 약하고 사실형 질의면 자동 웹검색
+        if rag_top_score < config.RAG_SIMILARITY_THRESHOLD and factual_query:
             return True
 
         # 2. 맥락 기반 판단 (연계 질문)
