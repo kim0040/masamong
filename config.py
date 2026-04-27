@@ -670,6 +670,24 @@ BM25_AUTO_REBUILD_CONFIG = {
 CONVERSATION_WINDOW_SIZE = as_int(load_config_value('CONVERSATION_WINDOW_SIZE'), 12) # 윈도우 크기 (메시지 개수)
 CONVERSATION_WINDOW_STRIDE = as_int(load_config_value('CONVERSATION_WINDOW_STRIDE'), 6) # 윈도우 이동 간격
 CONVERSATION_WINDOW_MAX_CHARS = as_int(load_config_value('CONVERSATION_WINDOW_MAX_CHARS'), 3000) # 윈도우 최대 문자열 길이 (토큰 제한 대응)
+LOCAL_EMBEDDING_MAX_TOKENS = max(
+    128,
+    as_int(
+        load_config_value(
+            'LOCAL_EMBEDDING_MAX_TOKENS',
+            EMBED_CONFIG.get("embedding_max_tokens", 512),
+        ),
+        512,
+    ),
+)
+CONVERSATION_WINDOW_MAX_TOKENS = as_int(
+    load_config_value('CONVERSATION_WINDOW_MAX_TOKENS', 0),
+    0,
+)
+CONVERSATION_WINDOW_TOKEN_RESERVE = max(
+    8,
+    as_int(load_config_value('CONVERSATION_WINDOW_TOKEN_RESERVE', 32), 32),
+)
 CONVERSATION_NEIGHBOR_RADIUS = max(1, as_int(load_config_value('CONVERSATION_NEIGHBOR_RADIUS', EMBED_CONFIG.get("conversation_neighbor_radius", 3)), 3))
 STRUCTURED_MEMORY_MAX_SUMMARY_CHARS = max(120, as_int(load_config_value('STRUCTURED_MEMORY_MAX_SUMMARY_CHARS', 320), 320))
 STRUCTURED_MEMORY_MAX_CONTEXT_CHARS = max(300, as_int(load_config_value('STRUCTURED_MEMORY_MAX_CONTEXT_CHARS', 1200), 1200))
