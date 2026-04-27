@@ -117,6 +117,119 @@ async def log_api_call(db: aiosqlite.Connection, api_type: str):
         logger.error(f"API 호출 기록 중 DB 오류 ({api_type}): {e}", exc_info=True)
 
 
+async def _ensure_linkup_usage_table(db: aiosqlite.Connection):
+    """구버전 DB 호환을 위해 Linkup 사용량 테이블 존재를 보장합니다."""
+    try:
+        backend = str(getattr(db, "backend", "") or "").strip().lower() or "sqlite"
+        if backend == "tidb":
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS linkup_usage_log (
+                    id BIGINT PRIMARY KEY AUTO_RANDOM,
+                    used_at VARCHAR(64) NOT NULL,
+                    endpoint VARCHAR(32) NOT NULL,
+                    depth VARCHAR(32),
+                    render_js BOOLEAN,
+                    cost_eur DOUBLE NOT NULL,
+                    KEY idx_linkup_usage_time (used_at)
+                )
+                """
+            )
+        else:
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS linkup_usage_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    used_at TEXT NOT NULL,
+                    endpoint TEXT NOT NULL,
+                    depth TEXT,
+                    render_js BOOLEAN,
+                    cost_eur REAL NOT NULL
+                )
+                """
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_linkup_usage_time ON linkup_usage_log (used_at DESC)"
+            )
+        await db.commit()
+    except Exception as e:
+        logger.error(f"Linkup 사용량 테이블 보장 중 오류: {e}", exc_info=True)
+        raise
+
+
+def _get_month_window_utc(now_utc: datetime | None = None) -> tuple[str, str]:
+    now = now_utc or datetime.now(timezone.utc)
+    now_kst = now.astimezone(KST)
+    month_start_kst = now_kst.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    month_start_utc = month_start_kst.astimezone(timezone.utc).isoformat()
+    now_iso = now.isoformat()
+    return month_start_utc, now_iso
+
+
+async def get_linkup_monthly_spend_eur(db: aiosqlite.Connection, now_utc: datetime | None = None) -> float:
+    """이번 달(KST 기준) Linkup 사용 금액(유로)을 반환합니다."""
+    try:
+        await _ensure_linkup_usage_table(db)
+        start_utc, end_utc = _get_month_window_utc(now_utc)
+        async with db.execute(
+            "SELECT COALESCE(SUM(cost_eur), 0) FROM linkup_usage_log WHERE used_at >= ? AND used_at <= ?",
+            (start_utc, end_utc),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return float(row[0] or 0.0) if row else 0.0
+    except Exception as e:
+        logger.error(f"Linkup 월 사용액 조회 중 오류: {e}", exc_info=True)
+        return float("inf")
+
+
+async def can_spend_linkup_budget(
+    db: aiosqlite.Connection,
+    estimated_cost_eur: float,
+    *,
+    budget_limit_eur: float | None = None,
+    now_utc: datetime | None = None,
+) -> tuple[bool, float, float]:
+    """Linkup 월 예산 사용 가능 여부를 확인합니다."""
+    limit = float(config.LINKUP_MONTHLY_BUDGET_EUR if budget_limit_eur is None else budget_limit_eur)
+    if limit <= 0:
+        return False, 0.0, limit
+    used = await get_linkup_monthly_spend_eur(db, now_utc=now_utc)
+    if used == float("inf"):
+        return False, used, limit
+    return (used + max(0.0, float(estimated_cost_eur))) <= limit, used, limit
+
+
+async def log_linkup_usage(
+    db: aiosqlite.Connection,
+    *,
+    endpoint: str,
+    cost_eur: float,
+    depth: str | None = None,
+    render_js: bool | None = None,
+    used_at_iso: str | None = None,
+):
+    """Linkup 과금 이벤트를 기록합니다."""
+    try:
+        await _ensure_linkup_usage_table(db)
+        used_at = used_at_iso or datetime.now(timezone.utc).isoformat()
+        await db.execute(
+            """
+            INSERT INTO linkup_usage_log (used_at, endpoint, depth, render_js, cost_eur)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                used_at,
+                str(endpoint or "").strip().lower(),
+                (str(depth or "").strip().lower() or None),
+                None if render_js is None else (1 if bool(render_js) else 0),
+                float(cost_eur),
+            ),
+        )
+        await db.commit()
+    except Exception as e:
+        logger.error(f"Linkup 사용량 기록 중 오류: {e}", exc_info=True)
+
+
 async def get_daily_api_count(db: aiosqlite.Connection, api_type: str) -> int:
     """오늘 특정 API의 호출 횟수를 반환합니다.
     

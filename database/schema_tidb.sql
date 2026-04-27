@@ -27,6 +27,16 @@ CREATE TABLE IF NOT EXISTS user_activity_log (
     KEY idx_user_activity_log_user_time (guild_id, channel_id, user_id, created_at)
 );
 
+CREATE TABLE IF NOT EXISTS linkup_usage_log (
+    id BIGINT PRIMARY KEY AUTO_RANDOM,
+    used_at VARCHAR(64) NOT NULL,
+    endpoint VARCHAR(32) NOT NULL,
+    depth VARCHAR(32),
+    render_js BOOLEAN,
+    cost_eur DOUBLE NOT NULL,
+    KEY idx_linkup_usage_time (used_at)
+);
+
 CREATE TABLE IF NOT EXISTS conversation_history (
     message_id BIGINT PRIMARY KEY,
     guild_id BIGINT NOT NULL,

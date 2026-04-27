@@ -308,7 +308,7 @@ class ToolsCog(commands.Cog):
             try:
                 run_linkup_search_pipeline = await self._load_linkup_search_pipeline()
                 logger.info(f"웹 검색 RAG(Linkup) 실행: '{query}'")
-                linkup_result = await run_linkup_search_pipeline(query)
+                linkup_result = await run_linkup_search_pipeline(query, db_conn=self.bot.db)
                 if linkup_result.get("status") == "success":
                     return linkup_result
                 logger.warning(

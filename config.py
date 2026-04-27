@@ -331,6 +331,7 @@ HISTORY_LIMIT_WITHOUT_RAG = as_int(load_config_value('HISTORY_LIMIT_WITHOUT_RAG'
 # 도구 의도 분석 시 참고할 이전 대화 개수
 INTENT_HISTORY_LIMIT = as_int(load_config_value('INTENT_HISTORY_LIMIT', 5), 5)
 INTENT_LLM_ENABLED = as_bool(load_config_value('INTENT_LLM_ENABLED', 'true'))
+INTENT_LLM_ALWAYS_RUN = as_bool(load_config_value('INTENT_LLM_ALWAYS_RUN', 'true'))
 INTENT_LLM_RAG_STRONG_BYPASS = as_bool(load_config_value('INTENT_LLM_RAG_STRONG_BYPASS', 'true'))
 
 # 메시지 1개당 최대 글자수 (프롬프트 포함 시)
@@ -508,6 +509,11 @@ LINKUP_MIN_ANSWER_CHARS = max(20, as_int(load_config_value('LINKUP_MIN_ANSWER_CH
 LINKUP_CONTEXT_MAX_CHARS = max(800, as_int(load_config_value('LINKUP_CONTEXT_MAX_CHARS', 3200), 3200))
 LINKUP_CONTEXT_SOURCE_BLOCKS = max(1, as_int(load_config_value('LINKUP_CONTEXT_SOURCE_BLOCKS', 4), 4))
 LINKUP_CONTEXT_SNIPPET_MAX_CHARS = max(80, as_int(load_config_value('LINKUP_CONTEXT_SNIPPET_MAX_CHARS', 300), 300))
+LINKUP_MONTHLY_BUDGET_EUR = max(
+    0.0,
+    as_float(load_config_value('LINKUP_MONTHLY_BUDGET_EUR', 4.5), 4.5),
+)
+LINKUP_MONTHLY_BUDGET_ENFORCED = as_bool(load_config_value('LINKUP_MONTHLY_BUDGET_ENFORCED', 'true'))
 
 # 범용 웹 탐색 파이프라인 예산/캐시 설정
 WEB_RAG_FAST_LLM_MAX_CALLS = max(0, as_int(load_config_value('WEB_RAG_FAST_LLM_MAX_CALLS', 3), 3))
