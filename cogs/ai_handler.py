@@ -1394,6 +1394,16 @@ Generate the optimized English image prompt:"""
         '환율', '달러', '엔화', '유로', 'usd', 'jpy', 'eur', 'krw', '환전',
         '코인', '비트코인', '이더리움', 'crypto', 'bitcoin', 'eth',
     ])
+    _FINANCE_INTENT_HINTS = frozenset([
+        '주가', '주식', '시세', '종가', '시가', '상장', '시총', '시가총액', '배당',
+        '증시', '나스닥', '뉴욕증시', '코스피', '코스닥', '투자', '실적', '매출',
+        '영업이익', 'per', 'pbr', 'eps', 'etf', 'fund', 'market cap',
+        '환율', '환전', '달러', '엔화', '유로', '코인', '비트코인', '이더리움',
+    ])
+    _STOCK_TICKER_PATTERN = re.compile(
+        r"\b(aapl|tsla|googl|nvda|msft|amzn|mcd|sbux|ko|pep|nflx|meta|dis|intc|amd|nke|cost|brk\.?b)\b",
+        re.IGNORECASE,
+    )
     _FINANCE_KEYWORDS = _STOCK_US_KEYWORDS | _STOCK_KR_KEYWORDS | _STOCK_GENERAL_KEYWORDS | _EXCHANGE_KEYWORDS
     _DEPRECATED_FINANCE_TOOLS = frozenset([
         'get_stock_price',
@@ -1440,6 +1450,7 @@ Generate the optimized English image prompt:"""
         '누가', '언제', '어디', '왜', '무엇', '몇', '얼마', '정의', '의미', '차이',
         '비교', '장단점', '순위', '통계', '수치', '근거', '출처', '링크',
         '공식', '문서', '가이드', '튜토리얼', '사용법',
+        '호환성', '문제', '오류', '버그', '이슈', '해결', '해결법', '트러블슈팅',
         '발표', '업데이트', '버전', '릴리즈', '변경사항', '패치노트',
         '라인업', '일정', '개최', '행사', '축제',
         'latest', 'update', 'release', 'version', 'docs', 'documentation',
@@ -1470,7 +1481,7 @@ Generate the optimized English image prompt:"""
         # 도구 키워드가 섞여 있으면 smalltalk로 보지 않습니다.
         if (
             any(kw in text for kw in self._WEATHER_KEYWORDS)
-            or any(kw in text for kw in self._FINANCE_KEYWORDS)
+            or self._looks_like_finance_query(text)
             or any(kw in text for kw in self._PLACE_KEYWORDS)
             or any(kw in text for kw in self._WEB_SEARCH_KEYWORDS)
             or any(kw in text for kw in self._IMAGE_GEN_KEYWORDS)
@@ -1522,6 +1533,28 @@ Generate the optimized English image prompt:"""
             return False
         return any(token in query_lower for token in self._REALTIME_WEB_QUERY_HINTS)
 
+    def _looks_like_finance_query(self, query: str) -> bool:
+        """회사명 단독 언급 오탐을 줄이기 위해 금융 의도 문맥까지 함께 확인합니다."""
+        query_lower = (query or "").lower().strip()
+        if not query_lower:
+            return False
+
+        # 환율/코인/주가 등 강한 금융 키워드는 즉시 금융으로 분류
+        if any(kw in query_lower for kw in self._STOCK_GENERAL_KEYWORDS):
+            return True
+        if any(kw in query_lower for kw in self._EXCHANGE_KEYWORDS):
+            return True
+        if self._STOCK_TICKER_PATTERN.search(query_lower):
+            return True
+
+        # 회사명만 있는 경우에는 금융 의도 힌트가 함께 있을 때만 금융으로 본다.
+        has_stock_entity = any(kw in query_lower for kw in self._STOCK_US_KEYWORDS) or any(
+            kw in query_lower for kw in self._STOCK_KR_KEYWORDS
+        )
+        if not has_stock_entity:
+            return False
+        return any(hint in query_lower for hint in self._FINANCE_INTENT_HINTS)
+
     @staticmethod
     def _normalize_realtime_web_query(query: str) -> str:
         """실시간 질의에서 과거 연/월 오염 토큰을 제거하고 현재 날짜 앵커를 부여합니다."""
@@ -1555,9 +1588,11 @@ Generate the optimized English image prompt:"""
         query_lower = (query or "").lower()
         if not query_lower:
             return False
-        return any(kw in query_lower for kw in self._WEATHER_KEYWORDS) or any(
-            kw in query_lower for kw in self._FINANCE_KEYWORDS
-        ) or any(kw in query_lower for kw in self._PLACE_KEYWORDS)
+        return (
+            any(kw in query_lower for kw in self._WEATHER_KEYWORDS)
+            or self._looks_like_finance_query(query)
+            or any(kw in query_lower for kw in self._PLACE_KEYWORDS)
+        )
 
     def _select_tool_plan_without_intent_llm(
         self,
@@ -1587,7 +1622,7 @@ Generate the optimized English image prompt:"""
             # web_search는 명시적 탐색/금융 질문일 때만 키워드 라우팅
             if tool_name == "web_search":
                 query_lower = (query or "").lower()
-                finance_query = any(kw in query_lower for kw in self._FINANCE_KEYWORDS)
+                finance_query = self._looks_like_finance_query(query)
                 explicit_web = self._has_explicit_web_search_intent(query)
                 place_query = any(kw in query_lower for kw in self._PLACE_KEYWORDS)
                 if finance_query or explicit_web or place_query:
@@ -1724,7 +1759,7 @@ Generate the optimized English image prompt:"""
 
         query_lower = (query or "").lower()
         explicit_web = self._has_explicit_web_search_intent(query)
-        finance_query = any(kw in query_lower for kw in self._FINANCE_KEYWORDS)
+        finance_query = self._looks_like_finance_query(query)
         factual_query = self._looks_like_external_fact_query(query)
         weather_query = any(kw in query_lower for kw in self._WEATHER_KEYWORDS)
         place_query = any(kw in query_lower for kw in self._PLACE_KEYWORDS)
@@ -1857,7 +1892,7 @@ Generate the optimized English image prompt:"""
         """외부 정보 탐색(뉴스/웹/블로그/문서) 필요 여부를 판단합니다."""
         query_lower = query.lower()
         explicit_web = self._has_explicit_web_search_intent(query)
-        finance_query = any(kw in query_lower for kw in self._FINANCE_KEYWORDS)
+        finance_query = self._looks_like_finance_query(query)
         place_query = any(kw in query_lower for kw in self._PLACE_KEYWORDS)
         factual_query = self._looks_like_external_fact_query(query)
 
@@ -2050,7 +2085,7 @@ Generate the optimized English image prompt:"""
             return tools  # 날씨 요청은 단일 도구로 처리
 
         # 금융 관련 질문은 직접 시세 도구 대신 웹 검색으로 대체
-        if any(kw in query_lower for kw in self._FINANCE_KEYWORDS):
+        if self._looks_like_finance_query(query):
             logger.info(f"금융 관련 질문 감지: '{query}' -> web_search로 대체")
             tools.append({
                 'tool_to_use': 'web_search',
@@ -2966,7 +3001,13 @@ Generate the optimized English image prompt:"""
                 rag_top_score=rag_top_score,
                 log_extra=log_extra,
             )
-            raw_tool_plan = heuristic_plan if heuristic_plan is not None else llm_tool_plan
+            if heuristic_plan is None:
+                raw_tool_plan = llm_tool_plan
+            elif heuristic_plan:
+                raw_tool_plan = heuristic_plan
+            else:
+                # 휴리스틱이 빈 계획이면(no-op), 띵킹 LLM 계획을 유지해 과도한 누락을 방지한다.
+                raw_tool_plan = llm_tool_plan if llm_tool_plan else []
             if heuristic_plan is not None:
                 logger.info(
                     "[도구계획] 휴리스틱 보정 적용 (llm=%d, heuristic=%d)",
@@ -2974,6 +3015,12 @@ Generate the optimized English image prompt:"""
                     len(heuristic_plan or []),
                     extra=log_extra,
                 )
+                if not heuristic_plan and llm_tool_plan:
+                    logger.info(
+                        "[도구계획] 휴리스틱이 빈 계획이어서 LLM 계획을 유지합니다. (llm=%d)",
+                        len(llm_tool_plan),
+                        extra=log_extra,
+                    )
             tool_plan = self._sanitize_tool_plan(
                 user_query,
                 raw_tool_plan,

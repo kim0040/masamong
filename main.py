@@ -134,6 +134,59 @@ class ReMasamongBot(commands.Bot):
                     logger.info("핵심 테이블이 이미 존재하여 스키마 재적용을 건너뜁니다: %s", schema_path)
             else:
                 logger.error("스키마 파일을 찾을 수 없습니다: %s", schema_path)
+
+            # 과거 conversation_history를 user_activity_log로 1회 백필하여
+            # !랭킹(채널/기간 집계)에서 이전 누적 데이터가 사라져 보이지 않게 보정합니다.
+            backfill_key = "user_activity_log_backfill_v1"
+            backfill_done = False
+            async with self.db.execute(
+                "SELECT counter_value FROM system_counters WHERE counter_name = ?",
+                (backfill_key,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                backfill_done = bool(row)
+
+            if not backfill_done:
+                async with self.db.execute("SELECT COUNT(*) FROM user_activity_log") as cursor:
+                    before_count = int((await cursor.fetchone())[0] or 0)
+
+                await self.db.execute(
+                    """
+                    INSERT OR IGNORE INTO user_activity_log (message_id, guild_id, channel_id, user_id, created_at)
+                    SELECT message_id, guild_id, channel_id, user_id, created_at
+                    FROM conversation_history
+                    WHERE is_bot = 0
+                    """
+                )
+                if await self._table_exists("conversation_history_archive"):
+                    await self.db.execute(
+                        """
+                        INSERT OR IGNORE INTO user_activity_log (message_id, guild_id, channel_id, user_id, created_at)
+                        SELECT message_id, guild_id, channel_id, user_id, created_at
+                        FROM conversation_history_archive
+                        WHERE is_bot = 0
+                        """
+                    )
+
+                async with self.db.execute("SELECT COUNT(*) FROM user_activity_log") as cursor:
+                    after_count = int((await cursor.fetchone())[0] or 0)
+
+                now_utc = discord.utils.utcnow().isoformat()
+                await self.db.execute(
+                    """
+                    INSERT OR REPLACE INTO system_counters (counter_name, counter_value, last_reset_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (backfill_key, after_count, now_utc),
+                )
+                await self.db.commit()
+                logger.info(
+                    "user_activity_log 백필 완료: 이전=%d, 이후=%d, 추가=%d",
+                    before_count,
+                    after_count,
+                    max(0, after_count - before_count),
+                )
+
             # locations 테이블이 비어있거나 구형 데이터(예: 2만개 미만 또는 주요 별칭 누락)일 경우 재시딩합니다.
             async with self.db.execute("SELECT COUNT(*) FROM locations") as cursor:
                 existing_count = (await cursor.fetchone())[0]
