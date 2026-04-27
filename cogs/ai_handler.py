@@ -57,7 +57,10 @@ from utils import http
 from utils.embeddings import (
     DiscordEmbeddingStore,
     KakaoEmbeddingStore,
+    count_embedding_tokens,
     get_embedding,
+    get_embedding_token_limit,
+    trim_text_to_embedding_token_limit,
 )
 from utils.memory_units import build_storage_text, build_structured_memory_units
 from database.bm25_index import BM25IndexManager
@@ -110,6 +113,7 @@ class AIHandler(commands.Cog):
         )
         self._window_buffers: dict[tuple[int, int], deque[dict[str, Any]]] = {}
         self._window_counts: dict[tuple[int, int], int] = {}
+        self._embedding_token_limit_cache: int | None = None
         self.debug_enabled = config.AI_DEBUG_ENABLED
         self._debug_log_len = getattr(config, "AI_DEBUG_LOG_MAX_LEN", 400)
         self._openai_clients: dict[tuple[str, str], Any] = {}
@@ -822,6 +826,20 @@ class AIHandler(commands.Cog):
             logger.error("임베딩 생성 실패", extra=log_extra)
         return embedding
 
+    @staticmethod
+    def _estimate_window_tokens(text: str) -> int:
+        """윈도우 저장 판단용 경량 토큰 추정치."""
+        return len(re.findall(r"\S+", str(text or "")))
+
+    async def _embedding_token_limit(self) -> int:
+        """임베딩 입력에 사용할 안전 토큰 한계를 반환합니다."""
+        if self._embedding_token_limit_cache is not None:
+            return self._embedding_token_limit_cache
+        reserve = max(8, int(getattr(config, "CONVERSATION_WINDOW_TOKEN_RESERVE", 32)))
+        limit = await get_embedding_token_limit(reserve_tokens=reserve)
+        self._embedding_token_limit_cache = max(32, int(limit))
+        return self._embedding_token_limit_cache
+
     async def add_message_to_history(self, message: discord.Message):
         """AI 허용 채널의 메시지를 대화 기록 DB에 저장합니다.
 
@@ -936,8 +954,37 @@ class AIHandler(commands.Cog):
                 'memory_scope': unit.memory_scope,
                 'memory_type': unit.memory_type,
             }
+            memory_text_for_embedding = unit.memory_text
+            summary_text_for_storage = unit.summary_text
+            token_limit = await self._embedding_token_limit()
+            input_text = f"passage: {memory_text_for_embedding}"
+            token_count = await count_embedding_tokens(input_text)
+            if token_count > token_limit:
+                logger.info(
+                    "구조화 메모리 토큰 초과 감지: %s > %s (scope=%s). 요약 전환 시도",
+                    token_count,
+                    token_limit,
+                    unit.memory_scope,
+                    extra=log_extra,
+                )
+                summary_source = unit.raw_context or unit.memory_text
+                summarized = await self._summarize_content(summary_source)
+                if summarized:
+                    summary_text_for_storage = summarized
+                    memory_text_for_embedding = summarized
+                    token_count = await count_embedding_tokens(f"passage: {memory_text_for_embedding}")
+
+                if token_count > token_limit:
+                    trimmed = await trim_text_to_embedding_token_limit(
+                        memory_text_for_embedding,
+                        token_limit,
+                    )
+                    if trimmed:
+                        memory_text_for_embedding = trimmed
+                        token_count = await count_embedding_tokens(f"passage: {memory_text_for_embedding}")
+
             embedding_vector = await self._generate_local_embedding(
-                f"passage: {unit.memory_text}",
+                f"passage: {memory_text_for_embedding}",
                 log_extra,
                 prefix="",
             )
@@ -954,8 +1001,8 @@ class AIHandler(commands.Cog):
                     owner_user_name=unit.owner_user_name,
                     memory_scope=unit.memory_scope,
                     memory_type=unit.memory_type,
-                    summary_text=unit.summary_text,
-                    memory_text=unit.memory_text,
+                    summary_text=summary_text_for_storage,
+                    memory_text=memory_text_for_embedding,
                     raw_context=unit.raw_context,
                     source_message_ids=unit.source_message_ids,
                     speaker_names=unit.speaker_names,
@@ -993,19 +1040,29 @@ class AIHandler(commands.Cog):
         }
         if not entry["content"]:
             return
+        entry["token_estimate"] = self._estimate_window_tokens(entry["content"])
         buffer.append(entry)
 
         # stride 계산을 위해 채널별 삽입 횟수를 기록한다.
         counter = self._window_counts.get(key, 0) + 1
         self._window_counts[key] = counter
 
-        # [Feature] 메시지 길이 합계를 계산하여 토큰 제한에 대비한다.
-        total_chars = sum(len(item["content"]) for item in buffer)
-        max_chars = getattr(config, "CONVERSATION_WINDOW_MAX_CHARS", 3000)
+        # [Feature] 토큰 기반 윈도우 저장 기준.
+        total_tokens = sum(int(item.get("token_estimate") or 0) for item in buffer)
+        configured_max_tokens = int(getattr(config, "CONVERSATION_WINDOW_MAX_TOKENS", 0))
+        fallback_max_tokens = max(64, int(getattr(config, "LOCAL_EMBEDDING_MAX_TOKENS", 512)))
+        max_tokens = configured_max_tokens if configured_max_tokens > 0 else max(
+            64,
+            fallback_max_tokens - int(getattr(config, "CONVERSATION_WINDOW_TOKEN_RESERVE", 32)),
+        )
 
-        # 윈도우가 가득 찼거나, 문자열 길이가 제한을 초과하면 저장을 시도한다.
+        # 비정상 장문 보호용 문자 기준(2차 안전장치)
+        total_chars = sum(len(item["content"]) for item in buffer)
+        max_chars = int(getattr(config, "CONVERSATION_WINDOW_MAX_CHARS", 3000))
+
+        # 윈도우가 가득 찼거나, 토큰/문자열 길이가 제한을 초과하면 저장을 시도한다.
         is_full = len(buffer) >= window_size
-        is_heavy = total_chars >= max_chars
+        is_heavy = total_tokens >= max_tokens or total_chars >= max_chars
         
         if not is_full and not is_heavy:
             return
@@ -1017,7 +1074,15 @@ class AIHandler(commands.Cog):
         
         # [Log] 용량 초과로 인한 강제 저장 알림
         if is_heavy and not is_full:
-            logger.info(f"대화 윈도우 용량 초과({total_chars}자)로 즉시 저장: {message.channel.id}", extra={'guild_id': guild_id})
+            logger.info(
+                "대화 윈도우 용량 초과(tokens=%s/%s, chars=%s/%s)로 즉시 저장: %s",
+                total_tokens,
+                max_tokens,
+                total_chars,
+                max_chars,
+                message.channel.id,
+                extra={'guild_id': guild_id},
+            )
 
         try:
             payload = list(buffer)

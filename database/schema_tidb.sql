@@ -17,6 +17,16 @@ CREATE TABLE IF NOT EXISTS user_activity (
     PRIMARY KEY(user_id, guild_id)
 );
 
+CREATE TABLE IF NOT EXISTS user_activity_log (
+    message_id BIGINT PRIMARY KEY,
+    guild_id BIGINT NOT NULL,
+    channel_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    created_at VARCHAR(64) NOT NULL,
+    KEY idx_user_activity_log_scope_time (guild_id, channel_id, created_at),
+    KEY idx_user_activity_log_user_time (guild_id, channel_id, user_id, created_at)
+);
+
 CREATE TABLE IF NOT EXISTS conversation_history (
     message_id BIGINT PRIMARY KEY,
     guild_id BIGINT NOT NULL,
