@@ -35,6 +35,8 @@ korean-lunar-calendar
 psutil
 pytz
 ephem
+matplotlib>=3.9.0
+seaborn>=0.13.2
 
 # --- 뉴스 RAG 파이프라인 (DuckDuckGo, 무료, API 키 불필요) ---
 ddgs

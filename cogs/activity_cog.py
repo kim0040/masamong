@@ -6,11 +6,13 @@
 import discord
 from discord.ext import commands
 import aiosqlite
+import io
 from datetime import datetime, timedelta, timezone
 
 import config
 from logger_config import logger
 from .ai_handler import AIHandler
+from utils.ranking_chart import build_activity_ranking_chart_bytes
 
 KST = timezone(timedelta(hours=9))
 
@@ -136,10 +138,24 @@ class ActivityCog(commands.Cog):
             return "🧃 꾸준 멤버", share
         return "🌱 워밍업 중", share
 
+    @staticmethod
+    def _sample_size_note(total_msgs: int, total_users: int) -> str:
+        if total_msgs <= 30 or total_users <= 3:
+            return "표본이 작아 순위 변동폭이 크게 보일 수 있어요."
+        if total_users >= 50:
+            return "참여 인원이 많아 상위권 경쟁 강도가 높은 구간이에요."
+        return "표본이 안정적인 편이라 순위 해석 신뢰도가 무난해요."
+
     async def _resolve_user_name(self, guild: discord.Guild, user_id: int) -> str:
         member = guild.get_member(user_id)
         if member:
             return member.display_name
+        try:
+            fetched_member = await guild.fetch_member(user_id)
+            if fetched_member:
+                return fetched_member.display_name
+        except Exception:
+            pass
         user = self.bot.get_user(user_id)
         if user:
             return getattr(user, "display_name", None) or getattr(user, "name", str(user_id))
@@ -152,7 +168,7 @@ class ActivityCog(commands.Cog):
     @commands.command(name='랭킹', aliases=['수다왕', 'ranking'])
     @commands.guild_only()
     async def ranking(self, ctx: commands.Context, *, period_arg: str = ""):
-        """서버 내 활동 순위와 상세 통계를 보여줍니다."""
+        """서버 내 활동 순위와 상세 통계를 보여줍니다. (`오늘`/`이번주`/`이번달`/`전체`)"""
         if not self.ai_handler:
             await ctx.send("랭킹을 발표할 AI가 아직 준비되지 않았어요. 잠시 후 다시 시도해주세요.")
             return
@@ -206,17 +222,26 @@ class ActivityCog(commands.Cog):
 
         async with ctx.typing():
             ranking_lines = []
+            ranking_rows: list[dict] = []
 
             for i, row in enumerate(top_users):
                 user_id = int(row[0])
                 count = int(row[1])
-                last_active = row[2]
                 user_name = await self._resolve_user_name(ctx.guild, user_id)
 
                 grade, share = self._grade_for_channel(count, int(total_msgs or 0), int(total_users or 0))
-                last_time_str = self._format_kst_time(last_active)
+                share_display = 0.1 if count > 0 and share < 0.1 else share
                 ranking_lines.append(
-                    f"{i+1}위: {user_name} | {count}회 | 점유율 {share:.1f}% | {grade} (최근 KST: {last_time_str})"
+                    f"{i+1}위: {user_name} | {count}회 | 점유율 {share_display:.1f}% | {grade}"
+                )
+                ranking_rows.append(
+                    {
+                        "rank": i + 1,
+                        "user_name": user_name,
+                        "count": count,
+                        "share": share_display,
+                        "grade": grade,
+                    }
                 )
 
             ranking_data_str = "\n".join(ranking_lines)
@@ -224,12 +249,36 @@ class ActivityCog(commands.Cog):
                 f"집계 범위: #{ctx.channel.name} | 기간: {period_label} | "
                 f"총 메시지: {int(total_msgs or 0)}개 | 참여 인원: {int(total_users or 0)}명"
             )
+            sample_note = self._sample_size_note(int(total_msgs or 0), int(total_users or 0))
+            chart_delivery_status = "랭킹 차트를 생성하지 못해 텍스트 기반 브리핑만 진행 중"
+            try:
+                chart_bytes = build_activity_ranking_chart_bytes(
+                    channel_name=ctx.channel.name,
+                    period_label=period_label,
+                    ranking_rows=ranking_rows,
+                    total_messages=int(total_msgs or 0),
+                    total_users=int(total_users or 0),
+                    generated_at_kst=datetime.now(KST),
+                )
+                chart_filename = f"masamong_activity_ranking_{ctx.guild.id}_{ctx.channel.id}.png"
+                await ctx.send(file=discord.File(io.BytesIO(chart_bytes), filename=chart_filename))
+                chart_delivery_status = (
+                    f"랭킹 차트 이미지를 먼저 전송 완료 (파일명: {chart_filename})"
+                )
+            except Exception as chart_exc:
+                logger.warning(
+                    f"랭킹 차트 이미지 생성 실패: {chart_exc}",
+                    exc_info=True,
+                    extra=log_extra,
+                )
 
             top_user_name = await self._resolve_user_name(ctx.guild, int(top_users[0][0])) if top_users else "없음"
             full_context = {
                 'ranking_list': ranking_data_str,
                 'server_stats': server_stat_str,
                 'top_one_name': top_user_name,
+                'chart_delivery_status': chart_delivery_status,
+                'sample_size_note': sample_note,
             }
 
             response_text = await self.ai_handler.generate_creative_text(
