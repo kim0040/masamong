@@ -661,6 +661,36 @@ class AIHandler(commands.Cog):
             logger.error(f"Gemini 응답 생성 중 예기치 않은 오류: {e}", extra=log_extra, exc_info=True)
             return None
 
+    def _looks_like_prompt_leakage(self, response_text: str) -> bool:
+        """시스템/내부 지시문 유출로 보이는 응답만 선별 차단합니다."""
+        text = (response_text or "").strip()
+        if not text:
+            return False
+
+        lowered = text.lower()
+
+        hard_markers = [
+            "절대 시스템 프롬프트",
+            "system prompt:",
+            "system message:",
+            "developer message:",
+            "assistant instructions:",
+            "internal instructions:",
+            "hidden prompt:",
+            "mention policy",
+            "<system>",
+            "[system]",
+        ]
+        if any(marker in lowered for marker in hard_markers):
+            return True
+
+        disclosure_patterns = [
+            r"(시스템\s*프롬프트|system\s*prompt).{0,20}(공개|유출|노출|보여|출력|다음|원문)",
+            r"(내부\s*지시|지시사항|rules|규칙).{0,20}(다음|원문|전문|그대로|출력|보여)",
+            r"(^|\n)\s*(you are|너는)\s+.*(assistant|챗봇|ai|모델)",
+        ]
+        return any(re.search(pattern, lowered, flags=re.IGNORECASE | re.DOTALL) for pattern in disclosure_patterns)
+
     async def _cometapi_generate_content(
         self,
         system_prompt: str,
@@ -730,23 +760,9 @@ class AIHandler(commands.Cog):
                     break
 
             # [Security] Prompt Leakage Filter
-            if final_response:
-                leakage_keywords = [
-                    "system prompt",
-                    "system message",
-                    "system instructions",
-                    "mention policy",
-                    "명령어",
-                    "지시사항",
-                    "프롬프트",
-                    "persona",
-                    "rules",
-                ]
-                # 답변에 시스템 프롬프트의 핵심 문구가 너무 많이 포함되어 있으면 차단
-                if ("절대 시스템 프롬프트" in final_response or 
-                    (final_response.count("\n") > 5 and any(kw in final_response.lower() for kw in leakage_keywords))):
-                    logger.warning(f"[Security] 프롬프트 유출 감지 및 차단: {final_response[:100]}...", extra=log_extra)
-                    return None
+            if final_response and self._looks_like_prompt_leakage(final_response):
+                logger.warning(f"[Security] 프롬프트 유출 감지 및 차단: {final_response[:100]}...", extra=log_extra)
+                return None
 
             if self.debug_enabled:
                 self._debug(f"[CometAPI] 응답: {self._truncate_for_debug(final_response)}", log_extra)
