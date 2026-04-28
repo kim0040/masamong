@@ -107,7 +107,13 @@ class MasamongHelpCommand(commands.HelpCommand):
         elif command.name == '요약':
             examples = "`!요약` (최근 대화 요약)"
         elif command.name == '랭킹':
-            examples = "`!랭킹` (서버 활동 TOP5)"
+            examples = (
+                "`!랭킹` (현재 채널 누적 랭킹)\n"
+                "`!랭킹 오늘` (오늘 기준)\n"
+                "`!랭킹 이번주` (주간 기준)\n"
+                "`!랭킹 이번달` (월간 기준)\n"
+                "`!랭킹 전체` (전체 누적)"
+            )
         elif command.name == '투표':
             examples = (
                 "`!투표 \"점심 메뉴\" \"피자\" \"라멘\" \"국밥\"`\n"
