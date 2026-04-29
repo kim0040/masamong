@@ -44,6 +44,7 @@ __author__ = "kim0040"
 
 
 def _format_storage_target() -> str:
+    """현재 설정된 DB 백엔드 정보를 사람이 읽을 수 있는 문자열로 포맷합니다."""
     if config.DB_BACKEND == "tidb":
         return f"TiDB {config.TIDB_NAME}@{config.TIDB_HOST}:{config.TIDB_PORT}"
     return f"SQLite {config.DATABASE_FILE}"

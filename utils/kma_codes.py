@@ -61,14 +61,14 @@ MID_TERM_TEMP_CODES = {
 }
 
 def get_land_code(location_name: str) -> str:
-    """Finds best matching land code."""
+    """지역명에 가장 잘 맞는 중기 육상예보 구역 코드를 반환한다."""
     for key, code in MID_TERM_LAND_CODES.items():
         if key in location_name:
             return code
     return "11B00000" # Default to Seoul if unknown
 
 def get_temp_code(location_name: str) -> str:
-    """Finds best matching temp code."""
+    """지역명에 가장 잘 맞는 중기 기온예보 구역 코드를 반환한다."""
     for key, code in MID_TERM_TEMP_CODES.items():
         if key in location_name:
             return code

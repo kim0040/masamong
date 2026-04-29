@@ -33,6 +33,7 @@ class Reranker:
     """Cross-Encoder 기반 재순위화 래퍼."""
 
     def __init__(self, config: RerankerConfig | None = None):
+        """RerankerConfig를 받아 모델명·디바이스·배치 크기 등을 초기화하고 지연 로딩 준비를 한다."""
         self.config = config or RerankerConfig()
         self._tokenizer = None
         self._model = None

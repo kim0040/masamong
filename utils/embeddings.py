@@ -39,6 +39,7 @@ _WHITESPACE_TOKEN_RE = re.compile(r"\S+")
 
 
 def _build_tidb_settings() -> TiDBSettings | None:
+    """config 값을 바탕으로 TiDB 연결 설정 객체를 생성합니다."""
     if not (config.TIDB_HOST and config.TIDB_USER):
         return None
     return TiDBSettings(
@@ -83,6 +84,7 @@ def _resolve_local_model_path(model_name: str) -> Path | None:
 
 
 def _vector_literal(vector: "np.ndarray") -> str:
+    """numpy 배열을 SQL 벡터 리터럴 문자열로 직렬화합니다."""
     values = np.asarray(vector, dtype=np.float32).tolist()
     return "[" + ",".join(f"{float(item):.8f}" for item in values) + "]"
 
@@ -150,6 +152,7 @@ async def _load_model() -> SentenceTransformer:
 
 
 def _fallback_token_count(text: str) -> int:
+    """토크나이저 접근이 불가능할 때 공백 기반으로 대략적인 토큰 수를 추정합니다."""
     return len(_WHITESPACE_TOKEN_RE.findall(text or ""))
 
 
@@ -344,6 +347,11 @@ class DiscordEmbeddingStore:
     )
 
     def __init__(self, db_path: str):
+        """Discord 임베딩 저장소를 초기화합니다.
+
+        Args:
+            db_path: 임베딩을 저장할 SQLite DB 파일 경로.
+        """
         self.db_path = Path(db_path)
         self.backend = getattr(config, "DISCORD_EMBEDDING_BACKEND", "sqlite")
         self.tidb_table = getattr(config, "DISCORD_EMBEDDING_TIDB_TABLE", "discord_chat_embeddings")
@@ -380,6 +388,7 @@ class DiscordEmbeddingStore:
             logger.info("Discord 임베딩 DB 초기화 완료: %s", self.db_path)
 
     async def _initialize_tidb(self) -> None:
+        """TiDB에 Discord 임베딩 테이블과 메모리 엔트리 테이블을 생성합니다."""
         create_sql = f"""
         CREATE TABLE IF NOT EXISTS {self.tidb_table} (
             id BIGINT PRIMARY KEY AUTO_RANDOM,
@@ -424,6 +433,13 @@ class DiscordEmbeddingStore:
         await asyncio.to_thread(self._tidb_exec, create_memory_sql, ())
 
     def _tidb_exec(self, query: str, params: tuple[Any, ...], *, fetch: bool = False) -> list[dict[str, Any]] | None:
+        """TiDB 연결을 열고 SQL을 실행한 후 연결을 닫습니다.
+
+        Args:
+            query: 실행할 SQL 쿼리.
+            params: 쿼리 파라미터 튜플.
+            fetch: SELECT 결과를 반환할지 여부.
+        """
         if pymysql is None or self._tidb_settings is None:
             raise RuntimeError("TiDB 연결 정보 또는 PyMySQL 패키지가 없습니다.")
         conn = pymysql.connect(**self._tidb_settings.to_connect_kwargs())
@@ -564,6 +580,7 @@ class DiscordEmbeddingStore:
         timestamp_iso: str,
         embedding: np.ndarray,
     ) -> None:
+        """메모리 엔트리를 저장하거나 갱신합니다."""
         await self.initialize()
         if np is None:
             raise RuntimeError("numpy가 설치되어 있지 않아 임베딩을 저장할 수 없습니다.")
@@ -669,6 +686,7 @@ class DiscordEmbeddingStore:
         user_id: int | None = None,
         limit: int = 200,
     ) -> list[aiosqlite.Row]:
+        """지정한 범위의 최신 메모리 엔트리를 반환합니다."""
         await self.initialize()
         user_id_str = str(user_id) if user_id is not None else None
         if self.backend == "tidb":
@@ -778,6 +796,7 @@ class DiscordEmbeddingStore:
         return rows
 
     async def clear_memory_entries(self) -> None:
+        """모든 메모리 엔트리를 삭제합니다."""
         await self.initialize()
         if self.backend == "tidb":
             await asyncio.to_thread(self._tidb_exec, "DELETE FROM discord_memory_entries", ())
@@ -787,6 +806,7 @@ class DiscordEmbeddingStore:
             await db.commit()
 
     async def delete_memory_entries(self, memory_ids: Iterable[str]) -> None:
+        """지정한 memory_id 목록에 해당하는 메모리 엔트리를 삭제합니다."""
         ids = [str(item) for item in memory_ids if str(item).strip()]
         if not ids:
             return
@@ -810,6 +830,7 @@ class DiscordEmbeddingStore:
         server_id: int | None = None,
         channel_id: int | None = None,
     ) -> int:
+        """조건에 맞는 메모리 엔트리 개수를 반환합니다."""
         await self.initialize()
         clauses: list[str] = []
         params: list[Any] = []
@@ -856,6 +877,12 @@ class KakaoEmbeddingStore:
     """여러 카카오 채팅방 임베딩 DB를 읽어오는 헬퍼."""
 
     def __init__(self, default_db_path: str | None, server_map: Dict[str, Dict[str, str]]):
+        """Kakao 임베딩 저장소를 초기화합니다.
+
+        Args:
+            default_db_path: 기본 DB 파일 경로.
+            server_map: 서버 ID별 DB 경로/방 키 매핑 정보.
+        """
         self.backend = getattr(config, "KAKAO_STORE_BACKEND", "local")
         self.tidb_table = getattr(config, "KAKAO_TIDB_TABLE", "kakao_chunks")
         self._tidb_settings = _build_tidb_settings()
@@ -888,6 +915,7 @@ class KakaoEmbeddingStore:
         self._numpy_lock = asyncio.Lock()
 
     async def _ensure_numpy_backend(self, path: Path) -> bool:
+        """경로가 numpy 파일을 포함한 디렉터리인지 확인하고 필요 시 로드합니다."""
         """Check if path is a directory with numpy files and load them if needed."""
         if not path.is_dir():
             return False
@@ -923,6 +951,7 @@ class KakaoEmbeddingStore:
 
     @staticmethod
     def _load_numpy_files(vec_path: Path, meta_path: Path):
+        """numpy 벡터 파일과 JSON 메타데이터 파일을 로드합니다."""
         vectors = np.load(vec_path)
         with open(meta_path, 'r', encoding='utf-8') as f:
             metadata = json.load(f)
@@ -983,6 +1012,7 @@ class KakaoEmbeddingStore:
         limit: int,
         query_vector: "np.ndarray" | None,
     ) -> list[Dict[str, Any]]:
+        """TiDB에서 방 키 기준으로 임베딩 레코드를 읽어옵니다."""
         if pymysql is None or self._tidb_settings is None:
             logger.warning("TiDB Kakao 저장소를 사용할 수 없습니다.")
             return []
@@ -1014,6 +1044,7 @@ class KakaoEmbeddingStore:
         return results
 
     def _remote_recent_fetch(self, room_key: str, limit: int) -> list[Dict[str, Any]]:
+        """TiDB에서 특정 방의 최신 레코드를 가져옵니다."""
         conn = pymysql.connect(**self._tidb_settings.to_connect_kwargs())
         try:
             with conn.cursor() as cursor:
@@ -1036,6 +1067,7 @@ class KakaoEmbeddingStore:
             conn.close()
 
     def _remote_vector_search(self, room_key: str, query_vector: "np.ndarray", limit: int) -> list[Dict[str, Any]]:
+        """TiDB에서 벡터 유사도 기반으로 레코드를 검색합니다."""
         vector_literal = _vector_literal(query_vector)
         sql = f"""
             SELECT chunk_id AS message_id,
@@ -1059,6 +1091,7 @@ class KakaoEmbeddingStore:
             conn.close()
 
     def _build_vector_extension_candidates(self) -> list[str]:
+        """config와 기본값을 바탕으로 SQLite 벡터 확장 후보 목록을 생성합니다."""
         candidates: list[str] = []
         raw = getattr(config, "KAKAO_VECTOR_EXTENSION", None)
         if isinstance(raw, str) and raw.strip():
@@ -1077,6 +1110,7 @@ class KakaoEmbeddingStore:
         return deduped
 
     async def _load_vector_extension(self, db: aiosqlite.Connection) -> bool:
+        """SQLite 벡터 확장을 로드합니다. 성공 시 True, 실패 시 False를 반환합니다."""
         if not self._vector_extension_candidates:
             return False
 
@@ -1109,6 +1143,7 @@ class KakaoEmbeddingStore:
 
 
     async def _fetch_from_path(self, path: Path, label: str, limit: int) -> list[Dict[str, Any]]:
+        """SQLite 또는 numpy 백엔드에서 최신 임베딩 레코드를 읽어옵니다."""
         # 1. Numpy Backend Check
         if await self._ensure_numpy_backend(path):
             return self._fetch_from_numpy(path, limit)
@@ -1150,6 +1185,7 @@ class KakaoEmbeddingStore:
         limit: int,
         query_vector: "np.ndarray",
     ) -> list[Dict[str, Any]]:
+        """로컬 DB에서 벡터 유사도 기반으로 레코드를 검색합니다."""
         if np is None:
             logger.debug("numpy 미설치로 Kakao 벡터 검색을 건너뜁니다: %s", path)
             return []
@@ -1206,6 +1242,7 @@ class KakaoEmbeddingStore:
         return window_rows
 
     def _fetch_from_numpy(self, path: Path, limit: int) -> list[Dict[str, Any]]:
+        """numpy 백엔드에서 최근 N개 아이템을 반환합니다."""
         """Fetch recent items from numpy store (just returns last N items)."""
         vectors, metadata = self._numpy_cache[path]
         
@@ -1227,6 +1264,7 @@ class KakaoEmbeddingStore:
         return results
 
     def _vector_search_numpy(self, path: Path, query_vector: np.ndarray, limit: int) -> list[Dict[str, Any]]:
+        """numpy 백엔드에서 코사인 유사도 기반으로 Top-K 벡터 검색을 수행합니다."""
         vectors, metadata = self._numpy_cache[path]
         
         # Cosine Similarity: (A . B) / (|A| * |B|)
@@ -1269,6 +1307,7 @@ class KakaoEmbeddingStore:
         path: Path,
         connection: aiosqlite.Connection | None = None,
     ) -> Optional[_KakaoTableMeta]:
+        """캐시된 테이블 메타정보를 반환하거나, 없으면 DB에서 감지 후 캐싱합니다."""
         cached = self._table_meta_cache.get(path)
         if cached is not None:
             return cached
@@ -1292,6 +1331,7 @@ class KakaoEmbeddingStore:
             return meta
 
     async def _detect_table_meta(self, db: aiosqlite.Connection) -> Optional[_KakaoTableMeta]:
+        """SQLite DB 스키마를 분석하여 텍스트/임베딩/타임스탬프/발화자 컬럼을 감지합니다."""
         try:
             async with db.execute(
                 "SELECT name, type FROM sqlite_master "
@@ -1354,6 +1394,7 @@ class KakaoEmbeddingStore:
         return None
 
     async def _fetch_column_info(self, db: aiosqlite.Connection, table_name: str) -> list[tuple[str, str]]:
+        """지정한 테이블의 컬럼명과 타입을 조회합니다."""
         async with db.execute(f"PRAGMA table_info('{table_name}')") as cursor:
             rows = await cursor.fetchall()
         return [(row[1], row[2]) for row in rows]
@@ -1365,6 +1406,7 @@ class KakaoEmbeddingStore:
         column_types: Optional[Dict[str, str]] = None,
         allowed_type_hints: Optional[set[str]] = None,
     ) -> Optional[str]:
+        """후보 컬럼명 중 테이블에 존재하고 타입이 일치하는 컬럼을 선택합니다."""
         def _type_matches(name_lower: str) -> bool:
             if not allowed_type_hints or not column_types:
                 return True

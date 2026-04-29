@@ -1,5 +1,12 @@
 
 # -*- coding: utf-8 -*-
+"""
+yfinance 주식 데이터 클라이언트.
+
+yfinance 라이브러리를 통해 미국/한국 주식의 시세, 기업 정보,
+재무제표 등을 비동기적으로 조회합니다.
+"""
+
 import yfinance as yf
 import asyncio
 from typing import Optional, Dict, Any

@@ -170,6 +170,7 @@ data/
 # 임시 스크립트 (개발 중 테스트용)
 scratch.py
 scratch_verify.py
+benchmark_delay.py
 test_*.py
 !tests/test_*.py  # tests 폴더의 테스트는 포함
 

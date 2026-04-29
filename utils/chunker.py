@@ -62,6 +62,7 @@ class SemanticChunker:
     """단순 문장 기반 청킹 로직."""
 
     def __init__(self, config: ChunkerConfig | None = None):
+        """ChunkerConfig를 받아 최대 토큰 수·오버랩 크기·토크나이저를 설정한다."""
         self.config = config or ChunkerConfig()
 
     def chunk(self, text: str, *, metadata: dict[str, Any] | None = None) -> List[Chunk]:

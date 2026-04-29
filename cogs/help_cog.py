@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+"""
+도움말 명령어를 제공하는 Cog 모듈입니다.
+"""
 import discord
 from discord.ext import commands
 from logger_config import logger

@@ -12,6 +12,7 @@ class PollCog(commands.Cog):
     """간단한 투표 기능을 제공하는 클래스입니다."""
 
     def __init__(self, bot: commands.Bot):
+        """PollCog를 초기화합니다."""
         self.bot = bot
         logger.info("PollCog가 성공적으로 초기화되었습니다.")
 

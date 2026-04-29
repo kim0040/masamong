@@ -1,4 +1,11 @@
 # -*- coding: utf-8 -*-
+"""
+KRX(한국거래소) 주식 정보 API 클라이언트.
+
+공공데이터포털 API를 통해 국내 주식 종목의 현재가와 등락 정보를 조회하고,
+Kakao 웹 검색으로 종목명을 정규화하는 기능을 제공합니다.
+"""
+
 from __future__ import annotations
 import asyncio
 import requests
