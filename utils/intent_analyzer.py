@@ -502,28 +502,18 @@ class IntentAnalyzer:
             history_text = "\n".join(history_lines)
 
         system_prompt = (
-            "당신은 마사몽의 도구 플래너이자 검색 쿼리 최적화 전문가입니다. "
-            "사용자의 현재 메시지와 이전 대화 맥락을 분석하여 의도를 파악하고, 작업을 수행하기 위해 가장 적절한 도구를 선택하세요.\n\n"
-            "핵심 규칙:\n"
-            "1. 대화 맥락 고려: 사용자가 '그거', '그때 말한 거' 등 지시 대명사를 쓰거나 주어를 생략하면 이전 대화에서 대상을 찾아 검색 쿼리에 포함하세요.\n"
-            "2. 독립적 쿼리 생성: 도구 파라미터(특히 query)를 설정할 때, 이전 맥락 없이도 검색 엔진에서 정확한 결과를 얻을 수 있도록 완성된 문장/키워드로 변환하세요.\n"
-            "3. 멀티 도구 선택: 여러 질문이 섞여 있다면 도구를 여러 개 선택할 수 있습니다.\n"
-            "4. web_search는 '최신/실시간/뉴스/출처/웹검색 요청/금융 시황'이 분명할 때만 선택하세요.\n"
-            "5. 인사/잡담/봇 상태 질문(예: '뭐해', '안녕')에는 절대 web_search를 선택하지 마세요.\n"
-            "6. 날씨는 web_search 대신 get_weather_forecast를 우선 선택하세요.\n"
-            "7. 사용자가 '오늘/현재/실시간/최신/최근'을 말하면, 검색 query에 과거 특정 연월(예: 2024년 5월)을 임의로 넣지 마세요.\n"
-            "8. 이미지 생성/그림 요청은 web_search가 아닌 generate_image를 선택하세요.\n\n"
-            "사용 가능 도구:\n"
-            "1. get_weather_forecast(location, day_offset): 특정 지역/시간의 날씨.\n"
-            "2. web_search(query): 외부 웹 검색(뉴스/웹/블로그/문서/커뮤니티).\n"
-            "   - 최신 이슈뿐 아니라 사용법/비교/후기/공식 문서 탐색에도 사용.\n"
-            "   - 맛집/장소 추천도 web_search로 처리.\n"
-            "   - 주식/환율/코인 등 금융 관련 질문도 web_search로 처리.\n"
-            "3. generate_image(prompt): AI 이미지 생성.\n"
-            "   - '그려줘', '이미지 생성', '그림', '일러스트', '사진 만들어줘' 등의 요청에 사용.\n"
-            "   - 이미지 검색(찾아줘)이 아니라 이미지 생성(만들어줘)일 때만 선택.\n\n"
-            "출력 형식 (유효한 JSON만):\n"
-            '{"intent": "의도", "reasoning": "선택 근거", "tools": [{"tool": "이름", "params": {"키": "값"}}]}'
+            "당신은 마사몽의 도구 플래너입니다. "
+            "사용자의 현재 메시지와 이전 대화 맥락을 분석하여 가장 적절한 도구를 선택하세요.\n\n"
+            "규칙:\n"
+            "- 대화 맥락 고려: '그거', '그때' 등 지시어는 이전 대화에서 대상을 찾으세요.\n"
+            "- 독립적 쿼리: 파라미터는 이전 맥락 없이도 정확한 검색이 가능하도록 완성하세요.\n"
+            "- web_search: 최신/뉴스/후기/정보 검색이 필요할 때 사용 (주식/환율/맛집 포함).\n"
+            "- get_weather_forecast: 날씨 요청에 사용 (web_search 대신).\n"
+            "- generate_image: '그려줘', '이미지 생성' 등 그림 생성 요청에 사용.\n"
+            "- 인사/잡담(안녕, 뭐해 등)은 도구 없이 빈 tools 배열을 반환하세요.\n"
+            "- 과거 연월(예: 2024년 5월)을 임의로 query에 넣지 마세요.\n\n"
+            '출력: {"intent": "의도", "reasoning": "근거", "tools": [{"tool": "이름", "params": {"키": "값"}}]}\n'
+            "tool은 get_weather_forecast / web_search / generate_image 중 하나"
         )
         try:
             if not self.llm_client.use_cometapi:
@@ -532,22 +522,12 @@ class IntentAnalyzer:
             prompt = (
                 f"System:\n{system_prompt}\n\n"
                 "Examples:\n"
-                'Context: (None)\nUser: "오늘 서울 날씨?"\n'
-                'Response: {"intent": "날씨 조회", "reasoning": "서울 날씨 요청", "tools": [{"tool": "get_weather_forecast", "params": {"location": "서울", "day_offset": 0}}]}\n\n'
-                'Context: User: "미국 이란 전쟁에 대해 알려줘"\\nMasamong: (전쟁 설명...)\n'
-                'User: "군비는 얼마나 썼대?"\n'
-                'Response: {"intent": "상세 수치 검색", "reasoning": "이전 대화인 미국-이란 전쟁의 군비 지출액을 묻는 연계 질문", "tools": [{"tool": "web_search", "params": {"query": "미국 이란 전쟁 군비 지출 및 비용"}}] }\n\n'
-                'Context: User: "서울 날씨 어때?"\\nMasamong: (서울 날씨 답변...)\n'
-                'User: "내일은?"\n'
-                'Response: {"intent": "날씨 연계 질문", "reasoning": "이전 대화의 지역(서울) 유지, 시간만 내일로 변경", "tools": [{"tool": "get_weather_forecast", "params": {"location": "서울", "day_offset": 1}}] }\n\n'
-                'Context: (None)\nUser: "사몽아 뭐하냐"\n'
-                'Response: {"intent": "인사/잡담", "reasoning": "도구 불필요한 일반 대화", "tools": []}\n\n'
-                'Context: (None)\nUser: "강아지 그림 그려줘"\n'
-                'Response: {"intent": "이미지 생성", "reasoning": "사용자가 그림/이미지 생성을 요청", "tools": [{"tool": "generate_image", "params": {"prompt": "강아지"}}] }\n\n'
-                'Context: (None)\nUser: "사이버펑크 스타일의 고양이 일러스트 만들어줘"\n'
-                'Response: {"intent": "이미지 생성", "reasoning": "일러스트/이미지 생성 요청", "tools": [{"tool": "generate_image", "params": {"prompt": "사이버펑크 스타일의 고양이"}}] }\n\n'
-                f"--- Current Context ---\n{history_text}\n"
-                f"User Message: {query}\n\n"
+                'U: "오늘 서울 날씨?" → {"intent": "날씨", "reasoning": "서울 날씨 요청", "tools": [{"tool": "get_weather_forecast", "params": {"location": "서울", "day_offset": 0}}]}\n\n'
+                'U: "미국 이란 전쟁 군비는?" → {"intent": "정보 검색", "reasoning": "최신 뉴스/통계 필요", "tools": [{"tool": "web_search", "params": {"query": "미국 이란 전쟁 군비 지출"}}]}\n\n'
+                'U: "강아지 그려줘" → {"intent": "이미지 생성", "reasoning": "그림 생성 요청", "tools": [{"tool": "generate_image", "params": {"prompt": "강아지"}}]}\n\n'
+                'U: "안녕" → {"intent": "인사", "reasoning": "도구 불필요", "tools": []}\n\n'
+                f"--- Context ---\n{history_text}\n"
+                f"User: {query}\n"
                 "Response:"
             )
             raw = await self.llm_client.fast_generate_text(
