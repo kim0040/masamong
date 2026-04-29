@@ -265,6 +265,7 @@ class IntentAnalyzer:
             any(kw in query_lower for kw in self._WEATHER_KEYWORDS)
             or self._looks_like_finance_query(query)
             or any(kw in query_lower for kw in self._PLACE_KEYWORDS)
+            or any(kw in query_lower for kw in self._IMAGE_GEN_KEYWORDS)
         )
 
     # ── Tool‑plan selection ─────────────────────────────────────────────
@@ -278,7 +279,7 @@ class IntentAnalyzer:
     ) -> list[dict[str, Any]] | None:
         """
         의도 분석 LLM 호출 없이 처리 가능한 도구 계획을 우선 선택합니다.
-        - 명확한 키워드 도구(날씨/웹검색/금융)는 즉시 라우팅
+        - 명확한 키워드 도구(날씨/금융/장소/이미지생성)는 즉시 라우팅
         - 강한 RAG + 도구 신호 없음이면 intent LLM 호출 자체를 생략
         """
         if self._is_smalltalk_only_query(query):
@@ -509,14 +510,18 @@ class IntentAnalyzer:
             "3. 멀티 도구 선택: 여러 질문이 섞여 있다면 도구를 여러 개 선택할 수 있습니다.\n"
             "4. web_search는 '최신/실시간/뉴스/출처/웹검색 요청/금융 시황'이 분명할 때만 선택하세요.\n"
             "5. 인사/잡담/봇 상태 질문(예: '뭐해', '안녕')에는 절대 web_search를 선택하지 마세요.\n"
-            "6. 날씨는 web_search 대신 get_weather_forecast를 우선 선택하세요.\n\n"
-            "7. 사용자가 '오늘/현재/실시간/최신/최근'을 말하면, 검색 query에 과거 특정 연월(예: 2024년 5월)을 임의로 넣지 마세요.\n\n"
+            "6. 날씨는 web_search 대신 get_weather_forecast를 우선 선택하세요.\n"
+            "7. 사용자가 '오늘/현재/실시간/최신/최근'을 말하면, 검색 query에 과거 특정 연월(예: 2024년 5월)을 임의로 넣지 마세요.\n"
+            "8. 이미지 생성/그림 요청은 web_search가 아닌 generate_image를 선택하세요.\n\n"
             "사용 가능 도구:\n"
             "1. get_weather_forecast(location, day_offset): 특정 지역/시간의 날씨.\n"
             "2. web_search(query): 외부 웹 검색(뉴스/웹/블로그/문서/커뮤니티).\n"
             "   - 최신 이슈뿐 아니라 사용법/비교/후기/공식 문서 탐색에도 사용.\n"
             "   - 맛집/장소 추천도 web_search로 처리.\n"
-            "   - 주식/환율/코인 등 금융 관련 질문도 web_search로 처리.\n\n"
+            "   - 주식/환율/코인 등 금융 관련 질문도 web_search로 처리.\n"
+            "3. generate_image(prompt): AI 이미지 생성.\n"
+            "   - '그려줘', '이미지 생성', '그림', '일러스트', '사진 만들어줘' 등의 요청에 사용.\n"
+            "   - 이미지 검색(찾아줘)이 아니라 이미지 생성(만들어줘)일 때만 선택.\n\n"
             "출력 형식 (유효한 JSON만):\n"
             '{"intent": "의도", "reasoning": "선택 근거", "tools": [{"tool": "이름", "params": {"키": "값"}}]}'
         )
@@ -537,6 +542,10 @@ class IntentAnalyzer:
                 'Response: {"intent": "날씨 연계 질문", "reasoning": "이전 대화의 지역(서울) 유지, 시간만 내일로 변경", "tools": [{"tool": "get_weather_forecast", "params": {"location": "서울", "day_offset": 1}}] }\n\n'
                 'Context: (None)\nUser: "사몽아 뭐하냐"\n'
                 'Response: {"intent": "인사/잡담", "reasoning": "도구 불필요한 일반 대화", "tools": []}\n\n'
+                'Context: (None)\nUser: "강아지 그림 그려줘"\n'
+                'Response: {"intent": "이미지 생성", "reasoning": "사용자가 그림/이미지 생성을 요청", "tools": [{"tool": "generate_image", "params": {"prompt": "강아지"}}] }\n\n'
+                'Context: (None)\nUser: "사이버펑크 스타일의 고양이 일러스트 만들어줘"\n'
+                'Response: {"intent": "이미지 생성", "reasoning": "일러스트/이미지 생성 요청", "tools": [{"tool": "generate_image", "params": {"prompt": "사이버펑크 스타일의 고양이"}}] }\n\n'
                 f"--- Current Context ---\n{history_text}\n"
                 f"User Message: {query}\n\n"
                 "Response:"
