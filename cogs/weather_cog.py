@@ -33,6 +33,7 @@ class WeatherCog(commands.Cog):
     """
 
     def __init__(self, bot: commands.Bot):
+        """WeatherCog를 초기화하고 상태 변수들을 설정합니다."""
         self.bot = bot
         self.ai_handler: AIHandler | None = None
         self.notified_rain_event_starts = set()

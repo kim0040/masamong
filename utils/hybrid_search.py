@@ -48,6 +48,7 @@ class HybridSearchEngine:
         reranker: Reranker | None = None,
         chunker: SemanticChunker | None = None,
     ):
+        """임베딩 저장소·BM25 관리자·리랭커·청커를 주입받아 하이브리드 검색 엔진을 초기화한다."""
         self.discord_store = discord_store
         self.kakao_store = kakao_store
         self.bm25_manager = bm25_manager

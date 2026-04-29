@@ -21,6 +21,7 @@ class ActivityCog(commands.Cog):
     """서버 멤버의 메시지 활동량을 데이터베이스에 기록하고, `!랭킹` 명령어를 처리합니다."""
 
     def __init__(self, bot: commands.Bot):
+        """ActivityCog를 초기화합니다."""
         self.bot = bot
         self.ai_handler: AIHandler | None = None # main.py에서 주입됨
         logger.info("ActivityCog가 성공적으로 초기화되었습니다.")

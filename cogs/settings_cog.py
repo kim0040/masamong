@@ -29,6 +29,7 @@ class PersonaSetModal(Modal, title="AI 페르소나 설정"):
     )
 
     def __init__(self, bot: commands.Bot, current_persona: str = ""):
+        """Modal을 초기화하고 현재 페르소나를 기본값으로 설정합니다."""
         super().__init__()
         self.bot = bot
         # 현재 설정된 페르소나가 있으면 기본값으로 보여줍니다.
@@ -54,6 +55,7 @@ class SettingsCog(commands.Cog):
     """서버별 설정을 관리하는 슬래시 커맨드 그룹입니다."""
 
     def __init__(self, bot: commands.Bot):
+        """SettingsCog를 초기화합니다."""
         self.bot = bot
         logger.info("SettingsCog가 성공적으로 초기화되었습니다.")
 

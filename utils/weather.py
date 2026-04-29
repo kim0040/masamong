@@ -60,12 +60,14 @@ def _mask_sensitive_url(url: str | None) -> str:
 
 
 def _masked_request_url(full_url: str, error: Exception) -> str:
+    """예외 객체로부터 실제 요청 URL을 추출한 뒤 민감 정보를 마스킹하여 반환한다."""
     request = getattr(error, "request", None)
     request_url = getattr(request, "url", None) or full_url
     return _mask_sensitive_url(request_url)
 
 
 def _http_status(error: Exception) -> int | None:
+    """예외 객체의 HTTP 응답에서 상태 코드를 추출하여 반환한다."""
     response = getattr(error, "response", None)
     return getattr(response, "status_code", None)
 

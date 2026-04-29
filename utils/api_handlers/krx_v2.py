@@ -1,3 +1,8 @@
+"""
+KRX v2 주식 정보 API 클라이언트.
+
+KRX 정보데이터시스템의 대체 엔드포인트를 통해 국내 주식 시세를 조회합니다.
+"""
 
 import aiohttp
 import asyncio

@@ -8,7 +8,7 @@ from typing import Dict, Any
 from logger_config import logger
 
 class WeatherDataFormatter:
-    """날씨 데이터를 LLM 친화적인 형태로 변환"""
+    """기상청 API 응답을 LLM이 이해하기 쉬운 문자열로 가공하는 정적 메서드 모음"""
     
     @staticmethod
     def format_current_weather(raw_data: Dict[str, Any]) -> str:
@@ -110,7 +110,7 @@ class WeatherDataFormatter:
         return angles[index]
 
 class FinancialDataFormatter:
-    """금융 데이터를 LLM 친화적인 형태로 변환"""
+    """환율·주식 등의 금융 API 응답을 LLM이 소비할 수 있는 텍스트로 정제하는 정적 메서드 모음"""
 
     @staticmethod
     def format_exchange_rate(rate_info: Dict[str, Any]) -> str:
@@ -187,7 +187,7 @@ class FinancialDataFormatter:
             return "주식 데이터 처리 중 오류가 발생했습니다."
 
 class GameDataFormatter:
-    """게임 데이터를 LLM 친화적인 형태로 변환"""
+    """게임 추천 API 응답을 사용자 친화적인 마크다운으로 변환하는 정적 메서드 모음"""
     
     @staticmethod
     def format_game_recommendation(raw_data: Dict[str, Any]) -> str:
@@ -234,7 +234,7 @@ class GameDataFormatter:
             return "게임 데이터 처리 중 오류가 발생했습니다."
 
 class TravelDataFormatter:
-    """여행 데이터를 LLM 친화적인 형태로 변환"""
+    """장소·이벤트 등 여행 관련 API 응답을 사용자에게 보기 좋게 만드는 정적 메서드 모음"""
     
     @staticmethod
     def format_places(raw_data: Dict[str, Any]) -> str:

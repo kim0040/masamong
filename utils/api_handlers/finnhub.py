@@ -1,4 +1,11 @@
 # -*- coding: utf-8 -*-
+"""
+Finnhub 금융 데이터 API 클라이언트.
+
+미국 주식 시세 조회, 기업 뉴스 검색, 회사 프로필, 애널리스트 추천 등의
+엔드포인트를 비동기로 호출하고 LLM 친화적 형식으로 포맷팅합니다.
+"""
+
 from __future__ import annotations
 import asyncio
 import requests

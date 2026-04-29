@@ -1,4 +1,12 @@
 # -*- coding: utf-8 -*-
+"""
+마사몽 봇의 전체 설정을 로드하고 관리하는 모듈입니다.
+
+환경변수(.env) → config.json → 코드 기본값 순으로 값을 조회하며,
+LLM 레인 구성, API 키, RAG 파라미터, Rate Limit 등 모든 설정 상수를
+모듈 레벨 변수로 노출합니다.
+"""
+
 import os
 import json
 from pathlib import Path
@@ -23,6 +31,14 @@ _CONFIG_JSON_LOADED: bool = False
 
 
 def _read_config_json() -> dict:
+    """config.json 파일을 읽어 메모리에 캐싱합니다.
+
+    최초 호출 시 파일을 읽고, 이후 호출에서는 캐시된 값을 반환하여
+    디스크 I/O를 방지합니다. 파일이 없거나 JSON 파싱에 실패하면 빈 dict를 반환합니다.
+
+    Returns:
+        dict: config.json의 파싱 결과 또는 빈 dict
+    """
     global _CONFIG_JSON_CACHE, _CONFIG_JSON_LOADED
     if _CONFIG_JSON_LOADED:
         return _CONFIG_JSON_CACHE or {}
@@ -156,7 +172,14 @@ _PROMPT_CONFIG_EXPLICIT = "PROMPT_CONFIG_PATH" in os.environ
 
 
 def _read_prompt_file(path: Path) -> dict[str, Any]:
-    """프롬프트 설정 파일(JSON/YAML)을 읽어 dict 형태로 반환합니다."""
+    """프롬프트 설정 파일(JSON/YAML)을 읽어 dict 형태로 반환합니다.
+
+    Args:
+        path: 설정 파일 경로 (.json 또는 .yaml/.yml)
+
+    Returns:
+        파싱된 설정 dict. 파일이 없거나 파싱 실패 시 빈 dict
+    """
     if path.suffix.lower() == ".json":
         with path.open("r", encoding="utf-8") as fp:
             data = json.load(fp)
@@ -866,6 +889,17 @@ DEFAULT_TSUNDERE_RULES = _extract_prompt_value("default_rules", FALLBACK_RULES)
 
 
 def _build_channel_config(raw_channels: Any) -> Dict[int, Dict[str, Any]]:
+    """프롬프트 설정에서 채널별 AI 구성을 추출합니다.
+
+    prompts.json의 'channels' 섹션 또는 DEFAULT_AI_CHANNELS 환경변수에서
+    채널 ID별 AI 허용 여부, 페르소나, 규칙을 매핑합니다.
+
+    Args:
+        raw_channels: prompts.json에서 읽은 채널 설정 dict
+
+    Returns:
+        {channel_id: {"allowed": bool, "persona": str, "rules": str}} 매핑
+    """
     configs: Dict[int, Dict[str, Any]] = {}
     if isinstance(raw_channels, dict):
         for raw_id, meta in raw_channels.items():

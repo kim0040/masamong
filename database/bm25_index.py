@@ -102,6 +102,7 @@ class BM25IndexManager:
     """대화 히스토리에 대한 FTS5 기반 BM25 검색을 처리합니다."""
 
     def __init__(self, db_path: str, context_minutes: int = 10, context_limit: int = 6):
+        """DB 경로·컨텍스트 수집 범위(분)·조회 제한 수를 받아 FTS5 인덱스 관리기를 초기화한다."""
         self.db_path = Path(db_path)
         self.context_minutes = max(1, context_minutes)
         self.context_limit = max(1, context_limit)

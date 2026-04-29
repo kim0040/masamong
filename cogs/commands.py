@@ -17,6 +17,7 @@ class UserCommands(commands.Cog):
     """사용자 명령어들을 그룹화하는 클래스입니다."""
 
     def __init__(self, bot: commands.Bot):
+        """UserCommands Cog를 초기화합니다."""
         self.bot = bot
         logger.info("UserCommands Cog가 성공적으로 초기화되었습니다.")
 

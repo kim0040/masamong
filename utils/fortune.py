@@ -67,9 +67,10 @@ def get_sign_from_date(month: int, day: int) -> str:
     return "염소자리"
 
 class FortuneCalculator:
-    """운세 계산 및 데이터 생성을 담당하는 클래스"""
+    """서양 점성술과 동양 사주를 결합한 종합 운세 데이터를 생성하는 클래스"""
 
     def __init__(self):
+        """한국식 음력 변환기(KoreanLunarCalendar)를 초기화하고 운세 계산 준비를 수행한다."""
         try:
             self.calendar = KoreanLunarCalendar()
             logger.info("FortuneCalculator 초기화 완료")

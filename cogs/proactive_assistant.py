@@ -15,6 +15,7 @@ class ProactiveAssistant(commands.Cog):
     """사용자의 잠재적 요구를 파악하고 능동적으로 제안하는 비서 기능 클래스입니다."""
     
     def __init__(self, bot: commands.Bot):
+        """ProactiveAssistant를 초기화합니다."""
         self.bot = bot
         self.ai_handler: Optional[AIHandler] = None
         logger.info("ProactiveAssistant Cog가 성공적으로 초기화되었습니다.")
