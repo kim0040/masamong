@@ -1657,38 +1657,18 @@ Generate the optimized English image prompt:"""
             # [Move Up] 히스토리를 도구 선택 이전에 가져옴
             history = await self._get_recent_history(message, rag_prompt)
             
-            # 도구 계획 수립:
-            # - 기본 정책: fast 라우팅 LLM을 항상 1회 실행해 thinking 결과를 확보
-            # - 이후 휴리스틱 보정으로 과도한 도구 호출을 억제
+            # 도구 계획 수립: LLM 의도 분석을 1차로, 실패 시에만 키워드 휴리스틱 fallback
             llm_tool_plan = await self._detect_tools_by_llm(user_query, log_extra, history=history)
-            heuristic_plan = self._select_tool_plan_without_intent_llm(
-                user_query,
-                rag_top_score=rag_top_score,
-                log_extra=log_extra,
-            )
-            if heuristic_plan is None:
+            if llm_tool_plan:
                 raw_tool_plan = llm_tool_plan
-                llm_decision_trusted = True  # 휴리스틱이 판단을 유보 → LLM 신뢰
-            elif heuristic_plan:
-                raw_tool_plan = heuristic_plan
-                llm_decision_trusted = False
+                llm_decision_trusted = True
             else:
-                # 휴리스틱이 빈 계획이면(no-op), 띵킹 LLM 계획을 유지해 과도한 누락을 방지한다.
-                raw_tool_plan = llm_tool_plan if llm_tool_plan else []
-                llm_decision_trusted = bool(llm_tool_plan)  # LLM이 제안했으면 신뢰
-            if heuristic_plan is not None:
-                logger.info(
-                    "[도구계획] 휴리스틱 보정 적용 (llm=%d, heuristic=%d)",
-                    len(llm_tool_plan or []),
-                    len(heuristic_plan or []),
-                    extra=log_extra,
-                )
-                if not heuristic_plan and llm_tool_plan:
-                    logger.info(
-                        "[도구계획] 휴리스틱이 빈 계획이어서 LLM 계획을 유지합니다. (llm=%d)",
-                        len(llm_tool_plan),
-                        extra=log_extra,
-                    )
+                # LLM이 도구 불필요라고 판단했거나 실패 → 휴리스틱으로 보완
+                fallback_plan = self._detect_tools_by_keyword(user_query)
+                raw_tool_plan = fallback_plan
+                llm_decision_trusted = False
+                if fallback_plan:
+                    logger.info("[도구계획] LLM 실패/무응답 → 키워드 fallback (%d개)", len(fallback_plan), extra=log_extra)
             tool_plan = self._sanitize_tool_plan(
                 user_query,
                 raw_tool_plan,
