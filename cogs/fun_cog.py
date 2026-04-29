@@ -97,18 +97,20 @@ class FunCog(commands.Cog):
     #             logger.error(f"운세 기능 실행 중 오류: {e}", exc_info=True, extra={'guild_id': channel.guild.id})
     #             await channel.send(config.MSG_CMD_ERROR)
 
-    async def execute_summarize(self, channel: discord.TextChannel, author: discord.User):
+    async def execute_summarize(self, channel: discord.TextChannel, author: discord.User, status_msg: discord.Message = None):
         """
         AI를 호출하여 최근 대화를 요약하고 채널에 전송하는 핵심 로직입니다.
         `!요약` 명령어 또는 키워드 트리거에 의해 호출됩니다.
         """
         if not self.ai_handler or not self.ai_handler.is_ready or not config.AI_MEMORY_ENABLED:
-            await channel.send("죄송합니다, 대화 요약 기능이 현재 준비되지 않았습니다.")
+            if status_msg: await status_msg.edit(content="죄송합니다, 대화 요약 기능이 현재 준비되지 않았습니다.")
+            else: await channel.send("죄송합니다, 대화 요약 기능이 현재 준비되지 않았습니다.")
             return
 
         # [Safety] DM Support Check
         if not channel.guild:
-            await channel.send("이 명령어는 개인 메시지(DM)에서는 사용할 수 없어요! 서버(채널)에서 사용해주세요.")
+            if status_msg: await status_msg.edit(content="이 명령어는 개인 메시지(DM)에서는 사용할 수 없어요! 서버(채널)에서 사용해주세요.")
+            else: await channel.send("이 명령어는 개인 메시지(DM)에서는 사용할 수 없어요! 서버(채널)에서 사용해주세요.")
             return
 
         async with channel.typing():
@@ -117,7 +119,8 @@ class FunCog(commands.Cog):
                 channel_id = channel.id
                 latest_message_id = await self.ai_handler.get_latest_conversation_message_id(guild_id, channel_id)
                 if latest_message_id is None:
-                    await channel.send("요약할 만한 대화가 충분히 쌓이지 않았어요.")
+                    if status_msg: await status_msg.edit(content="요약할 만한 대화가 충분히 쌓이지 않았어요.")
+                    else: await channel.send("요약할 만한 대화가 충분히 쌓이지 않았어요.")
                     return
 
                 cache_entry = self.summary_cache.get(channel_id)
@@ -169,7 +172,8 @@ class FunCog(commands.Cog):
                     )
 
                     if not history_str:
-                        await channel.send("요약할 만한 대화가 충분히 쌓이지 않았어요.")
+                        if status_msg: await status_msg.edit(content="요약할 만한 대화가 충분히 쌓이지 않았어요.")
+                        else: await channel.send("요약할 만한 대화가 충분히 쌓이지 않았어요.")
                         return
 
                     response_text = await self.ai_handler.generate_creative_text(
@@ -181,15 +185,18 @@ class FunCog(commands.Cog):
                 
                 # AI 응답 생성 실패 시 기본 메시지 전송
                 if not response_text or response_text in [config.MSG_AI_ERROR, config.MSG_CMD_ERROR]:
-                    await channel.send(response_text or "대화 내용을 요약하다가 머리에 쥐났어요. 다시 시도해주세요.")
+                    if status_msg: await status_msg.edit(content=response_text or "대화 내용을 요약하다가 머리에 쥐났어요. 다시 시도해주세요.")
+                    else: await channel.send(response_text or "대화 내용을 요약하다가 머리에 쥐났어요. 다시 시도해주세요.")
                 else:
                     self._update_summary_cache(channel_id, latest_message_id, response_text)
-                    await channel.send(f"**📈 최근 대화 요약 (마사몽 ver.)**\n{response_text}")
+                    if status_msg: await status_msg.edit(content=f"**📈 최근 대화 요약 (마사몽 ver.)**\n{response_text}")
+                    else: await channel.send(f"**📈 최근 대화 요약 (마사몽 ver.)**\n{response_text}")
             except Exception as e:
                 # [Fix] Handle logs safely even if guild is None (though we return early above, good for safety)
                 guild_id = channel.guild.id if channel.guild else 'DM'
                 logger.error(f"요약 기능 실행 중 오류: {e}", exc_info=True, extra={'guild_id': guild_id})
-                await channel.send(config.MSG_CMD_ERROR)
+                if status_msg: await status_msg.edit(content=config.MSG_CMD_ERROR)
+                else: await channel.send(config.MSG_CMD_ERROR)
 
     # --- 명령어 정의 ---
 
@@ -213,7 +220,8 @@ class FunCog(commands.Cog):
         참고:
         - 대화 기록이 충분히 쌓여 있어야 합니다.
         """
-        await self.execute_summarize(ctx.channel, ctx.author)
+        status_msg = await ctx.send("📋 대화 내용을 분석해서 요약 중이야...")
+        await self.execute_summarize(ctx.channel, ctx.author, status_msg=status_msg)
 
 async def setup(bot: commands.Bot):
     """Cog를 봇에 등록하는 함수입니다."""
