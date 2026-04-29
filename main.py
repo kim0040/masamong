@@ -300,6 +300,8 @@ class ReMasamongBot(commands.Bot):
         if ai_handler_cog:
             # LLMClient에 DB 연결 주입 (AIHandler.__init__ 시점에는 db=None)
             ai_handler_cog.llm_client.db = self.db
+            ai_handler_cog.intent_analyzer.db = self.db
+            ai_handler_cog.rag_manager.db = self.db
             # ActivityCog와 FunCog에 AIHandler 인스턴스를 주입합니다.
             for cog_name in ['ActivityCog', 'FunCog']:
                 cog_instance = self.get_cog(cog_name)
