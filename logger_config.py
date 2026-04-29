@@ -134,7 +134,8 @@ class DiscordLogHandler(logging.Handler):
         message_content = record.getMessage()
         if record.exc_info:
             exc_text = "".join(traceback.format_exception(*record.exc_info))
-            message_content += f"\n\n**Traceback:**\n```python\n{exc_text[:1500]}\n```"
+            exc_text = exc_text[:800]
+            message_content += f"\n\n**Traceback:**\n```python\n{exc_text}\n```"
 
         # 임베드 필드 길이 제한 (1024자) 준수
         if len(message_content) > 1000:
