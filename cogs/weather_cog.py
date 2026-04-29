@@ -182,7 +182,7 @@ class WeatherCog(commands.Cog):
             logger.error(f"날씨 정보 포맷팅 중 오류: {e}", exc_info=True)
             return None, config.MSG_WEATHER_FETCH_ERROR
 
-    async def prepare_weather_response_for_ai(self, original_message: discord.Message, day_offset: int, location_name: str, nx: str, ny: str, user_original_query: str):
+    async def prepare_weather_response_for_ai(self, original_message: discord.Message, day_offset: int, location_name: str, nx: str, ny: str, user_original_query: str, status_msg: discord.Message = None):
         """날씨 조회 결과를 AI 채널/일반 채널에 맞게 전송합니다.
 
         Args:
@@ -197,7 +197,8 @@ class WeatherCog(commands.Cog):
             AI 채널에서는 `AIHandler`를 통해 창의적 멘트를 생성하며, 일반 채널에서는 즉시 텍스트를 회신합니다.
         """
         if not weather_utils.get_kma_api_key():
-            await original_message.channel.send(config.MSG_WEATHER_API_KEY_MISSING)
+            if status_msg: await status_msg.edit(content=config.MSG_WEATHER_API_KEY_MISSING)
+            else: await original_message.channel.send(config.MSG_WEATHER_API_KEY_MISSING)
             return
 
         async with original_message.channel.typing():
@@ -210,10 +211,12 @@ class WeatherCog(commands.Cog):
             # 2. 날씨 정보 조회
             weather_data_str, error_message = await self.get_formatted_weather_string(day_offset, location_name, nx, ny)
             if error_message:
-                await original_message.channel.send(error_message)
+                if status_msg: await status_msg.edit(content=error_message)
+                else: await original_message.channel.send(error_message)
                 return
             if not weather_data_str:
-                await original_message.channel.send(config.MSG_WEATHER_NO_DATA)
+                if status_msg: await status_msg.edit(content=config.MSG_WEATHER_NO_DATA)
+                else: await original_message.channel.send(config.MSG_WEATHER_NO_DATA)
                 return
 
             # 3. 특보와 날씨 정보 결합
@@ -227,7 +230,11 @@ class WeatherCog(commands.Cog):
             is_ai_channel_and_enabled = self.ai_handler and self.ai_handler.is_ready and config.CHANNEL_AI_CONFIG.get(original_message.channel.id, {}).get("allowed", False)
             
             # [Refactor] Data First, then AI Briefing
-            data_msg = await original_message.channel.send(f"📍 **{location_name}**\n{final_response_str}")
+            if status_msg:
+                await status_msg.edit(content=f"📍 **{location_name}**\n{final_response_str}")
+                data_msg = status_msg
+            else:
+                data_msg = await original_message.channel.send(f"📍 **{location_name}**\n{final_response_str}")
 
             if is_ai_channel_and_enabled:
                 context = {"location_name": location_name, "weather_data": final_response_str}
@@ -256,6 +263,7 @@ class WeatherCog(commands.Cog):
         location_name, nx, ny = config.DEFAULT_LOCATION_NAME, config.DEFAULT_NX, config.DEFAULT_NY
         coords = await coords_utils.get_coords_from_db(self.bot.db, user_original_query.lower())
         if coords: location_name, nx, ny = coords['name'], str(coords['nx']), str(coords['ny'])
+        status_msg = await ctx.send(f"🌤️ `{location_name}`의 날씨 정보를 가져오는 중이야...")
         
         # [NEW] Weekly Weather Logic (Short-term + Mid-term)
         if "이번주" in user_original_query or "주간" in user_original_query:
@@ -273,7 +281,7 @@ class WeatherCog(commands.Cog):
             full_weekly_data = f"--- [단기 예보 (내일/모레)] ---\n{short_term_summary}\n\n--- [중기 예보 (3일 후 ~ 10일 후)] ---\n{mid_term_data}"
 
             # [Refactor] Data First, then AI Briefing
-            data_msg = await ctx.channel.send(f"📅 **{location_name} 이번 주 날씨 종합**\n{full_weekly_data}")
+            await status_msg.edit(content=f"📅 **{location_name} 이번 주 날씨 종합**\n{full_weekly_data}")
 
             # Send via AI for summarization
             self.ai_handler = self.bot.get_cog('AIHandler')
@@ -284,11 +292,11 @@ class WeatherCog(commands.Cog):
                  async with ctx.channel.typing():
                      ai_response = await self.ai_handler.generate_creative_text(ctx.channel, ctx.author, "answer_weather_weekly", context)
                      if ai_response and ai_response != config.MSG_AI_ERROR:
-                         await data_msg.channel.send(ai_response)
+                         await status_msg.channel.send(ai_response)
             return
 
         day_offset = 1 if "내일" in user_original_query else 2 if "모레" in user_original_query else 0
-        await self.prepare_weather_response_for_ai(ctx.message, day_offset, location_name, nx, ny, user_original_query)
+        await self.prepare_weather_response_for_ai(ctx.message, day_offset, location_name, nx, ny, user_original_query, status_msg)
 
     def _parse_rain_periods(self, forecast_data: dict) -> list:
         """단기예보에서 강수 관련 값을 묶어 강수 구간을 계산합니다.
