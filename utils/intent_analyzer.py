@@ -71,6 +71,7 @@ class IntentAnalyzer:
     _ALLOWED_RUNTIME_TOOLS = frozenset([
         "web_search",
         "get_weather_forecast",
+        "generate_image",
     ])
     _PLACE_KEYWORDS = frozenset(['맛집', '카페', '음식점', '식당', '근처', '주변', '가볼만한', '핫플레이스'])
     _IMAGE_GEN_KEYWORDS = frozenset([
@@ -464,6 +465,15 @@ class IntentAnalyzer:
                 'tool_to_use': 'web_search',
                 'tool_name': 'web_search',
                 'parameters': {'query': query.strip()}
+            })
+            return tools
+
+        # 이미지 생성 요청 감지
+        if any(kw in query_lower for kw in self._IMAGE_GEN_KEYWORDS):
+            tools.append({
+                'tool_to_use': 'generate_image',
+                'tool_name': 'generate_image',
+                'parameters': {'prompt': query.strip()}
             })
             return tools
 
