@@ -282,6 +282,9 @@ class ActivityCog(commands.Cog):
                 'sample_size_note': sample_note,
             }
 
+            # 브리핑 작성 중 상태 메시지 표시
+            status_msg = await ctx.send("📝 랭킹 데이터를 분석해서 재치있는 브리핑을 준비 중이야...")
+
             response_text = await self.ai_handler.generate_creative_text(
                 channel=ctx.channel,
                 author=ctx.author,
@@ -294,7 +297,11 @@ class ActivityCog(commands.Cog):
             else:
                 final_response = response_text
 
-            await ctx.send(final_response)
+            # 상태 메시지를 최종 브리핑으로 교체
+            try:
+                await status_msg.edit(content=final_response)
+            except:
+                await ctx.send(final_response)
 
 async def setup(bot: commands.Bot):
     """Cog를 봇에 등록하는 함수"""
