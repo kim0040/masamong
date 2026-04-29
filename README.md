@@ -134,18 +134,21 @@
 
 ## 3. 프로젝트 구조
 
+> **2026-04 리팩토링**: `ai_handler.py`를 3,821줄에서 2,402줄로 분할.  
+> LLM 클라이언트, RAG 관리, 의도 분석을 독립 모듈로 추출.
+
 ```text
 masamong/
 ├── main.py                    # 봇 진입점, Cog 로드, DB 마이그레이션
-├── config.py                  # 전체 설정 로드 (920줄)
+├── config.py                  # 전체 설정 로드
 ├── logger_config.py           # KST 로깅, Discord 로그 핸들러
 ├── prompts.json               # 채널 페르소나, 시스템 프롬프트
 ├── emb_config.json            # 임베딩/RAG 설정
 │
 ├── cogs/                      # Discord Cog 확장 모듈
-│   ├── ai_handler.py          # 🔥 AI 핵심 파이프라인 (3780줄, 분리 필요)
+│   ├── ai_handler.py          # AI 메시지 파이프라인 (2,402줄)
 │   ├── tools_cog.py           # 외부 도구 통합 (웹검색/날씨/금융/이미지)
-│   ├── weather_cog.py         # 날씨 명령어 + 강수/인사 알림 태스크
+│   ├── weather_cog.py         # 날씨 명령어 + 강수/인사 알림
 │   ├── fortune_cog.py         # 운세/별자리/구독 기능
 │   ├── activity_cog.py        # 활동 추적 + 랭킹
 │   ├── fun_cog.py             # 유틸리티 명령어 + 자동 요약
@@ -158,16 +161,19 @@ masamong/
 │   └── help_cog.py            # 도움말 명령어
 │
 ├── utils/                     # 유틸리티 모듈
+│   ├── llm_client.py          # 🆕 LLM 레인 라우팅 클라이언트 (552줄)
+│   ├── rag_manager.py         # 🆕 RAG/임베딩/메모리 관리 (369줄)
+│   ├── intent_analyzer.py     # 🆕 의도 분석/도구 탐지 (855줄)
 │   ├── db.py                  # DB 작업 (Rate limit, 아카이빙, Linkup 예산)
-│   ├── embeddings.py          # 임베딩 모델 로드, 벡터 저장소 관리 (1388줄)
+│   ├── embeddings.py          # 임베딩 모델, 벡터 저장소 관리
 │   ├── hybrid_search.py       # 하이브리드 검색 엔진 (임베딩+BM25+RRF)
 │   ├── memory_units.py        # 구조화 메모리 유닛 생성
-│   ├── news_search.py         # DuckDuckGo 웹 검색 RAG 파이프라인 (1389줄)
+│   ├── news_search.py         # DuckDuckGo 웹 검색 RAG 파이프라인
 │   ├── linkup_search.py       # Linkup API 웹 검색 파이프라인
 │   ├── weather.py             # KMA 기상청 API 클라이언트
 │   ├── chunker.py             # 시맨틱 청킹
 │   ├── query_rewriter.py      # 검색 쿼리 확장
-│   ├── reranker.py            # 검색 결과 재순위화 (bge-reranker-v2-m3)
+│   ├── reranker.py            # 검색 결과 재순위화
 │   ├── data_formatters.py     # 응답 포맷팅 헬퍼
 │   ├── coords.py              # 좌표 변환 (위경도 → 기상청 격자)
 │   ├── kma_codes.py           # 기상청 코드 매핑
