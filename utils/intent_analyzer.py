@@ -616,8 +616,12 @@ class IntentAnalyzer:
         *,
         rag_top_score: float,
         log_extra: dict | None = None,
+        trust_llm: bool = False,
     ) -> list[dict]:
-        """LLM 도구 계획을 운영 정책(과도한 웹검색 방지) 기준으로 보정합니다."""
+        """LLM 도구 계획을 운영 정책 기준으로 보정합니다.
+
+        trust_llm=True 이면 LLM의 판단을 신뢰하여 web_search를 과도하게 차단하지 않습니다.
+        (휴리스틱이 판단을 유보했을 때만 True)"""
         if not tool_plan:
             return []
 
@@ -666,8 +670,10 @@ class IntentAnalyzer:
                 return []
 
             if name == "web_search":
-                # 기본 대화/회상형 문맥에서 LLM이 web_search를 과탐지하면 방어적으로 차단한다.
-                if (
+                # LLM 신뢰 모드: 휴리스틱이 판단을 유보했고 LLM이 명시적으로 제안한 경우 차단하지 않음
+                if trust_llm:
+                    logger.info("[도구보정] LLM 신뢰 모드로 web_search 허용", extra=log_extra)
+                elif (
                     not explicit_web
                     and not finance_query
                     and not factual_query

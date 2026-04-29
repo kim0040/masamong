@@ -1668,11 +1668,14 @@ Generate the optimized English image prompt:"""
             )
             if heuristic_plan is None:
                 raw_tool_plan = llm_tool_plan
+                llm_decision_trusted = True  # 휴리스틱이 판단을 유보 → LLM 신뢰
             elif heuristic_plan:
                 raw_tool_plan = heuristic_plan
+                llm_decision_trusted = False
             else:
                 # 휴리스틱이 빈 계획이면(no-op), 띵킹 LLM 계획을 유지해 과도한 누락을 방지한다.
                 raw_tool_plan = llm_tool_plan if llm_tool_plan else []
+                llm_decision_trusted = bool(llm_tool_plan)  # LLM이 제안했으면 신뢰
             if heuristic_plan is not None:
                 logger.info(
                     "[도구계획] 휴리스틱 보정 적용 (llm=%d, heuristic=%d)",
@@ -1691,6 +1694,7 @@ Generate the optimized English image prompt:"""
                 raw_tool_plan,
                 rag_top_score=rag_top_score,
                 log_extra=log_extra,
+                trust_llm=llm_decision_trusted,
             )
             
             tool_results: list[dict[str, Any]] = []
