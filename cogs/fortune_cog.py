@@ -96,7 +96,8 @@ class FortuneCog(commands.Cog):
         """
         if ctx.invoked_subcommand is None:
             # 기존 !운세 (check_fortune) 로직 호출
-            await self._check_fortune_logic(ctx, option)
+            status_msg = await ctx.send("🔮 운세를 살펴보는 중이야...")
+            await self._check_fortune_logic(ctx, option, status_msg=status_msg)
 
     @fortune.command(name='등록')
     @commands.dm_only()
@@ -359,7 +360,8 @@ class FortuneCog(commands.Cog):
         # !이번달 운세 <- 이렇게 띄어쓰기 한 경우 처리
         if arg and arg not in ['운세']:
              return # 다른 명령어일 수 있음
-        await self._check_fortune_logic(ctx, mode='month')
+        status_msg = await ctx.send("📅 이번달 운세를 분석 중이야...")
+        await self._check_fortune_logic(ctx, mode='month', status_msg=status_msg)
 
     @commands.command(name='올해운세', aliases=['올해', '신년운세'])
     @commands.dm_only()
@@ -376,9 +378,10 @@ class FortuneCog(commands.Cog):
         # !올해 운세 <- 띄어쓰기 대응
         if arg and arg not in ['운세']:
              return
-        await self._check_fortune_logic(ctx, mode='year')
+        status_msg = await ctx.send("🗓️ 올해 운세를 살펴보는 중이야...")
+        await self._check_fortune_logic(ctx, mode='year', status_msg=status_msg)
 
-    async def _check_fortune_logic(self, ctx: commands.Context, option: str = None, mode: str = 'day'):
+    async def _check_fortune_logic(self, ctx: commands.Context, option: str = None, mode: str = 'day', status_msg: discord.Message = None):
         """오늘의 운세를 분석하여 출력하는 핵심 로직"""
         user_id = ctx.author.id
         is_dm = isinstance(ctx.channel, discord.DMChannel)
@@ -390,7 +393,8 @@ class FortuneCog(commands.Cog):
         if usage_check_needed:
             is_limited, remaining = await db_utils.check_fortune_daily_limit(self.bot.db, user_id)
             if is_limited:
-                await ctx.send(f"⛔ **일일 운세 조회 한도 초과!**\n상세 운세(월/년/상세)는 하루 3회까지만 가능해요.\n내일 다시 찾아와주세요! 🌙")
+                if status_msg: await status_msg.edit(content=f"⛔ **일일 운세 조회 한도 초과!**\n상세 운세(월/년/상세)는 하루 3회까지만 가능해요.\n내일 다시 찾아와주세요! 🌙")
+                else: await ctx.send(f"⛔ **일일 운세 조회 한도 초과!**\n상세 운세(월/년/상세)는 하루 3회까지만 가능해요.\n내일 다시 찾아와주세요! 🌙")
                 return
 
         # 2. 프로필 조회
@@ -398,10 +402,13 @@ class FortuneCog(commands.Cog):
         row = await cursor.fetchone()
         
         if not row:
-            if ctx.guild: # 서버에서는 안내만
-                 await ctx.reply("🔮 개인 운세를 보려면 DM으로 `!운세 등록`을 먼저 해주세요!", mention_author=True)
+            if status_msg:
+                msg = "🔮 개인 운세를 보려면 DM으로 `!운세 등록`을 먼저 해주세요!" if ctx.guild else "🔮 아직 정보가 없네요. `!운세 등록`으로 생년월일을 알려주세요!"
+                await status_msg.edit(content=msg)
+            elif ctx.guild: # 서버에서는 안내만
+                await ctx.reply("🔮 개인 운세를 보려면 DM으로 `!운세 등록`을 먼저 해주세요!", mention_author=True)
             else: # DM에서는 바로 유도
-                 await ctx.send("🔮 아직 정보가 없네요. `!운세 등록`으로 생년월일을 알려주세요!")
+                await ctx.send("🔮 아직 정보가 없네요. `!운세 등록`으로 생년월일을 알려주세요!")
             return
 
         birth_date, birth_time, gender, birth_place = row
@@ -418,7 +425,8 @@ class FortuneCog(commands.Cog):
             # 3. AI 핸들러 호출
             ai_handler = self.bot.get_cog('AIHandler')
             if not ai_handler:
-                await ctx.send("AI 모듈을 불러올 수 없습니다.")
+                if status_msg: await status_msg.edit(content="AI 모듈을 불러올 수 없습니다.")
+                else: await ctx.send("AI 모듈을 불러올 수 없습니다.")
                 return
             
             # 모델명 매핑 (환경변수/설정으로 오버라이드 가능)
@@ -510,7 +518,16 @@ class FortuneCog(commands.Cog):
                  )
                  
                  if response:
-                     await self._send_split_message(ctx, response)
+                     if status_msg:
+                         if len(response) > 1900:
+                             await status_msg.edit(content=response[:1900])
+                             for i in range(1900, len(response), 1900):
+                                 await ctx.send(response[i:i + 1900])
+                                 await asyncio.sleep(0.5)
+                         else:
+                             await status_msg.edit(content=response)
+                     else:
+                         await self._send_split_message(ctx, response)
                      # DM이고 상세 운세(오늘)인 경우 컨텍스트 저장
                      if is_dm and mode == 'day' and is_detail_request:
                          await self._update_last_fortune_context(user_id, response)
@@ -520,11 +537,13 @@ class FortuneCog(commands.Cog):
                          await db_utils.log_fortune_usage(self.bot.db, user_id)
                          await ctx.send(f"💡 남은 일일 조회 횟수: {remaining - 1}회")
                  else:
-                     await ctx.send("운세 분석에 실패했습니다. (AI 응답 없음)")
+                     if status_msg: await status_msg.edit(content="운세 분석에 실패했습니다. (AI 응답 없음)")
+                     else: await ctx.send("운세 분석에 실패했습니다. (AI 응답 없음)")
                      
             except Exception as e:
                  logger.error(f"운세 요청 처리 중 오류: {e}", exc_info=True)
-                 await ctx.send("운세 시스템에 문제가 발생했습니다.")
+                 if status_msg: await status_msg.edit(content="운세 시스템에 문제가 발생했습니다.")
+                 else: await ctx.send("운세 시스템에 문제가 발생했습니다.")
 
 
 
