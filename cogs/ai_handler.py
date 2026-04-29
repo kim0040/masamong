@@ -35,7 +35,6 @@ except ImportError:  # pragma: no cover
 from datetime import datetime, timedelta, timezone
 import asyncio
 import pytz
-from collections import deque
 import re
 from typing import Dict, Any, Tuple
 import aiosqlite
@@ -55,15 +54,12 @@ from logger_config import logger
 from utils import db as db_utils
 from utils import http
 from utils.llm_client import LLMClient
+from utils.intent_analyzer import IntentAnalyzer
+from utils.rag_manager import RAGManager
 from utils.embeddings import (
     DiscordEmbeddingStore,
     KakaoEmbeddingStore,
-    count_embedding_tokens,
-    get_embedding,
-    get_embedding_token_limit,
-    trim_text_to_embedding_token_limit,
 )
-from utils.memory_units import build_storage_text, build_structured_memory_units
 from database.bm25_index import BM25IndexManager
 from utils.hybrid_search import HybridSearchEngine
 from utils.reranker import Reranker, RerankerConfig
@@ -85,7 +81,6 @@ class AIHandler(commands.Cog):
         self.tools_cog = bot.get_cog('ToolsCog')
         self.ai_user_cooldowns: Dict[int, datetime] = {}
         self.proactive_cooldowns: Dict[int, float] = {}
-        self._auto_web_search_last_used: Dict[int, float] = {}
         # 뉴스 출처 리액션 캐시: {메시지ID: [URL, ...]} — 📰 리액션 클릭 시 출처 표시
         self._news_source_cache: Dict[int, list] = {}
         self._updating_news_sources: set[int] = set() # [NEW] 동시성 방어용: 현재 업데이트 중인 메시지 ID 세트
@@ -113,14 +108,20 @@ class AIHandler(commands.Cog):
             self.bm25_manager,
             reranker=self.reranker,
         )
-        self._window_buffers: dict[tuple[int, int], deque[dict[str, Any]]] = {}
-        self._window_counts: dict[tuple[int, int], int] = {}
-        self._embedding_token_limit_cache: int | None = None
         self.debug_enabled = config.AI_DEBUG_ENABLED
         self._debug_log_len = getattr(config, "AI_DEBUG_LOG_MAX_LEN", 400)
         self.llm_client = LLMClient(db=self.bot.db)
+        self.intent_analyzer = IntentAnalyzer(db=self.bot.db, llm_client=self.llm_client, tools_cog=self.tools_cog)
         self.use_cometapi = self.llm_client.use_cometapi
         self.gemini_configured = self.llm_client.gemini_configured
+        self.rag_manager = RAGManager(
+            db=self.bot.db,
+            embedding_store=self.discord_embedding_store,
+            hybrid_search_engine=self.hybrid_search_engine,
+            reranker=self.reranker,
+            llm_client=self.llm_client,
+            bot=self.bot,
+        )
 
         logger.info(
             "LLM 레인 구성: routing=%s, main=%s",
@@ -134,8 +135,6 @@ class AIHandler(commands.Cog):
             logger.warning("사용 가능한 LLM 제공자가 없습니다. LLM 레인 키/엔드포인트 또는 Gemini fallback 설정을 확인하세요.")
         
         # [NEW] Location Cache from DB
-        self.location_cache: set[str] = set()
-        
         # [NEW] Emoji Cache: {guild_id: (formatted_list, timestamp)}
         self._emoji_cache: Dict[int, Tuple[list[str], float]] = {}
 
@@ -188,21 +187,7 @@ class AIHandler(commands.Cog):
 
     async def _load_location_cache(self):
         """DB에서 지역명 데이터를 로드하여 캐싱합니다."""
-        if self.location_cache:
-            return
-
-        if not self.bot.db:
-            return
-
-        try:
-            # 2글자 이상인 지역명만 로드 (1글자는 오탐지 가능성 높음)
-            async with self.bot.db.execute("SELECT name FROM locations WHERE LENGTH(name) >= 2") as cursor:
-                rows = await cursor.fetchall()
-                if rows:
-                    self.location_cache = {row['name'] for row in rows}
-                    logger.info(f"DB에서 지역명 데이터 {len(self.location_cache)}개를 로드했습니다.")
-        except Exception as e:
-            logger.error(f"지역명 캐시 로드 중 오류: {e}")
+        await self.intent_analyzer._load_location_cache()
 
     def _message_has_valid_mention(self, message: discord.Message) -> bool:
         """메시지에 봇 멘션이 존재하는지 확인합니다."""
@@ -409,30 +394,16 @@ class AIHandler(commands.Cog):
 
     async def _generate_local_embedding(self, content: str, log_extra: dict, prefix: str = "") -> np.ndarray | None:
         """SentenceTransformer 기반 임베딩을 생성합니다."""
-        if not config.AI_MEMORY_ENABLED:
-            return None
-        if np is None:
-            logger.warning("numpy가 설치되어 있지 않아 AI 메모리 기능을 사용할 수 없습니다.", extra=log_extra)
-            return None
-
-        embedding = await get_embedding(content, prefix=prefix)
-        if embedding is None:
-            logger.error("임베딩 생성 실패", extra=log_extra)
-        return embedding
+        return await self.rag_manager._generate_local_embedding(content, log_extra, prefix)
 
     @staticmethod
     def _estimate_window_tokens(text: str) -> int:
         """윈도우 저장 판단용 경량 토큰 추정치."""
-        return len(re.findall(r"\S+", str(text or "")))
+        return RAGManager._estimate_window_tokens(text)
 
     async def _embedding_token_limit(self) -> int:
         """임베딩 입력에 사용할 안전 토큰 한계를 반환합니다."""
-        if self._embedding_token_limit_cache is not None:
-            return self._embedding_token_limit_cache
-        reserve = max(8, int(getattr(config, "CONVERSATION_WINDOW_TOKEN_RESERVE", 32)))
-        limit = await get_embedding_token_limit(reserve_tokens=reserve)
-        self._embedding_token_limit_cache = max(32, int(limit))
-        return self._embedding_token_limit_cache
+        return await self.rag_manager._embedding_token_limit()
 
     async def add_message_to_history(self, message: discord.Message):
         """AI 허용 채널의 메시지를 대화 기록 DB에 저장합니다.
@@ -443,272 +414,19 @@ class AIHandler(commands.Cog):
         Notes:
             메시지가 충분히 길면 임베딩 생성을 비동기 태스크로 예약합니다.
         """
-        if not self.is_ready or not config.AI_MEMORY_ENABLED: return
-
-        guild_id = message.guild.id if message.guild else 0
-        
-        # Guild인 경우에만 채널 화이트리스트 체크
-        if message.guild:
-            try:
-                channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
-                if not channel_config.get("allowed", False): return
-            except AttributeError:
-                pass # message.channel has no id? rare.
-
-        try:
-            storage_text = build_storage_text(
-                message.content or "",
-                attachment_count=len(getattr(message, "attachments", [])),
-                embed_count=len(getattr(message, "embeds", [])),
-                sticker_count=len(getattr(message, "stickers", [])),
-            )
-            if not storage_text:
-                return
-            await self.bot.db.execute(
-                "INSERT INTO conversation_history (message_id, guild_id, channel_id, user_id, user_name, content, is_bot, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    message.id,
-                    guild_id,
-                    message.channel.id,
-                    message.author.id,
-                    message.author.display_name,
-                    storage_text,
-                    message.author.bot,
-                    message.created_at.isoformat(),
-                ),
-            )
-            await self._update_conversation_windows(message)
-            await self.bot.db.commit()
-            # 단일 메시지 임베딩 생성 로직 제거 (윈도우 기반 임베딩으로 전환)
-            # if not message.author.bot and message.content.strip():
-            #     asyncio.create_task(self._create_and_save_embedding(message))
-        except Exception as e:
-            logger.error(f"대화 기록 저장 중 DB 오류: {e}", exc_info=True, extra={'guild_id': guild_id})
+        return await self.rag_manager.add_message_to_history(message)
 
     async def _summarize_content(self, text: str) -> str:
         """긴 텍스트를 임베딩용으로 요약합니다. DeepSeek 모델을 사용하여 검색 품질을 최적화합니다."""
-        # [Optimization] 텍스트가 짧으면(400자 미만) 요약하지 않고 원본 그대로 사용
-        # (E5 모델의 512 토큰 제한을 고려하여 안전한 길이로 설정)
-        if len(text) < 400:
-            return text
-
-        if not self.use_cometapi:
-            # CometAPI가 꺼져있다면 원본 반환
-            return text
-        
-        # [Optimization] 입력 텍스트가 너무 길면 잘라서 토큰 절약
-        safe_text = text[:4000] 
-        
-        try:
-            # [Optimization] 검색(RAG) 품질을 위한 상세 요약 프롬프트
-            # E5 임베딩 한계(512토큰) 내에 중요 정보가 다 들어가도록 500자 제한 둠
-            system_prompt = (
-                "너는 대화 내용을 나중에 검색하기 좋게 정리하는 '기억 관리자'야.\n"
-                "주어진 대화 내용을 바탕으로 다음 형식에 맞춰 요약해.\n\n"
-                "1. **상황 설명**: 어떤 주제로 누가 무슨 말을 했는지 자연스럽게 서술 (분량 제한 없음, 자세할수록 좋음)\n"
-                "2. **분위기**: 대화가 즐거웠는지, 진지했는지, 화가 났는지 등 감정 상태 기록\n"
-                "3. **핵심 키워드**: 날짜, 시간, 장소, URL, 주식 종목, 사람 이름 등 검색에 걸려야 할 단어들을 빠짐없이 나열\n\n"
-                "※ **주의사항**: 전체 요약 길이는 반드시 **500자 이내**가 되도록 내용을 핵심 위주로 압축해. (임베딩 용량 제한)"
-            )
-            user_prompt = f"--- 대화 내용 ---\n{safe_text}"
-            
-            # max_tokens 설정
-            summary = await self._cometapi_generate_content(
-                system_prompt, 
-                user_prompt, 
-                log_extra={'mode': 'rag_summary'}
-            )
-            
-            if summary:
-                return summary.strip()
-            return text
-        except Exception as e:
-            logger.warning("대화 내용 요약 중 오류 발생, 원본 텍스트 반환: %s", e)
-            return text
+        return await self.rag_manager._summarize_content(text)
 
     async def _create_window_embedding(self, guild_id: int, channel_id: int, payload: list[dict[str, Any]]):
         """대화 윈도우를 구조화 메모리 유닛으로 정제해 저장합니다."""
-        if not payload:
-            return
-
-        memory_units = build_structured_memory_units(
-            payload,
-            channel_id=channel_id,
-            max_summary_chars=getattr(config, "STRUCTURED_MEMORY_MAX_SUMMARY_CHARS", 320),
-            max_context_chars=getattr(config, "STRUCTURED_MEMORY_MAX_CONTEXT_CHARS", 1200),
-            user_turn_min_chars=getattr(config, "STRUCTURED_USER_MEMORY_MIN_CHARS", 12),
-        )
-        if not memory_units:
-            return
-
-        for unit in memory_units:
-            log_extra = {
-                'guild_id': guild_id,
-                'channel_id': channel_id,
-                'window_id': unit.anchor_message_id,
-                'memory_scope': unit.memory_scope,
-                'memory_type': unit.memory_type,
-            }
-            memory_text_for_embedding = unit.memory_text
-            summary_text_for_storage = unit.summary_text
-            token_limit = await self._embedding_token_limit()
-            input_text = f"passage: {memory_text_for_embedding}"
-            token_count = await count_embedding_tokens(input_text)
-            if token_count > token_limit:
-                logger.info(
-                    "구조화 메모리 토큰 초과 감지: %s > %s (scope=%s). 요약 전환 시도",
-                    token_count,
-                    token_limit,
-                    unit.memory_scope,
-                    extra=log_extra,
-                )
-                summary_source = unit.raw_context or unit.memory_text
-                summarized = await self._summarize_content(summary_source)
-                if summarized:
-                    summary_text_for_storage = summarized
-                    memory_text_for_embedding = summarized
-                    token_count = await count_embedding_tokens(f"passage: {memory_text_for_embedding}")
-
-                if token_count > token_limit:
-                    trimmed = await trim_text_to_embedding_token_limit(
-                        memory_text_for_embedding,
-                        token_limit,
-                    )
-                    if trimmed:
-                        memory_text_for_embedding = trimmed
-                        token_count = await count_embedding_tokens(f"passage: {memory_text_for_embedding}")
-
-            embedding_vector = await self._generate_local_embedding(
-                f"passage: {memory_text_for_embedding}",
-                log_extra,
-                prefix="",
-            )
-            if embedding_vector is None:
-                continue
-
-            try:
-                await self.discord_embedding_store.upsert_memory_entry(
-                    memory_id=unit.memory_id,
-                    anchor_message_id=unit.anchor_message_id,
-                    server_id=guild_id,
-                    channel_id=channel_id,
-                    owner_user_id=unit.owner_user_id,
-                    owner_user_name=unit.owner_user_name,
-                    memory_scope=unit.memory_scope,
-                    memory_type=unit.memory_type,
-                    summary_text=summary_text_for_storage,
-                    memory_text=memory_text_for_embedding,
-                    raw_context=unit.raw_context,
-                    source_message_ids=unit.source_message_ids,
-                    speaker_names=unit.speaker_names,
-                    keywords=unit.keywords,
-                    timestamp_iso=unit.timestamp_iso,
-                    embedding=embedding_vector,
-                )
-            except Exception as e:
-                logger.error("구조화 메모리 저장 중 오류: %s", e, extra=log_extra, exc_info=True)
+        return await self.rag_manager._create_window_embedding(guild_id, channel_id, payload)
 
     async def _update_conversation_windows(self, message: discord.Message) -> None:
         """대화 슬라이딩 윈도우(6개, stride=3)를 누적해 별도 테이블에 저장합니다."""
-        if self.bot.db is None:
-            return
-
-        guild_id = message.guild.id if message.guild else 0
-        window_size = max(1, getattr(config, "CONVERSATION_WINDOW_SIZE", 6))
-        stride = max(1, getattr(config, "CONVERSATION_WINDOW_STRIDE", 3))
-        key = (guild_id, message.channel.id)
-
-        # 채널별 슬라이딩 버퍼에 메시지를 누적한다.
-        buffer = self._window_buffers.setdefault(key, deque(maxlen=window_size))
-        entry = {
-            "message_id": int(message.id),
-            "user_id": int(message.author.id),
-            "user_name": message.author.display_name or message.author.name or str(message.author.id),
-            "content": build_storage_text(
-                message.content or "",
-                attachment_count=len(getattr(message, "attachments", [])),
-                embed_count=len(getattr(message, "embeds", [])),
-                sticker_count=len(getattr(message, "stickers", [])),
-            ),
-            "is_bot": bool(message.author.bot),
-            "created_at": message.created_at.isoformat(),
-        }
-        if not entry["content"]:
-            return
-        entry["token_estimate"] = self._estimate_window_tokens(entry["content"])
-        buffer.append(entry)
-
-        # stride 계산을 위해 채널별 삽입 횟수를 기록한다.
-        counter = self._window_counts.get(key, 0) + 1
-        self._window_counts[key] = counter
-
-        # [Feature] 토큰 기반 윈도우 저장 기준.
-        total_tokens = sum(int(item.get("token_estimate") or 0) for item in buffer)
-        configured_max_tokens = int(getattr(config, "CONVERSATION_WINDOW_MAX_TOKENS", 0))
-        fallback_max_tokens = max(64, int(getattr(config, "LOCAL_EMBEDDING_MAX_TOKENS", 512)))
-        max_tokens = configured_max_tokens if configured_max_tokens > 0 else max(
-            64,
-            fallback_max_tokens - int(getattr(config, "CONVERSATION_WINDOW_TOKEN_RESERVE", 32)),
-        )
-
-        # 비정상 장문 보호용 문자 기준(2차 안전장치)
-        total_chars = sum(len(item["content"]) for item in buffer)
-        max_chars = int(getattr(config, "CONVERSATION_WINDOW_MAX_CHARS", 3000))
-
-        # 윈도우가 가득 찼거나, 토큰/문자열 길이가 제한을 초과하면 저장을 시도한다.
-        is_full = len(buffer) >= window_size
-        is_heavy = total_tokens >= max_tokens or total_chars >= max_chars
-        
-        if not is_full and not is_heavy:
-            return
-
-        # stride 간격에 맞춰 윈도우를 저장한다.
-        # 단, is_heavy(용량 초과)인 경우에는 stride와 무관하게 즉시 저장하여 컨텍스트 누락을 방지한다.
-        if not is_heavy and (counter - window_size) % stride != 0:
-            return
-        
-        # [Log] 용량 초과로 인한 강제 저장 알림
-        if is_heavy and not is_full:
-            logger.info(
-                "대화 윈도우 용량 초과(tokens=%s/%s, chars=%s/%s)로 즉시 저장: %s",
-                total_tokens,
-                max_tokens,
-                total_chars,
-                max_chars,
-                message.channel.id,
-                extra={'guild_id': guild_id},
-            )
-
-        try:
-            payload = list(buffer)
-            await self.bot.db.execute(
-                """
-                INSERT OR REPLACE INTO conversation_windows (
-                    guild_id, channel_id, start_message_id, end_message_id,
-                    message_count, messages_json, anchor_timestamp
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    guild_id,
-                    message.channel.id,
-                    payload[0]["message_id"],
-                    payload[-1]["message_id"],
-                    len(payload),
-                    json.dumps(payload, ensure_ascii=False),
-                    payload[-1]["created_at"],
-                ),
-            )
-            # 윈도우가 저장될 때 해당 윈도우에 대한 임베딩도 생성 (비동기 처리)
-            asyncio.create_task(
-                self._create_window_embedding(guild_id, message.channel.id, payload)
-            )
-        except Exception as exc:  # pragma: no cover - 방어적 로깅
-            logger.error(
-                "대화 윈도우 저장 중 DB 오류: %s",
-                exc,
-                extra={"guild_id": guild_id, "channel_id": message.channel.id},
-                exc_info=True,
-            )
+        return await self.rag_manager._update_conversation_windows(message)
 
     # ========== 뉴스/실시간 정보 검색 (DuckDuckGo RAG) ==========
 
@@ -988,233 +706,39 @@ Generate the optimized English image prompt:"""
         return {"result": fallback, "source_urls": news_result.get("source_urls", [])}
 
 
-    # ========== 키워드 기반 도구 감지 (Lite 모델 대체) ==========
-
-    # [Fix] 1글자 단독 키워드 제거 → 최소 2글자 이상 또는 복합어 패턴만 사용 (오매칭 방지)
-    # 예: '비' 단독 → '비가','비온다','비내리' 등으로 대체
-    _WEATHER_KEYWORDS = frozenset([
-        '날씨', '기온', '온도', '흐림', '우산', '강수', '일기예보', '체감',
-        '폭염', '한파', '태풍', '황사', '미세먼지', '자외선',
-        '비가', '비온', '비내', '눈이', '눈온', '눈날',
-        '덥다', '덥네', '더워', '춥다', '춥네', '추워', '따뜻해', '쌀쌀',
-        '맑음', '맑다', '맑네', '흐리다', '구름', '안개',
-    ])
-    _STOCK_US_KEYWORDS = frozenset([
-        '애플', 'apple', 'aapl', '테슬라', 'tesla', 'tsla',
-        '구글', 'google', 'googl', '엔비디아', 'nvidia', 'nvda',
-        '마이크로소프트', 'microsoft', 'msft', '아마존', 'amazon', 'amzn',
-        '맥도날드', '스타벅스', '코카콜라', '펩시', '넷플릭스',
-        '메타', '페이스북', '디즈니', '인텔', 'amd', '나이키', '코스트코', '버크셔',
-    ])
-    _STOCK_KR_KEYWORDS = frozenset([
-        '삼성전자', '현대차', 'sk하이닉스', '네이버', '카카오',
-        'lg에너지', '셀트리온', '삼성바이오', '기아', '포스코',
-    ])
-    _STOCK_GENERAL_KEYWORDS = frozenset(['주가', '주식', '시세', '종가', '시가', '상장'])
-    _EXCHANGE_KEYWORDS = frozenset([
-        '환율', '달러', '엔화', '유로', 'usd', 'jpy', 'eur', 'krw', '환전',
-        '코인', '비트코인', '이더리움', 'crypto', 'bitcoin', 'eth',
-    ])
-    _FINANCE_INTENT_HINTS = frozenset([
-        '주가', '주식', '시세', '종가', '시가', '상장', '시총', '시가총액', '배당',
-        '증시', '나스닥', '뉴욕증시', '코스피', '코스닥', '투자', '실적', '매출',
-        '영업이익', 'per', 'pbr', 'eps', 'etf', 'fund', 'market cap',
-        '환율', '환전', '달러', '엔화', '유로', '코인', '비트코인', '이더리움',
-    ])
-    _STOCK_TICKER_PATTERN = re.compile(
-        r"\b(aapl|tsla|googl|nvda|msft|amzn|mcd|sbux|ko|pep|nflx|meta|dis|intc|amd|nke|cost|brk\.?b)\b",
-        re.IGNORECASE,
-    )
-    _FINANCE_KEYWORDS = _STOCK_US_KEYWORDS | _STOCK_KR_KEYWORDS | _STOCK_GENERAL_KEYWORDS | _EXCHANGE_KEYWORDS
-    _DEPRECATED_FINANCE_TOOLS = frozenset([
-        'get_stock_price',
-        'get_krw_exchange_rate',
-        'get_company_news',
-        'get_exchange_rate',
-    ])
-    _ALLOWED_RUNTIME_TOOLS = frozenset([
-        "web_search",
-        "get_weather_forecast",
-    ])
-    _PLACE_KEYWORDS = frozenset(['맛집', '카페', '음식점', '식당', '근처', '주변', '가볼만한', '핫플레이스'])
-    _LOCATION_KEYWORDS = []  # Deprecated: DB 캐시로 대체
-
-    # [Fix] 이미지 생성 키워드 - 중복 제거 및 정리
-    _IMAGE_GEN_KEYWORDS = frozenset([
-        '이미지 생성', '그림 그려', '사진 만들어', '이미지 만들어',
-        '그려줘', '생성해줘', '그림 생성', '이미지 그려', '사진 생성',
-        '만들어줘', '그림으로 그려', '이미지로 만들어',
-        'generate image', 'create image', 'draw me', 'make an image',
-    ])
-
-    # 범용 정보 탐색 트리거 키워드 (의도적으로 보수적으로 유지)
-    # 너무 넓은 키워드는 잡담까지 웹검색으로 오탐지할 수 있어 제외한다.
-    _WEB_SEARCH_KEYWORDS = frozenset([
-        '웹검색', '검색', '검색해줘', '찾아줘', '조사해줘', '탐색해줘',
-        '뉴스', '최신', '최근', '실시간', '속보', '이슈', '현황', '상황',
-        '어떻게 됐어', '어떻게 됨', '출처', '링크', '기사',
-        '공식 문서', '레퍼런스', '가이드', '튜토리얼', '사용법',
-        '리뷰', '사용기', '비교', '업데이트', '버전', '변경사항', '패치노트', '릴리즈', '발표',
-    ])
-
-    _WEB_SEARCH_FOLLOWUP_KEYWORDS = frozenset([
-        '자세히', '근거', '링크', '출처', '원문', '기사', '팩트체크',
-    ])
-
-    _REALTIME_WEB_QUERY_HINTS = frozenset([
-        '오늘', '지금', '현재', '실시간', '최신', '최근', '속보',
-        '급등', '급락', '떡상', '떡락', '코스피', '코스닥', '주가', '환율',
-        '이번', '올해', '라인업', '일정', '축제', '행사',
-    ])
-
-    _FACTUAL_WEB_QUERY_HINTS = frozenset([
-        '누가', '언제', '어디', '왜', '무엇', '몇', '얼마', '정의', '의미', '차이',
-        '비교', '장단점', '순위', '통계', '수치', '근거', '출처', '링크',
-        '공식', '문서', '가이드', '튜토리얼', '사용법',
-        '호환성', '문제', '오류', '버그', '이슈', '해결', '해결법', '트러블슈팅',
-        '발표', '업데이트', '버전', '릴리즈', '변경사항', '패치노트',
-        '라인업', '일정', '개최', '행사', '축제',
-        'latest', 'update', 'release', 'version', 'docs', 'documentation',
-    ])
-
-    _LOCAL_MEMORY_HINTS = frozenset([
-        '내가 어제 말', '내가 아까 말', '내가 방금 말', '내가 전에 말',
-        '우리 대화', '이전 대화', '방금 얘기', '아까 얘기', '기억나',
-        '내 얘기', '우리 얘기', '저번에 말한', '앞에서 말한',
-    ])
-
-
-    _NO_SEARCH_PATTERNS = frozenset([
-        '내 얘기', '우리 얘기', '너 얘기', '잡담만', '인사만'
-    ])
-    _SMALLTALK_PATTERNS = frozenset([
-        '안녕', '하이', 'ㅎㅇ', 'hello', 'hey', 'hi',
-        '뭐해', '뭐하냐', '뭐하네', '뭐함', '잘지내', '잘 지내',
-        '반가워', '반갑다', '심심해', '놀아줘', '근황',
-    ])
+    # Keyword / pattern sets moved to IntentAnalyzer (see utils/intent_analyzer.py)
 
     def _is_smalltalk_only_query(self, query: str) -> bool:
         """외부 도구 호출이 불필요한 인사/잡담성 질문인지 판별합니다."""
-        text = (query or "").strip().lower()
-        if not text:
-            return False
-
-        # 도구 키워드가 섞여 있으면 smalltalk로 보지 않습니다.
-        if (
-            any(kw in text for kw in self._WEATHER_KEYWORDS)
-            or self._looks_like_finance_query(text)
-            or any(kw in text for kw in self._PLACE_KEYWORDS)
-            or any(kw in text for kw in self._WEB_SEARCH_KEYWORDS)
-            or any(kw in text for kw in self._IMAGE_GEN_KEYWORDS)
-        ):
-            return False
-
-        if any(token in text for token in self._SMALLTALK_PATTERNS):
-            return True
-
-        # 매우 짧은 인사 표현
-        return bool(re.fullmatch(r"(안녕+|하이+|ㅎㅇ+|hello+|hey+|hi+)", text))
+        return self.intent_analyzer._is_smalltalk_only_query(query)
 
     def _has_explicit_web_search_intent(self, query: str) -> bool:
         """질문이 명시적으로 외부 웹 탐색을 요구하는지 판별합니다."""
-        query_lower = (query or "").lower()
-        explicit_terms = (
-            '웹검색', '검색해줘', '검색해', '검색 좀', '찾아줘', '찾아봐', '조사해줘', '탐색해줘',
-            '뉴스', '소식', '출처', '링크', '기사', '공식 문서', '레퍼런스', '가이드', '튜토리얼', '사용법',
-            '리뷰', '사용기', '비교', '업데이트', '버전', '변경사항', '패치노트', '릴리즈', '발표',
-        )
-        return any(kw in query_lower for kw in explicit_terms)
+        return self.intent_analyzer._has_explicit_web_search_intent(query)
 
     def _looks_like_external_fact_query(self, query: str) -> bool:
         """
         웹에서 사실 확인이 필요한 질의인지 휴리스틱으로 판별합니다.
         (명시적 웹검색 키워드가 없어도 외부 정보가 필요한 질문을 놓치지 않기 위한 보정)
         """
-        text = (query or "").strip().lower()
-        if not text:
-            return False
-        if self._is_smalltalk_only_query(text):
-            return False
-        if any(kw in text for kw in self._WEATHER_KEYWORDS):
-            return False
-        if any(kw in text for kw in self._PLACE_KEYWORDS):
-            return False
-        if any(kw in text for kw in self._IMAGE_GEN_KEYWORDS):
-            return False
-        # 로컬/이전 대화 회상성 질문은 외부 웹검색 대상으로 보지 않는다.
-        if any(kw in text for kw in self._LOCAL_MEMORY_HINTS):
-            return False
-        if any(kw in text for kw in self._FACTUAL_WEB_QUERY_HINTS):
-            return True
-        return False
+        return self.intent_analyzer._looks_like_external_fact_query(query)
 
     def _is_realtime_web_query(self, query: str) -> bool:
         """질의에 실시간 웹 검색이 필요한지 여부를 판단합니다."""
-        query_lower = (query or "").lower()
-        if not query_lower:
-            return False
-        return any(token in query_lower for token in self._REALTIME_WEB_QUERY_HINTS)
+        return self.intent_analyzer._is_realtime_web_query(query)
 
     def _looks_like_finance_query(self, query: str) -> bool:
         """회사명 단독 언급 오탐을 줄이기 위해 금융 의도 문맥까지 함께 확인합니다."""
-        query_lower = (query or "").lower().strip()
-        if not query_lower:
-            return False
-
-        # 환율/코인/주가 등 강한 금융 키워드는 즉시 금융으로 분류
-        if any(kw in query_lower for kw in self._STOCK_GENERAL_KEYWORDS):
-            return True
-        if any(kw in query_lower for kw in self._EXCHANGE_KEYWORDS):
-            return True
-        if self._STOCK_TICKER_PATTERN.search(query_lower):
-            return True
-
-        # 회사명만 있는 경우에는 금융 의도 힌트가 함께 있을 때만 금융으로 본다.
-        has_stock_entity = any(kw in query_lower for kw in self._STOCK_US_KEYWORDS) or any(
-            kw in query_lower for kw in self._STOCK_KR_KEYWORDS
-        )
-        if not has_stock_entity:
-            return False
-        return any(hint in query_lower for hint in self._FINANCE_INTENT_HINTS)
+        return self.intent_analyzer._looks_like_finance_query(query)
 
     @staticmethod
     def _normalize_realtime_web_query(query: str) -> str:
         """실시간 질의에서 과거 연/월 오염 토큰을 제거하고 현재 날짜 앵커를 부여합니다."""
-        raw = str(query or "").strip()
-        if not raw:
-            return raw
-
-        cleaned = raw
-        patterns = (
-            r"(?:19|20)\d{2}\s*년\s*\d{1,2}\s*월\s*\d{0,2}\s*일?",
-            r"(?:19|20)\d{2}\s*년\s*\d{1,2}\s*월",
-            r"(?:19|20)\d{2}\s*년",
-            r"(?:19|20)\d{2}[./-]\d{1,2}[./-]\d{1,2}",
-            r"(?:19|20)\d{2}[./-]\d{1,2}",
-        )
-        for pat in patterns:
-            cleaned = re.sub(pat, " ", cleaned)
-        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
-        if not cleaned:
-            cleaned = raw
-
-        now_kst = datetime.now(timezone(timedelta(hours=9)))
-        anchor = f"{now_kst.year}년 {now_kst.month}월 {now_kst.day}일"
-        lower = cleaned.lower()
-        if not any(token in lower for token in ("오늘", "현재", "실시간", "최신", "최근")):
-            cleaned = f"{cleaned} {anchor}".strip()
-        return cleaned
+        return IntentAnalyzer._normalize_realtime_web_query(query)
 
     def _has_tool_keyword_signal(self, query: str) -> bool:
         """질문에 도구 호출이 필요한 명시적 신호가 있는지 판별합니다."""
-        query_lower = (query or "").lower()
-        if not query_lower:
-            return False
-        return (
-            any(kw in query_lower for kw in self._WEATHER_KEYWORDS)
-            or self._looks_like_finance_query(query)
-            or any(kw in query_lower for kw in self._PLACE_KEYWORDS)
-        )
+        return self.intent_analyzer._has_tool_keyword_signal(query)
 
     def _select_tool_plan_without_intent_llm(
         self,
@@ -1228,145 +752,25 @@ Generate the optimized English image prompt:"""
         - 명확한 키워드 도구(날씨/웹검색/금융)는 즉시 라우팅
         - 강한 RAG + 도구 신호 없음이면 intent LLM 호출 자체를 생략
         """
-        if self._is_smalltalk_only_query(query):
-            return []
-
-        keyword_plan = self._detect_tools_by_keyword(query)
-        if keyword_plan:
-            tool_name = keyword_plan[0].get("tool_to_use") or keyword_plan[0].get("tool_name")
-            if tool_name and tool_name != "web_search":
-                logger.info(
-                    "[도구보정] 키워드 기반 라우팅으로 intent LLM 호출을 생략합니다. tool=%s",
-                    tool_name,
-                    extra=log_extra,
-                )
-                return keyword_plan
-            # web_search는 명시적 탐색/금융 질문일 때만 키워드 라우팅
-            if tool_name == "web_search":
-                query_lower = (query or "").lower()
-                finance_query = self._looks_like_finance_query(query)
-                explicit_web = self._has_explicit_web_search_intent(query)
-                place_query = any(kw in query_lower for kw in self._PLACE_KEYWORDS)
-                if finance_query or explicit_web or place_query:
-                    if self._is_realtime_web_query(query):
-                        params = keyword_plan[0].setdefault("parameters", {})
-                        source_query = str(params.get("query") or query).strip()
-                        if source_query:
-                            params["query"] = self._normalize_realtime_web_query(source_query)
-                    logger.info(
-                        "[도구보정] 키워드 기반 web_search 라우팅으로 intent LLM 호출을 생략합니다.",
-                        extra=log_extra,
-                    )
-                    return keyword_plan
-
-        # 명시적 외부 탐색 요청은 intent LLM을 거치지 않고 web_search로 직접 라우팅한다.
-        if self._has_explicit_web_search_intent(query):
-            normalized_query = query
-            if self._is_realtime_web_query(query):
-                normalized_query = self._normalize_realtime_web_query(query)
-            logger.info(
-                "[도구보정] 명시적 web_search 의도로 intent LLM 호출을 생략합니다.",
-                extra=log_extra,
-            )
-            return [
-                {
-                    "tool_to_use": "web_search",
-                    "tool_name": "web_search",
-                    "parameters": {"query": normalized_query},
-                }
-            ]
-
-        # 기본 대화(명시적 도구 신호 없음)는 intent LLM을 생략하고 로컬 기억 기반 응답으로 처리한다.
-        if not self._has_tool_keyword_signal(query):
-            if (
-                self._looks_like_external_fact_query(query)
-                and (
-                    rag_top_score < config.RAG_SIMILARITY_THRESHOLD
-                    or self._is_realtime_web_query(query)
-                )
-            ):
-                logger.info(
-                    "[도구보정] 사실형 질의로 판단해 intent LLM 없이 web_search로 직접 라우팅합니다.",
-                    extra=log_extra,
-                )
-                normalized_query = query
-                if self._is_realtime_web_query(query):
-                    normalized_query = self._normalize_realtime_web_query(query)
-                return [
-                    {
-                        "tool_to_use": "web_search",
-                        "tool_name": "web_search",
-                        "parameters": {"query": normalized_query},
-                    }
-                ]
-            logger.info(
-                "[도구보정] 도구 신호가 없어 intent LLM 호출을 생략합니다.",
-                extra=log_extra,
-            )
-            return []
-
-        if (
-            getattr(config, "INTENT_LLM_RAG_STRONG_BYPASS", True)
-            and rag_top_score >= config.RAG_STRONG_SIMILARITY_THRESHOLD
-            and not self._has_tool_keyword_signal(query)
-            and not self._has_explicit_web_search_intent(query)
-        ):
-            logger.info(
-                "[도구보정] 강한 RAG 질의로 intent LLM 호출을 생략합니다. (score=%.3f)",
-                rag_top_score,
-                extra=log_extra,
-            )
-            return []
-
-        return None
+        return self.intent_analyzer._select_tool_plan_without_intent_llm(
+            query, rag_top_score=rag_top_score, log_extra=log_extra,
+        )
 
     @staticmethod
     def _auto_web_search_scope_key(message: discord.Message) -> int:
         """자동 웹검색 쿨다운을 적용할 스코프 키를 계산합니다."""
-        if message.guild:
-            return int(message.channel.id)
-        # DM은 사용자 단위로 쿨다운 적용
-        return -int(message.author.id)
+        return IntentAnalyzer._auto_web_search_scope_key(message)
 
     def _can_run_auto_web_search(self, message: discord.Message, query: str, log_extra: dict | None = None) -> bool:
         """
         자동 웹검색(도구 계획이 없을 때의 fallback) 실행 가능 여부를 판단합니다.
         명시적 웹검색 요청은 쿨다운을 적용하지 않습니다.
         """
-        if self._has_explicit_web_search_intent(query):
-            return True
-
-        cooldown_seconds = max(0, int(getattr(config, "AUTO_WEB_SEARCH_COOLDOWN_SECONDS", 90)))
-        if cooldown_seconds <= 0:
-            return True
-
-        key = self._auto_web_search_scope_key(message)
-        now_mono = time.monotonic()
-        last_mono = self._auto_web_search_last_used.get(key)
-        if last_mono is None:
-            return True
-
-        elapsed = now_mono - last_mono
-        if elapsed >= cooldown_seconds:
-            return True
-
-        remaining = cooldown_seconds - elapsed
-        logger.info(
-            "[도구보정] 자동 web_search 쿨다운으로 생략합니다. 남은 시간=%.1fs",
-            remaining,
-            extra=log_extra,
-        )
-        return False
+        return self.intent_analyzer._can_run_auto_web_search(message, query, log_extra)
 
     def _mark_auto_web_search_used(self, message: discord.Message) -> None:
         """자동 웹 검색 사용 시점을 기록하여 쿨다운을 관리합니다."""
-        key = self._auto_web_search_scope_key(message)
-        self._auto_web_search_last_used[key] = time.monotonic()
-        if len(self._auto_web_search_last_used) > 2048:
-            # 오래된 엔트리 절반 정리
-            sorted_items = sorted(self._auto_web_search_last_used.items(), key=lambda item: item[1])
-            for old_key, _ in sorted_items[:1024]:
-                self._auto_web_search_last_used.pop(old_key, None)
+        return self.intent_analyzer._mark_auto_web_search_used(message)
 
     def _sanitize_tool_plan(
         self,
@@ -1377,433 +781,39 @@ Generate the optimized English image prompt:"""
         log_extra: dict | None = None,
     ) -> list[dict]:
         """LLM 도구 계획을 운영 정책(과도한 웹검색 방지) 기준으로 보정합니다."""
-        if not tool_plan:
-            return []
-
-        query_lower = (query or "").lower()
-        explicit_web = self._has_explicit_web_search_intent(query)
-        finance_query = self._looks_like_finance_query(query)
-        factual_query = self._looks_like_external_fact_query(query)
-        weather_query = any(kw in query_lower for kw in self._WEATHER_KEYWORDS)
-        place_query = any(kw in query_lower for kw in self._PLACE_KEYWORDS)
-        rag_is_strong = rag_top_score >= config.RAG_STRONG_SIMILARITY_THRESHOLD
-
-        normalized: list[dict[str, Any]] = []
-        seen_keys: set[tuple[str, str]] = set()
-
-        for raw in tool_plan:
-            name = raw.get("tool_to_use") or raw.get("tool_name")
-            params = raw.get("parameters")
-            if not isinstance(params, dict):
-                params = {}
-
-            # 이름 정규화
-            if not name:
-                continue
-
-            # 비활성화된 금융 도구는 web_search로 강제 변환
-            if name in self._DEPRECATED_FINANCE_TOOLS:
-                finance_query_text = (
-                    params.get("query")
-                    or params.get("user_query")
-                    or params.get("symbol")
-                    or params.get("stock_name")
-                    or params.get("currency_code")
-                    or query
-                )
-                name = "web_search"
-                params = {"query": self._build_finance_news_query(finance_query_text)}
-
-            # 실행 가능한 도구는 web_search / get_weather_forecast만 허용
-            if name not in self._ALLOWED_RUNTIME_TOOLS:
-                logger.info("[도구보정] 허용되지 않은 도구 제거: %s", name, extra=log_extra)
-                continue
-
-            # 잡담 질문은 도구 자체를 차단
-            if self._is_smalltalk_only_query(query):
-                logger.info("[도구보정] 잡담성 질의로 도구 계획을 모두 무효화합니다.", extra=log_extra)
-                return []
-
-            if name == "web_search":
-                # 기본 대화/회상형 문맥에서 LLM이 web_search를 과탐지하면 방어적으로 차단한다.
-                if (
-                    not explicit_web
-                    and not finance_query
-                    and not factual_query
-                    and not self._has_tool_keyword_signal(query)
-                ):
-                    logger.info("[도구보정] 일반 대화 문맥으로 판단해 web_search 제거", extra=log_extra)
-                    continue
-
-                # 실시간형 질문은 과거 날짜 오염 토큰을 제거하고 현재 시점으로 앵커링한다.
-                if self._is_realtime_web_query(query):
-                    source_query = str(params.get("query") or query).strip()
-                    if source_query:
-                        normalized_query = self._normalize_realtime_web_query(source_query)
-                        params["query"] = normalized_query
-                        logger.info(
-                            "[도구보정] 실시간 web_search 쿼리 정규화: '%s' -> '%s'",
-                            source_query,
-                            normalized_query,
-                            extra=log_extra,
-                        )
-
-                # 날씨/장소는 전용 도구 우선 (웹검색 남용 방지)
-                if weather_query:
-                    location = self._extract_location_from_query(query) or "광양"
-                    day_offset = 0
-                    if "내일" in query:
-                        day_offset = 1
-                    elif "모레" in query:
-                        day_offset = 2
-                    elif "글피" in query:
-                        day_offset = 3
-                    elif any(token in query for token in ("다음주", "이번주", "주말", "일주일")):
-                        day_offset = 3
-                    candidate = {
-                        "tool_to_use": "get_weather_forecast",
-                        "tool_name": "get_weather_forecast",
-                        "parameters": {"location": location, "day_offset": day_offset},
-                    }
-                    key = (candidate["tool_to_use"], json.dumps(candidate["parameters"], sort_keys=True, ensure_ascii=False))
-                    if key not in seen_keys:
-                        seen_keys.add(key)
-                        normalized.append(candidate)
-                    logger.info("[도구보정] web_search -> get_weather_forecast 전환", extra=log_extra)
-                    continue
-
-                # 명시적 외부탐색 요청/금융 질문이 아니고 RAG가 강하면 웹검색 생략
-                if (
-                    not explicit_web
-                    and not finance_query
-                    and not place_query
-                    and not factual_query
-                    and rag_is_strong
-                ):
-                    logger.info(
-                        "[도구보정] RAG 강한 질의에서 web_search 제거 (score=%.3f)",
-                        rag_top_score,
-                        extra=log_extra,
-                    )
-                    continue
-
-                # 명시적 탐색 의도도 없고 금융도 아니며 짧은 일반질문이면 웹검색 차단
-                if (
-                    not explicit_web
-                    and not finance_query
-                    and not place_query
-                    and not factual_query
-                    and len(query.strip()) <= 16
-                ):
-                    logger.info("[도구보정] 명시적 탐색 의도 부족으로 web_search 제거", extra=log_extra)
-                    continue
-
-            candidate = {
-                "tool_to_use": name,
-                "tool_name": name,
-                "parameters": params,
-            }
-            key = (name, json.dumps(params, sort_keys=True, ensure_ascii=False))
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            normalized.append(candidate)
-
-        return normalized
+        return self.intent_analyzer._sanitize_tool_plan(
+            query, tool_plan, rag_top_score=rag_top_score, log_extra=log_extra,
+        )
 
     async def _should_use_web_search(self, query: str, rag_top_score: float, history: list = None) -> bool:
         """외부 정보 탐색(뉴스/웹/블로그/문서) 필요 여부를 판단합니다."""
-        query_lower = query.lower()
-        explicit_web = self._has_explicit_web_search_intent(query)
-        finance_query = self._looks_like_finance_query(query)
-        place_query = any(kw in query_lower for kw in self._PLACE_KEYWORDS)
-        factual_query = self._looks_like_external_fact_query(query)
-
-        # 인사/잡담은 항상 검색하지 않는다.
-        if self._is_smalltalk_only_query(query):
-            return False
-        
-        # 명시적인 검색 방지 패턴
-        if any(pat in query_lower for pat in self._NO_SEARCH_PATTERNS):
-            return False
-
-        # RAG 점수가 매우 높으면 검색 생략 (이미 알고 있는 정보)
-        if rag_top_score >= config.RAG_STRONG_SIMILARITY_THRESHOLD:
-            # 최신/외부탐색/금융 키워드가 없으면 검색 생략
-            if (
-                not explicit_web
-                and not finance_query
-                and not place_query
-                and not (factual_query and self._is_realtime_web_query(query))
-            ):
-                return False
-
-        # 1. 명시 키워드 기반 판단
-        if explicit_web or finance_query or place_query:
-            return True
-
-        if factual_query and self._is_realtime_web_query(query):
-            return True
-
-        # 1-1. RAG가 약하고 사실형 질의면 자동 웹검색
-        if rag_top_score < config.RAG_SIMILARITY_THRESHOLD and factual_query:
-            return True
-
-        # 2. 맥락 기반 판단 (연계 질문)
-        if history and rag_top_score < config.RAG_SIMILARITY_THRESHOLD:
-            last_msg = history[-1]['parts'][0] if isinstance(history[-1]['parts'], list) else str(history[-1]['parts'])
-            # 이전 답변이 탐색 맥락일 때만, 출처/근거/자세히 같은 명시적 후속 요청에 한해 검색 시도
-            if "뉴스" in last_msg or "출처" in last_msg or "검색" in last_msg:
-                if any(dw in query_lower for dw in self._WEB_SEARCH_FOLLOWUP_KEYWORDS):
-                    return True
-                if getattr(config, "AUTO_WEB_SEARCH_ALLOW_SHORT_FOLLOWUP", False) and len(query_lower) < 15:
-                    return True
-
-        return False
+        return await self.intent_analyzer._should_use_web_search(query, rag_top_score, history)
 
     async def _detect_tools_by_llm(self, query: str, log_extra: dict, history: list = None) -> list[dict]:
         """사용자의 의도와 대화 맥락을 분석하여 가장 적합한 도구와 최적화된 검색 파라미터를 결정합니다."""
-        import json as _json
-
-        if not getattr(config, "INTENT_LLM_ENABLED", True):
-            return self._detect_tools_by_keyword(query)
-
-        # 운영 모드(INTENT_LLM_ALWAYS_RUN=false)에서는 잡담 질의를 LLM 호출 없이 단축 처리합니다.
-        if self._is_smalltalk_only_query(query) and not getattr(config, "INTENT_LLM_ALWAYS_RUN", True):
-            logger.info("[LLM의도분석] 잡담/인사성 질문 감지: 도구 호출 생략", extra=log_extra)
-            return []
-        
-        # 히스토리 텍스트 변환
-        history_text = ""
-        if history:
-            history_lines = []
-            for h in history[-config.INTENT_HISTORY_LIMIT:]: # 설정된 개수만큼만
-                role = "User" if h['role'] == 'user' else "Masamong"
-                content = h['parts'][0] if isinstance(h['parts'], list) else str(h['parts'])
-                history_lines.append(f"{role}: {content}")
-            history_text = "\n".join(history_lines)
-
-        system_prompt = (
-            "당신은 마사몽의 도구 플래너이자 검색 쿼리 최적화 전문가입니다. "
-            "사용자의 현재 메시지와 이전 대화 맥락을 분석하여 의도를 파악하고, 작업을 수행하기 위해 가장 적절한 도구를 선택하세요.\n\n"
-            "핵심 규칙:\n"
-            "1. 대화 맥락 고려: 사용자가 '그거', '그때 말한 거' 등 지시 대명사를 쓰거나 주어를 생략하면 이전 대화에서 대상을 찾아 검색 쿼리에 포함하세요.\n"
-            "2. 독립적 쿼리 생성: 도구 파라미터(특히 query)를 설정할 때, 이전 맥락 없이도 검색 엔진에서 정확한 결과를 얻을 수 있도록 완성된 문장/키워드로 변환하세요.\n"
-            "3. 멀티 도구 선택: 여러 질문이 섞여 있다면 도구를 여러 개 선택할 수 있습니다.\n"
-            "4. web_search는 '최신/실시간/뉴스/출처/웹검색 요청/금융 시황'이 분명할 때만 선택하세요.\n"
-            "5. 인사/잡담/봇 상태 질문(예: '뭐해', '안녕')에는 절대 web_search를 선택하지 마세요.\n"
-            "6. 날씨는 web_search 대신 get_weather_forecast를 우선 선택하세요.\n\n"
-            "7. 사용자가 '오늘/현재/실시간/최신/최근'을 말하면, 검색 query에 과거 특정 연월(예: 2024년 5월)을 임의로 넣지 마세요.\n\n"
-            "사용 가능 도구:\n"
-            "1. get_weather_forecast(location, day_offset): 특정 지역/시간의 날씨.\n"
-            "2. web_search(query): 외부 웹 검색(뉴스/웹/블로그/문서/커뮤니티).\n"
-            "   - 최신 이슈뿐 아니라 사용법/비교/후기/공식 문서 탐색에도 사용.\n"
-            "   - 맛집/장소 추천도 web_search로 처리.\n"
-            "   - 주식/환율/코인 등 금융 관련 질문도 web_search로 처리.\n\n"
-            "출력 형식 (유효한 JSON만):\n"
-            '{"intent": "의도", "reasoning": "선택 근거", "tools": [{"tool": "이름", "params": {"키": "값"}}]}'
-        )
-        try:
-            if not self.use_cometapi:
-                return self._detect_tools_by_keyword(query)
-
-            prompt = (
-                f"System:\n{system_prompt}\n\n"
-                "Examples:\n"
-                'Context: (None)\nUser: "오늘 서울 날씨?"\n'
-                'Response: {"intent": "날씨 조회", "reasoning": "서울 날씨 요청", "tools": [{"tool": "get_weather_forecast", "params": {"location": "서울", "day_offset": 0}}]}\n\n'
-                'Context: User: "미국 이란 전쟁에 대해 알려줘"\\nMasamong: (전쟁 설명...)\n'
-                'User: "군비는 얼마나 썼대?"\n'
-                'Response: {"intent": "상세 수치 검색", "reasoning": "이전 대화인 미국-이란 전쟁의 군비 지출액을 묻는 연계 질문", "tools": [{"tool": "web_search", "params": {"query": "미국 이란 전쟁 군비 지출 및 비용"}}] }\n\n'
-                'Context: User: "서울 날씨 어때?"\\nMasamong: (서울 날씨 답변...)\n'
-                'User: "내일은?"\n'
-                'Response: {"intent": "날씨 연계 질문", "reasoning": "이전 대화의 지역(서울) 유치, 시간만 내일로 변경", "tools": [{"tool": "get_weather_forecast", "params": {"location": "서울", "day_offset": 1}}] }\n\n'
-                'Context: (None)\nUser: "사몽아 뭐하냐"\n'
-                'Response: {"intent": "인사/잡담", "reasoning": "도구 불필요한 일반 대화", "tools": []}\n\n'
-                f"--- Current Context ---\n{history_text}\n"
-                f"User Message: {query}\n\n"
-                "Response:"
-            )
-            raw = await self._cometapi_fast_generate_text(
-                prompt,
-                None,
-                log_extra,
-                trace_key="cometapi_fast_intent",
-            )
-            if not raw:
-                return self._detect_tools_by_keyword(query)
-            if "```" in raw:
-                raw = re.sub(r"```(?:json)?", "", raw).replace("```", "").strip()
-            
-            parsed = _json.loads(raw)
-            logger.info(f"[LLM의도분석] Intent: {parsed.get('intent')}, Reason: {parsed.get('reasoning')}", extra=log_extra)
-            
-            tool_list = parsed.get("tools", [])
-            result = []
-            for t in tool_list:
-                name = t.get("tool", "")
-                if not name or name == "none":
-                    continue
-                params = t.get("params", {})
-                if not isinstance(params, dict):
-                    params = {}
-
-                # 금융 도구는 실수 빈도가 높아 웹 검색 도구로 일괄 대체
-                if name in self._DEPRECATED_FINANCE_TOOLS:
-                    finance_query = (
-                        params.get("query")
-                        or params.get("user_query")
-                        or params.get("symbol")
-                        or params.get("stock_name")
-                        or query
-                    )
-                    result.append(
-                        {
-                            "tool_to_use": "web_search",
-                            "tool_name": "web_search",
-                            "parameters": {"query": self._build_finance_news_query(finance_query)},
-                        }
-                    )
-                    continue
-
-                if name not in self._ALLOWED_RUNTIME_TOOLS:
-                    logger.info("[LLM의도분석] 비허용 도구 계획 제거: %s", name, extra=log_extra)
-                    continue
-
-                result.append({"tool_to_use": name, "tool_name": name, "parameters": params})
-
-            # LLM이 잡담에 대해 과탐지한 경우 방어적으로 무효화
-            if result and self._is_smalltalk_only_query(query):
-                logger.info("[LLM의도분석] 잡담 질의에 대한 도구 계획 무효화", extra=log_extra)
-                return []
-            return result
-        except Exception as e:
-            logger.warning(f"[LLM도구선택] 실패 → 키워드 fallback: {e}", extra=log_extra)
-            return self._detect_tools_by_keyword(query)
+        return await self.intent_analyzer._detect_tools_by_llm(query, log_extra, history)
 
     def _detect_tools_by_keyword(self, query: str) -> list[dict]:
         """키워드 기반 도구 감지 (LLM 실패 시 fallback)."""
-        tools = []
-        query_lower = query.lower()
-
-        # 날씨 감지
-        if any(kw in query_lower for kw in self._WEATHER_KEYWORDS):
-            location = self._extract_location_from_query(query) or '광양'
-
-            day_offset = 0
-            if "내일" in query:
-                day_offset = 1
-            elif "모레" in query:
-                day_offset = 2
-            elif "글피" in query:
-                day_offset = 3
-            elif any(kw in query for kw in ["다음주", "이번주", "주말", "일주일"]):
-                day_offset = 3 # Start of mid-term forecast
-
-            tools.append({
-                'tool_to_use': 'get_weather_forecast',
-                'tool_name': 'get_weather_forecast',
-                'parameters': {'location': location, 'day_offset': day_offset}
-            })
-            return tools  # 날씨 요청은 단일 도구로 처리
-
-        # 금융 관련 질문은 직접 시세 도구 대신 웹 검색으로 대체
-        if self._looks_like_finance_query(query):
-            logger.info(f"금융 관련 질문 감지: '{query}' -> web_search로 대체")
-            tools.append({
-                'tool_to_use': 'web_search',
-                'tool_name': 'web_search',
-                'parameters': {'query': self._build_finance_news_query(query)}
-            })
-            return tools
-
-        # 장소 관련 질문도 web_search로 통합 처리
-        if any(kw in query_lower for kw in self._PLACE_KEYWORDS):
-            tools.append({
-                'tool_to_use': 'web_search',
-                'tool_name': 'web_search',
-                'parameters': {'query': query.strip()}
-            })
-            return tools
-
-        # 도구 필요 없음 - 일반 대화 또는 RAG로 처리
-        return tools
+        return self.intent_analyzer._detect_tools_by_keyword(query)
 
     @staticmethod
     def _build_finance_news_query(query: str) -> str:
         """금융 질문을 웹 검색 친화 쿼리로 보정합니다."""
-        base = (query or "").strip()
-        if not base:
-            return "국내외 금융 시장 최신 뉴스"
-        base_lower = base.lower()
-        has_news_hint = any(
-            hint in base_lower
-            for hint in ("뉴스", "소식", "헤드라인", "이슈", "동향", "시황", "news")
-        )
-        if has_news_hint:
-            return base
-        return f"{base} 최신 금융 뉴스"
+        return IntentAnalyzer._build_finance_news_query(query)
 
     def _extract_location_from_query(self, query: str) -> str | None:
         """쿼리에서 지역명을 추출합니다 (DB 캐시 사용)."""
-        # 캐시가 비어있으면 로드 시도 (동기 메서드라 await 불가하지만, process_agent에서 미리 로드됨을 가정)
-        # 만약 로드 안 된 상태라면 어쩔 수 없이 pass
-        
-        # 긴 이름부터 매칭하여 오탐지 방지 (예: '나주시' vs '나주')
-        # 매번 정렬하면 느리므로, 캐시가 클 경우 최적화 필요. 일단은 단순 순회.
-        # 성능을 위해 쿼리에 있는 단어만 필터링하는 방식이 좋음.
-        
-        if not self.location_cache:
-             return None
+        return self.intent_analyzer._extract_location_from_query(query)
 
-        # 쿼리가 짧으면 그냥 순회
-        # 매칭된 것 중 가장 긴 것을 선택
-        best_match = None
-        for location in self.location_cache:
-            if location in query:
-                if best_match is None or len(location) > len(best_match):
-                    best_match = location
-        
-        return best_match
-
-    def _extract_us_stock_symbol(self, query_lower: str) -> str | None:
+    @staticmethod
+    def _extract_us_stock_symbol(query_lower: str) -> str | None:
         """쿼리에서 미국 주식 심볼을 추출합니다."""
-        symbol_map = {
-            '애플': 'AAPL', 'apple': 'AAPL', 'aapl': 'AAPL',
-            '테슬라': 'TSLA', 'tesla': 'TSLA', 'tsla': 'TSLA',
-            '구글': 'GOOGL', 'google': 'GOOGL', 'googl': 'GOOGL',
-            '엔비디아': 'NVDA', 'nvidia': 'NVDA', 'nvda': 'NVDA',
-            '마이크로소프트': 'MSFT', 'microsoft': 'MSFT', 'msft': 'MSFT',
-            '아마존': 'AMZN', 'amazon': 'AMZN', 'amzn': 'AMZN',
-            '맥도날드': 'MCD', 'mcd': 'MCD',
-            '스타벅스': 'SBUX', 'sbux': 'SBUX',
-            '코카콜라': 'KO', 'coca-cola': 'KO', 'ko': 'KO',
-            '펩시': 'PEP', 'pepsi': 'PEP',
-            '넷플릭스': 'NFLX', 'netflix': 'NFLX',
-            '메타': 'META', '페이스북': 'META', 'meta': 'META',
-            '디즈니': 'DIS', 'disney': 'DIS',
-            '인텔': 'INTC', 'intel': 'INTC',
-            'amd': 'AMD',
-            '나이키': 'NKE', 'nike': 'NKE',
-            '코스트코': 'COST', 'costco': 'COST',
-            '버크셔': 'BRK.B', 'berkshire': 'BRK.B'
-        }
-        for keyword, symbol in symbol_map.items():
-            if keyword in query_lower:
-                return symbol
-        return None
+        return IntentAnalyzer._extract_us_stock_symbol(query_lower)
 
     def _extract_kr_stock_ticker(self, query_lower: str) -> str | None:
         """쿼리에서 한국 주식 종목 코드를 추출합니다."""
-        ticker_map = {
-            '삼성전자': '005930', '현대차': '005380', 'sk하이닉스': '000660',
-            '네이버': '035420', '카카오': '035720', 'lg에너지': '373220',
-            '셀트리온': '068270', '삼성바이오': '207940', '기아': '000270', '포스코': '005490',
-        }
-        for keyword, ticker in ticker_map.items():
-            if keyword in query_lower:
-                return ticker
-        return None
+        return self.intent_analyzer._extract_kr_stock_ticker(query_lower)
 
     async def _get_rag_context(
         self,
@@ -2447,7 +1457,7 @@ Generate the optimized English image prompt:"""
             return {"error": "tool_to_use가 지정되지 않았습니다."}
 
         # 금융 도구는 비활성화하고 웹 검색으로 강제 대체
-        if tool_name in self._DEPRECATED_FINANCE_TOOLS:
+        if tool_name in self.intent_analyzer._DEPRECATED_FINANCE_TOOLS:
             redirected_query = self._build_finance_news_query(
                 parameters.get('query')
                 or parameters.get('user_query')
@@ -2468,7 +1478,7 @@ Generate the optimized English image prompt:"""
             tool_call["tool_name"] = tool_name
             tool_call["parameters"] = parameters
 
-        if tool_name not in self._ALLOWED_RUNTIME_TOOLS:
+        if tool_name not in self.intent_analyzer._ALLOWED_RUNTIME_TOOLS:
             logger.warning("비활성화된 도구 실행 시도 차단: %s", tool_name, extra=log_extra)
             return {"error": f"'{tool_name}' 도구는 현재 비활성화되어 있습니다."}
 
