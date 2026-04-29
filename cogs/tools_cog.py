@@ -34,6 +34,7 @@ def is_korean(text: str) -> bool:
 class ToolsCog(commands.Cog):
     """AI 에이전트가 사용할 수 있는 도구(Tool)들의 모음입니다."""
     def __init__(self, bot: commands.Bot):
+        """ToolsCog를 초기화하고 지연 로딩용 Lock을 설정합니다."""
         self.bot = bot
         self.weather_cog: WeatherCog = self.bot.get_cog('WeatherCog')
         self._linkup_search_pipeline = None

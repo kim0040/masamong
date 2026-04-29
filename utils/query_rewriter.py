@@ -46,6 +46,7 @@ _TAIL_VARIANTS: tuple[str, ...] = (
 
 
 def _normalize_query(text: str) -> str:
+    """질의 문자열의 앞뒤 공백을 제거한 정규화된 텍스트를 반환한다."""
     stripped = text.strip()
     if not stripped:
         return ""

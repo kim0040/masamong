@@ -1,4 +1,12 @@
 # -*- coding: utf-8 -*-
+"""
+Kakao 로컬 API 클라이언트.
+
+장소 검색, 웹 검색, 이미지 검색 기능을 제공하며,
+Rate Limit (RPM/RPD) 및 동시성 제어를 내장하고 있습니다.
+공유 aiohttp 세션을 통해 커넥션을 재사용합니다.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -33,10 +41,12 @@ def _format_places_data(query: str, places: list) -> str:
 
 
 def _is_kakao_key_ready() -> bool:
+    """Kakao API 키가 설정되었고 기본값이 아닌지 확인합니다."""
     return bool(config.KAKAO_API_KEY and config.KAKAO_API_KEY != "YOUR_KAKAO_API_KEY")
 
 
 def _kakao_headers() -> dict[str, str]:
+    """Kakao API 요청용 Authorization 헤더를 생성합니다."""
     return {
         "Authorization": f"KakaoAK {config.KAKAO_API_KEY}",
         "User-Agent": "Masamong/2.0",
@@ -44,6 +54,10 @@ def _kakao_headers() -> dict[str, str]:
 
 
 async def _get_kakao_session() -> aiohttp.ClientSession:
+    """공유 aiohttp 세션을 생성하거나 기존 세션을 반환합니다.
+
+    세션은 double-checked locking으로 스레드 안전하게 생성됩니다.
+    """
     global _kakao_session
 
     if _kakao_session and not _kakao_session.closed:
@@ -74,6 +88,7 @@ async def close_kakao_session() -> None:
 
 
 def _prune_rate_window(now: float) -> None:
+    """만료된 Rate Limit 호출 기록을 제거합니다."""
     minute_cutoff = now - 60.0
     day_cutoff = now - 86400.0
     while _minute_calls and _minute_calls[0] < minute_cutoff:
@@ -83,6 +98,7 @@ def _prune_rate_window(now: float) -> None:
 
 
 async def _acquire_rate_slot() -> bool:
+    """Rate Limit 슬롯을 획득합니다. RPM/RPD 초과 시 False를 반환합니다."""
     rpm_limit = max(1, int(getattr(config, "KAKAO_API_RPM_LIMIT", 60)))
     rpd_limit = max(1, int(getattr(config, "KAKAO_API_RPD_LIMIT", 95000)))
 
@@ -103,6 +119,10 @@ async def _acquire_rate_slot() -> bool:
 
 
 async def _request_kakao_json(url: str, params: dict[str, Any], endpoint_name: str) -> dict[str, Any] | None:
+    """Kakao API에 GET 요청을 보내고 JSON 응답을 반환합니다.
+
+    Rate Limit, 동시성 제어, 재시도를 내장하고 있습니다.
+    """
     if not _is_kakao_key_ready():
         logger.error("카카오 API 키(KAKAO_API_KEY)가 설정되지 않았습니다.")
         return None

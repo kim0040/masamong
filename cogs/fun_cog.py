@@ -17,6 +17,7 @@ from .ai_handler import AIHandler
 
 @dataclass
 class SummaryCacheEntry:
+    """채널별 요약 캐시 데이터를 저장하는 데이터클래스입니다."""
     anchor_message_id: int
     summary_text: str
     updated_at: datetime
@@ -26,6 +27,7 @@ class FunCog(commands.Cog):
     """재미, 편의 목적의 명령어 및 키워드 기반 기능을 그룹화하는 클래스입니다."""
 
     def __init__(self, bot: commands.Bot):
+        """FunCog를 초기화하고 키워드 쿨다운 및 요약 캐시를 설정합니다."""
         self.bot = bot
         self.ai_handler: AIHandler | None = None # main.py에서 주입됨
         # 채널별 키워드 기능 쿨다운을 관리하는 딕셔너리

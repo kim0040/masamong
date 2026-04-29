@@ -21,6 +21,7 @@ class MaintenanceCog(commands.Cog):
     """봇의 백그라운드 유지보수 작업을 관리합니다."""
 
     def __init__(self, bot: commands.Bot):
+        """MaintenanceCog를 초기화하고 유지보수 관련 상태를 설정합니다."""
         self.bot = bot
         self._last_conversation_ts: datetime | None = None
         self._last_bm25_rebuild_ts: datetime | None = None

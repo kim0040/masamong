@@ -22,7 +22,10 @@ from utils.fortune import FortuneCalculator, get_sign_from_date
 TIME_PATTERN = re.compile(r'^([01]\d|2[0-3]):([0-5]\d)$')
 
 class FortuneCog(commands.Cog):
+    """운세 관련 기능을 제공하는 Cog입니다."""
+
     def __init__(self, bot: commands.Bot):
+        """FortuneCog를 초기화하고 백그라운드 태스크를 시작합니다."""
         self.bot = bot
         self.calculator = FortuneCalculator()
         self._ready = False
@@ -70,6 +73,7 @@ class FortuneCog(commands.Cog):
             self._ready = True
 
     def cog_unload(self):
+        """Cog 언로드 시 아침 브리핑 태스크를 취소합니다."""
         self.morning_briefing_task.cancel()
 
     @commands.group(name='운세', invoke_without_command=True)

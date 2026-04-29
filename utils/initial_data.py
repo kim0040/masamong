@@ -48,10 +48,12 @@ SHORT_NAME_MAP = {
 
 
 def _normalize_name(value: str | None) -> str:
+    """문자열의 앞뒤 공백과 연속된 공백을 하나로 정리하여 반환한다."""
     return " ".join((value or "").split()).strip()
 
 
 def _expand_level_aliases(level: str) -> Iterable[str]:
+    """행정구역명의 접미사(시/군/구/도 등)를 떼어낸 다양한 별칭 후보를 생성한다."""
     level = _normalize_name(level)
     if not level:
         return []
@@ -92,6 +94,7 @@ def _expand_level_aliases(level: str) -> Iterable[str]:
 
 
 def _collect_candidate_names(level1: str, level2: str, level3: str) -> set[str]:
+    """1·2·3단계 행정구역명을 조합하여 검색에 사용할 모든 이름 후보 집합을 생성한다."""
     names: set[str] = set()
     l1_aliases = list(_expand_level_aliases(level1))
     l2_aliases = list(_expand_level_aliases(level2))

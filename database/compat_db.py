@@ -32,6 +32,11 @@ class CompatRow:
     """SQLite Row와 유사하게 int/str 인덱싱을 모두 지원하는 행 객체."""
 
     def __init__(self, data: dict[str, Any]):
+        """주어진 딕셔너리로 행 객체를 초기화합니다.
+
+        Args:
+            data: 컬럼명→값 매핑
+        """
         self._mapping = dict(data)
         self._columns = list(data.keys())
         self._values = [data[name] for name in self._columns]
@@ -60,6 +65,7 @@ class CompatRow:
         return self._mapping.values()
 
     def as_dict(self) -> dict[str, Any]:
+        """행 데이터를 일반 dict로 변환합니다."""
         return dict(self._mapping)
 
 
@@ -181,6 +187,16 @@ def rewrite_sql_for_tidb(query: str) -> str:
 
 
 def split_sql_script(script: str) -> list[str]:
+    """SQL 스크립트를 개별 구문(statement) 목록으로 분할합니다.
+
+    주석(`--`)과 빈 줄은 무시하며, 세미콜론(`;`)을 기준으로 구문을 나눕니다.
+
+    Args:
+        script: 분할할 SQL 스크립트 문자열
+
+    Returns:
+        개별 SQL 구문 리스트
+    """
     statements: list[str] = []
     current: list[str] = []
     for raw_line in script.splitlines():
@@ -311,6 +327,7 @@ class TiDBConnection:
                 raise CompatOperationalError(str(exc)) from exc
 
     def _executemany_sync(self, sql: str, values: list[tuple[Any, ...]]) -> None:
+        """여러 행을 동기적으로 일괄 실행합니다."""
         assert self._conn is not None
         with self._conn.cursor() as cursor:
             cursor.executemany(sql, values)

@@ -79,6 +79,7 @@ class AIHandler(commands.Cog):
     """
 
     def __init__(self, bot: commands.Bot):
+        """AIHandler 초기화 — LLM 클라이언트, 임베딩 스토어, 검색 엔진 등 코어 컴포넌트를 설정합니다."""
         self.bot = bot
         self.tools_cog = bot.get_cog('ToolsCog')
         self.ai_user_cooldowns: Dict[int, datetime] = {}
@@ -165,10 +166,12 @@ class AIHandler(commands.Cog):
 
     @staticmethod
     def _normalize_provider(provider: Any) -> str:
+        """LLM 프로바이더 식별자를 소문자 문자열로 정규화합니다."""
         return str(provider or "").strip().lower()
 
     @staticmethod
     def _strip_mention_guard(text: Any) -> str:
+        """프롬프트 텍스트에서 멘션 가드 스니펫을 제거합니다."""
         rendered = str(text or "")
         return rendered.replace(config.MENTION_GUARD_SNIPPET, "").strip()
 
@@ -251,6 +254,7 @@ class AIHandler(commands.Cog):
         return targets
 
     def _get_openai_client(self, base_url: str, api_key: str) -> Any | None:
+        """캐시된 OpenAI 호환 클라이언트를 반환하거나 새로 생성합니다."""
         if not AsyncOpenAI:
             return None
         cache_key = (base_url.rstrip("/"), api_key)
@@ -261,6 +265,7 @@ class AIHandler(commands.Cog):
         return client
 
     def _get_gemini_compat_client(self, base_url: str, api_key: str) -> Any | None:
+        """캐시된 Gemini 호환 클라이언트를 반환하거나 새로 생성합니다."""
         if not google_genai:
             return None
         cache_key = (base_url.rstrip("/"), api_key)
@@ -282,6 +287,7 @@ class AIHandler(commands.Cog):
         log_extra: dict,
         max_tokens: int,
     ) -> str | None:
+        """시스템/사용자 프롬프트로 단일 메인 레인 LLM 타겟을 호출합니다."""
         provider = target["provider"]
         if provider == "openai_compat":
             client = self._get_openai_client(target["base_url"], target["api_key"])
@@ -336,6 +342,7 @@ class AIHandler(commands.Cog):
         prompt: str,
         log_extra: dict,
     ) -> str | None:
+        """단일 라우팅 레인 LLM 타겟을 호출하여 프롬프트 응답을 반환합니다."""
         provider = target["provider"]
         if provider == "openai_compat":
             client = self._get_openai_client(target["base_url"], target["api_key"])
@@ -1571,6 +1578,7 @@ Generate the optimized English image prompt:"""
         return False
 
     def _is_realtime_web_query(self, query: str) -> bool:
+        """질의에 실시간 웹 검색이 필요한지 여부를 판단합니다."""
         query_lower = (query or "").lower()
         if not query_lower:
             return False
@@ -1780,6 +1788,7 @@ Generate the optimized English image prompt:"""
         return False
 
     def _mark_auto_web_search_used(self, message: discord.Message) -> None:
+        """자동 웹 검색 사용 시점을 기록하여 쿨다운을 관리합니다."""
         key = self._auto_web_search_scope_key(message)
         self._auto_web_search_last_used[key] = time.monotonic()
         if len(self._auto_web_search_last_used) > 2048:
@@ -2369,6 +2378,7 @@ Generate the optimized English image prompt:"""
 
     @staticmethod
     def _extract_json_block(text: str) -> str:
+        """LLM 응답 텍스트에서 JSON 블록을 추출합니다."""
         stripped = text.strip()
         if stripped.startswith("```"):
             stripped = re.sub(r'^```[a-zA-Z0-9_]*\s*', '', stripped)
@@ -2382,6 +2392,7 @@ Generate the optimized English image prompt:"""
 
     @staticmethod
     def _normalize_score(value: Any) -> float | None:
+        """점수 값을 float 또는 None으로 정규화합니다."""
         if value is None:
             return None
         try:
@@ -2395,6 +2406,7 @@ Generate the optimized English image prompt:"""
         return score
 
     def _parse_thinking_response(self, text: str) -> dict[str, Any]:
+        """Thinking 모델 응답을 구조화된 dict로 파싱합니다."""
         stripped = text.strip()
         data: Any | None = None
         for candidate in (stripped, self._extract_json_block(stripped)):
@@ -2490,6 +2502,7 @@ Generate the optimized English image prompt:"""
         }
 
     def _should_use_flash(self, thinking: dict[str, Any], rag_top_score: float) -> bool:
+        """Flash/소형 모델을 사용해야 하는지 판단합니다."""
         if not thinking:
             return True
         if thinking.get("needs_flash"):
@@ -2675,6 +2688,7 @@ Generate the optimized English image prompt:"""
 
     @staticmethod
     def _format_tool_results_for_prompt(tool_results: list[dict]) -> str:
+        """도구 실행 결과를 LLM 프롬프트용으로 포맷팅합니다."""
         lines: list[str] = []
         for entry in tool_results:
             name = entry.get("tool_name") or "unknown"

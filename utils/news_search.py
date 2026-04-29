@@ -100,6 +100,11 @@ class FastLLMBudget:
     """파이프라인 내 Fast 모델 호출 횟수를 제한하는 스레드 세이프 카운터."""
 
     def __init__(self, max_calls: int):
+        """Fast 모델 호출 예산을 초기화합니다.
+
+        Args:
+            max_calls: 허용할 최대 호출 횟수 (0 이상의 정수).
+        """
         self.max_calls = max(0, int(max_calls))
         self._used_calls = 0
         self._lock = threading.Lock()
@@ -121,6 +126,11 @@ class FastLLMQuotaManager:
     """Fast 모델 호출을 중앙 api_call_log(cometapi) 기준으로 제한/기록합니다."""
 
     def __init__(self, db_path: str | None):
+        """CometAPI 호출 한도 관리자를 초기화합니다.
+
+        Args:
+            db_path: api_call_log를 기록할 SQLite DB 경로. None이면 한도 검사를 건너뜁니다.
+        """
         self.db_path = db_path
         self.rpm_limit = max(1, int(getattr(config, "COMETAPI_RPM_LIMIT", 40)))
         self.rpd_limit = max(1, int(getattr(config, "COMETAPI_RPD_LIMIT", 3000)))
@@ -1119,6 +1129,7 @@ def _snippet_fallback_summary(user_query: str, title: str, snippet: str, url: st
 
 
 def _local_extract_summary(text: str) -> str:
+    """LLM 요약 실패 시 텍스트 앞부분을 잘라 로컬에서 폴백 요약을 생성합니다."""
     cleaned = re.sub(r"\s+", " ", (text or "").strip())
     if not cleaned:
         return ""
