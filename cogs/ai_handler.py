@@ -395,7 +395,7 @@ class AIHandler(commands.Cog):
                 rendered = json.dumps(prompt, ensure_ascii=False)
             else:
                 rendered = str(prompt)
-        except Exception:
+        except (TypeError, ValueError, Exception):
             rendered = repr(prompt)
         return self._truncate_for_debug(rendered)
 
@@ -944,7 +944,8 @@ class AIHandler(commands.Cog):
             if summary:
                 return summary.strip()
             return text
-        except Exception:
+        except Exception as e:
+            logger.warning("대화 내용 요약 중 오류 발생, 원본 텍스트 반환: %s", e)
             return text
 
     async def _create_window_embedding(self, guild_id: int, channel_id: int, payload: list[dict[str, Any]]):
@@ -1152,6 +1153,23 @@ class AIHandler(commands.Cog):
         Returns:
             영문 이미지 프롬프트 또는 None
         """
+        # 사용자 쿼리 NSFW 검사
+        query_lower = (user_query or "").lower()
+        nsfw_query_keywords = [
+            '야한', '선정적', '노출', '성인', '음란', '에로', '섹시', '야동',
+            'nsfw', 'nude', 'naked', 'sexy', 'erotic', 'xxx', 'porn',
+            '벗은', '알몸', '나체', '가슴', '엉덩이', '19금', '18금',
+            '혐오', '증오', '살인', '자살', '테러', '학살', '고문',
+            'hate', 'gore', 'suicide', 'murder', 'torture', 'kill',
+        ]
+        if any(kw in query_lower for kw in nsfw_query_keywords):
+            logger.warning(
+                "이미지 생성 요청이 안전 필터에 의해 차단되었습니다: %s",
+                user_query[:100],
+                extra=log_extra,
+            )
+            return "A beautiful serene landscape with mountains and a peaceful lake, golden hour lighting, photorealistic, masterpiece, best quality, 8k"
+
         # RAG 컨텍스트 안전성 검사 (선정적 내용이 있으면 무시)
         safe_context = ""
         if rag_context:
@@ -1160,11 +1178,13 @@ class AIHandler(commands.Cog):
             nsfw_keywords = [
                 '야한', '선정적', '노출', '성인', '음란', '에로', '섹시', '야동',
                 'nsfw', 'nude', 'naked', 'sexy', 'erotic', 'xxx', 'porn',
-                '벗은', '알몸', '나체', '가슴', '엉덩이', '19금', '18금'
+                '벗은', '알몸', '나체', '가슴', '엉덩이', '19금', '18금',
+                '혐오', '증오', '살인', '자살', '테러', '학살', '고문',
+                'hate', 'gore', 'suicide', 'murder', 'torture',
             ]
             if not any(kw in rag_lower for kw in nsfw_keywords):
                 safe_context = f"\n\n[Context from previous conversations - use if relevant]:\n{rag_context[:400]}"
-        
+
         # 전문 프롬프트 엔지니어링 시스템 프롬프트
         system_prompt = """You are an expert AI image prompt engineer specializing in FLUX and Stable Diffusion models.
 Your task: Convert the user's Korean image request into a HIGH-QUALITY English prompt.
@@ -1180,11 +1200,18 @@ Your task: Convert the user's Korean image request into a HIGH-QUALITY English p
 ## Example Output:
 "A fluffy orange tabby cat sitting on a windowsill, looking outside at falling snow, cozy indoor lighting, photorealistic style, soft warm lighting from the window, masterpiece, best quality, highly detailed, 8k, shallow depth of field, medium shot"
 
-## CRITICAL SAFETY RULES (RELAXED):
-- ONLY SUBSTITUTE if the request specifically asks for: EXPLICIT SEXUAL ACTS, GENITALIA, or NUDITY (NIPPLES/GENITALS EXPOSED).
-- ALLOW: Swimwear, lingerie, attractive characters, sexy poses, celebrities, real people, action violence, horror, and hate symbols are ALL ALLOWED.
-- IF and ONLY IF the request is EXPLICIT PORNOGRAPHY (e.g. sex acts, exposed genitalia): SUBSTITUTE with: "A beautiful serene landscape with mountains and a peaceful lake, golden hour lighting, photorealistic, masterpiece, best quality, 8k"
+            ## CRITICAL SAFETY RULES (STRICT):
+- SUBSTITUTE immediately for ANY of the following:
+  - Explicit sexual acts, genitalia, or nudity (nipples/genitals exposed)
+  - Sexualized depictions of minors or non-consenting subjects
+  - Gore, extreme violence, self-harm, or suicide
+  - Hate symbols, hate speech, or discriminatory content
+  - Sexualized lingerie, sexualized swimwear, or sexualized poses
+  - Real-person deepfakes or impersonation without consent
+- When ANY of the above is detected, output ONLY this EXACT text:
+  "A beautiful serene landscape with mountains and a peaceful lake, golden hour lighting, photorealistic, masterpiece, best quality, 8k"
 - Do NOT explain why you substituted - just output the safe alternative
+- Celebrities and real people: only allow if the request is clearly for a respectful portrait or fan art, not for degrading or sexualized depictions
 
 ## Output Rules:
 - Output ONLY the English prompt, nothing else
