@@ -1638,7 +1638,7 @@ Generate the optimized English image prompt:"""
 
         try:
             # 1단계: 분석 및 도구 계획 수립
-            await status_msg.edit(content="🤔 질문을 분석하고 있어...")
+            await status_msg.edit(content="🔎 질문 의도를 파악하고 필요한 자료를 검토 중이야...")
             
             # [NEW] 지역명 캐시 로드 (필요 시)
             await self._load_location_cache()
@@ -1705,12 +1705,18 @@ Generate the optimized English image prompt:"""
                 })
 
             if tool_plan:
-                await status_msg.edit(content=f"🔍 필요한 정보를 찾는 중이야... ({len(tool_plan)}단계)")
+                step_label = f"{len(tool_plan)}단계" if len(tool_plan) > 1 else ""
+                tool_names_kr = {"web_search": "웹 검색", "get_weather_forecast": "날씨 조회", "generate_image": "이미지 생성"}
+                first_tool = tool_plan[0].get('tool_to_use', '')
+                first_label = tool_names_kr.get(first_tool, first_tool)
+                await status_msg.edit(content=f"🔍 {first_label} 정보를 가져오는 중이야... {step_label}")
                 logger.info(f"2단계: 도구 실행 시작. 총 {len(tool_plan)}단계.", extra=log_extra)
                 
                 for idx, tool_call in enumerate(tool_plan, start=1):
                     tool_name = tool_call.get('tool_to_use')
-                    await status_msg.edit(content=f"🔍 {tool_name} 실행 중... ({idx}/{len(tool_plan)})")
+                    tool_label = tool_names_kr.get(tool_name, tool_name)
+                    progress = f"({idx}/{len(tool_plan)})" if len(tool_plan) > 1 else ""
+                    await status_msg.edit(content=f"🔍 {tool_label} 진행 중... {progress}")
 
                     result = await self._execute_tool(
                         tool_call,
@@ -1731,7 +1737,7 @@ Generate the optimized English image prompt:"""
             # 도구 계획이 없을 때만 웹 검색 자동 판단 (중복 탐색/과호출 방지)
             if not tool_plan and await self._should_use_web_search(user_query, rag_top_score, history=history):
                 if self._can_run_auto_web_search(message, user_query, log_extra):
-                    await status_msg.edit(content="🌐 웹에서 정보를 찾아보는 중이야...")
+                    await status_msg.edit(content="🌐 웹에서 최신 정보를 검색하고 요약 중이야...")
 
                     # [NEW] 히스토리를 바탕으로 검색 쿼리 정제
                     refined_query = user_query
@@ -1764,7 +1770,7 @@ Generate the optimized English image prompt:"""
                         return
 
             # 답변 작성 단계
-            await status_msg.edit(content="✍️ 답변을 정리하고 있어...")
+            await status_msg.edit(content="✍️ 수집한 정보를 바탕으로 답변을 작성 중이야...")
 
             # 도구 결과에서 출처 URL 추출
             source_urls_to_cache = []
