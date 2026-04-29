@@ -780,10 +780,11 @@ Generate the optimized English image prompt:"""
         *,
         rag_top_score: float,
         log_extra: dict | None = None,
+        trust_llm: bool = False,
     ) -> list[dict]:
         """LLM 도구 계획을 운영 정책(과도한 웹검색 방지) 기준으로 보정합니다."""
         return self.intent_analyzer._sanitize_tool_plan(
-            query, tool_plan, rag_top_score=rag_top_score, log_extra=log_extra,
+            query, tool_plan, rag_top_score=rag_top_score, log_extra=log_extra, trust_llm=trust_llm,
         )
 
     async def _should_use_web_search(self, query: str, rag_top_score: float, history: list = None) -> bool:
