@@ -17,6 +17,29 @@ load_dotenv()
 USE_YFINANCE = True
 YFINANCE_CACHE_TTL = 600 # 10분 캐시
 
+# config.json 메모리 캐시 (매 호출마다 디스크 I/O 방지)
+_CONFIG_JSON_CACHE: dict | None = None
+_CONFIG_JSON_LOADED: bool = False
+
+
+def _read_config_json() -> dict:
+    global _CONFIG_JSON_CACHE, _CONFIG_JSON_LOADED
+    if _CONFIG_JSON_LOADED:
+        return _CONFIG_JSON_CACHE or {}
+    _CONFIG_JSON_LOADED = True
+    try:
+        with open('config.json', 'r', encoding='utf-8') as f:
+            _CONFIG_JSON_CACHE = json.load(f)
+            return _CONFIG_JSON_CACHE or {}
+    except FileNotFoundError:
+        _CONFIG_JSON_CACHE = {}
+        return {}
+    except json.JSONDecodeError:
+        print("경고: config.json 파일이 유효한 JSON 형식이 아닙니다.")
+        _CONFIG_JSON_CACHE = {}
+        return {}
+
+
 def load_config_value(key, default=None):
     """환경 변수 → `config.json` 순으로 값을 조회하고, 없으면 기본값을 반환합니다.
 
@@ -30,16 +53,10 @@ def load_config_value(key, default=None):
     value = os.environ.get(key)
     if value:
         return value
-    try:
-        with open('config.json', 'r', encoding='utf-8') as f:
-            config_json = json.load(f)
-        value = config_json.get(key)
-        if value:
-            return value
-    except FileNotFoundError:
-        pass
-    except json.JSONDecodeError:
-        print("경고: config.json 파일이 유효한 JSON 형식이 아닙니다.")
+    config_json = _read_config_json()
+    value = config_json.get(key)
+    if value:
+        return value
     return default
 
 
