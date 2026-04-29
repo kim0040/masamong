@@ -46,6 +46,7 @@ except ModuleNotFoundError:  # pragma: no cover - 경량 설치 환경 고려
 import random
 import time
 import json
+import io
 import uuid
 import requests
 
@@ -1836,6 +1837,37 @@ Generate the optimized English image prompt:"""
             if final_response_text:
                 # 멘션 제거 및 후처리
                 final_response_text = re.sub(r'^@마사몽\s*|^@masamong\s*|^<@!?[0-9]+>\s*', '', final_response_text, flags=re.IGNORECASE)
+                
+                # 이미지 생성 결과가 있으면 Discord 파일로 전송
+                image_result = next((res for res in tool_results if res.get("tool_name") == "generate_image"), None)
+                if image_result and isinstance(image_result.get("result"), dict):
+                    img_data = image_result["result"].get("image_data")
+                    img_url = image_result["result"].get("image_url")
+                    if img_data:
+                        try:
+                            image_file = discord.File(io.BytesIO(img_data), filename="generated.png")
+                            await message.channel.send(content=final_response_text[:2000], file=image_file)
+                            try:
+                                await status_msg.delete()
+                            except:
+                                pass
+                            # 분석 데이터 로깅
+                            await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
+                            await db_utils.log_api_call(self.bot.db, "llm_global")
+                            await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {
+                                "guild_id": message.guild.id if message.guild else "DM",
+                                "user_id": message.author.id,
+                                "channel_id": message.channel.id,
+                                "trace_id": trace_id,
+                                "user_query": user_query,
+                                "tool_plan": executed_plan or tool_plan,
+                                "final_response": final_response_text,
+                            })
+                            return
+                        except Exception as img_exc:
+                            logger.error(f"이미지 전송 실패: {img_exc}", extra=log_extra)
+                    elif img_url:
+                        final_response_text += f"\n\n🖼️ {img_url}"
                 
                 # [Progress Update] 최종 답변으로 편집
                 if source_urls_to_cache:
