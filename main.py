@@ -298,6 +298,8 @@ class ReMasamongBot(commands.Bot):
         # 일부 Cog는 다른 Cog의 기능을 직접 호출해야 할 수 있습니다.
         ai_handler_cog = self.get_cog('AIHandler')
         if ai_handler_cog:
+            # LLMClient에 DB 연결 주입 (AIHandler.__init__ 시점에는 db=None)
+            ai_handler_cog.llm_client.db = self.db
             # ActivityCog와 FunCog에 AIHandler 인스턴스를 주입합니다.
             for cog_name in ['ActivityCog', 'FunCog']:
                 cog_instance = self.get_cog(cog_name)
