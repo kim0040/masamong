@@ -722,24 +722,24 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     Start([메시지 수신]) --> CheckBot{작성자가 봇?}
-    CheckBot -->|Yes| End([종료])
+    CheckBot -->|Yes| Done([종료])
     CheckBot -->|No| RecordActivity[활동 기록<br/>ActivityCog.record_message]
 
     RecordActivity --> CheckCmd{! 프리픽스?}
     CheckCmd -->|Yes| ProcessCmd[process_commands<br/>명령어 처리]
-    ProcessCmd --> End
+    ProcessCmd --> Done
 
     CheckCmd -->|No| AddHistory[대화 기록 저장<br/>add_message_to_history]
 
     AddHistory --> CheckAIReady{AI 준비 완료?}
-    CheckAIReady -->|No| End
+    CheckAIReady -->|No| Done
     CheckAIReady -->|Yes| CheckChannel{채널 허용?<br/>DM은 자동 통과}
-    CheckChannel -->|No| End
+    CheckChannel -->|No| Done
     CheckChannel -->|Yes| CheckMention{멘션 검증<br/>서버: @멘션 필수<br/>DM: 불필요}
-    CheckMention -->|실패| End
+    CheckMention -->|실패| Done
 
     CheckMention -->|통과| CheckLock{사용자 잠금?<br/>(대화형 커맨드 중)}
-    CheckLock -->|Yes| End
+    CheckLock -->|Yes| Done
     CheckLock -->|No| ValidateInput[입력 검증 및 정제<br/>text_cleaner]
 
     ValidateInput --> IntentAnalysis[1단계: 의도 분석<br/>IntentAnalyzer.analyze]
@@ -762,14 +762,16 @@ flowchart TD
     BuildPrompt --> GenResponse[3단계: 응답 생성<br/>Main Lane LLM 호출]
 
     GenResponse --> CheckSuccess{생성 성공?}
-    CheckSuccess -->|No| GenFallback[Fallback LLM 시도]
-    GenFallback --> CheckSuccess
-
     CheckSuccess -->|Yes| FormatResponse[응답 포맷팅<br/>data_formatters]
+    CheckSuccess -->|No| GenFallback[Fallback LLM 시도]
+    GenFallback --> FormatSuccess{생성 성공?}
+    FormatSuccess -->|Yes| FormatResponse
+    FormatSuccess -->|No| Done
+
     FormatResponse --> SendMessage[Discord 메시지 전송]
 
     SendMessage --> SaveEmbedding[임베딩 비동기 저장<br/>asyncio.create_task]
-    SaveEmbedding --> End
+    SaveEmbedding --> Done
 ```
 
 ### 6.2 의도 분석 상세 활동
@@ -822,7 +824,7 @@ flowchart TD
     RetryLLM --> MergeIntent
 
     MergeIntent --> BuildPlan[도구 실행 계획 생성]
-    BuildPlan --> End([분석 완료])
+    BuildPlan --> Done([분석 완료])
 ```
 
 ---
