@@ -166,13 +166,24 @@ test_data/
 data/
 임시/
 
+# 테스트 파일
+tests/
+test_*.py
+*_spec.py
+*_test.py
+
+# 일회성 검증 / 디버그 스크립트
+scripts/verify_*.py
+scripts/check_*.py
+scripts/deep_diag_*.py
+scripts/reproduce_*.py
+scripts/server_conn_test.py
+scripts/show_masamong_*.py
 
 # 임시 스크립트 (개발 중 테스트용)
 scratch.py
 scratch_verify.py
 benchmark_delay.py
-test_*.py
-!tests/test_*.py  # tests 폴더의 테스트는 포함
 
 # 개인 메모
 notes.md
