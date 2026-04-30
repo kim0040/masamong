@@ -109,9 +109,9 @@ PYTHONPATH=. python main.py
 메시지 → 의도 분석 (Routing Lane) → 도구 실행 → RAG 검색 → 응답 생성 (Main Lane)
 ```
 
-[📗 상세 아키텍처 (한국어)](ARCHITECTURE.md) &nbsp;|&nbsp; [📘 상세 아키텍처 (English)](ARCHITECTURE.en.md)
+[📗 상세 아키텍처 (한국어)](ARCHITECTURE.ko.md) &nbsp;|&nbsp; [📘 상세 아키텍처 (English)](ARCHITECTURE.en.md)
 
-[📐 UML 명세 및 다이어그램](UML_SPEC.md) — C4, 컴포넌트, 클래스, 시퀀스, 액티비티, 상태, 배포, ER 다이어그램 (총 17종)
+[📐 UML 명세 (English)](UML_SPEC.en.md) &nbsp;|&nbsp; [📐 UML 명세 (한국어)](UML_SPEC.ko.md) — C4, 컴포넌트, 클래스, 시퀀스, 액티비티, 상태, ER 다이어그램 (총 15종)
 
 ---
 
@@ -170,7 +170,7 @@ flowchart LR
 ```
 
 각 레인은 **Primary + Fallback** 타깃을 가지며 실패 시 자동 전환됩니다.  
-자세한 내용은 [ARCHITECTURE.md](ARCHITECTURE.md)를 참조하세요.
+자세한 내용은 [ARCHITECTURE.md](ARCHITECTURE.ko.md)를 참조하세요.
 
 ---
 
@@ -237,9 +237,9 @@ Copyright (c) 2025-2026 kim0040
 
 | 문서 | 언어 | 내용 |
 |------|------|------|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | 한국어 | 시스템 아키텍처 상세 (15개 다이어그램) |
+| [ARCHITECTURE.md](ARCHITECTURE.ko.md) | 한국어 | 시스템 아키텍처 상세 (15개 다이어그램) |
 | [ARCHITECTURE.en.md](ARCHITECTURE.en.md) | English | System architecture detail (15 diagrams) |
-| [UML_SPEC.md](UML_SPEC.md) | 한국어 | UML 분석 — C4, 클래스, 시퀀스, ER (17개 다이어그램) |
+| [UML_SPEC.md](UML_SPEC.ko.md) | 한국어 | UML 분석 — C4, 클래스, 시퀀스, ER (17개 다이어그램) |
 | [../README.md](../../README.md) | English | 영문 README |
 | [README.ja.md](README.ja.md) | 日本語 | 일본어 README |
 

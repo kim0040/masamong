@@ -108,9 +108,9 @@ Masamong uses a **3-stage dual-lane agent pipeline**:
 Message → Intent Analysis (Routing Lane) → Tool Execution → RAG Search → Response (Main Lane)
 ```
 
-[📘 Full Architecture (English)](docs/ARCHITECTURE.en.md) &nbsp;|&nbsp; [📗 Full Architecture (한국어)](docs/ARCHITECTURE.md)
+[📘 Full Architecture (English)](docs/ARCHITECTURE.en.md) &nbsp;|&nbsp; [📗 Full Architecture (한국어)](docs/ARCHITECTURE.ko.md)
 
-[📐 UML Specification & Diagrams](docs/UML_SPEC.md) — C4, component, class, sequence, activity, state, deployment, and ER diagrams (17 total)
+[📐 UML Specification (English)](docs/UML_SPEC.en.md) &nbsp;|&nbsp; [📐 UML 명세 (한국어)](docs/UML_SPEC.ko.md) — C4, component, class, sequence, activity, state, and ER diagrams (15 total)
 
 ---
 
@@ -141,10 +141,10 @@ masamong/
 ├── database/             # TiDB/SQLite schemas + compat adapter
 ├── scripts/              # Operational scripts (smoke test, migration, etc.)
 ├── docs/                 # Documentation
-│   ├── ARCHITECTURE.md   # Korean architecture doc
+│   ├── ARCHITECTURE.ko.md # Korean architecture doc
 │   ├── ARCHITECTURE.en.md # English architecture doc
-│   ├── UML_SPEC.md       # UML diagrams & technical analysis
-│   ├── README.ko.md      # Korean README
+│   ├── UML_SPEC.ko.md     # UML diagrams & technical analysis (Korean)
+│   ├── README.ko.md       # Korean README
 │   └── README.ja.md      # Japanese README
 └── requirements.txt
 ```
@@ -247,8 +247,8 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
 | Document | Language | Content |
 |----------|----------|---------|
 | [ARCHITECTURE.en.md](docs/ARCHITECTURE.en.md) | English | System architecture in detail (15 diagrams) |
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | 한국어 | 시스템 아키텍처 상세 (15개 다이어그램) |
-| [UML_SPEC.md](docs/UML_SPEC.md) | 한국어 | UML analysis — C4, class, sequence, ER (17 diagrams) |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.ko.md) | 한국어 | 시스템 아키텍처 상세 (15개 다이어그램) |
+| [UML_SPEC.md](docs/UML_SPEC.ko.md) | 한국어 | UML analysis — C4, class, sequence, ER (17 diagrams) |
 | [README.ko.md](docs/README.ko.md) | 한국어 | Korean README |
 | [README.ja.md](docs/README.ja.md) | 日本語 | Japanese README |
 
