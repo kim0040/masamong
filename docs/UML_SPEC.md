@@ -77,7 +77,7 @@ graph TB
 ## 2. 컨테이너 다이어그램 (C4 Level 2)
 
 ```mermaid
-graph TB
+flowchart TB
     subgraph DiscordPlatform["Discord 플랫폼"]
         Guilds["서버 (Guilds)"]
         DMs["DM"]
@@ -942,7 +942,7 @@ graph TB
         
         subgraph FSStructure["저장소 구조"]
             AppCode["masamong/"]
-            ServerConfig["tmp/server_config/<br/>prompts.server.json<br/>emb_config.server.json"]
+            ServerConfig["tmp/server_config<br/>prompts.server.json<br/>emb_config.server.json"]
             Logs["로그 파일<br/>discord_logs.txt<br/>error_logs.txt"]
         end
     end
