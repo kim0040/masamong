@@ -800,23 +800,22 @@ flowchart TD
     CheckWebSearch -->|No| CheckImage{이미지 키워드?}
     
     CheckImage -->|Yes| MarkImage[image_gen 플래그]
-    CheckImage -->|No| CheckGeneral
+    CheckImage -->|No| CheckGeneral[일반 대화 감지]
 
-    MarkWeather --> LLMAnalysis
-    MarkUS --> LLMAnalysis
-    MarkKR --> LLMAnalysis
-    MarkExchange --> LLMAnalysis
-    MarkFinance --> LLMAnalysis
-    MarkPlace --> LLMAnalysis
-    MarkWeb --> LLMAnalysis
-    MarkImage --> LLMAnalysis
+    MarkWeather --> LLMEntry[LLM 의도 분석 진입]
+    MarkUS --> LLMEntry
+    MarkKR --> LLMEntry
+    MarkExchange --> LLMEntry
+    MarkFinance --> LLMEntry
+    MarkPlace --> LLMEntry
+    MarkWeb --> LLMEntry
+    MarkImage --> LLMEntry
+    CheckGeneral --> LLMEntry
 
-    subgraph LLMAnalysis["LLM 의도 분석 (Routing Lane)"]
-        CheckGeneral[일반 대화 감지] --> BuildPrompt2[분석 프롬프트 구성]
-        BuildPrompt2 --> CallLLM[LLM 호출<br/>gemini-3.1-flash-lite]
-        CallLLM --> ParseJSON[JSON 파싱<br/>tool_plan, draft, self_score]
-        ParseJSON --> ValidateScore{self_score 검증}
-    end
+    LLMEntry --> BuildPrompt2[분석 프롬프트 구성]
+    BuildPrompt2 --> CallLLM[LLM 호출<br/>gemini-3.1-flash-lite]
+    CallLLM --> ParseJSON[JSON 파싱<br/>tool_plan, draft, self_score]
+    ParseJSON --> ValidateScore{self_score 검증}
 
     ValidateScore -->|통과| MergeIntent[키워드 + LLM 결과 병합]
     ValidateScore -->|실패| RetryLLM[재시도 / 키워드만 사용]
