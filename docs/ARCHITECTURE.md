@@ -96,7 +96,7 @@ flowchart TB
 ### 2. 듀얼 레인 LLM 라우팅
 
 ```mermaid
-graph TB
+flowchart TB
     subgraph Routing["Routing Lane (의도 분석)"]
         direction TB
         RP1["Primary: gemini-3.1-flash-lite<br/><i>(CometAPI)</i>"]
@@ -225,7 +225,7 @@ combined_score = (similarity * 0.55) + (bm25_score * 0.45)
 ### Cog 아키텍처
 
 ```mermaid
-graph TB
+flowchart TB
     Bot["ReMasamongBot<br/>main.py"] --> CogLoad["Cog 로드<br/>setup_hook()"]
 
     CogLoad -->|"순서 1-13"| Cogs
@@ -266,7 +266,7 @@ graph TB
 ### 컴포넌트 의존성 관계
 
 ```mermaid
-graph TB
+flowchart TB
     subgraph Core["핵심 컴포넌트"]
         AIHandler["AIHandler<br/><i>파이프라인 컨트롤러</i>"]
     end
@@ -295,7 +295,7 @@ graph TB
         Weather["weather.py"]
         LinkupSearch["linkup_search.py"]
         NewsSearch["news_search.py<br/>(DuckDuckGo)"]
-        FinanceAPIs["api_handlers/<br/>finnhub, yfinance, krx"]
+        FinanceAPIs["api_handlers<br/>finnhub, yfinance, krx"]
     end
 
     AIHandler --> LLMClient
