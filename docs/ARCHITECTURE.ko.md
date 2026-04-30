@@ -1,6 +1,6 @@
 # 마사몽 아키텍처 문서
 
-> **참고**: 더 자세한 UML 분석은 [UML_SPEC.md](UML_SPEC.md)를 참조하세요.
+> **참고**: 더 자세한 UML 분석은 [UML_SPEC.md](UML_SPEC.ko.md)를 참조하세요.
 
 ## 시스템 개요
 
@@ -976,7 +976,7 @@ BM25_AUTO_REBUILD_ENABLED=true
 
 | 문서 | 내용 |
 |------|------|
-| [UML_SPEC.md](UML_SPEC.md) | 🆕 UML 다이어그램 상세 분석 |
+| [UML_SPEC.md](UML_SPEC.ko.md) | 🆕 UML 다이어그램 상세 분석 |
 | [README.md](../README.md) | 프로젝트 메인 문서 |
 | [QUICKSTART.md](QUICKSTART.md) | 빠른 시작 가이드 |
 | [Discord.py](https://discordpy.readthedocs.io/) | Discord.py 공식 문서 |

@@ -1,6 +1,6 @@
 # Masamong Architecture Document
 
-> **See also**: [UML_SPEC.md](UML_SPEC.md) for detailed UML diagrams and technical analysis.
+> **See also**: [UML_SPEC.md](UML_SPEC.ko.md) for detailed UML diagrams and technical analysis.
 
 ## System Overview
 
@@ -913,7 +913,7 @@ BM25_AUTO_REBUILD_ENABLED=true
 
 | Document | Content |
 |----------|---------|
-| [UML_SPEC.md](UML_SPEC.md) | Detailed UML diagrams & technical analysis |
+| [UML_SPEC.md](UML_SPEC.ko.md) | Detailed UML diagrams & technical analysis |
 | [README.en.md](README.en.md) | English project overview |
 | [QUICKSTART.md](QUICKSTART.md) | 5-minute quick start guide |
 | [Discord.py](https://discordpy.readthedocs.io/) | Discord.py official docs |
