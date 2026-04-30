@@ -25,64 +25,142 @@
 
 ### 1.1 듀얼 레인 LLM 시스템
 
-```
-사용자 메시지
-    │
-    ▼
-┌─────────────────────────────┐
-│  Routing Lane (경량 모델)     │
-│  - 의도 분석 / 키워드 추출    │
-│  - 도구 선택 (날씨/금융/웹)   │
-│  - 검색 쿼리 정제             │
-│  모델: gemini-3.1-flash-lite  │
-└──────────┬──────────────────┘
-           │
-           ▼
-┌─────────────────────────────┐
-│  도구 실행 (ToolsCog)        │
-│  - 날씨 (KMA API)            │
-│  - 금융 (Finnhub/yfinance)   │
-│  - 웹 검색 (Linkup/DDG)      │
-│  - RAG 메모리 검색           │
-└──────────┬──────────────────┘
-           │
-           ▼
-┌─────────────────────────────┐
-│  Main Lane (고성능 모델)      │
-│  - 도구 결과 + RAG 기반 답변  │
-│  - 채널 페르소나 적용         │
-│  - 대화 기록 / 메모리 저장    │
-│  모델: DeepSeek-V3.2-Exp     │
-└─────────────────────────────┘
+```mermaid
+flowchart TB
+    User["👤 사용자 메시지"] --> Route[메시지 라우팅<br/>main.py: on_message]
+
+    Route --> Phase1["🔍 1단계: 의도 분석<br/>Routing Lane<br/><i>gemini-3.1-flash-lite</i>"]
+
+    Phase1 -->|"키워드 + LLM 분석"| Decision{도구 필요?}
+
+    Decision -->|"yes"| Tools["🛠️ 2단계: 도구 실행<br/>ToolsCog"]
+    Decision -->|"no"| RAG
+
+    subgraph Tools["🛠️ 도구 실행"]
+        direction LR
+        Weather["🌤️ 날씨<br/>KMA API"]
+        Finance["📈 금융<br/>Finnhub/yfinance/KRX"]
+        WebSearch["🌐 웹 검색<br/>Linkup/DuckDuckGo"]
+        Place["📍 장소<br/>Kakao Local"]
+        Image["🎨 이미지<br/>CometAPI Gemini"]
+        RAGTool["🧠 RAG 검색<br/>Hybrid Search"]
+    end
+
+    Tools --> RAG["🧠 RAG 컨텍스트 검색<br/>HybridSearchEngine<br/><i>임베딩 + BM25 + RRF</i>"]
+
+    RAG --> Phase3["✍️ 3단계: 응답 생성<br/>Main Lane<br/><i>DeepSeek-V3.2-Exp</i>"]
+
+    Phase3 -->|"채널 페르소나 적용"| Persona[/"prompts.json<br/>페르소나 + 규칙"/]
+    Persona --> Response["💬 Discord 응답"]
+
+    style Phase1 fill:#e1f5fe,stroke:#0288d1
+    style Phase3 fill:#fff3e0,stroke:#f57c00
+    style Tools fill:#f3e5f5,stroke:#7b1fa2
+    style RAG fill:#e8f5e9,stroke:#388e3c
+    style Response fill:#c8e6c9,stroke:#2e7d32
 ```
 
 각 레인은 **Primary + Fallback** 타깃을 가질 수 있으며, 실패 시 자동 전환됩니다.
 
-### 1.2 저장소 구조
+### 1.2 LLM 레인 라우팅 구조
 
+```mermaid
+flowchart LR
+    subgraph RoutingLane["Routing Lane (의도 분석)"]
+        RP["Primary<br/>gemini-3.1-flash-lite<br/><i>CometAPI</i>"]
+        RF["Fallback<br/>gemini-2.5-flash<br/><i>CometAPI</i>"]
+        RP -->|"실패 시"| RF
+        RF -->|"실패 시"| RD["Gemini Direct<br/><i>(선택적)</i>"]
+    end
+
+    subgraph MainLane["Main Lane (응답 생성)"]
+        MP["Primary<br/>DeepSeek-V3.2-Exp<br/><i>CometAPI</i>"]
+        MF["Fallback<br/>DeepSeek-R1<br/><i>CometAPI</i>"]
+        MP -->|"실패 시"| MF
+        MF -->|"실패 시"| MD["Gemini Direct<br/><i>(선택적)</i>"]
+    end
+
+    Caller["AIHandler"] --> RoutingLane
+    Caller --> MainLane
+
+    style RP fill:#e3f2fd,stroke:#1565c0
+    style MP fill:#fff8e1,stroke:#f57f17
 ```
-┌─ Main DB (TiDB/SQLite) ────────────────────────┐
-│ conversation_history, conversation_windows,       │
-│ guild_settings, user_profiles, user_activity_log, │
-│ locations, api_call_log, linkup_usage_log,        │
-│ dm_usage_logs, system_counters, analytics_log     │
-└──────────────────────────────────────────────────┘
 
-┌─ Discord 메모리 저장소 (TiDB/SQLite) ───────────┐
-│ discord_chat_embeddings  (레거시 단일 임베딩)     │
-│ discord_memory_entries   (구조화 메모리)          │
-│   - channel scope / user scope                   │
-│   - summary_text + raw_context + embedding       │
-└──────────────────────────────────────────────────┘
+### 1.3 전체 메시지 처리 흐름 (Sequence)
 
-┌─ Kakao 저장소 (TiDB/로컬) ──────────────────────┐
-│ kakao_chunks                                      │
-│   - room_key 단위 분리                            │
-│   - VECTOR(384) 검색                              │
-└──────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    actor User as 👤 유저
+    participant Discord as Discord
+    participant Bot as ReMasamongBot
+    participant AI as AIHandler
+    participant Intent as IntentAnalyzer
+    participant Tools as ToolsCog
+    participant LLM as LLMClient
+
+    User->>Discord: "@마사몽 서울 날씨"
+    Discord->>Bot: on_message(message)
+
+    Bot->>Bot: 활동 기록 + 기록 저장 + 명령어 체크
+
+    alt 검증 실패 (멘션/채널/잠금)
+        Bot-->>Discord: (무응답)
+    else 검증 통과
+        Bot->>AI: process_agent_message(message)
+
+        AI->>Intent: analyze(query, context)
+        Intent->>Intent: 키워드 휴리스틱 분석
+        Intent->>LLM: call_routing_llm(의도 분석)
+        LLM-->>Intent: {tool_plan, draft, self_score}
+        Intent-->>AI: intent_result
+
+        alt 도구 실행
+            AI->>Tools: execute_tool_plan(plan)
+            Tools-->>AI: tool_results
+        end
+
+        AI->>AI: RAG 컨텍스트 검색
+
+        AI->>LLM: call_main_llm(prompt + tool_results + RAG)
+        LLM-->>AI: 최종 응답
+
+        AI->>Discord: reply(응답)
+    end
 ```
 
-### 1.3 구조화 메모리 vs 원본 로그
+### 1.4 저장소 구조
+
+```mermaid
+graph TB
+    subgraph MainDB["📦 Main DB (TiDB / SQLite)"]
+        CH["conversation_history<br/><i>모든 대화 원본</i>"]
+        CW["conversation_windows<br/><i>슬라이딩 윈도우 캐시</i>"]
+        GS["guild_settings<br/><i>서버 설정</i>"]
+        UA["user_activity + user_activity_log<br/><i>활동 추적</i>"]
+        UP["user_profiles<br/><i>운세 프로필</i>"]
+        LO["locations<br/><i>날씨 격자 좌표</i>"]
+        ACL["api_call_log<br/><i>API Rate Limit</i>"]
+        LUL["linkup_usage_log<br/><i>웹 검색 예산</i>"]
+        DML["dm_usage_logs<br/><i>DM 제한</i>"]
+        AL["analytics_log<br/><i>운영 지표</i>"]
+        SC["system_counters<br/><i>전역 카운터</i>"]
+        CHA["conversation_history_archive<br/><i>보관 데이터</i>"]
+    end
+
+    subgraph MemStore["🧠 Discord 메모리 저장소 (TiDB / SQLite)"]
+        DCE["discord_chat_embeddings<br/><i>레거시 단일 임베딩</i>"]
+        DME["discord_memory_entries<br/><i>구조화 메모리<br/>channel scope / user scope</i>"]
+    end
+
+    subgraph KakaoStore["💬 Kakao 저장소 (TiDB / 로컬)"]
+        KC["kakao_chunks<br/><i>room_key 단위 분리<br/>VECTOR(384) 검색</i>"]
+    end
+
+    MainDB --- MemStore --- KakaoStore
+```
+
+### 1.5 구조화 메모리 vs 원본 로그
 
 | 구분 | 원본 로그 | 구조화 메모리 |
 |------|-----------|---------------|
@@ -103,6 +181,32 @@
 - **대화 히스토리**: 최근 대화 컨텍스트를 LLM 프롬프트에 주입
 
 ### 2.2 메모리 / RAG (Retrieval-Augmented Generation)
+
+```mermaid
+flowchart LR
+    subgraph Store["📥 저장 단계"]
+        MSG["Discord 메시지"] --> StoreDB["conversation_history<br/>저장"]
+        StoreDB --> Window["슬라이딩 윈도우 생성<br/>6메시지, stride=3"]
+        Window --> Memory["구조화 메모리 생성<br/>discord_memory_entries"]
+        Memory --> Embed["임베딩 벡터화<br/>SentenceTransformers"]
+    end
+
+    subgraph Search["🔍 검색 단계"]
+        Query["사용자 쿼리"] --> QE["Query Expansion<br/>query_rewriter"]
+        QE --> Emb["임베딩 검색<br/>코사인 유사도"]
+        QE --> BM25["BM25 키워드 검색<br/>(비활성)"]
+        Emb --> RRF["RRF 융합<br/>Reciprocal Rank Fusion"]
+        BM25 --> RRF
+        RRF --> Rerank["Re-ranker<br/><i>(선택적)</i>"]
+        Rerank --> Results["검색 결과"]
+    end
+
+    Store -.-> Search
+
+    style Store fill:#e8f5e9,stroke:#388e3c
+    style Search fill:#e3f2fd,stroke:#1565c0
+```
+
 - 슬라이딩 윈도우 방식으로 대화를 구조화 메모리로 변환
 - 채널 공동 기억(`channel` scope)과 유저 개인 기억(`user` scope) 분리
 - 하이브리드 검색: 임베딩(코사인 유사도) + BM25(비활성) + RRF 재순위화
@@ -634,6 +738,7 @@ scikit-learn, PyMySQL>=1.1.0
 | 문서 | 내용 |
 |------|------|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 시스템 아키텍처 상세 |
+| [docs/UML_SPEC.md](docs/UML_SPEC.md) | 🆕 UML 다이어그램 상세 분석 |
 | [docs/QUICKSTART.md](docs/QUICKSTART.md) | 빠른 시작 가이드 |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | 변경 이력 |
 | [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | 기여 가이드 |
