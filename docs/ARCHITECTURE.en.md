@@ -289,7 +289,7 @@ flowchart TB
     AIHandler --> HybridSearch
     AIHandler --> ToolsCog
 
-    IntentAnalyzer --> LLMClient : "Routing Lane"
+    IntentAnalyzer -->|"Routing Lane"| LLMClient
 
     RAGManager --> DiscordStore
     RAGManager --> CompatDB
