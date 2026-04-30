@@ -160,6 +160,16 @@ local_settings.py
 # 프로젝트 고유 제외 항목
 # =============================================================================
 
+# 배포/기여/계획 문서 (로컬 전용)
+DEPLOYMENT.md
+docs/CHANGELOG.md
+docs/CONTRIBUTING.md
+docs/QUICKSTART.md
+examples/
+
+# GitHub 템플릿 (로컬 전용)
+.github/
+
 # 테스트 데이터
 test_data/
 *.test.db
