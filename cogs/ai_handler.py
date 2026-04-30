@@ -1353,13 +1353,17 @@ Generate the optimized English image prompt:"""
                     lines.append(f"[{name}] {str(result)}")
                 continue
 
-            # 이미지 생성 결과는 바이너리 제외하고 상태만 전달
+            # 이미지 생성 결과는 바이너리 제외하고 상태와 프롬프트만 전달
             if name == "generate_image" and isinstance(result, dict):
                 if result.get("error"):
                     lines.append(f"[{name}] 생성 실패: {result['error']}")
                 else:
                     remaining = result.get("remaining", "?")
-                    lines.append(f"[{name}] 이미지 생성 완료 (남은 횟수: {remaining})")
+                    image_prompt = result.get("image_prompt", "")
+                    if image_prompt:
+                        lines.append(f"[{name}] 이미지 생성 완료 (생성 프롬프트: \"{image_prompt}\", 남은 횟수: {remaining})")
+                    else:
+                        lines.append(f"[{name}] 이미지 생성 완료 (남은 횟수: {remaining})")
                 continue
             
             # [Optimization] 나머지 도구는 문자열 길이 제한
@@ -1453,6 +1457,7 @@ Generate the optimized English image prompt:"""
         *,
         channel_id: int | None = None,
         user_id: int | None = None,
+        rag_context: str | None = None,
     ) -> dict:
         """파싱된 단일 도구 호출 계획을 실제로 실행하고 결과를 반환합니다."""
         tool_name = tool_call.get('tool_to_use') or tool_call.get('tool_name')
@@ -1522,15 +1527,21 @@ Generate the optimized English image prompt:"""
 
         if tool_name == "generate_image":
             try:
-                prompt = parameters.get('prompt', user_query)
+                raw_prompt = parameters.get('prompt', user_query)
                 effective_user_id = user_id or guild_id
-                logger.info(f"이미지 생성 도구 실행: prompt='{prompt[:80]}' user_id={effective_user_id}", extra=log_extra)
-                self._debug(f"[도구:generate_image] prompt={self._truncate_for_debug(prompt)}", log_extra)
-                result = await self.tools_cog.generate_image(prompt=prompt, user_id=effective_user_id)
+                logger.info(f"이미지 생성 도구 실행 (raw): prompt='{raw_prompt[:80]}' user_id={effective_user_id}", extra=log_extra)
+                self._debug(f"[도구:generate_image] raw_prompt={self._truncate_for_debug(raw_prompt)}", log_extra)
+
+                optimized_prompt = await self._generate_image_prompt(raw_prompt, log_extra, rag_context=rag_context)
+                final_prompt = optimized_prompt or raw_prompt
+                logger.info(f"이미지 생성 최종 프롬프트: '{final_prompt[:120]}'", extra=log_extra)
+                self._debug(f"[도구:generate_image] 최종 프롬프트={self._truncate_for_debug(final_prompt)}", log_extra)
+
+                result = await self.tools_cog.generate_image(prompt=final_prompt, user_id=effective_user_id)
                 if result.get("error"):
                     return {"error": result["error"]}
                 self._debug(f"[도구:generate_image] 생성 완료", log_extra)
-                return {"result": "이미지가 생성되었습니다.", "image_data": result.get("image_data"), "image_url": result.get("image_url"), "remaining": result.get("remaining", 0)}
+                return {"result": "이미지가 생성되었습니다.", "image_data": result.get("image_data"), "image_url": result.get("image_url"), "remaining": result.get("remaining", 0), "image_prompt": final_prompt}
             except Exception as e:
                 logger.error(f"이미지 생성 도구 실행 중 오류: {e}", exc_info=True, extra=log_extra)
                 return {"error": "이미지 생성 중 오류가 발생했습니다."}
@@ -1709,6 +1720,7 @@ Generate the optimized English image prompt:"""
                         user_query,
                         channel_id=message.channel.id,
                         user_id=message.author.id,
+                        rag_context=rag_prompt,
                     )
 
                     tool_results.append({
