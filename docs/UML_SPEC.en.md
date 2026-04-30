@@ -1,80 +1,24 @@
-# 마사몽 UML 상세 분석 문서
+# Masamong UML Specification
 
-> **버전**: 2.0.0 | **언어**: Python 3.9+ | **작성일**: 2026-04-30
+> **Version**: 2.0.0 | **Language**: Python 3.9+ | **Date**: 2026-04-30
 
-본 문서는 마사몽 Discord 봇의 소프트웨어 아키텍처를 UML 표기법과 Mermaid 다이어그램으로 상세하게 분석한 기술 문서입니다.
-
----
-
-## 목차
-
-1. [시스템 컨텍스트 다이어그램 (C4 Level 1)](#1-시스템-컨텍스트-다이어그램-c4-level-1)
-2. [컨테이너 다이어그램 (C4 Level 2)](#2-컨테이너-다이어그램-c4-level-2)
-3. [컴포넌트 다이어그램](#3-컴포넌트-다이어그램)
-4. [클래스 다이어그램](#4-클래스-다이어그램)
-5. [시퀀스 다이어그램](#5-시퀀스-다이어그램)
-6. [액티비티 다이어그램](#6-액티비티-다이어그램)
-7. [상태 다이어그램](#7-상태-다이어그램)
-8. [배포 다이어그램](#8-배포-다이어그램)
-9. [ER 다이어그램](#9-er-entity-relationship-다이어그램)
+This document provides a formal UML analysis of the Masamong Discord bot architecture using Mermaid diagrams.
 
 ---
 
-## 1. 시스템 컨텍스트 다이어그램 (C4 Level 1)
+## Table of Contents
 
-```mermaid
-graph TB
-    subgraph External["🌐 외부 시스템"]
-        Discord["Discord API<br/>메시지, 이벤트, 슬래시 커맨드"]
-        CometAPI["CometAPI<br/>LLM Inference<br/>(OpenAI-compatible)"]
-        Gemini["Google Gemini<br/>Fallback LLM"]
-        KMA["기상청 KMA API<br/>날씨/지진 정보"]
-        Finnhub["Finnhub API<br/>미국 주식"]
-        yfinance["yfinance<br/>주식 시세 (캐시)"]
-        KRX["한국거래소 KRX<br/>국내 주식"]
-        Exim["한국수출입은행<br/>환율 정보"]
-        Linkup["Linkup API<br/>웹 검색"]
-        Kakao["Kakao Local API<br/>장소 검색"]
-    end
-
-    subgraph Users["👤 사용자"]
-        GuildUser["서버 유저<br/>(@멘션 필수)"]
-        DMUser["DM 유저<br/>(멘션 불필요, 5h/30회 제한)"]
-        Admin["관리자<br/>(!업데이트, !debug)"]
-    end
-
-    subgraph System["🤖 마사몽 봇 시스템"]
-        Masamong["마사몽 Discord Bot<br/>v2.0.0"]
-    end
-
-    subgraph Storage["💾 저장소"]
-        TiDB["TiDB Cloud<br/>(운영)"]
-        SQLite["SQLite<br/>(개발)"]
-    end
-
-    GuildUser -->|"@마사몽 메시지"| Discord
-    DMUser -->|"DM"| Discord
-    Admin -->|"관리 명령어"| Discord
-    Discord -->|"Gateway Events"| Masamong
-    Masamong -->|"API 응답"| Discord
-
-    Masamong -->|"LLM 호출"| CometAPI
-    Masamong -->|"Fallback LLM"| Gemini
-    Masamong -->|"날씨 조회"| KMA
-    Masamong -->|"주식 조회"| Finnhub
-    Masamong -->|"주식 (캐시)"| yfinance
-    Masamong -->|"국내 주식"| KRX
-    Masamong -->|"환율 조회"| Exim
-    Masamong -->|"웹 검색"| Linkup
-    Masamong -->|"장소 검색"| Kakao
-
-    Masamong -->|"CRUD"| TiDB
-    Masamong -->|"CRUD"| SQLite
-```
+1. [Container Diagram (C4 Level 2)](#1-container-diagram-c4-level-2)
+2. [Component Diagram](#2-component-diagram)
+3. [Class Diagrams](#3-class-diagrams)
+4. [Sequence Diagrams](#4-sequence-diagrams)
+5. [Activity Diagrams](#5-activity-diagrams)
+6. [State Diagrams](#6-state-diagrams)
+7. [ER Diagram](#7-er-entity-relationship-diagram)
 
 ---
 
-## 2. 컨테이너 다이어그램 (C4 Level 2)
+## 1. Container Diagram (C4 Level 2)
 
 ```mermaid
 flowchart TB
@@ -83,14 +27,14 @@ flowchart TB
         DMs["DM"]
     end
 
-    subgraph BotProcess["🐍 마사몽 Bot Process (Python)"]
+    subgraph BotProcess["🐍 Masamong Bot Process (Python)"]
         direction TB
 
         Entrypoint["main.py<br/>ReMasamongBot"]
         Config["config.py<br/>설정 로드"]
         Logger["logger_config.py<br/>KST 로깅"]
 
-        subgraph CogLayer["Cog 확장 레이어"]
+        subgraph CogLayer["Cog Extension Layer"]
             AIHandler["AIHandler<br/>AI 파이프라인"]
             ToolsCog["ToolsCog<br/>외부 도구"]
             WeatherCog["WeatherCog<br/>날씨/알림"]
@@ -105,7 +49,7 @@ flowchart TB
             HelpCog["HelpCog<br/>도움말"]
         end
 
-        subgraph UtilsLayer["유틸리티 레이어"]
+        subgraph UtilsLayer["Utility Layer"]
             LLMClient["LLMClient<br/>LLM 레인 라우팅"]
             IntentAnalyzer["IntentAnalyzer<br/>의도 분석"]
             RAGManager["RAGManager<br/>메모리 관리"]
@@ -124,7 +68,7 @@ flowchart TB
             KakaoClient["kakao.py"]
         end
 
-        subgraph DBLayer["데이터베이스 레이어"]
+        subgraph DBLayer["Database Layer"]
             CompatDB["compat_db.py<br/>TiDB/SQLite 어댑터"]
             SchemaSQL["schema.sql"]
             SchemaTiDB["schema_tidb.sql"]
@@ -139,7 +83,7 @@ flowchart TB
         UtilsLayer --> DBLayer
     end
 
-    subgraph ExternalAPIs["외부 API 서비스"]
+    subgraph ExternalAPIs["External API Services"]
         Comet["CometAPI"]
         GCP["Google Gemini"]
         KMAAPI["KMA"]
@@ -151,7 +95,7 @@ flowchart TB
         KakaoAPI["Kakao Local"]
     end
 
-    subgraph DataStores["데이터 저장소"]
+    subgraph DataStores["Data Stores"]
         TiDBCloud["TiDB Cloud<br/>aws ap-northeast-1"]
         LocalSQLite["SQLite<br/>(로컬 파일)"]
         HuggingFace["HuggingFace Cache<br/>(~/.cache)"]
@@ -177,7 +121,7 @@ flowchart TB
 
 ---
 
-## 3. 컴포넌트 다이어그램
+## 2. Component Diagram
 
 ```mermaid
 graph TB
@@ -267,7 +211,7 @@ graph TB
 
 ---
 
-## 4. 클래스 다이어그램
+## 3. Class Diagrams
 
 ### 4.1 핵심 클래스 구조
 
@@ -456,7 +400,7 @@ classDiagram
         +archive_task()
     }
 
-    AIHandler --> ToolsCog : 도구 실행 위임
+    AIHandler --> ToolsCog : tool delegation
     ActivityCog --> AIHandler : injected (랭킹 연동)
     FunCog --> AIHandler : injected (요약 연동)
     WeatherCog --> ToolsCog : 날씨 도구
@@ -464,7 +408,7 @@ classDiagram
 
 ---
 
-## 5. 시퀀스 다이어그램
+## 4. Sequence Diagrams
 
 ### 5.1 전체 메시지 처리 흐름
 
@@ -715,14 +659,14 @@ sequenceDiagram
 
 ---
 
-## 6. 액티비티 다이어그램
+## 5. Activity Diagrams
 
 ### 6.1 메시지 처리 활동 흐름
 
 ```mermaid
 flowchart TD
-    Start([메시지 수신]) --> CheckBot{작성자가 봇?}
-    CheckBot -->|Yes| Done([종료])
+    Start([Message received]) --> CheckBot{작성자가 봇?}
+    CheckBot -->|Yes| Done([Done])
     CheckBot -->|No| RecordActivity[활동 기록<br/>ActivityCog.record_message]
 
     RecordActivity --> CheckCmd{! 프리픽스?}
@@ -738,7 +682,7 @@ flowchart TD
     CheckChannel -->|Yes| CheckMention{멘션 검증<br/>서버: @멘션 필수<br/>DM: 불필요}
     CheckMention -->|실패| Done
 
-    CheckMention -->|통과| CheckLock{사용자 잠금?<br/>(대화형 커맨드 중)}
+    CheckMention -->|통과| CheckLock{사용자 잠금?<br/>대화형 커맨드 중}
     CheckLock -->|Yes| Done
     CheckLock -->|No| ValidateInput[입력 검증 및 정제<br/>text_cleaner]
 
@@ -778,7 +722,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    Start([의도 분석 시작]) --> KeywordMatch[키워드 기반 1차 분석]
+    Start([의도 analysis start]) --> KeywordMatch[키워드 기반 1차 분석]
     
     KeywordMatch --> CheckWeather{날씨 키워드?}
     CheckWeather -->|Yes| MarkWeather[weather 플래그 설정]
@@ -823,13 +767,13 @@ flowchart TD
     ValidateScore -->|실패| RetryLLM[재시도 / 키워드만 사용]
     RetryLLM --> MergeIntent
 
-    MergeIntent --> BuildPlan[도구 실행 계획 생성]
-    BuildPlan --> Done([분석 완료])
+    MergeIntent --> BuildPlan[Build tool execution plan]
+    BuildPlan --> Done([Analysis complete])
 ```
 
 ---
 
-## 7. 상태 다이어그램
+## 6. State Diagrams
 
 ### 7.1 봇 라이프사이클
 
@@ -847,7 +791,7 @@ stateDiagram-v2
     BotCreation --> DBConnect: setup_hook() 진입
     
     DBConnect --> DBError: 연결 실패
-    DBError --> [*]: 종료
+    DBError --> [*]: Done
     
     DBConnect --> Migration: _migrate_db()
     Migration --> CogLoading: Cog 순차 로드
@@ -888,7 +832,7 @@ stateDiagram-v2
 
     Running --> ShuttingDown: KeyboardInterrupt / 오류
     ShuttingDown --> DBClose: bot.close()
-    DBClose --> [*]: 프로세스 종료
+    DBClose --> [*]: 프로세스 Done
 ```
 
 ### 7.2 AI 처리 상태
@@ -897,7 +841,7 @@ stateDiagram-v2
 stateDiagram-v2
     [*] --> Idle: 대기 중
     
-    Idle --> Validating: 메시지 수신
+    Idle --> Validating: Message received
     Validating --> Idle: 검증 실패 (멘션/채널/잠금)
     
     Validating --> Analyzing: 검증 통과
@@ -925,56 +869,7 @@ stateDiagram-v2
 
 ---
 
-## 8. 배포 다이어그램
-
-```mermaid
-graph TB
-    subgraph DevEnv["🖥️ 개발 환경 (macOS)"]
-        DevMachine["GPU Workstation<br/>Python 3.9+<br/>CUDA 11.8<br/>SQLLite"]
-        DevCache["HuggingFace Cache<br/>~/.cache/huggingface"]
-        GitRepo["GitHub Repository<br/>kim0040/masamong"]
-    end
-
-    subgraph ProdServer["☁️ 운영 서버 (Linux CPU)"]
-        Screen["screen 세션<br/>masamong"]
-        Venv["Python venv<br/>Python 3.9+"]
-        BotProcess["마사몽 Bot Process<br/>main.py"]
-        LocalFS["로컬 파일시스템<br/>/mnt/block-storage"]
-        
-        subgraph FSStructure["저장소 구조"]
-            AppCode["masamong/"]
-            ServerConfig["tmp/server_config<br/>prompts.server.json<br/>emb_config.server.json"]
-            Logs["로그 파일<br/>discord_logs.txt<br/>error_logs.txt"]
-        end
-    end
-
-    subgraph CloudServices["☁️ 클라우드 서비스"]
-        TiDBCloud["TiDB Cloud<br/>ap-northeast-1.aws<br/>Free Tier / Dedicated"]
-        CometAPI["CometAPI<br/>LLM Inference"]
-        KMA_API["기상청 KMA API<br/>공공데이터포털"]
-        LinkupAPI["Linkup API<br/>Web Search"]
-    end
-
-    DevMachine -->|"git push"| GitRepo
-    ProdServer -->|"git pull"| GitRepo
-    
-    Screen --> BotProcess
-    Venv --> BotProcess
-    BotProcess --> LocalFS
-    BotProcess --> ServerConfig
-    BotProcess --> Logs
-
-    BotProcess -->|"PyMySQL :4000"| TiDBCloud
-    BotProcess -->|"HTTPS"| CometAPI
-    BotProcess -->|"HTTPS"| KMA_API
-    BotProcess -->|"HTTPS"| LinkupAPI
-
-    DevCache -->|"SentenceTransformers<br/>dragonkue/multilingual-e5-small-ko-v2"| BotProcess
-```
-
----
-
-## 9. ER (Entity-Relationship) 다이어그램
+## 7. ER (Entity-Relationship) Diagram
 
 ```mermaid
 erDiagram
@@ -1036,7 +931,7 @@ erDiagram
         bigint guild_id "서버 ID"
         bigint channel_id "채널 ID"
         bigint start_message_id "시작 메시지 ID"
-        bigint end_message_id "종료 메시지 ID"
+        bigint end_message_id "Done 메시지 ID"
         int message_count "메시지 수"
         text messages_json "메시지 JSON"
         text anchor_timestamp "기준 타임스탬프"
@@ -1162,7 +1057,7 @@ erDiagram
 
 ---
 
-## 부록: 주요 데이터 흐름 요약
+## Appendix: Data Flow Summary
 
 ```mermaid
 flowchart LR
@@ -1206,5 +1101,5 @@ flowchart LR
 
 ---
 
-> **문서 업데이트**: 마지막 갱신 2026-04-30  
-> **참조**: 이 문서는 [ARCHITECTURE.md](ARCHITECTURE.md), [README.md](../README.md)와 함께 읽는 것을 권장합니다.
+> **Last Updated**: 2026-04-30
+> **See also**: [ARCHITECTURE.ko.md](ARCHITECTURE.ko.md) | [ARCHITECTURE.en.md](ARCHITECTURE.en.md) | [../README.md](../README.md)
