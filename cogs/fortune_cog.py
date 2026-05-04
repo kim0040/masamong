@@ -203,7 +203,7 @@ class FortuneCog(commands.Cog):
             self.bot.locked_users.discard(ctx.author.id)
 
     async def _save_user_profile(self, user_id, birth_date, birth_time, gender, birth_place):
-        """DB에 사용자 프로필 저장/업데이트"""
+        """사용자 운세 프로필(생년월일/시간/성별/출생지)을 DB에 저장하거나 갱신합니다."""
         if config.DB_BACKEND == "tidb":
             query = """
                 REPLACE INTO user_profiles (user_id, birth_date, birth_time, gender, birth_place, created_at)
@@ -221,7 +221,7 @@ class FortuneCog(commands.Cog):
             await self.bot.db.commit()
 
     async def _update_last_fortune_context(self, user_id: int, content: str):
-        """사용자가 마지막으로 받은 운세 내용을 DB에 저장하여 컨텍스트로 활용"""
+        """사용자가 마지막으로 받은 운세 내용을 DB에 저장하여 이후 대화 컨텍스트로 활용합니다."""
         try:
              await self.bot.db.execute(
                 "UPDATE user_profiles SET last_fortune_content = ? WHERE user_id = ?",
@@ -382,7 +382,7 @@ class FortuneCog(commands.Cog):
         await self._check_fortune_logic(ctx, mode='year', status_msg=status_msg)
 
     async def _check_fortune_logic(self, ctx: commands.Context, option: str = None, mode: str = 'day', status_msg: discord.Message = None):
-        """오늘의 운세를 분석하여 출력하는 핵심 로직"""
+        """운세 조회의 핵심 로직: 일일 한도 확인 → 프로필 조회 → 별자리/사주 데이터 → LLM 운세 생성."""
         user_id = ctx.author.id
         is_dm = isinstance(ctx.channel, discord.DMChannel)
         
@@ -729,7 +729,7 @@ class FortuneCog(commands.Cog):
         return mapping.get(name)
 
     def _get_system_prompt(self, key: str) -> str:
-        """프롬프트 템플릿 반환 (추후 prompts.json 연동 가능)"""
+        """운세 유형별 AI 시스템 프롬프트 템플릿을 반환합니다."""
         prompts = {
             "fortune_summary": (
                 "너는 사용자의 친구이자 개인 비서인 '마사몽'이야. 제공된 운세 데이터를 바탕으로, "
@@ -750,7 +750,7 @@ class FortuneCog(commands.Cog):
         return prompts.get(key, prompts['fortune_summary'])
 
     async def _send_split_message(self, destination, text: str):
-        """2000자 초과 메시지 분할 전송 (destination: ctx or user or channel)"""
+        """Discord 메시지 2000자 제한을 고려해 텍스트를 1900자씩 분할 전송합니다."""
         if not text: return
         chunk_size = 1900
         for i in range(0, len(text), chunk_size):

@@ -17,8 +17,9 @@ async def get_stock_info(ticker: str) -> Dict[str, Any]:
     yfinance를 사용하여 주식/암호화폐 정보를 조회합니다.
     """
     try:
-        # Run synchronous yfinance call in a thread to verify non-blocking behavior
+        # 동기 yfinance 호출을 스레드에서 실행
         def _fetch():
+            """yfinance Ticker에서 시세/정보를 동기적으로 조회합니다."""
             stock = yf.Ticker(ticker)
             # Try to get fast info first
             info = {}

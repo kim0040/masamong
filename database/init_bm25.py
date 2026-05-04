@@ -13,6 +13,7 @@ DEFAULT_DB_PATH = Path("database/remasamong.db")
 
 
 async def _initialize(path: Path) -> None:
+    """지정된 DB 경로의 BM25 FTS 인덱스를 재구축합니다."""
     if not path.exists():
         logger.error("BM25 인덱스를 초기화할 기본 DB가 존재하지 않습니다: %s", path)
         return

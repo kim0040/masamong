@@ -103,6 +103,7 @@ def resolve_summary_base_url(cli_base_url: str | None = None) -> str:
 
 class KakaoSessionEmbedder:
     def __init__(self, embedding_model_name: str, api_key: str, base_url: str, summary_model_config: Dict[str, Any]):
+        """임베딩 모델명, API 키, Base URL, 요약 모델 설정으로 임베더를 초기화합니다."""
         self.embedding_model_name = embedding_model_name
         self.summary_model_config = summary_model_config
         self.embedding_model = None
@@ -278,7 +279,7 @@ class KakaoSessionEmbedder:
             return session_text[:500].replace('\n', ' ')
 
     async def _summarize_with_progress(self, idx, session, semaphore, pbar):
-        """Wrapper to update progress bar and save incremental checkpoint."""
+        """요약을 실행하고 진행률 막대를 갱신합니다."""
         summary = await self.summarize_session(session['full_text'], semaphore)
         
         result = {
@@ -494,6 +495,7 @@ class KakaoSessionEmbedder:
         logger.info(f"✅ V2.1 Complete! Saved {len(final_metadata)} items to {output_path}")
 
 def main():
+    """전체 임베딩 생성 파이프라인을 실행합니다."""
     parser = argparse.ArgumentParser(description="KakaoEmbedder V2.1 (Chunked)")
     parser.add_argument("--input", "-i", type=str, default="data/kakao_raw/kakao_chat.csv")
     parser.add_argument("--output", "-o", type=str, default="data/kakao_store_v2")

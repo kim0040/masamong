@@ -31,6 +31,7 @@ class EventListeners(commands.Cog):
     """봇의 핵심 이벤트 리스너들을 관리하는 클래스입니다."""
 
     def __init__(self, bot: commands.Bot):
+        """EventListeners Cog를 초기화하고 의존 Cog 참조를 준비합니다."""
         self.bot = bot
         # 다른 Cog들은 on_ready에서 지연 로딩됩니다.
         self.ai_handler: AIHandler | None = None

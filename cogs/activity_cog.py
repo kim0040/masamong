@@ -112,6 +112,7 @@ class ActivityCog(commands.Cog):
 
     @staticmethod
     def _format_kst_time(iso_ts: str | None) -> str:
+        """UTC ISO 타임스탬프를 KST 표기(`MM/DD HH:MM`)로 변환합니다."""
         if not iso_ts:
             return "정보 없음"
         try:
@@ -125,6 +126,7 @@ class ActivityCog(commands.Cog):
 
     @staticmethod
     def _grade_for_channel(count: int, total_msgs: int, total_users: int) -> tuple[str, float]:
+        """개별 사용자의 메시지 비중을 기준으로 활동 등급과 점유율을 산출합니다."""
         share = (count / total_msgs * 100.0) if total_msgs > 0 else 0.0
         avg = (total_msgs / max(1, total_users)) if total_msgs > 0 else 0.0
         ratio = (count / max(1.0, avg)) if avg > 0 else 0.0
@@ -141,6 +143,7 @@ class ActivityCog(commands.Cog):
 
     @staticmethod
     def _sample_size_note(total_msgs: int, total_users: int) -> str:
+        """표본 크기에 따라 순위 신뢰도 안내 메시지를 반환합니다."""
         if total_msgs <= 30 or total_users <= 3:
             return "표본이 작아 순위 변동폭이 크게 보일 수 있어요."
         if total_users >= 50:
@@ -148,6 +151,7 @@ class ActivityCog(commands.Cog):
         return "표본이 안정적인 편이라 순위 해석 신뢰도가 무난해요."
 
     async def _resolve_user_name(self, guild: discord.Guild, user_id: int) -> str:
+        """guild 멤버 캐시, API fetch, 글로벌 캐시를 순차 조회하여 사용자 표시명을 반환합니다."""
         member = guild.get_member(user_id)
         if member:
             return member.display_name

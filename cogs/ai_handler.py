@@ -153,37 +153,47 @@ class AIHandler(commands.Cog):
 
     @staticmethod
     def _normalize_provider(provider: Any) -> str:
+        """LLM 제공자 식별자를 소문자 문자열로 정규화합니다."""
         return LLMClient.normalize_provider(provider)
 
     @staticmethod
     def _strip_mention_guard(text: Any) -> str:
+        """프롬프트 텍스트에서 멘션 가드 스니펫을 제거합니다."""
         return LLMClient.strip_mention_guard(text)
 
     def _get_lane_targets(self, lane: str, *, model_override: str | None = None) -> list[dict[str, str]]:
+        """지정된 레인(라우팅/메인)의 LLM 타깃 목록을 조회합니다."""
         return self.llm_client.get_lane_targets(lane, model_override=model_override)
 
     def _get_openai_client(self, base_url: str, api_key: str) -> Any | None:
+        """캐시된 OpenAI 호환 클라이언트를 반환하거나 새로 생성합니다."""
         return self.llm_client.get_openai_client(base_url, api_key)
 
     def _get_gemini_compat_client(self, base_url: str, api_key: str) -> Any | None:
+        """캐시된 Gemini 호환 클라이언트를 반환하거나 새로 생성합니다."""
         return self.llm_client.get_gemini_compat_client(base_url, api_key)
 
     async def _call_main_lane_target(self, target, *, system_prompt, user_prompt, log_extra, max_tokens):
+        """시스템/사용자 프롬프트로 단일 메인 레인 LLM 타겟을 호출합니다."""
         return await self.llm_client.call_main_lane_target(
             target, system_prompt=system_prompt, user_prompt=user_prompt,
             log_extra=log_extra, max_tokens=max_tokens,
         )
 
     async def _call_routing_lane_target(self, target, *, prompt, log_extra):
+        """단일 라우팅 레인 LLM 타겟을 호출하여 프롬프트 응답을 반환합니다."""
         return await self.llm_client.call_routing_lane_target(target, prompt=prompt, log_extra=log_extra)
 
     def _debug(self, message: str, log_extra: dict[str, Any] | None = None) -> None:
+        """디버그 설정이 켜진 경우에만 메시지를 기록합니다."""
         self.llm_client.debug(message, log_extra)
 
     def _truncate_for_debug(self, value: Any) -> str:
+        """긴 문자열을 로그용으로 잘라냅니다."""
         return self.llm_client.truncate_for_debug(value)
 
     def _format_prompt_debug(self, prompt: Any) -> str:
+        """프롬프트를 JSON 또는 일반 문자열로 축약합니다."""
         return self.llm_client.format_prompt_debug(prompt)
 
     async def _load_location_cache(self):
@@ -372,6 +382,7 @@ class AIHandler(commands.Cog):
         return await self.llm_client.safe_generate_content(model, prompt, log_extra, generation_config)
 
     def _looks_like_prompt_leakage(self, response_text: str) -> bool:
+        """시스템/내부 지시문 유출로 보이는 응답을 선별 차단합니다."""
         return self.llm_client.looks_like_prompt_leakage(response_text)
 
     async def _cometapi_generate_content(
@@ -381,6 +392,10 @@ class AIHandler(commands.Cog):
         log_extra: dict,
         model: str | None = None,
     ) -> str | None:
+        """메인 레인(primary/fallback)을 통해 응답을 생성합니다.
+
+        Rate Limit 확인 → 프롬프트 길이 제한 → Primary/Fallback 순차 호출 → 응답 반환.
+        """
         return await self.llm_client.generate_content(system_prompt, user_prompt, log_extra, model)
 
     async def _cometapi_fast_generate_text(
@@ -391,6 +406,7 @@ class AIHandler(commands.Cog):
         *,
         trace_key: str = "cometapi_fast",
     ) -> str | None:
+        """라우팅 레인 Fast 모델을 통해 텍스트를 생성합니다."""
         return await self.llm_client.fast_generate_text(prompt, model, log_extra, trace_key=trace_key)
 
     async def _generate_local_embedding(self, content: str, log_extra: dict, prefix: str = "") -> np.ndarray | None:
@@ -759,7 +775,10 @@ Generate the optimized English image prompt:"""
 
     @staticmethod
     def _auto_web_search_scope_key(message: discord.Message) -> int:
-        """자동 웹검색 쿨다운을 적용할 스코프 키를 계산합니다."""
+        """자동 웹검색 쿨다운 범위 키를 산출합니다.
+
+        서버/채널 또는 DM 단위로 쿨다운을 적용할 스코프를 반환합니다.
+        """
         return IntentAnalyzer._auto_web_search_scope_key(message)
 
     def _can_run_auto_web_search(self, message: discord.Message, query: str, log_extra: dict | None = None) -> bool:
@@ -770,7 +789,7 @@ Generate the optimized English image prompt:"""
         return self.intent_analyzer._can_run_auto_web_search(message, query, log_extra)
 
     def _mark_auto_web_search_used(self, message: discord.Message) -> None:
-        """자동 웹 검색 사용 시점을 기록하여 쿨다운을 관리합니다."""
+        """자동 웹 검색 사용 시점을 기록하여 스코프별 쿨다운을 갱신합니다."""
         return self.intent_analyzer._mark_auto_web_search_used(message)
 
     def _sanitize_tool_plan(

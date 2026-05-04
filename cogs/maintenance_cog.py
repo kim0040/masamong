@@ -128,6 +128,7 @@ class MaintenanceCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
+        """BM25 자동 재구축을 위해 대화 시각을 추적합니다."""
         if not self._bm25_auto_enabled:
             return
         if getattr(message.author, "bot", False):

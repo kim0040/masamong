@@ -31,6 +31,7 @@ TIME_WINDOW_MINUTES = 10
 MAX_MESSAGES_PER_CHUNK = 15
 
 def parse_iso(iso_str):
+    """ISO 형식 문자열을 datetime으로 변환합니다. 실패 시 현재 시간을 반환합니다."""
     try:
         return datetime.fromisoformat(iso_str)
     except:
@@ -103,6 +104,7 @@ def chunk_messages(messages):
     return chunks
 
 async def main():
+    """Discord 대화 기록을 재청킹하고 임베딩 DB를 재생성합니다."""
     print(f"🚀 Reindexing Discord Embeddings...")
     print(f"   Model: {config.LOCAL_EMBEDDING_MODEL_NAME or 'BM-K/KoSimCSE-roberta'}")
     print(f"   Database: {config.DATABASE_FILE}")

@@ -103,6 +103,7 @@ def test_configuration():
         return False
 
 def main():
+    """봇 설치 및 설정 초기화 스크립트의 진입점입니다."""
     print("🤖 마사몽 봇 설치 프로그램")
     print("=" * 50)
     

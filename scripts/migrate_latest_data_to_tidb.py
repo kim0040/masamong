@@ -33,6 +33,7 @@ SOURCE_MAIN_TABLES = [
 
 
 def parse_args() -> argparse.Namespace:
+    """CLI 인자를 파싱하여 소스 루트, 스킵 플래그, truncate 옵션을 반환합니다."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-root", default="임시", help="최신 운영 데이터셋 루트")
     parser.add_argument("--skip-main", action="store_true")
@@ -43,6 +44,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def connect_tidb() -> pymysql.connections.Connection:
+    """환경 변수로 TiDB에 연결하고 auto_random_explicit_insert를 활성화합니다."""
     settings = TiDBSettings.from_env()
     conn = pymysql.connect(**settings.to_connect_kwargs())
     with conn.cursor() as cursor:
@@ -52,6 +54,7 @@ def connect_tidb() -> pymysql.connections.Connection:
 
 
 def apply_schema(conn: pymysql.connections.Connection) -> None:
+    """schema_tidb.sql 스크립트를 읽어 TiDB에 스키마를 적용합니다."""
     schema_path = Path(__file__).resolve().parents[1] / "database" / "schema_tidb.sql"
     statements = split_sql_script(schema_path.read_text(encoding="utf-8"))
     with conn.cursor() as cursor:
@@ -61,6 +64,7 @@ def apply_schema(conn: pymysql.connections.Connection) -> None:
 
 
 def recreate_tables(conn: pymysql.connections.Connection) -> None:
+    """의존성 순서대로 모든 테이블을 DROP 후 재생성합니다."""
     ordered = [
         "kakao_chunks",
         "discord_memory_entries",
@@ -85,6 +89,7 @@ def recreate_tables(conn: pymysql.connections.Connection) -> None:
 
 
 def migrate_sqlite_tables(source_db: Path, conn: pymysql.connections.Connection) -> None:
+    """SQLite의 SOURCE_MAIN_TABLES 데이터를 TiDB로 이전합니다."""
     src = sqlite3.connect(source_db)
     src.row_factory = sqlite3.Row
     try:
@@ -106,6 +111,7 @@ def migrate_sqlite_tables(source_db: Path, conn: pymysql.connections.Connection)
 
 
 def migrate_discord_embeddings(source_db: Path, conn: pymysql.connections.Connection) -> None:
+    """discord_chat_embeddings 테이블을 SQLite에서 TiDB로 이전합니다."""
     src = sqlite3.connect(source_db)
     src.row_factory = sqlite3.Row
     try:
@@ -151,6 +157,7 @@ def migrate_discord_embeddings(source_db: Path, conn: pymysql.connections.Connec
 
 
 def migrate_discord_memory_entries(source_db: Path, conn: pymysql.connections.Connection) -> None:
+    """discord_memory_entries 테이블을 SQLite에서 TiDB로 이전합니다."""
     src = sqlite3.connect(source_db)
     src.row_factory = sqlite3.Row
     try:
@@ -222,6 +229,7 @@ def migrate_discord_memory_entries(source_db: Path, conn: pymysql.connections.Co
 
 
 def _room_label(room_key: str) -> str:
+    """KAKAO_EMBEDDING_SERVER_MAP에서 room_key에 대응하는 레이블을 반환합니다."""
     for meta in config.KAKAO_EMBEDDING_SERVER_MAP.values():
         candidate_room_key = str(meta.get("room_key") or "").strip()
         db_path = meta.get("db_path") or ""
@@ -231,6 +239,7 @@ def _room_label(room_key: str) -> str:
 
 
 def migrate_kakao_store(source_root: Path, conn: pymysql.connections.Connection) -> None:
+    """kakao_store 디렉토리의 모든 room 데이터를 TiDB로 이전합니다."""
     rooms_root = source_root / "kakao_store"
     room_dirs = sorted(path for path in rooms_root.iterdir() if path.is_dir())
     total = 0
@@ -283,6 +292,7 @@ def migrate_kakao_store(source_root: Path, conn: pymysql.connections.Connection)
 
 
 def main() -> None:
+    """전체 마이그레이션 파이프라인을 실행합니다."""
     args = parse_args()
     source_root = Path(args.source_root).resolve()
     main_db = source_root / "remasamong.db"

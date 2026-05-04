@@ -39,7 +39,7 @@ class FunCog(commands.Cog):
     # --- 쿨다운 관리 ---
 
     def is_on_cooldown(self, channel_id: int) -> bool:
-        """특정 채널이 키워드 기능 쿨다운 상태인지 확인합니다."""
+        """지정된 채널이 키워드 트리거 쿨다운 기간인지 확인합니다."""
         cooldown_seconds = config.FUN_KEYWORD_TRIGGERS.get("cooldown_seconds", 60)
         last_time = self.keyword_cooldowns.get(channel_id)
         if last_time and (datetime.now() - last_time) < timedelta(seconds=cooldown_seconds):
@@ -47,12 +47,12 @@ class FunCog(commands.Cog):
         return False
 
     def update_cooldown(self, channel_id: int):
-        """특정 채널의 키워드 기능 쿨다운을 현재 시간으로 갱신합니다."""
+        """지정된 채널의 키워드 트리거 쿨다운을 현재 시간으로 갱신합니다."""
         self.keyword_cooldowns[channel_id] = datetime.now()
         logger.debug(f"FunCog: 채널({channel_id})의 키워드 응답 쿨다운이 갱신되었습니다.")
 
     def _trim_summary_cache(self):
-        """캐시가 설정 개수를 초과하면 오래된 항목부터 제거합니다."""
+        """요약 캐시가 설정 최대 개수를 초과하면 가장 오래된 항목부터 제거합니다."""
         max_channels = max(1, int(getattr(config, "SUMMARY_CACHE_MAX_CHANNELS", 300)))
         if len(self.summary_cache) <= max_channels:
             return
@@ -61,6 +61,7 @@ class FunCog(commands.Cog):
             self.summary_cache.pop(channel_id, None)
 
     def _update_summary_cache(self, channel_id: int, anchor_message_id: int, summary_text: str):
+        """채널별 요약 결과를 메모리 캐시에 기록하고 초과 시 트리밍합니다."""
         self.summary_cache[channel_id] = SummaryCacheEntry(
             anchor_message_id=int(anchor_message_id),
             summary_text=(summary_text or "").strip(),

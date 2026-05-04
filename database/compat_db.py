@@ -42,26 +42,33 @@ class CompatRow:
         self._values = [data[name] for name in self._columns]
 
     def __getitem__(self, key: int | str) -> Any:
+        """정수 인덱스 또는 컬럼명 문자열로 값에 접근합니다."""
         if isinstance(key, int):
             return self._values[key]
         return self._mapping[key]
 
     def __iter__(self):
+        """값 목록에 대한 이터레이터를 반환합니다."""
         return iter(self._values)
 
     def __len__(self) -> int:
+        """컬럼 개수를 반환합니다."""
         return len(self._values)
 
     def get(self, key: str, default: Any = None) -> Any:
+        """딕셔너리 스타일로 값에 접근하며, 키가 없으면 default를 반환합니다."""
         return self._mapping.get(key, default)
 
     def keys(self):
+        """컬럼명 키 뷰를 반환합니다."""
         return self._mapping.keys()
 
     def items(self):
+        """(컬럼명, 값) 쌍의 아이템 뷰를 반환합니다."""
         return self._mapping.items()
 
     def values(self):
+        """값 뷰를 반환합니다."""
         return self._mapping.values()
 
     def as_dict(self) -> dict[str, Any]:
@@ -73,12 +80,14 @@ class BufferedCursor:
     """결과를 메모리에 버퍼링한 비동기 커서."""
 
     def __init__(self, rows: list[CompatRow], rowcount: int = 0, lastrowid: int | None = None):
+        """버퍼링된 행 목록, rowcount, lastrowid로 커서를 초기화합니다."""
         self._rows = rows
         self._index = 0
         self.rowcount = rowcount
         self.lastrowid = lastrowid
 
     async def fetchone(self) -> CompatRow | None:
+        """버퍼에서 다음 행 하나를 반환하거나, 더 이상 없으면 None을 반환합니다."""
         if self._index >= len(self._rows):
             return None
         row = self._rows[self._index]
@@ -86,6 +95,7 @@ class BufferedCursor:
         return row
 
     async def fetchall(self) -> list[CompatRow]:
+        """버퍼에서 남은 모든 행을 리스트로 반환합니다."""
         if self._index == 0:
             self._index = len(self._rows)
             return list(self._rows)
@@ -94,9 +104,11 @@ class BufferedCursor:
         return remaining
 
     async def __aenter__(self) -> "BufferedCursor":
+        """비동기 컨텍스트 매니저 진입."""
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> bool:
+        """비동기 컨텍스트 매니저 종료 (예외를 전파)."""
         return False
 
 
@@ -104,23 +116,28 @@ class QueryHandle:
     """`await db.execute(...)` 와 `async with db.execute(...)` 를 모두 지원."""
 
     def __init__(self, db: "TiDBConnection", query: str, params: Iterable[Any] | None = None):
+        """TiDB 연결, SQL 쿼리, 파라미터로 쿼리 핸들을 초기화합니다."""
         self._db = db
         self._query = query
         self._params = tuple(params or ())
         self._cursor: BufferedCursor | None = None
 
     async def _ensure(self) -> BufferedCursor:
+        """실행되지 않았다면 지연 실행하고, 버퍼링된 커서를 반환합니다."""
         if self._cursor is None:
             self._cursor = await self._db._execute_buffered(self._query, self._params)
         return self._cursor
 
     def __await__(self):
+        """`await db.execute(...)` 호출을 지원합니다."""
         return self._ensure().__await__()
 
     async def __aenter__(self) -> BufferedCursor:
+        """`async with db.execute(...)` 진입 시 실행하고 커서를 반환합니다."""
         return await self._ensure()
 
     async def __aexit__(self, exc_type, exc, tb) -> bool:
+        """비동기 컨텍스트 매니저 종료."""
         return False
 
 
@@ -140,6 +157,7 @@ class TiDBSettings:
 
     @classmethod
     def from_env(cls) -> "TiDBSettings":
+        """환경 변수에서 TiDB 접속 설정을 읽어 TiDBSettings 인스턴스를 생성합니다."""
         return cls(
             host=os.environ.get("MASAMONG_DB_HOST", "").strip(),
             port=int(os.environ.get("MASAMONG_DB_PORT", "4000")),
@@ -155,6 +173,7 @@ class TiDBSettings:
         )
 
     def to_connect_kwargs(self) -> dict[str, Any]:
+        """PyMySQL 연결을 위한 키워드 인자 딕셔너리를 생성합니다."""
         kwargs: dict[str, Any] = {
             "host": self.host,
             "port": self.port,
@@ -216,6 +235,7 @@ class TiDBConnection:
     """단일 PyMySQL 연결을 aiosqlite 스타일로 감싼 어댑터."""
 
     def __init__(self, settings: TiDBSettings):
+        """TiDB 연결 설정을 받아 어댑터를 초기화합니다."""
         self.settings = settings
         self.row_factory = aiosqlite.Row
         self._conn: Any = None
@@ -224,6 +244,7 @@ class TiDBConnection:
         self._connected_at_monotonic: float | None = None
 
     async def connect(self) -> "TiDBConnection":
+        """PyMySQL 연결을 생성하고 연결 시각을 기록합니다."""
         if pymysql is None:
             raise CompatOperationalError("PyMySQL 패키지가 필요합니다.")
         self._conn = await asyncio.to_thread(pymysql.connect, **self.settings.to_connect_kwargs())
@@ -231,12 +252,14 @@ class TiDBConnection:
         return self
 
     def _is_connection_stale(self) -> bool:
+        """연결 유지 시간이 최대 수명을 초과했는지 확인합니다."""
         if self._connected_at_monotonic is None:
             return False
         return (time.monotonic() - self._connected_at_monotonic) >= float(self.settings.conn_max_lifetime_seconds)
 
     @staticmethod
     def _is_retryable_disconnect(exc: Exception) -> bool:
+        """예외 메시지/코드로 재연결 가능한 연결 끊김인지 판별합니다."""
         msg = str(exc).lower()
         if any(token in msg for token in ("lost connection", "server has gone away", "connection was killed", "connection reset")):
             return True
@@ -249,6 +272,7 @@ class TiDBConnection:
         return code in {2006, 2013, 2055}
 
     def _reconnect_sync(self) -> None:
+        """기존 연결을 닫고 새 PyMySQL 연결을 동기적으로 생성합니다."""
         if pymysql is None:
             raise CompatOperationalError("PyMySQL 패키지가 필요합니다.")
         if self._conn is not None:
@@ -281,6 +305,10 @@ class TiDBConnection:
                 raise CompatOperationalError(str(reconnect_exc)) from reconnect_exc
 
     async def _execute_buffered(self, query: str, params: Iterable[Any] | None = None) -> BufferedCursor:
+        """SQL을 TiDB 문법으로 변환 후 실행하고 BufferedCursor로 결과를 반환합니다.
+
+        연결 끊김 감지 시 1회 자동 재연결을 시도합니다.
+        """
         sql = rewrite_sql_for_tidb(query)
         bind = tuple(params or ())
         async with self._lock:
@@ -297,6 +325,7 @@ class TiDBConnection:
                 raise CompatOperationalError(str(exc)) from exc
             
     def _execute_sync(self, sql: str, params: tuple[Any, ...]) -> BufferedCursor:
+        """PyMySQL 커서로 SQL을 동기 실행하고 결과를 BufferedCursor로 래핑합니다."""
         assert self._conn is not None
         with self._conn.cursor() as cursor:
             cursor.execute(sql, params)
@@ -307,9 +336,11 @@ class TiDBConnection:
             return BufferedCursor(rows, rowcount=cursor.rowcount, lastrowid=cursor.lastrowid)
 
     def execute(self, query: str, params: Iterable[Any] | None = None) -> QueryHandle:
+        """aiosqlite 호환 `await/async with db.execute()` 인터페이스를 제공합니다."""
         return QueryHandle(self, query, params)
 
     async def executemany(self, query: str, seq_of_params: Iterable[Iterable[Any]]) -> None:
+        """여러 행을 한 번에 실행합니다. (INSERT 다중행 등)"""
         sql = rewrite_sql_for_tidb(query)
         values = [tuple(item) for item in seq_of_params]
         async with self._lock:
@@ -333,10 +364,12 @@ class TiDBConnection:
             cursor.executemany(sql, values)
 
     async def executescript(self, script: str) -> None:
+        """세미콜론으로 구분된 SQL 스크립트 전체를 순차 실행합니다."""
         for statement in split_sql_script(script):
             await self.execute(statement)
 
     async def commit(self) -> None:
+        """현재 트랜잭션을 커밋합니다. 연결 끊김 시 CompatOperationalError를 발생시킵니다."""
         if self._conn is None:
             return
         async with self._lock:
@@ -352,6 +385,7 @@ class TiDBConnection:
                 raise CompatOperationalError(str(exc)) from exc
 
     async def rollback(self) -> None:
+        """현재 트랜잭션을 롤백합니다."""
         if self._conn is None:
             return
         async with self._lock:
@@ -367,6 +401,7 @@ class TiDBConnection:
                 raise CompatOperationalError(str(exc)) from exc
 
     async def close(self) -> None:
+        """TiDB 연결을 안전하게 종료합니다."""
         if self._conn is None:
             return
         async with self._lock:

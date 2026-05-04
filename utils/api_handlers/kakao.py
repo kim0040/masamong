@@ -81,6 +81,7 @@ async def _get_kakao_session() -> aiohttp.ClientSession:
 
 
 async def close_kakao_session() -> None:
+    """공유 aiohttp 세션을 안전하게 종료합니다."""
     global _kakao_session
     if _kakao_session and not _kakao_session.closed:
         await _kakao_session.close()

@@ -81,7 +81,7 @@ def load_csv_flexible(path: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 def chunk_conversations(df: pd.DataFrame) -> List[Dict[str, Any]]:
-    """대화 내용을 청크 단위로 분할합니다. (화자 병합 적용)"""
+    """시간 간격과 최대 메시지 수 기준으로 대화를 청크로 분할합니다."""
     chunks = []
     current_chunk_msgs = []
     last_time = None
@@ -159,6 +159,7 @@ def format_chunk(messages: List[Dict[str, str]]) -> Dict[str, Any]:
     }
 
 def main():
+    """카카오톡 CSV → 청킹 → 임베딩 → 저장 전 과정을 실행합니다."""
     parser = argparse.ArgumentParser(description="KakaoTalk Offline Embedding Generator")
     parser.add_argument("--input", "-i", type=str, default="data/kakao_raw/kakao_chat.csv", help="Input CSV file path")
     parser.add_argument("--output", "-o", type=str, default="data/kakao_store", help="Output directory path")

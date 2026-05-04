@@ -74,7 +74,7 @@ async def get_coords_from_db(db: aiosqlite.Connection, location_name: str) -> Op
     return None
 
 def latlon_to_kma_grid(lat: float, lon: float) -> tuple[int, int]:
-    """위경도(WGS84) 좌표를 기상청 격자 좌표(X, Y)로 변환합니다."""
+    """WGS84 위경도를 기상청 람베르트 정각원추(Lambert Conformal Conic) 격자 좌표(X, Y)로 변환합니다."""
     ra = math.tan(PI * 0.25 + lat * DEGRAD * 0.5)
     ra = re * sf / math.pow(ra, sn)
     theta = lon * DEGRAD - olon
@@ -88,7 +88,7 @@ def latlon_to_kma_grid(lat: float, lon: float) -> tuple[int, int]:
     return x, y
 
 def kma_grid_to_latlon(x: int, y: int) -> tuple[float, float]:
-    """기상청 격자 좌표(X, Y)를 위경도(WGS84) 좌표로 변환합니다."""
+    """기상청 람베르트 정각원추 격자 좌표(X, Y)를 WGS84 위경도로 역변환합니다."""
     xn = x - XO
     yn = ro - y + YO
     ra = math.sqrt(xn * xn + yn * yn)

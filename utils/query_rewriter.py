@@ -54,6 +54,7 @@ def _normalize_query(text: str) -> str:
 
 
 async def _async_encode(model: SentenceTransformer, sentences: List[str]) -> np.ndarray:
+    """SentenceTransformer 인코딩을 별도 스레드에서 실행합니다."""
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         None,
@@ -62,6 +63,7 @@ async def _async_encode(model: SentenceTransformer, sentences: List[str]) -> np.
 
 
 async def _get_model() -> SentenceTransformer | None:
+    """쿼리 재작성용 SentenceTransformer 모델을 지연 로딩합니다."""
     global _MODEL_INSTANCE
     if SentenceTransformer is None:
         logger.warning("sentence-transformers 패키지를 찾을 수 없어 쿼리 재작성을 비활성화합니다.")
@@ -93,6 +95,7 @@ async def _get_model() -> SentenceTransformer | None:
 
 
 def _build_candidate_variants(query: str) -> list[str]:
+    """동의어 치환과 꼬리말 확장을 통해 후보 질의 변형을 생성합니다."""
     base = _normalize_query(query)
     if not base:
         return []
