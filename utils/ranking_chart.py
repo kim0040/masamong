@@ -33,6 +33,7 @@ def _prepare_matplotlib_env() -> None:
 
 
 def _resolve_korean_font_name() -> str:
+    """시스템에서 사용 가능한 한글 폰트를 탐색하여 반환합니다."""
     try:
         from matplotlib import font_manager
     except Exception:

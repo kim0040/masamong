@@ -107,6 +107,7 @@ def build_storage_text(
 
 
 def is_meaningful_text(text: str, *, min_chars: int = 2) -> bool:
+    """노이즈(ㅋㅋ, 이모티콘 등)를 제외하고 유의미한 텍스트인지 판별합니다."""
     cleaned = normalize_message_content(text)
     if not cleaned:
         return False
@@ -119,6 +120,7 @@ def is_meaningful_text(text: str, *, min_chars: int = 2) -> bool:
 
 
 def extract_keywords(text: str, *, limit: int = 8) -> list[str]:
+    """텍스트에서 불용어를 제외한 핵심 키워드를 최대 limit개 추출합니다."""
     seen: set[str] = set()
     keywords: list[str] = []
     for token in _TOKEN_RE.findall(text or ""):
@@ -136,6 +138,7 @@ def extract_keywords(text: str, *, limit: int = 8) -> list[str]:
 
 
 def classify_memory_type(text: str, *, speaker_count: int, owner_specific: bool) -> str:
+    """대화 내용을 분석하여 메모리 유형(preference/plan/profile/event/shared_context/conversation)을 분류합니다."""
     lowered = (text or "").lower()
     if any(keyword in lowered for keyword in ("좋아", "싫어", "선호", "취향", "자주", "즐겨")):
         return "preference"
@@ -149,6 +152,7 @@ def classify_memory_type(text: str, *, speaker_count: int, owner_specific: bool)
 
 
 def truncate_text(text: str, limit: int) -> str:
+    """텍스트를 limit 글자로 자르고 말줄임표를 붙입니다."""
     cleaned = normalize_message_content(text)
     if len(cleaned) <= limit:
         return cleaned
@@ -167,7 +171,7 @@ def compose_memory_text(summary_text: str, raw_context: str, *, limit: int) -> s
 
 
 def merge_payload_to_turns(payload: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """연속된 동일 화자의 메시지를 하나의 턴으로 합친다."""
+    """동일 화자의 연속 메시지를 하나의 turn으로 병합합니다."""
     turns: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
 
@@ -213,6 +217,7 @@ def merge_payload_to_turns(payload: Iterable[dict[str, Any]]) -> list[dict[str, 
 
 
 def _build_context_lines(turns: list[dict[str, Any]], *, max_turns: int = 8, max_line_chars: int = 180) -> list[str]:
+    """턴 데이터를 `화자명: 내용` 형식의 요약 라인으로 변환합니다."""
     lines: list[str] = []
     for turn in turns[:max_turns]:
         merged = " ".join(turn["contents"])
@@ -228,6 +233,7 @@ def build_structured_memory_units(
     max_context_chars: int = 1200,
     user_turn_min_chars: int = 12,
 ) -> list[StructuredMemoryUnit]:
+    """대화 페이로드를 채널 공유 메모리와 사용자별 메모리 유닛으로 변환합니다."""
     turns = merge_payload_to_turns(payload)
     if not turns:
         return []

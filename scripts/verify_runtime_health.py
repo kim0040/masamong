@@ -39,6 +39,7 @@ class CheckResult:
 
 
 def parse_args() -> argparse.Namespace:
+    """헬스체크 CLI 옵션(백엔드, 임베딩 타임아웃, 검색 질의 수 등)을 파싱합니다."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--write-check", action="store_true", help="합성 데이터 적재/검색/정리까지 검증")
     parser.add_argument("--json", action="store_true", help="JSON 결과만 출력")
@@ -51,6 +52,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def _print_text(results: list[CheckResult]) -> None:
+    """CheckResult 리스트를 PASS/FAIL 형식으로 텍스트 출력합니다."""
     for item in results:
         status = "PASS" if item.ok else "FAIL"
         print(f"[{status}] {item.name}: {item.details}")
@@ -59,27 +61,32 @@ def _print_text(results: list[CheckResult]) -> None:
 
 
 def _json_default(value: Any) -> Any:
+    """json.dumps에서 CheckResult 직렬화를 위한 기본 변환기입니다."""
     if isinstance(value, CheckResult):
         return asdict(value)
     raise TypeError(f"JSON 직렬화할 수 없는 값: {type(value)!r}")
 
 
 def _append(results: list[CheckResult], name: str, ok: bool, details: str, **metrics: Any) -> None:
+    """헬스체크 결과를 results 리스트에 추가합니다."""
     results.append(CheckResult(name=name, ok=ok, details=details, metrics=metrics))
 
 
 async def _select_count(db: Any, table_name: str) -> int:
+    """지정된 테이블의 행 개수를 조회합니다."""
     async with db.execute(f"SELECT COUNT(*) AS cnt FROM {table_name}") as cursor:
         row = await cursor.fetchone()
     return int(row[0] if row else 0)
 
 
 def _current_timestamp_sql(db: Any) -> str:
+    """백엔드에 맞는 CURRENT_TIMESTAMP SQL 표현식을 반환합니다."""
     backend = getattr(db, "backend", "sqlite")
     return "CURRENT_TIMESTAMP(6)" if backend == "tidb" else "CURRENT_TIMESTAMP"
 
 
 async def _discover_discord_scope(store: DiscordEmbeddingStore) -> tuple[str, str] | None:
+    """데이터가 가장 많은 Discord (server_id, channel_id)를 자동 탐색합니다."""
     await store.initialize()
     if store.backend == "tidb":
         settings = store._tidb_settings
@@ -152,6 +159,7 @@ async def _fetch_recent_discord_memory_rows(
     *,
     limit: int = 120,
 ) -> list[dict[str, Any]]:
+    """지정된 스코프의 최근 메모리 행을 limit개 조회합니다."""
     rows = await store.fetch_recent_memory_entries(
         server_id=int(server_id),
         channel_id=int(channel_id),
@@ -161,6 +169,7 @@ async def _fetch_recent_discord_memory_rows(
 
 
 def _rank_keywords_from_rows(rows: Iterable[dict[str, Any]], *, limit: int) -> list[str]:
+    """keyword_json과 텍스트에서 키워드를 집계하여 빈도순 상위 limit개를 반환합니다."""
     counter: Counter[str] = Counter()
     for row in rows:
         raw_keywords = row.get("keyword_json")
@@ -195,6 +204,7 @@ async def _discover_user_id_for_scope(
     server_id: str,
     channel_id: str,
 ) -> int | None:
+    """해당 스코프에서 user 메모리를 가진 사용자 ID를 하나 찾아 반환합니다."""
     rows = await _fetch_recent_discord_memory_rows(store, server_id, channel_id, limit=80)
     for row in rows:
         if row.get("memory_scope") != "user":
@@ -208,6 +218,7 @@ async def _discover_user_id_for_scope(
 
 
 def _discover_kakao_targets() -> list[tuple[str, str]]:
+    """KAKAO_EMBEDDING_SERVER_MAP에서 (server_id, room_key) 쌍을 수집합니다."""
     discovered: list[tuple[str, str]] = []
     seen_room_keys: set[str] = set()
     for server_id, meta in config.KAKAO_EMBEDDING_SERVER_MAP.items():
@@ -225,6 +236,7 @@ async def _fetch_recent_kakao_rows(
     *,
     limit: int = 60,
 ) -> list[dict[str, Any]]:
+    """지정된 server_id의 최근 Kakao 임베딩 행을 limit개 조회합니다."""
     rows = await store.fetch_recent_embeddings([server_id], limit=limit, query_vector=None)
     return [dict(row) for row in rows]
 
@@ -233,6 +245,7 @@ async def _run_write_pipeline_check(
     db: Any,
     discord_store: DiscordEmbeddingStore,
 ) -> CheckResult:
+    """합성 데이터를 적재→임베딩→하이브리드 검색하는 전체 쓰기 파이프라인을 검증합니다."""
     base = int(datetime.now(timezone.utc).timestamp())
     test_guild_id = 990000000000000 + (base % 100000)
     test_channel_id = test_guild_id + 1
@@ -403,6 +416,7 @@ async def _run_write_pipeline_check(
 
 
 async def _run_archive_cycle_check(db: Any) -> CheckResult:
+    """RAG 아카이빙 함수가 정상 동작하는지 단일 사이클로 확인합니다."""
     try:
         before_count = await _select_count(db, "conversation_history")
         await db_utils.archive_old_conversations(db)
@@ -423,6 +437,7 @@ async def _run_archive_cycle_check(db: Any) -> CheckResult:
 
 
 async def _run_prompt_injection_check(channel_id: int = 0) -> CheckResult:
+    """AIHandler의 프롬프트 합성이 필수 섹션을 모두 포함하는지 검증합니다."""
     class _DummyBot:
         db = None
 
@@ -488,6 +503,7 @@ async def _run_prompt_injection_check(channel_id: int = 0) -> CheckResult:
 
 
 async def _run_embedding_preflight(timeout_seconds: int) -> CheckResult:
+    """임베딩 모델이 정상 로드되어 벡터를 생성하는지 사전 검증합니다."""
     timeout_seconds = max(5, int(timeout_seconds))
     try:
         vector = await asyncio.wait_for(
@@ -526,6 +542,7 @@ async def _run_embedding_preflight(timeout_seconds: int) -> CheckResult:
 
 
 async def main() -> int:
+    """전체 헬스체크를 실행하고 결과를 출력합니다. 실패 시 exit code 1."""
     args = parse_args()
     results: list[CheckResult] = []
     selected_backend = config.DB_BACKEND if args.backend == "auto" else args.backend

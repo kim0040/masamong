@@ -14,6 +14,7 @@ class MasamongHelpCommand(commands.HelpCommand):
     """
     
     def __init__(self):
+        """커스텀 도움말 커맨드를 초기화하고 별칭을 설정합니다."""
         super().__init__()
         self.command_attrs["help"] = "명령어 목록과 사용법을 자세히 보여줍니다."
         self.command_attrs["aliases"] = ["도움", "도움말", "h"]
@@ -72,7 +73,7 @@ class MasamongHelpCommand(commands.HelpCommand):
         await destination.send(embed=embed)
 
     async def send_command_help(self, command):
-        """!도움 <명령어> 입력 시 상세 설명 출력"""
+        """개별 명령어에 대한 상세 도움말을 Embed로 출력합니다."""
         embed = discord.Embed(
             title=f"📘 명령어 가이드: !{command.name}",
             description=command.help or "상세 설명이 준비되어 있지 않아요.",
@@ -142,7 +143,7 @@ class MasamongHelpCommand(commands.HelpCommand):
         await destination.send(embed=embed)
 
     async def send_group_help(self, group):
-        """그룹 명령어 도움말 (예: !debug)"""
+        """그룹 명령어(예: !debug)의 하위 명령어 목록을 Embed로 출력합니다."""
         embed = discord.Embed(
             title=f"🔧 그룹 명령어: !{group.name}",
             description=group.help or "설명이 없습니다.",
@@ -160,13 +161,14 @@ class MasamongHelpCommand(commands.HelpCommand):
         await destination.send(embed=embed)
 
     async def send_error_message(self, error):
-        """없는 명렁어 검색 시 오류 메시지"""
+        """존재하지 않는 명령어 입력 시 오류 메시지를 출력합니다."""
         destination = self.get_destination()
         await destination.send(f"❌ {error}")
 
 class HelpCog(commands.Cog):
     """도움말 기능을 담당하는 Cog입니다."""
     def __init__(self, bot):
+        """Cog를 초기화하고 봇의 help_command를 커스텀 구현으로 교체합니다."""
         self.bot = bot
         self._original_help_command = bot.help_command
         bot.help_command = MasamongHelpCommand()

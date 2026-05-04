@@ -42,6 +42,7 @@ class Reranker:
         self._dependency_warning_logged = False
 
     async def _ensure_model(self):
+        """모델이 로드되지 않았다면 지연 로딩을 수행합니다."""
         if self._model is not None and self._tokenizer is not None:
             return
         if AutoTokenizer is None or AutoModelForSequenceClassification is None or torch is None:

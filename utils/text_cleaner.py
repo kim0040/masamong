@@ -35,7 +35,7 @@ class ProfanityFilter:
     ]
 
     def __init__(self):
-        # 모든 패턴을 하나의 정규식으로 컴파일
+        """모든 욕설 패턴을 하나의 정규식으로 컴파일합니다."""
         pattern_str = "|".join(self.BAD_PATTERNS)
         self.regex = re.compile(pattern_str, re.IGNORECASE)
 

@@ -16,6 +16,7 @@ from utils.memory_units import build_structured_memory_units
 
 
 def parse_args() -> argparse.Namespace:
+    """CLI 인자를 파싱하여 소스/타겟 DB 경로와 필터 옵션을 반환합니다."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-db", default=config.DATABASE_FILE)
     parser.add_argument("--target-db", default=config.DISCORD_EMBEDDING_DB_PATH)
@@ -26,6 +27,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_history_rows(source_db: Path, guild_id: int | None, channel_id: int | None) -> dict[tuple[int, int], list[dict[str, object]]]:
+    """SQLite 대화 기록을 (guild_id, channel_id) 기준으로 그룹화하여 로드합니다."""
     conn = sqlite3.connect(source_db)
     conn.row_factory = sqlite3.Row
     try:
@@ -75,6 +77,7 @@ async def rebuild_channel_memories(
     channel_id: int,
     rows: list[dict[str, object]],
 ) -> tuple[int, int]:
+    """슬라이딩 윈도우로 대화를 구조화 메모리 유닛으로 변환해 임베딩 스토어에 적재합니다."""
     window_size = max(1, getattr(config, "CONVERSATION_WINDOW_SIZE", 12))
     stride = max(1, getattr(config, "CONVERSATION_WINDOW_STRIDE", 6))
     max_chars = max(300, getattr(config, "CONVERSATION_WINDOW_MAX_CHARS", 3000))
@@ -128,6 +131,7 @@ async def rebuild_channel_memories(
 
 
 async def main() -> None:
+    """전체 리빌드 파이프라인을 실행합니다."""
     args = parse_args()
     source_db = Path(args.source_db).resolve()
     grouped = load_history_rows(source_db, args.guild_id, args.channel_id)

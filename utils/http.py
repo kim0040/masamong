@@ -21,6 +21,7 @@ CIPHERS = (
 class ModernTlsAdapter(HTTPAdapter):
     """최신 TLS 암호화 스위트를 강제하는 커스텀 HTTP 어댑터입니다."""
     def init_poolmanager(self, *args, **kwargs):
+        """최신 TLS 암호화 스위트로 poolmanager를 초기화합니다."""
         context = create_urllib3_context(ciphers=CIPHERS)
         context.check_hostname = True
         context.verify_mode = ssl.CERT_REQUIRED
@@ -32,6 +33,7 @@ class TlsV12Adapter(HTTPAdapter):
     data.go.kr과 같은 구형 서버와의 호환성을 위해 사용됩니다.
     """
     def init_poolmanager(self, *args, **kwargs):
+        """TLSv1.2를 강제하는 SSL 컨텍스트로 poolmanager를 초기화합니다."""
         context = ssl.create_default_context()
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         kwargs['ssl_context'] = context

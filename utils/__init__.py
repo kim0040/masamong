@@ -1,1 +1,6 @@
-# This file makes the 'utils' directory a Python package.
+# -*- coding: utf-8 -*-
+"""마사몽 봇의 유틸리티 모듈 패키지입니다.
+
+LLM 클라이언트, 임베딩, 검색, API 핸들러, 데이터 포맷터 등
+핵심 로직을 Discord 의존성 없이 독립적으로 제공합니다.
+"""

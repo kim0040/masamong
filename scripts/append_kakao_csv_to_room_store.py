@@ -25,6 +25,7 @@ from scripts.generate_kakao_embeddings_v2 import (
 
 
 def parse_args() -> argparse.Namespace:
+    """CLI 인자를 파싱하여 CSV, room 디렉토리, 모델명, TiDB 접속 정보 등을 반환합니다."""
     parser = argparse.ArgumentParser(description="Append Kakao CSV data into an existing room store and TiDB.")
     parser.add_argument(
         "--csv",
@@ -68,6 +69,7 @@ def parse_args() -> argparse.Namespace:
 
 
 async def build_chunks_with_v2(args: argparse.Namespace) -> list[dict[str, Any]]:
+    """KakaoSessionEmbedder V2를 사용해 CSV를 세션 단위로 요약·청킹한 리스트를 반환합니다."""
     api_key = resolve_summary_api_key(getattr(args, "summary_key", None))
     if not api_key:
         raise RuntimeError("요약용 LLM API 키(KAKAO_SUMMARY_API_KEY 또는 LLM_MAIN_PRIMARY_API_KEY)가 필요합니다.")
@@ -129,17 +131,20 @@ async def build_chunks_with_v2(args: argparse.Namespace) -> list[dict[str, Any]]
 
 
 def fingerprint(item: dict[str, Any]) -> str:
+    """청크 데이터의 중복 판별용 SHA256 해시를 생성합니다."""
     payload = f"{item.get('start_date', '')}\x1f{item.get('text', '')}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def load_existing_store(room_dir: Path) -> tuple[list[dict[str, Any]], np.ndarray]:
+    """기존 room 저장소에서 metadata.json과 vectors.npy를 로드합니다."""
     metadata = json.loads((room_dir / "metadata.json").read_text(encoding="utf-8"))
     vectors = np.load(room_dir / "vectors.npy")
     return metadata, np.asarray(vectors, dtype=np.float32)
 
 
 def save_store(room_dir: Path, metadata: list[dict[str, Any]], vectors: np.ndarray) -> None:
+    """metadata와 vectors를 임시 파일로 저장 후 원본 파일과 교체합니다."""
     metadata_tmp = room_dir / "metadata.json.tmp"
     vectors_tmp = room_dir / "vectors.npy.tmp"
     metadata_tmp.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -153,6 +158,7 @@ def assign_new_ids(
     existing_metadata: list[dict[str, Any]],
     new_chunks: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[str]]:
+    """기존 메타데이터와 중복되지 않는 새 청크에 고유 ID를 할당합니다."""
     existing_fingerprints = {fingerprint(item) for item in existing_metadata}
     next_chunk_id = max((int(item.get("id", -1)) for item in existing_metadata), default=-1) + 1
     next_session_id = max((int(item.get("session_id", -1)) for item in existing_metadata), default=-1) + 1
@@ -186,6 +192,7 @@ def assign_new_ids(
 
 
 def build_tidb_connection() -> pymysql.connections.Connection:
+    """환경 설정에 따라 PyMySQL TiDB 연결을 생성합니다."""
     if not (config.TIDB_HOST and config.TIDB_USER):
         raise RuntimeError("TiDB connection settings are not configured.")
     ssl_value: dict[str, Any] | None = None
@@ -214,6 +221,7 @@ def insert_into_tidb(
     metadata_rows: list[dict[str, Any]],
     vectors: np.ndarray,
 ) -> None:
+    """청크 메타데이터와 벡터를 TiDB 테이블에 배치 INSERT합니다."""
     if not metadata_rows:
         return
     insert_sql = f"""
@@ -256,6 +264,7 @@ def insert_into_tidb(
 
 
 def main() -> None:
+    """전체 append 워크플로우를 실행합니다."""
     args = parse_args()
     room_dir = Path(args.room_dir).resolve()
 

@@ -17,12 +17,14 @@ from utils.embeddings import DiscordEmbeddingStore, KakaoEmbeddingStore, get_emb
 
 
 def parse_args() -> argparse.Namespace:
+    """CLI 인자를 파싱하여 쓰기 검증 여부를 반환합니다."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--write-check", action="store_true")
     return parser.parse_args()
 
 
 async def main() -> None:
+    """TiDB 연결/조회/쓰기를 포함한 기본 연기 테스트를 실행합니다."""
     args = parse_args()
     db = await connect_main_db(
         config.DB_BACKEND,
