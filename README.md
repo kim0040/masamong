@@ -136,17 +136,19 @@ masamong/
 │   ├── intent_analyzer.py # Intent analysis + tool detection
 │   ├── rag_manager.py    # RAG / embedding / memory management
 │   ├── hybrid_search.py  # Embedding + BM25 + RRF search
+│   ├── locale.py         # i18n (internationalization) support
+│   ├── constants.py      # Shared constants (NSFW, limits, etc.)
+│   ├── discord_helpers.py # Discord message utilities
 │   └── api_handlers/     # Finnhub, yfinance, KRX, Kakao, EximBank
 │
-├── database/             # TiDB/SQLite schemas + compat adapter
+├── locales/              # i18n message files
+│   ├── ko.json           # Korean
+│   ├── en.json           # English
+│   └── ja.json           # Japanese
+│
+├── database/             # TiDB/SQLite schema + adapter
 ├── scripts/              # Operational scripts (smoke test, migration, etc.)
-├── docs/                 # Documentation
-│   ├── ARCHITECTURE.ko.md # Korean architecture doc
-│   ├── ARCHITECTURE.en.md # English architecture doc
-│   ├── UML_SPEC.ko.md     # UML diagrams & technical analysis (Korean)
-│   ├── README.ko.md       # Korean README
-│   └── README.ja.md      # Japanese README
-└── requirements.txt
+└── docs/                 # Documentation
 ```
 
 ---
@@ -198,6 +200,36 @@ See [ARCHITECTURE.en.md](docs/ARCHITECTURE.en.md) for the full diagram.
 | `MASAMONG_DB_BACKEND` | `tidb` or `sqlite` |
 
 See `.env.example` for the complete reference.
+
+---
+
+## Internationalization (i18n)
+
+Masamong supports Korean (ko), English (en), and Japanese (ja).
+
+### Global Language Setting
+
+Set the default language in `.env`:
+
+```env
+MASAMONG_LANG=ko  # ko, en, or ja
+```
+
+### Per-Server Language Setting
+
+Use the slash command in Discord to change the language per server:
+
+```
+/config language 한국어
+/config language English
+/config language 日本語
+```
+
+### Adding a New Language
+
+Create a new JSON file in the `locales/` directory and add the language code to `SUPPORTED_LANGUAGES` in `utils/locale.py`.
+
+See [docs/SETTINGS_GUIDE.md](docs/SETTINGS_GUIDE.md) for details.
 
 ---
 
