@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS guild_settings (
     proactive_response_probability REAL NOT NULL DEFAULT 0.05,
     proactive_response_cooldown INTEGER NOT NULL DEFAULT 300, -- 초 단위
     persona_text TEXT, -- 사용자 정의 페르소나
+    language TEXT DEFAULT 'ko', -- 서버 언어 설정 (ko/en/ja)
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc'))
 );

@@ -188,6 +188,30 @@ class ReMasamongBot(commands.Bot):
                     max(0, after_count - before_count),
                 )
 
+            # guild_settings 테이블에 language 컬럼 추가 (기존 DB 호환)
+            if config.DB_BACKEND != "tidb":
+                try:
+                    await self.db.execute(
+                        "ALTER TABLE guild_settings ADD COLUMN language TEXT DEFAULT 'ko'"
+                    )
+                    await self.db.commit()
+                    logger.info("guild_settings 테이블에 language 컬럼을 추가했습니다.")
+                except Exception:
+                    pass  # 이미 존재하면 무시
+            else:
+                try:
+                    await self.db.execute(
+                        "ALTER TABLE guild_settings ADD COLUMN language VARCHAR(10) DEFAULT 'ko'"
+                    )
+                    await self.db.commit()
+                    logger.info("guild_settings 테이블에 language 컬럼을 추가했습니다.")
+                except Exception:
+                    pass  # 이미 존재하면 무시
+
+            # 로케일 설정 로드
+            from utils.locale import load_guild_languages_from_db
+            await load_guild_languages_from_db(self.db)
+
             # locations 테이블이 비어있거나 구형 데이터(예: 2만개 미만 또는 주요 별칭 누락)일 경우 재시딩합니다.
             async with self.db.execute("SELECT COUNT(*) FROM locations") as cursor:
                 existing_count = (await cursor.fetchone())[0]

@@ -456,8 +456,8 @@ class WeatherCog(commands.Cog):
                         channel_ids.add(int(cid))
                     except (TypeError, ValueError):
                         continue
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"지진 알림 채널 조회 실패: {e}")
 
         # Fallback to prompt-config registered channels
         for cid, meta in getattr(config, "CHANNEL_AI_CONFIG", {}).items():
@@ -476,7 +476,8 @@ class WeatherCog(commands.Cog):
         # Sort by time ascending
         try:
            earthquakes.sort(key=lambda x: str(x.get('tmEqk')))
-        except: pass
+        except Exception as e:
+            logger.debug(f"지진 데이터 정렬 실패: {e}")
         
         new_last_time = self.last_earthquake_time
         
@@ -513,7 +514,7 @@ class WeatherCog(commands.Cog):
                     if eqk_dt > new_last_time:
                         new_last_time = eqk_dt
             except Exception as e:
-                logger.error(f"지진 정보 처리 오류: {e}")
+                logger.error(f"지진 정보 처리 오류: {e}", exc_info=True)
                 
         self.last_earthquake_time = new_last_time
 

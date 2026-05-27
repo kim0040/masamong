@@ -21,6 +21,9 @@ except ModuleNotFoundError:  # pragma: no cover - yaml is optional
 
 load_dotenv()
 
+# 로케일 시스템 초기화 (다국어 지원)
+from utils.locale import msg as _locale_msg, SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE
+
 # [NEW] Stock Config (yfinance)
 USE_YFINANCE = True
 YFINANCE_CACHE_TTL = 600 # 10분 캐시
@@ -345,7 +348,6 @@ GEMINI_API_KEY = load_config_value('GEMINI_API_KEY')
 GOOGLE_API_KEY = load_config_value('GOOGLE_API_KEY')
 GOOGLE_CX = load_config_value('GOOGLE_CX')
 GOOGLE_CUSTOM_SEARCH_DAILY_LIMIT = as_int(load_config_value('GOOGLE_CUSTOM_SEARCH_DAILY_LIMIT', 100), 100)
-SERPAPI_KEY = load_config_value('SERPAPI_KEY')
 LINKUP_API_KEY = as_str(load_config_value('LINKUP_API_KEY', ''), '')
 LINKUP_BASE_URL = as_str(
     load_config_value('LINKUP_BASE_URL', 'https://api.linkup.so/v1'),
@@ -596,7 +598,6 @@ IMAGE_SAFETY_TOLERANCE = 0  # 가장 엄격한 수준 (0=strict, 5=permissive) -
 FINNHUB_API_KEY = load_config_value('FINNHUB_API_KEY', 'YOUR_FINNHUB_API_KEY')
 KAKAO_API_KEY = load_config_value('KAKAO_API_KEY', 'YOUR_KAKAO_API_KEY')
 KRX_API_KEY = load_config_value('KRX_API_KEY')
-GO_DATA_API_KEY_KR = load_config_value('GO_DATA_API_KEY_KR', 'YOUR_GO_DATA_API_KEY_KR')
 EXIM_API_KEY_KR = load_config_value('EXIM_API_KEY_KR', 'YOUR_EXIM_API_KEY_KR')
 KMA_API_KEY = load_config_value('KMA_API_KEY')
 FINNHUB_BASE_URL = load_config_value('FINNHUB_BASE_URL', "https://finnhub.io/api/v1")
@@ -957,15 +958,25 @@ intents.message_content = True
 intents.guilds = True
 intents.members = True
 intents.emojis = True # [NEW] Enable access to custom emojis/expressions (compatible with older 2.x versions)
-MSG_AI_ERROR = "😥 아놔, 에러났네. 뭐지? 잠시 후에 다시 물어봐봐."
-MSG_AI_COOLDOWN = "😅 야, 좀 천천히 불러라! {remaining:.1f}초 뒤에 다시 말 걸어줘."
-MSG_CMD_NO_PERM = "🚫 너 그거 못 써 임마. 관리자한테 허락받고 와."
-MSG_CMD_ERROR = "❌ 명령어 쓰다 뭐 잘못된 듯? 다시 확인해봐."
-MSG_CMD_GUILD_ONLY = "🚫 야, 그건 서버 채널에서만 쓰는 거임."
-MSG_DELETE_LOG_SUCCESS = "✅ 로그 파일(`{filename}`) 지웠다. 깔끔~"
-MSG_DELETE_LOG_NOT_FOUND = "ℹ️ 로그 파일(`{filename}`) 원래 없는데? 뭘 지우라는겨."
-MSG_DELETE_LOG_ERROR = "❌ 로그 파일 지우는데 에러남. 뭐가 문제지?"
-MSG_WEATHER_API_KEY_MISSING = "😥 기상청 API 키가 설정되지 않아서 날씨 정보를 가져올 수 없어."
-MSG_WEATHER_FETCH_ERROR = "😥 날씨 정보를 가져오는데 실패했어. 잠시 후에 다시 시도해봐."
-MSG_WEATHER_TIMEOUT = "⏱️ 기상청 API 응답이 너무 느려서 실패했어. 조금 있다가 다시 부탁해줘."
-MSG_WEATHER_NO_DATA = "😥 해당 시간/날짜의 날씨 정보가 아직 없거나 조회할 수 없어."
+
+# ========== 다국어 설정 ==========
+# .env의 MASAMONG_LANG으로 전역 기본 언어를 설정할 수 있습니다.
+# 지원 언어: ko (한국어), en (English), ja (日本語)
+# 서버별 언어는 DB의 guild_settings.language 컬럼으로 관리합니다.
+LANGUAGE = os.environ.get("MASAMONG_LANG", DEFAULT_LANGUAGE).strip().lower()
+if LANGUAGE not in SUPPORTED_LANGUAGES:
+    LANGUAGE = DEFAULT_LANGUAGE
+
+# 메시지 상수 (로케일 시스템에서 로드, 기존 코드 호환성 유지)
+MSG_AI_ERROR = _locale_msg("MSG_AI_ERROR")
+MSG_AI_COOLDOWN = _locale_msg("MSG_AI_COOLDOWN")
+MSG_CMD_NO_PERM = _locale_msg("MSG_CMD_NO_PERM")
+MSG_CMD_ERROR = _locale_msg("MSG_CMD_ERROR")
+MSG_CMD_GUILD_ONLY = _locale_msg("MSG_CMD_GUILD_ONLY")
+MSG_DELETE_LOG_SUCCESS = _locale_msg("MSG_DELETE_LOG_SUCCESS")
+MSG_DELETE_LOG_NOT_FOUND = _locale_msg("MSG_DELETE_LOG_NOT_FOUND")
+MSG_DELETE_LOG_ERROR = _locale_msg("MSG_DELETE_LOG_ERROR")
+MSG_WEATHER_API_KEY_MISSING = _locale_msg("MSG_WEATHER_API_KEY_MISSING")
+MSG_WEATHER_FETCH_ERROR = _locale_msg("MSG_WEATHER_FETCH_ERROR")
+MSG_WEATHER_TIMEOUT = _locale_msg("MSG_WEATHER_TIMEOUT")
+MSG_WEATHER_NO_DATA = _locale_msg("MSG_WEATHER_NO_DATA")

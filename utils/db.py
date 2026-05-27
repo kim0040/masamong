@@ -13,10 +13,11 @@ from datetime import datetime, timedelta, timezone
 import pytz
 import json
 import aiosqlite
-from typing import Any
 
 import config
 from logger_config import logger
+from utils.constants import DM_LIMIT_WINDOW_HOURS, DM_LIMIT_COUNT, DM_GLOBAL_LIMIT, FORTUNE_DAILY_LIMIT
+from typing import Any
 
 KST = pytz.timezone('Asia/Seoul')
 
@@ -398,9 +399,6 @@ async def check_dm_message_limit(db: aiosqlite.Connection, user_id: int) -> tupl
         (허용 여부, 안내 메시지용 리셋 시간 문자열 or None)
     """
     try:
-        LIMIT_WINDOW_HOURS = 5
-        LIMIT_COUNT = 30
-        
         now = datetime.now(timezone.utc)
         now_str = now.isoformat()
         
@@ -409,7 +407,7 @@ async def check_dm_message_limit(db: aiosqlite.Connection, user_id: int) -> tupl
             
         if not row:
             # 기록 없음 -> 초기화
-            reset_at = (now + timedelta(hours=LIMIT_WINDOW_HOURS)).isoformat()
+            reset_at = (now + timedelta(hours=DM_LIMIT_WINDOW_HOURS)).isoformat()
             await db.execute(
                 "INSERT INTO dm_usage_logs (user_id, usage_count, window_start_at, reset_at) VALUES (?, 1, ?, ?)",
                 (user_id, now_str, reset_at)
@@ -422,7 +420,7 @@ async def check_dm_message_limit(db: aiosqlite.Connection, user_id: int) -> tupl
         
         if now > reset_at_dt:
             # 윈도우 지남 -> 초기화
-            reset_at = (now + timedelta(hours=LIMIT_WINDOW_HOURS)).isoformat()
+            reset_at = (now + timedelta(hours=DM_LIMIT_WINDOW_HOURS)).isoformat()
             await db.execute(
                 "UPDATE dm_usage_logs SET usage_count = 1, window_start_at = ?, reset_at = ? WHERE user_id = ?",
                 (now_str, reset_at, user_id)
@@ -431,7 +429,7 @@ async def check_dm_message_limit(db: aiosqlite.Connection, user_id: int) -> tupl
             return True, None
         
         # 윈도우 내 사용
-        if usage_count < LIMIT_COUNT:
+        if usage_count < DM_LIMIT_COUNT:
             # 카운트 증가
             await db.execute(
                 "UPDATE dm_usage_logs SET usage_count = usage_count + 1 WHERE user_id = ?",
@@ -456,8 +454,6 @@ async def check_global_dm_limit(db: aiosqlite.Connection) -> bool:
     `system_counters` 테이블 사용.
     """
     try:
-        GLOBAL_DM_LIMIT = 100 # 하루 최대 DM 처리 횟수
-        
         # 오늘 날짜 키 생성 (KST 기준)
         today_key = f"dm_daily_global_{datetime.now(KST).strftime('%Y-%m-%d')}"
         now_str = datetime.now(timezone.utc).isoformat()
@@ -468,8 +464,8 @@ async def check_global_dm_limit(db: aiosqlite.Connection) -> bool:
             
         current_count = row[0] if row else 0
         
-        if current_count >= GLOBAL_DM_LIMIT:
-            logger.warning(f"🚨 전역 DM 일일 한도 초과! ({current_count}/{GLOBAL_DM_LIMIT})")
+        if current_count >= DM_GLOBAL_LIMIT:
+            logger.warning(f"🚨 전역 DM 일일 한도 초과! ({current_count}/{DM_GLOBAL_LIMIT})")
             return False
             
         # 카운트 증가 (UPSERT)
@@ -504,7 +500,6 @@ async def check_fortune_daily_limit(db: aiosqlite.Connection, user_id: int) -> t
     Returns: (제한 도달 여부, 남은 횟수)
     """
     try:
-        LIMIT = 3
         now_kst = datetime.now(KST)
         today_key = f"fortune_limit_{user_id}_{now_kst.strftime('%Y-%m-%d')}"
         
@@ -520,8 +515,8 @@ async def check_fortune_daily_limit(db: aiosqlite.Connection, user_id: int) -> t
             row = await cursor.fetchone()
             count = row[0] if row else 0
             
-        remaining = max(0, LIMIT - count)
-        return (count >= LIMIT), remaining
+        remaining = max(0, FORTUNE_DAILY_LIMIT - count)
+        return (count >= FORTUNE_DAILY_LIMIT), remaining
 
     except Exception as e:
         logger.error(f"운세 제한 확인 중 오류: {e}", exc_info=True)

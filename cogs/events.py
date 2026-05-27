@@ -10,6 +10,9 @@ Discord API에서 발생하는 주요 이벤트를 수신하고 처리하는 Cog
 - `on_guild_join`/`remove`: 봇의 서버 참여/추방 이벤트를 로깅합니다.
 """
 
+from __future__ import annotations
+from typing import TYPE_CHECKING
+
 import discord
 from discord.ext import commands
 from datetime import datetime
@@ -20,12 +23,12 @@ import config
 from logger_config import logger
 from utils import db as db_utils
 
-# 의존하는 다른 Cog들을 타입 힌팅 목적으로 임포트
-from .ai_handler import AIHandler
-from .weather_cog import WeatherCog
-from .fun_cog import FunCog
-from .activity_cog import ActivityCog
-from .proactive_assistant import ProactiveAssistant
+if TYPE_CHECKING:
+    from .ai_handler import AIHandler
+    from .weather_cog import WeatherCog
+    from .fun_cog import FunCog
+    from .activity_cog import ActivityCog
+    from .proactive_assistant import ProactiveAssistant
 
 class EventListeners(commands.Cog):
     """봇의 핵심 이벤트 리스너들을 관리하는 클래스입니다."""

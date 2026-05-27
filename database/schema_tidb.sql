@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS guild_settings (
     proactive_response_probability DOUBLE NOT NULL DEFAULT 0.05,
     proactive_response_cooldown INT NOT NULL DEFAULT 300,
     persona_text LONGTEXT,
+    language VARCHAR(10) DEFAULT 'ko',
     created_at VARCHAR(64) NOT NULL DEFAULT '',
     updated_at VARCHAR(64) NOT NULL DEFAULT ''
 );

@@ -433,29 +433,8 @@ class ToolsCog(commands.Cog):
     # --- 이미지 생성 (CometAPI flux-2-flex) --- #
     
     # NSFW 차단 키워드 목록 (선정적/혐오/폭력 콘텐츠 차단)
-    _NSFW_BLOCKED_KEYWORDS = frozenset([
-        # 영문 (선정적 키워드)
-        'nude', 'naked', 'nsfw', 'explicit', 'sexual', 'porn', 'pornographic',
-        'hentai', 'erotic', 'xxx', 'adult only', 'lewd',
-        'topless', 'bottomless', 'genitals', 'nipple',
-        'intercourse', 'orgasm', 'fetish', 'bdsm', 'bondage',
-        # 영문 (우회 시도)
-        'n*de', 'nak3d', 'nud3', 'p0rn', 'pr0n', 's3x', 'seggs',
-        'boobs', 'tits', 'titties',
-        # 영문 (혐오/폭력)
-        'hate', 'gore', 'suicide', 'murder', 'torture', 'kill',
-        'terror', 'massacre', 'genocide', 'racist', 'racism',
-        'neo-nazi', 'nazi', 'swastika', 'kkk',
-        'self-harm', 'selfharm', 'cutting',
-        # 한국어 (선정적)
-        '야한', '선정적', '노출', '성인', '음란', '에로', '야동', '포르노',
-        '벗은', '알몸', '나체', '누드', '성기', '성관계', '성적',
-        '가슴', '엉덩이', '섹시',
-        '19금', '18금', 'r18', 'r-18',
-        # 한국어 (혐오/폭력)
-        '혐오', '증오', '살인', '자살', '테러', '학살', '고문',
-        '인종차별', '나치', '친일', '극우',
-    ])
+    # utils/constants.py의 NSFW_KEYWORDS를 사용하여 중복 제거
+    from utils.constants import NSFW_KEYWORDS as _NSFW_BLOCKED_KEYWORDS
     
     # 안전 Negative Prompt (이미지 품질 향상용)
     _SAFETY_NEGATIVE_PROMPT = (

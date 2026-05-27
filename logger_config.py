@@ -259,7 +259,7 @@ def register_discord_logging(bot: commands.Bot):
     discord_handler.setLevel(logging.WARNING) # WARNING 레벨 이상의 로그만 Discord로 전송
     logging.getLogger().addHandler(discord_handler)
     
-    asyncio.create_task(discord_logging_task())
+    _discord_log_task = asyncio.create_task(discord_logging_task())
     logging.info("Discord 로깅 핸들러가 등록되었으며, 전송 태스크가 시작될 예정입니다.")
 
 # --- 로거 인스턴스 생성 ---
