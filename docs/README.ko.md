@@ -137,7 +137,15 @@ masamong/
 │   ├── intent_analyzer.py # 의도 분석 + 도구 탐지
 │   ├── rag_manager.py    # RAG / 임베딩 / 메모리 관리
 │   ├── hybrid_search.py  # 임베딩 + BM25 + RRF 검색
+│   ├── locale.py         # 다국어(i18n) 지원
+│   ├── constants.py      # 공유 상수 (NSFW, 제한값 등)
+│   ├── discord_helpers.py # Discord 메시지 유틸리티
 │   └── api_handlers/     # Finnhub, yfinance, KRX, Kakao, EximBank
+│
+├── locales/              # 다국어 메시지 파일
+│   ├── ko.json           # 한국어
+│   ├── en.json           # English
+│   └── ja.json           # 日本語
 │
 ├── database/             # TiDB/SQLite 스키마 + 어댑터
 ├── scripts/              # 운영 스크립트 (smoke test, 마이그레이션 등)
@@ -193,6 +201,36 @@ flowchart LR
 | `MASAMONG_DB_BACKEND` | `tidb` 또는 `sqlite` |
 
 전체 환경변수는 `.env.example`을 참조하세요.
+
+---
+
+## 다국어 지원 (i18n)
+
+마사몽은 한국어(ko), 영어(en), 일본어(ja)를 지원합니다.
+
+### 전역 언어 설정
+
+`.env` 파일에서 기본 언어를 설정합니다:
+
+```env
+MASAMONG_LANG=ko  # ko, en, ja 중 선택
+```
+
+### 서버별 언어 설정
+
+Discord에서 슬래시 명령어로 서버별 언어를 변경할 수 있습니다:
+
+```
+/config language 한국어
+/config language English
+/config language 日本語
+```
+
+### 새 언어 추가
+
+`locales/` 디렉토리에 새 JSON 파일을 생성하고 `utils/locale.py`의 `SUPPORTED_LANGUAGES`에 추가합니다.
+
+자세한 내용은 [SETTINGS_GUIDE.md](SETTINGS_GUIDE.md)를 참조하세요.
 
 ---
 
