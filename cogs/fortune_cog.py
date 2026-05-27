@@ -17,6 +17,7 @@ from database.compat_db import get_table_columns
 from logger_config import logger
 from utils import db as db_utils
 from utils.fortune import FortuneCalculator, get_sign_from_date
+from utils.discord_helpers import send_split_message
 
 # 시간 유효성 검사 정규식 (HH:MM)
 TIME_PATTERN = re.compile(r'^([01]\d|2[0-3]):([0-5]\d)$')
@@ -750,12 +751,8 @@ class FortuneCog(commands.Cog):
         return prompts.get(key, prompts['fortune_summary'])
 
     async def _send_split_message(self, destination, text: str):
-        """Discord 메시지 2000자 제한을 고려해 텍스트를 1900자씩 분할 전송합니다."""
-        if not text: return
-        chunk_size = 1900
-        for i in range(0, len(text), chunk_size):
-            await destination.send(text[i:i + chunk_size])
-            await asyncio.sleep(0.5)
+        """Discord 메시지 2000자 제한을 고려해 텍스트를 분할 전송합니다."""
+        await send_split_message(destination, text)
 
 
     @tasks.loop(minutes=1)

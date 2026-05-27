@@ -553,8 +553,7 @@ def _is_safe_url(url: str) -> bool:
 
         # 2. HEAD 요청으로 메타데이터 확인 (최대 2MB)
         headers = {"User-Agent": "Mozilla/5.0"}
-        # SSL 인증서 오류가 있는 사이트도 메타데이터는 확인하기 위해 verify=False 설정 고려
-        response = requests.head(url, headers=headers, timeout=5, allow_redirects=True, verify=False)
+        response = requests.head(url, headers=headers, timeout=5, allow_redirects=True)
         
         # Content-Type 체크
         content_type = response.headers.get("Content-Type", "").lower()
@@ -607,7 +606,7 @@ def _extract_article_text(url: str) -> tuple[str | None, str]:
                 # 일부 버전은 download에 html 인자를 받음
                 try:
                     article.download(input_html=html_content)
-                except:
+                except Exception:
                     article.html = html_content
             else:
                 article.html = html_content

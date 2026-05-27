@@ -6,6 +6,7 @@
 - AI 기능 활성화/비활성화
 - AI 응답 허용 채널 관리
 - AI 페르소나 조회 및 설정 (Modal UI 사용)
+- 서버 언어 설정 (다국어 지원)
 """
 
 import discord
@@ -17,6 +18,14 @@ import json
 
 from logger_config import logger
 from utils import db as db_utils
+from utils.locale import SUPPORTED_LANGUAGES, set_guild_language
+
+# 언어 표시 이름 매핑
+_LANG_NAMES = {
+    "ko": "한국어 (Korean)",
+    "en": "English",
+    "ja": "日本語 (Japanese)",
+}
 
 class PersonaSetModal(Modal, title="AI 페르소나 설정"):
     """AI의 페르소나를 입력받기 위한 Modal(팝업창) UI 클래스입니다."""
@@ -139,6 +148,44 @@ class SettingsCog(commands.Cog):
         guild_id = interaction.guild_id
         current_persona = await db_utils.get_guild_setting(self.bot.db, guild_id, 'persona_text', default="")
         await interaction.response.send_modal(PersonaSetModal(self.bot, current_persona=current_persona))
+
+    @config_group.command(name="language", description="이 서버의 봇 언어를 설정합니다. / Set the bot language for this server.")
+    @app_commands.describe(lang="설정할 언어 / Language to set")
+    @app_commands.choices(lang=[
+        app_commands.Choice(name="한국어 (Korean)", value="ko"),
+        app_commands.Choice(name="English", value="en"),
+        app_commands.Choice(name="日本語 (Japanese)", value="ja"),
+    ])
+    @app_commands.checks.has_permissions(administrator=True)
+    async def set_language(self, interaction: discord.Interaction, lang: str):
+        """서버의 봇 언어를 변경합니다."""
+        guild_id = interaction.guild_id
+        log_extra = {'guild_id': guild_id, 'user_id': interaction.user.id}
+
+        if lang not in SUPPORTED_LANGUAGES:
+            await interaction.response.send_message(
+                f"❌ 지원하지 않는 언어입니다. 지원 언어: {', '.join(SUPPORTED_LANGUAGES)}",
+                ephemeral=True
+            )
+            return
+
+        try:
+            # guild_settings 테이블에 language 컬럼이 없을 수 있으므로 먼저 확인
+            await db_utils.set_guild_setting(self.bot.db, guild_id, 'language', lang)
+            set_guild_language(guild_id, lang)
+
+            lang_name = _LANG_NAMES.get(lang, lang)
+            messages = {
+                "ko": f"✅ 서버 언어를 **{lang_name}**로 변경했습니다.",
+                "en": f"✅ Server language has been set to **{lang_name}**.",
+                "ja": f"✅ サーバー言語を **{lang_name}** に変更しました。",
+            }
+            await interaction.response.send_message(messages.get(lang, messages["ko"]), ephemeral=True)
+            logger.info(f"서버 언어 변경: {lang}", extra=log_extra)
+
+        except aiosqlite.Error as e:
+            logger.error(f"언어 설정 중 DB 오류: {e}", exc_info=True, extra=log_extra)
+            await interaction.response.send_message("❌ 언어 설정 중 오류가 발생했습니다.", ephemeral=True)
 
 async def setup(bot: commands.Bot):
     """Cog를 봇에 등록하는 함수입니다."""

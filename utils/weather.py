@@ -406,7 +406,7 @@ def format_current_weather(data: dict | None) -> str:
                  temp_display = f"{temp}°C (체감 {sensible:.1f}°C)"
              else:
                  temp_display = f"{temp}°C"
-        except:
+        except (TypeError, ValueError):
              temp_display = f"{temp}°C"
         
         pty_map = {"0": "없음", "1": "비", "2": "비/눈", "3": "눈", "5": "빗방울"}
@@ -582,7 +582,8 @@ async def get_recent_earthquakes(db: aiosqlite.Connection) -> list | None:
             try:
                 if float(mt_val) >= 4.0:
                     filtered_items.append(item)
-            except: pass
+            except (TypeError, ValueError):
+                logger.debug(f"지진 규모 파싱 실패: mt={mt_val}")
             
         return filtered_items
     except Exception:
@@ -617,7 +618,7 @@ def format_earthquake_alert(item: dict) -> str:
         # 국내 지진 규모별 색상/헤더 구분
         try:
             mag = float(mt)
-        except:
+        except (TypeError, ValueError):
             mag = 0.0
             
         if mag >= 6.0:
@@ -702,7 +703,9 @@ def format_typhoon_list(raw_data: str) -> str | None:
             # Often Korean in KMA.
             
             active_typhoons.append(f"🌀 태풍 **{name}** 활동 중")
-        except: continue
+        except (IndexError, KeyError) as e:
+            logger.debug(f"태풍 데이터 파싱 실패: {e}")
+            continue
         
     return "\n".join(active_typhoons) if active_typhoons else None
 
@@ -768,7 +771,9 @@ async def get_mid_term_forecast_v2(db: aiosqlite.Connection, region_code: str) -
             if line.startswith(region_code):
                 # Found data line
                 return f"중기예보(3~10일) [Typ01 Raw Data]\nCOLUMN: {header_line}\nDATA: {line}\n(참고: WF 컬럼이 날씨, MIN/MAX가 기온입니다.)"
-    except: pass
+    except Exception as e:
+        logger.warning(f"중기예보 V2 파싱 실패: {e}")
+        pass
     return None
 
 async def get_impact_forecast(db: aiosqlite.Connection, timeout: float | None = None) -> str | None:

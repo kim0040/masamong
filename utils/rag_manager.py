@@ -64,6 +64,7 @@ class RAGManager:
         self._window_buffers: dict[tuple[int, int], deque[dict[str, Any]]] = {}
         self._window_counts: dict[tuple[int, int], int] = {}
         self._embedding_token_limit_cache: int | None = None
+        self._background_tasks: set[asyncio.Task] = set()
 
     @property
     def use_cometapi(self) -> bool:
@@ -357,9 +358,11 @@ class RAGManager:
                 ),
             )
             # 윈도우가 저장될 때 해당 윈도우에 대한 임베딩도 생성 (비동기 처리)
-            asyncio.create_task(
+            task = asyncio.create_task(
                 self._create_window_embedding(guild_id, message.channel.id, payload)
             )
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
         except Exception as exc:  # pragma: no cover - 방어적 로깅
             logger.error(
                 "대화 윈도우 저장 중 DB 오류: %s",

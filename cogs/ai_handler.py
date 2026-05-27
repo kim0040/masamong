@@ -48,12 +48,9 @@ import time
 import json
 import io
 import uuid
-import requests
-
 import config
 from logger_config import logger
 from utils import db as db_utils
-from utils import http
 from utils.llm_client import LLMClient
 from utils.intent_analyzer import IntentAnalyzer
 from utils.rag_manager import RAGManager
@@ -64,7 +61,6 @@ from utils.embeddings import (
 from database.bm25_index import BM25IndexManager
 from utils.hybrid_search import HybridSearchEngine
 from utils.reranker import Reranker, RerankerConfig
-from utils.api_handlers.finnhub import ALIAS_TO_TICKER  # [NEW] Import for robust stock detection
 
 KST = pytz.timezone('Asia/Seoul')
 
@@ -468,14 +464,8 @@ class AIHandler(commands.Cog):
         """
         # 사용자 쿼리 NSFW 검사
         query_lower = (user_query or "").lower()
-        nsfw_query_keywords = [
-            '야한', '선정적', '노출', '성인', '음란', '에로', '섹시', '야동',
-            'nsfw', 'nude', 'naked', 'sexy', 'erotic', 'xxx', 'porn',
-            '벗은', '알몸', '나체', '가슴', '엉덩이', '19금', '18금',
-            '혐오', '증오', '살인', '자살', '테러', '학살', '고문',
-            'hate', 'gore', 'suicide', 'murder', 'torture', 'kill',
-        ]
-        if any(kw in query_lower for kw in nsfw_query_keywords):
+        from utils.constants import contains_nsfw
+        if contains_nsfw(user_query or ""):
             logger.warning(
                 "이미지 생성 요청이 안전 필터에 의해 차단되었습니다: %s",
                 user_query[:100],
@@ -487,15 +477,7 @@ class AIHandler(commands.Cog):
         safe_context = ""
         if rag_context:
             # 엄격한 필터링: NSFW 키워드가 있으면 RAG 전체 무시
-            rag_lower = rag_context.lower()
-            nsfw_keywords = [
-                '야한', '선정적', '노출', '성인', '음란', '에로', '섹시', '야동',
-                'nsfw', 'nude', 'naked', 'sexy', 'erotic', 'xxx', 'porn',
-                '벗은', '알몸', '나체', '가슴', '엉덩이', '19금', '18금',
-                '혐오', '증오', '살인', '자살', '테러', '학살', '고문',
-                'hate', 'gore', 'suicide', 'murder', 'torture',
-            ]
-            if not any(kw in rag_lower for kw in nsfw_keywords):
+            if not contains_nsfw(rag_context):
                 safe_context = f"\n\n[Context from previous conversations - use if relevant]:\n{rag_context[:400]}"
 
         # 전문 프롬프트 엔지니어링 시스템 프롬프트
