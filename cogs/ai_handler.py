@@ -1600,16 +1600,17 @@ Generate the optimized English image prompt:"""
                 del spam_cache[k]
         self._spam_cache = spam_cache
         
-        # 3. 사용자별 일일 LLM 호출 제한 검사
+        # 3. 사용자별/글로벌 일일 LLM 호출 제한 검사 (병렬 실행)
         user_daily_key = f"llm_user_{user_id}"
-        user_daily_count = await db_utils.get_daily_api_count(self.bot.db, user_daily_key)
+        user_daily_count, global_daily_count = await asyncio.gather(
+            db_utils.get_daily_api_count(self.bot.db, user_daily_key),
+            db_utils.get_daily_api_count(self.bot.db, "llm_global"),
+        )
         if user_daily_count >= config.USER_DAILY_LLM_LIMIT:
             logger.warning(f"사용자 {user_id} 일일 LLM 제한 도달 ({user_daily_count}/{config.USER_DAILY_LLM_LIMIT})", extra=base_log_extra)
             await message.channel.send("오늘 너무 많이 물어봤어! 내일 다시 물어봐~ 😅")
             return
         
-        # 4. 글로벌 일일 LLM 호출 제한 검사
-        global_daily_count = await db_utils.get_daily_api_count(self.bot.db, "llm_global")
         if global_daily_count >= config.GLOBAL_DAILY_LLM_LIMIT:
             logger.warning(f"글로벌 일일 LLM 제한 도달 ({global_daily_count}/{config.GLOBAL_DAILY_LLM_LIMIT})", extra=base_log_extra)
             await message.channel.send("오늘 할 수 있는 대화가 다 끝났어... 내일 봐! 😢")
@@ -1623,18 +1624,21 @@ Generate the optimized English image prompt:"""
         if not user_query:
             return
 
-        # 5. DM Rate Limiting Check (New)
+        # 5. DM Rate Limiting Check (New) - 병렬 실행
         if not message.guild:
-            # 5-1. 사용자별 1:1 제한 (3시간 5회)
-            allowed, reset_time = await db_utils.check_dm_message_limit(self.bot.db, user_id)
+            # 5-1. 사용자별 1:1 제한 (3시간 5회) + 5-2. 전역 일일 DM 제한
+            dm_limit_result, global_dm_allowed = await asyncio.gather(
+                db_utils.check_dm_message_limit(self.bot.db, user_id),
+                db_utils.check_global_dm_limit(self.bot.db),
+            )
+            allowed, reset_time = dm_limit_result
             if not allowed:
                  await message.channel.send(
                      f"⛔ 일일 대화량이 초과되었습니다.\n마사몽과의 1:1 대화는 5시간당 30회로 제한됩니다.\n🕒 해제 예정 시각: {reset_time}"
                  )
                  return
             
-            # 5-2. 전역 일일 DM 제한 (하루 100회 - API 보호)
-            if not await db_utils.check_global_dm_limit(self.bot.db):
+            if not global_dm_allowed:
                 await message.channel.send(
                     "⛔ 죄송합니다. 오늘 마사몽이 처리할 수 있는 DM 총량을 초과했습니다.\n내일 다시 이용해 주세요! (서버 채널에서는 계속 이용 가능합니다)"
                 )
@@ -1763,8 +1767,10 @@ Generate the optimized English image prompt:"""
                             except:
                                 pass
 
-                        await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
-                        await db_utils.log_api_call(self.bot.db, "llm_global")
+                        await asyncio.gather(
+                            db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}"),
+                            db_utils.log_api_call(self.bot.db, "llm_global"),
+                        )
                         return
 
             # 답변 작성 단계
@@ -1855,18 +1861,20 @@ Generate the optimized English image prompt:"""
                                 await status_msg.delete()
                             except:
                                 pass
-                            # 분석 데이터 로깅
-                            await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
-                            await db_utils.log_api_call(self.bot.db, "llm_global")
-                            await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {
-                                "guild_id": message.guild.id if message.guild else "DM",
-                                "user_id": message.author.id,
-                                "channel_id": message.channel.id,
-                                "trace_id": trace_id,
-                                "user_query": user_query,
-                                "tool_plan": executed_plan or tool_plan,
-                                "final_response": final_response_text,
-                            })
+                            # 분석 데이터 로깅 (병렬 실행)
+                            await asyncio.gather(
+                                db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}"),
+                                db_utils.log_api_call(self.bot.db, "llm_global"),
+                                db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {
+                                    "guild_id": message.guild.id if message.guild else "DM",
+                                    "user_id": message.author.id,
+                                    "channel_id": message.channel.id,
+                                    "trace_id": trace_id,
+                                    "user_query": user_query,
+                                    "tool_plan": executed_plan or tool_plan,
+                                    "final_response": final_response_text,
+                                }),
+                            )
                             return
                         except Exception as img_exc:
                             logger.error(f"이미지 전송 실패: {img_exc}", extra=log_extra)
@@ -1889,18 +1897,20 @@ Generate the optimized English image prompt:"""
                         await status_msg.add_reaction("📰")
                     except: pass
                 
-                # 분석 데이터 로깅
-                await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
-                await db_utils.log_api_call(self.bot.db, "llm_global")
-                await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {
-                    "guild_id": message.guild.id if message.guild else "DM",
-                    "user_id": message.author.id,
-                    "channel_id": message.channel.id,
-                    "trace_id": trace_id,
-                    "user_query": user_query,
-                    "tool_plan": executed_plan or tool_plan,
-                    "final_response": final_response_text,
-                })
+                # 분석 데이터 로깅 (병렬 실행)
+                await asyncio.gather(
+                    db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}"),
+                    db_utils.log_api_call(self.bot.db, "llm_global"),
+                    db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {
+                        "guild_id": message.guild.id if message.guild else "DM",
+                        "user_id": message.author.id,
+                        "channel_id": message.channel.id,
+                        "trace_id": trace_id,
+                        "user_query": user_query,
+                        "tool_plan": executed_plan or tool_plan,
+                        "final_response": final_response_text,
+                    }),
+                )
             else:
                 await status_msg.edit(content="미안해, 답변을 생성하는 데 실패했어. 😢")
 
