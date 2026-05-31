@@ -39,16 +39,28 @@ _WHITESPACE_TOKEN_RE = re.compile(r"\S+")
 
 
 def _build_tidb_settings() -> TiDBSettings | None:
-    """config 값을 바탕으로 TiDB 연결 설정 객체를 생성합니다."""
+    """config 값을 바탕으로 TiDB 연결 설정 객체를 생성합니다.
+
+    SSL CA 경로가 존재하지 않으면 시스템 CA 번들(certifi)로 폴백합니다.
+    """
     if not (config.TIDB_HOST and config.TIDB_USER):
         return None
+
+    ssl_ca = config.TIDB_SSL_CA
+    if ssl_ca and not Path(ssl_ca).exists():
+        try:
+            import certifi
+            ssl_ca = certifi.where()
+        except ImportError:
+            ssl_ca = None
+
     return TiDBSettings(
         host=config.TIDB_HOST,
         port=config.TIDB_PORT,
         user=config.TIDB_USER,
         password=config.TIDB_PASSWORD or "",
         database=config.TIDB_NAME,
-        ssl_ca=config.TIDB_SSL_CA,
+        ssl_ca=ssl_ca,
         ssl_verify_identity=config.TIDB_SSL_VERIFY_IDENTITY,
     )
 
@@ -346,11 +358,12 @@ class DiscordEmbeddingStore:
         "CREATE INDEX IF NOT EXISTS idx_discord_memory_timestamp ON discord_memory_entries (timestamp DESC)",
     )
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, db_connection: Any = None):
         """Discord 임베딩 저장소를 초기화합니다.
 
         Args:
             db_path: 임베딩을 저장할 SQLite DB 파일 경로.
+            db_connection: 공유 TiDBConnection 인스턴스 (미사용, 호환성 유지).
         """
         self.db_path = Path(db_path)
         self.backend = getattr(config, "DISCORD_EMBEDDING_BACKEND", "sqlite")
@@ -358,6 +371,8 @@ class DiscordEmbeddingStore:
         self._tidb_settings = _build_tidb_settings()
         self._init_lock = asyncio.Lock()
         self._initialized = False
+        # 스레드 로컬 연결 캐시 (연결 풀 역할)
+        self._thread_local = __import__('threading').local()
 
     async def initialize(self) -> None:
         """DB 파일이 존재하지 않으면 생성하고 스키마를 준비합니다."""
@@ -432,25 +447,72 @@ class DiscordEmbeddingStore:
         """
         await asyncio.to_thread(self._tidb_exec, create_memory_sql, ())
 
+    def _get_tidb_connection(self):
+        """스레드 로컬 TiDB 연결을 반환합니다 (없으면 생성)."""
+        conn = getattr(self._thread_local, 'tidb_conn', None)
+        if conn is not None:
+            try:
+                conn.ping(reconnect=False)
+                return conn
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        
+        if pymysql is None or self._tidb_settings is None:
+            raise RuntimeError("TiDB 연결 정보 또는 PyMySQL 패키지가 없습니다.")
+        
+        conn = pymysql.connect(**self._tidb_settings.to_connect_kwargs())
+        self._thread_local.tidb_conn = conn
+        return conn
+
     def _tidb_exec(self, query: str, params: tuple[Any, ...], *, fetch: bool = False) -> list[dict[str, Any]] | None:
-        """TiDB 연결을 열고 SQL을 실행한 후 연결을 닫습니다.
+        """TiDB 연결을 열고 SQL을 실행합니다.
+
+        스레드 로컬 연결을 재사용하여 연결 생성 오버헤드를 줄입니다.
 
         Args:
             query: 실행할 SQL 쿼리.
             params: 쿼리 파라미터 튜플.
             fetch: SELECT 결과를 반환할지 여부.
         """
-        if pymysql is None or self._tidb_settings is None:
-            raise RuntimeError("TiDB 연결 정보 또는 PyMySQL 패키지가 없습니다.")
-        conn = pymysql.connect(**self._tidb_settings.to_connect_kwargs())
+        conn = self._get_tidb_connection()
         try:
             with conn.cursor() as cursor:
                 cursor.execute(query, params)
                 rows = cursor.fetchall() if fetch and cursor.description is not None else None
             conn.commit()
             return rows
-        finally:
-            conn.close()
+        except Exception as exc:
+            # 연결 끊김 시 재연결 시도
+            if self._is_retryable_error(exc):
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                self._thread_local.tidb_conn = None
+                conn = self._get_tidb_connection()
+                with conn.cursor() as cursor:
+                    cursor.execute(query, params)
+                    rows = cursor.fetchall() if fetch and cursor.description is not None else None
+                conn.commit()
+                return rows
+            raise
+
+    @staticmethod
+    def _is_retryable_error(exc: Exception) -> bool:
+        """재시도 가능한 연결 오류인지 확인합니다."""
+        msg = str(exc).lower()
+        if any(token in msg for token in ("lost connection", "server has gone away", "connection was killed", "connection reset")):
+            return True
+        code = None
+        if getattr(exc, "args", None):
+            try:
+                code = int(exc.args[0])
+            except Exception:
+                code = None
+        return code in {2006, 2013, 2055}
 
     async def upsert_message_embedding(
         self,
@@ -913,6 +975,42 @@ class KakaoEmbeddingStore:
         # Numpy Backend Cache: Path -> (vectors, metadata_list)
         self._numpy_cache: Dict[Path, Any] = {}
         self._numpy_lock = asyncio.Lock()
+        # 스레드 로컬 연결 캐시 (연결 풀 역할)
+        self._thread_local = __import__('threading').local()
+
+    def _get_tidb_connection(self):
+        """스레드 로컬 TiDB 연결을 반환합니다 (없으면 생성)."""
+        conn = getattr(self._thread_local, 'tidb_conn', None)
+        if conn is not None:
+            try:
+                conn.ping(reconnect=False)
+                return conn
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        
+        if pymysql is None or self._tidb_settings is None:
+            raise RuntimeError("TiDB 연결 정보 또는 PyMySQL 패키지가 없습니다.")
+        
+        conn = pymysql.connect(**self._tidb_settings.to_connect_kwargs())
+        self._thread_local.tidb_conn = conn
+        return conn
+
+    @staticmethod
+    def _is_retryable_error(exc: Exception) -> bool:
+        """재시도 가능한 연결 오류인지 확인합니다."""
+        msg = str(exc).lower()
+        if any(token in msg for token in ("lost connection", "server has gone away", "connection was killed", "connection reset")):
+            return True
+        code = None
+        if getattr(exc, "args", None):
+            try:
+                code = int(exc.args[0])
+            except Exception:
+                code = None
+        return code in {2006, 2013, 2055}
 
     async def _ensure_numpy_backend(self, path: Path) -> bool:
         """경로가 numpy 파일을 포함한 디렉터리인지 확인하고 필요 시 로드합니다."""
@@ -1045,7 +1143,7 @@ class KakaoEmbeddingStore:
 
     def _remote_recent_fetch(self, room_key: str, limit: int) -> list[Dict[str, Any]]:
         """TiDB에서 특정 방의 최신 레코드를 가져옵니다."""
-        conn = pymysql.connect(**self._tidb_settings.to_connect_kwargs())
+        conn = self._get_tidb_connection()
         try:
             with conn.cursor() as cursor:
                 cursor.execute(
@@ -1063,32 +1161,73 @@ class KakaoEmbeddingStore:
                 )
                 rows = cursor.fetchall()
             return [dict(row, context_window=[]) for row in rows]
-        finally:
-            conn.close()
+        except Exception as exc:
+            if self._is_retryable_error(exc):
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                self._thread_local.tidb_conn = None
+                conn = self._get_tidb_connection()
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        SELECT chunk_id AS message_id,
+                               text_long AS message,
+                               start_date AS timestamp,
+                               'Merged Context' AS speaker
+                        FROM {self.tidb_table}
+                        WHERE room_key = %s
+                        ORDER BY start_date DESC, chunk_id DESC
+                        LIMIT %s
+                        """,
+                        (room_key, int(limit)),
+                    )
+                    rows = cursor.fetchall()
+                return [dict(row, context_window=[]) for row in rows]
+            raise
 
     def _remote_vector_search(self, room_key: str, query_vector: "np.ndarray", limit: int) -> list[Dict[str, Any]]:
-        """TiDB에서 벡터 유사도 기반으로 레코드를 검색합니다."""
+        """TiDB에서 벡터 유사도 기반으로 레코드를 검색합니다.
+
+        VEC_COSINE_DISTANCE를 1회만 계산하고 alias를 재사용합니다.
+        """
         vector_literal = _vector_literal(query_vector)
         sql = f"""
             SELECT chunk_id AS message_id,
                    text_long AS message,
                    start_date AS timestamp,
                    'Merged Context' AS speaker,
-                   VEC_COSINE_DISTANCE(embedding, %s) AS distance,
-                   1.0 - VEC_COSINE_DISTANCE(embedding, %s) AS score
-            FROM {self.tidb_table}
-            WHERE room_key = %s
-            ORDER BY VEC_COSINE_DISTANCE(embedding, %s) ASC
-            LIMIT %s
+                   vec_cosine_dist AS distance,
+                   1.0 - vec_cosine_dist AS score
+            FROM (
+                SELECT chunk_id, text_long, start_date,
+                       VEC_COSINE_DISTANCE(embedding, %s) AS vec_cosine_dist
+                FROM {self.tidb_table}
+                WHERE room_key = %s
+                ORDER BY vec_cosine_dist ASC
+                LIMIT %s
+            ) t
         """
-        conn = pymysql.connect(**self._tidb_settings.to_connect_kwargs())
+        conn = self._get_tidb_connection()
         try:
             with conn.cursor() as cursor:
-                cursor.execute(sql, (vector_literal, vector_literal, room_key, vector_literal, int(limit)))
+                cursor.execute(sql, (vector_literal, room_key, int(limit)))
                 rows = cursor.fetchall()
             return [dict(row, context_window=[]) for row in rows]
-        finally:
-            conn.close()
+        except Exception as exc:
+            if self._is_retryable_error(exc):
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                self._thread_local.tidb_conn = None
+                conn = self._get_tidb_connection()
+                with conn.cursor() as cursor:
+                    cursor.execute(sql, (vector_literal, room_key, int(limit)))
+                    rows = cursor.fetchall()
+                return [dict(row, context_window=[]) for row in rows]
+            raise
 
     def _build_vector_extension_candidates(self) -> list[str]:
         """config와 기본값을 바탕으로 SQLite 벡터 확장 후보 목록을 생성합니다."""

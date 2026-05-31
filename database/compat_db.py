@@ -157,14 +157,25 @@ class TiDBSettings:
 
     @classmethod
     def from_env(cls) -> "TiDBSettings":
-        """환경 변수에서 TiDB 접속 설정을 읽어 TiDBSettings 인스턴스를 생성합니다."""
+        """환경 변수에서 TiDB 접속 설정을 읽어 TiDBSettings 인스턴스를 생성합니다.
+
+        SSL CA 경로가 존재하지 않으면 시스템 CA 번들(certifi)로 폴백합니다.
+        """
+        ssl_ca = os.environ.get("MASAMONG_DB_SSL_CA", "").strip() or None
+        if ssl_ca and not os.path.exists(ssl_ca):
+            try:
+                import certifi
+                ssl_ca = certifi.where()
+            except ImportError:
+                ssl_ca = None
+
         return cls(
             host=os.environ.get("MASAMONG_DB_HOST", "").strip(),
             port=int(os.environ.get("MASAMONG_DB_PORT", "4000")),
             user=os.environ.get("MASAMONG_DB_USER", "").strip(),
             password=os.environ.get("MASAMONG_DB_PASSWORD", ""),
             database=os.environ.get("MASAMONG_DB_NAME", "masamong").strip() or "masamong",
-            ssl_ca=os.environ.get("MASAMONG_DB_SSL_CA", "").strip() or None,
+            ssl_ca=ssl_ca,
             ssl_verify_identity=os.environ.get("MASAMONG_DB_SSL_VERIFY_IDENTITY", "true").strip().lower() in {"1", "true", "yes", "on"},
             connect_timeout=max(1, int(os.environ.get("MASAMONG_DB_CONNECT_TIMEOUT", "10"))),
             read_timeout=max(1, int(os.environ.get("MASAMONG_DB_READ_TIMEOUT", "30"))),
