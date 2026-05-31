@@ -37,22 +37,33 @@
 ```bash
 git clone https://github.com/kim0040/masamong.git
 cd masamong
+```
 
-python3 -m venv venv
-source venv/bin/activate
+**가상 환경 생성:**
 
+| OS | 명령어 |
+|----|--------|
+| **macOS / Linux** | `python3 -m venv venv && source venv/bin/activate` |
+| **Windows (CMD)** | `python -m venv venv && venv\Scripts\activate.bat` |
+| **Windows (PowerShell)** | `python -m venv venv && venv\Scripts\Activate.ps1` |
+
+**의존성 설치:**
+
+```bash
 pip install -r requirements.txt
-pip install -r requirements-cpu.txt
+pip install -r requirements-cpu.txt   # CPU 서버용 (RAG/임베딩)
 ```
 
 ### 설정
 
 ```bash
 cp .env.example .env
-# .env 파일을 편집하여 실제 API 키 입력
+cp emb_config.example.json emb_config.json
+cp prompts.example.json prompts.json
 ```
 
-**최소 `.env`:**
+`.env` 파일을 편집하여 API 키를 입력하세요. **최소 필요 항목:**
+
 ```env
 DISCORD_BOT_TOKEN=your_token_here
 COMETAPI_KEY=your_cometapi_key
@@ -60,10 +71,19 @@ COMETAPI_BASE_URL=https://api.cometapi.com/v1
 USE_COMETAPI=true
 ```
 
+> **팁:** `python setup.py`를 실행하면 대화형 설정 마법사를 사용할 수 있습니다.
+
 ### 실행
 
 ```bash
+# macOS / Linux
 PYTHONPATH=. python main.py
+
+# Windows (CMD)
+set PYTHONPATH=. && python main.py
+
+# Windows (PowerShell)
+$env:PYTHONPATH="."; python main.py
 ```
 
 ---
@@ -121,8 +141,9 @@ PYTHONPATH=. python main.py
 masamong/
 ├── main.py              # 봇 진입점, Cog 로드, DB 마이그레이션
 ├── config.py            # 설정 (.env → config.json → 기본값)
-├── prompts.json          # 채널 페르소나 & 시스템 프롬프트
-├── emb_config.json       # 임베딩 / RAG 설정
+├── setup.py             # 대화형 설정 마법사
+├── prompts.example.json # 채널 페르소나 템플릿 (prompts.json으로 복사)
+├── emb_config.example.json # RAG/임베딩 설정 템플릿 (emb_config.json으로 복사)
 │
 ├── cogs/                 # Discord Cog 모듈
 │   ├── ai_handler.py     # AI 파이프라인 (핵심)

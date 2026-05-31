@@ -10,7 +10,9 @@
 # 개인 설정 파일
 config.json
 emb_config.json
+!emb_config.example.json
 prompts.json
+!prompts.example.json
 prompts.yaml
 prompts.yml
 channel_prompts.*
