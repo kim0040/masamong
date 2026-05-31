@@ -36,22 +36,33 @@
 ```bash
 git clone https://github.com/kim0040/masamong.git
 cd masamong
+```
 
-python3 -m venv venv
-source venv/bin/activate
+**仮想環境の作成:**
 
+| OS | コマンド |
+|----|----------|
+| **macOS / Linux** | `python3 -m venv venv && source venv/bin/activate` |
+| **Windows (CMD)** | `python -m venv venv && venv\Scripts\activate.bat` |
+| **Windows (PowerShell)** | `python -m venv venv && venv\Scripts\Activate.ps1` |
+
+**依存関係のインストール:**
+
+```bash
 pip install -r requirements.txt
-pip install -r requirements-cpu.txt
+pip install -r requirements-cpu.txt   # CPUサーバー用 (RAG/埋め込み)
 ```
 
 ### 設定
 
 ```bash
 cp .env.example .env
-# .envを編集して実際のAPIキーを入力
+cp emb_config.example.json emb_config.json
+cp prompts.example.json prompts.json
 ```
 
-**最小 `.env`:**
+`.env`を編集してAPIキーを入力してください。**最低限必要な設定:**
+
 ```env
 DISCORD_BOT_TOKEN=your_token_here
 COMETAPI_KEY=your_cometapi_key
@@ -59,10 +70,19 @@ COMETAPI_BASE_URL=https://api.cometapi.com/v1
 USE_COMETAPI=true
 ```
 
+> **ヒント:** `python setup.py`を実行すると対話式セットアップウィザードが使えます。
+
 ### 実行
 
 ```bash
+# macOS / Linux
 PYTHONPATH=. python main.py
+
+# Windows (CMD)
+set PYTHONPATH=. && python main.py
+
+# Windows (PowerShell)
+$env:PYTHONPATH="."; python main.py
 ```
 
 ---

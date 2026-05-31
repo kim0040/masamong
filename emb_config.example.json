@@ -1,0 +1,50 @@
+{
+  "_comment": "=== 마사몽 RAG 검색 설정 (예시) ===",
+  "_comment2": "이 파일을 emb_config.json으로 복사하여 사용하세요.",
+  "_comment3": "변경 후 봇을 재시작해야 적용됩니다.",
+
+  "embedding_enabled": true,
+  "bm25_enabled": false,
+  "reranker_enabled": false,
+
+  "embedding_model_name": "dragonkue/multilingual-e5-small-ko-v2",
+  "embedding_device": "cpu",
+  "normalize_embeddings": true,
+
+  "similarity_threshold": 0.6,
+  "strong_similarity_threshold": 0.72,
+  "hybrid_top_k": 8,
+  "embedding_top_n": 14,
+  "bm25_top_n": 8,
+  "query_limit": 200,
+
+  "conversation_window_size": 12,
+  "conversation_window_stride": 6,
+  "conversation_neighbor_radius": 3,
+
+  "query_rewrite_enabled": false,
+  "query_rewrite_variants": 3,
+
+  "bm25_auto_rebuild": {
+    "enabled": false,
+    "idle_minutes": 180,
+    "poll_minutes": 15
+  },
+
+  "discord_db_path": "database/discord_embeddings.db",
+  "kakao_db_path": "database/kakao_embeddings.db",
+  "bm25_db_path": "database/remasamong.db",
+
+  "kakao_servers": [
+    {
+      "server_id": "YOUR_DISCORD_SERVER_ID_1",
+      "db_path": "data/kakao_store/room1",
+      "label": "My Server 1"
+    },
+    {
+      "server_id": "YOUR_DISCORD_SERVER_ID_2",
+      "db_path": "data/kakao_store/room2",
+      "label": "My Server 2"
+    }
+  ]
+}

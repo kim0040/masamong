@@ -36,22 +36,33 @@ Masamong is a modular Discord bot that integrates AI conversation, structured me
 ```bash
 git clone https://github.com/kim0040/masamong.git
 cd masamong
+```
 
-python3 -m venv venv
-source venv/bin/activate
+**Create virtual environment:**
 
+| OS | Command |
+|----|---------|
+| **macOS / Linux** | `python3 -m venv venv && source venv/bin/activate` |
+| **Windows (CMD)** | `python -m venv venv && venv\Scripts\activate.bat` |
+| **Windows (PowerShell)** | `python -m venv venv && venv\Scripts\Activate.ps1` |
+
+**Install dependencies:**
+
+```bash
 pip install -r requirements.txt
-pip install -r requirements-cpu.txt   # CPU server extras
+pip install -r requirements-cpu.txt   # CPU server extras (RAG/embedding)
 ```
 
 ### Configure
 
 ```bash
 cp .env.example .env
-# Edit .env with your API keys
+cp emb_config.example.json emb_config.json
+cp prompts.example.json prompts.json
 ```
 
-**Minimum `.env`:**
+Edit `.env` with your API keys. **Minimum required:**
+
 ```env
 DISCORD_BOT_TOKEN=your_token_here
 COMETAPI_KEY=your_cometapi_key
@@ -59,10 +70,19 @@ COMETAPI_BASE_URL=https://api.cometapi.com/v1
 USE_COMETAPI=true
 ```
 
+> **Tip:** Run `python setup.py` for an interactive setup wizard.
+
 ### Run
 
 ```bash
+# macOS / Linux
 PYTHONPATH=. python main.py
+
+# Windows (CMD)
+set PYTHONPATH=. && python main.py
+
+# Windows (PowerShell)
+$env:PYTHONPATH="."; python main.py
 ```
 
 ---
@@ -120,8 +140,9 @@ Message → Intent Analysis (Routing Lane) → Tool Execution → RAG Search →
 masamong/
 ├── main.py              # Bot entry point, Cog loader, DB migration
 ├── config.py            # Configuration from .env / config.json / defaults
-├── prompts.json          # Channel personas & system prompts
-├── emb_config.json       # Embedding / RAG settings
+├── setup.py             # Interactive setup wizard
+├── prompts.example.json # Channel personas template (copy to prompts.json)
+├── emb_config.example.json # RAG/embedding config template (copy to emb_config.json)
 │
 ├── cogs/                 # Discord Cog modules
 │   ├── ai_handler.py     # Core AI pipeline

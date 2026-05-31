@@ -6,18 +6,13 @@
 #   pip install -r requirements-gpu.txt
 #
 # 주의:
-#   - numpy를 1.x 고정합니다 (sentence-transformers 호환)
 #   - CUDA 지원 torch를 설치합니다 (GPU 사용 가능 환경)
 # ==============================================================================
 
-# --- numpy 호환 버전 고정 ---
-numpy>=1.24,<2.0
-
 # --- PyTorch (CUDA 지원) ---
-torch
-google-genai
+torch>=2.0.0
 
 # --- RAG / 임베딩 ---
-sentence-transformers
-scikit-learn
-PyMySQL>=1.1.0
+sentence-transformers>=2.2.0
+scikit-learn>=1.3.0
+numpy>=1.24.0,<3.0

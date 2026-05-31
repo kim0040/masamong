@@ -49,21 +49,34 @@ def setup_env_file():
     return True
 
 def setup_config_file():
-    """config.json 파일 설정"""
+    """설정 파일 설정 (emb_config.json, prompts.json)"""
     print("\n⚙️ 설정 파일 확인...")
     
-    if not os.path.exists('config.json.example'):
-        print("❌ config.json.example 파일을 찾을 수 없습니다.")
-        return False
-    
-    if not os.path.exists('config.json'):
-        print("📝 config.json 파일을 생성합니다...")
-        with open('config.json.example', 'r', encoding='utf-8') as src:
-            with open('config.json', 'w', encoding='utf-8') as dst:
-                dst.write(src.read())
-        print("✅ config.json 파일이 생성되었습니다.")
+    # emb_config.json 설정
+    if not os.path.exists('emb_config.json'):
+        if os.path.exists('emb_config.example.json'):
+            print("📝 emb_config.json 파일을 생성합니다...")
+            with open('emb_config.example.json', 'r', encoding='utf-8') as src:
+                with open('emb_config.json', 'w', encoding='utf-8') as dst:
+                    dst.write(src.read())
+            print("✅ emb_config.json 파일이 생성되었습니다.")
+        else:
+            print("⚠️  emb_config.example.json 파일을 찾을 수 없습니다. 기본 설정을 사용합니다.")
     else:
-        print("✅ config.json 파일이 이미 존재합니다.")
+        print("✅ emb_config.json 파일이 이미 존재합니다.")
+    
+    # prompts.json 설정
+    if not os.path.exists('prompts.json'):
+        if os.path.exists('prompts.example.json'):
+            print("📝 prompts.json 파일을 생성합니다...")
+            with open('prompts.example.json', 'r', encoding='utf-8') as src:
+                with open('prompts.json', 'w', encoding='utf-8') as dst:
+                    dst.write(src.read())
+            print("✅ prompts.json 파일이 생성되었습니다.")
+        else:
+            print("⚠️  prompts.example.json 파일을 찾을 수 없습니다. 기본 설정을 사용합니다.")
+    else:
+        print("✅ prompts.json 파일이 이미 존재합니다.")
     
     return True
 
@@ -92,10 +105,13 @@ def test_configuration():
         else:
             print("✅ Discord 봇 토큰 확인")
             
-        if not config.GEMINI_API_KEY:
-            print("⚠️  GEMINI_API_KEY가 설정되지 않았습니다.")
+        if not config.COMETAPI_KEY:
+            print("⚠️  COMETAPI_KEY가 설정되지 않았습니다. (선택사항)")
         else:
-            print("✅ Gemini API 키 확인")
+            print("✅ CometAPI 키 확인")
+        
+        # DB 설정 확인
+        print(f"✅ DB 백엔드: {config.DB_BACKEND}")
         
         return True
     except Exception as e:
