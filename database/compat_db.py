@@ -300,6 +300,11 @@ class TiDBConnection:
         주의: 반드시 `self._lock`을 획득한 상태에서만 호출해야 한다.
         같은 연결 객체에서 ping/query/commit이 동시에 실행되면
         PyMySQL packet sequence 오류가 발생할 수 있어 임계구역으로 묶는다.
+
+        성능: 매 쿼리마다 `ping()`으로 서버 왕복을 추가하지 않는다(원격 TiDB에서
+        쿼리당 왕복이 2배가 되어 지연/RU 비용이 커진다). 최대 수명을 초과했을 때만
+        선제적으로 재연결하고, 그 사이에 끊긴 연결은 실행 시점의 재시도 경로
+        (`_is_retryable_disconnect` 기반 1회 재연결+재실행)에서 처리한다.
         """
         if self._conn is None:
             await self.connect()
@@ -307,13 +312,6 @@ class TiDBConnection:
         if self._is_connection_stale():
             await asyncio.to_thread(self._reconnect_sync)
             return
-        try:
-            await asyncio.to_thread(self._conn.ping, False)
-        except Exception as exc:  # pragma: no cover
-            try:
-                await asyncio.to_thread(self._reconnect_sync)
-            except Exception as reconnect_exc:
-                raise CompatOperationalError(str(reconnect_exc)) from reconnect_exc
 
     async def _execute_buffered(self, query: str, params: Iterable[Any] | None = None) -> BufferedCursor:
         """SQL을 TiDB 문법으로 변환 후 실행하고 BufferedCursor로 결과를 반환합니다.

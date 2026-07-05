@@ -353,7 +353,9 @@ class ReMasamongBot(commands.Bot):
         guild_id = message.guild.id if message.guild else "DM"
         channel_id = message.channel.id
         
-        logger.info(f"[DEBUG] Message received from {message.author} ({message.author.id}) in {guild_id}/{channel_id}: {message.content}")
+        # 프라이버시/성능: 메시지 원문은 INFO로 남기지 않는다(파일 핸들러가 동기 write라
+        # 매 메시지마다 이벤트 루프를 블로킹하고, 원문 전체가 로그에 남는다). DEBUG로 격하.
+        logger.debug(f"Message received from {message.author} ({message.author.id}) in {guild_id}/{channel_id}: {message.content}")
 
         activity_cog = self.get_cog('ActivityCog')
         if activity_cog:
@@ -413,17 +415,19 @@ class ReMasamongBot(commands.Bot):
         if not ai_handler._message_has_valid_mention(message):
             # DM에서는 멘션 없어도 대화 가능하게 할지? -> 보통 DM은 1:1이므로 멘션 없이도 대화함.
             if message.guild:
-                logger.info(f"[DEBUG] Message ignored (No valid mention): {message.content}")
+                logger.debug(f"Message ignored (No valid mention): {message.content}")
                 return
             # DM은 멘션 체크 패스
 
         # [Safety Lock] 사용자가 대화형 커맨드(예: !운세 등록)를 진행 중이면 AI 응답을 막습니다.
         if message.author.id in self.locked_users:
-            logger.info(f"User {message.author.id} is locked (in command flow). AI response skipped.")
+            logger.debug(f"User {message.author.id} is locked (in command flow). AI response skipped.")
             return
 
         try:
-            await ai_handler.process_agent_message(message)
+            # [저사양 보호] 전역 세마포어로 동시 AI 처리 수를 제한한다.
+            async with ai_handler.ai_processing_semaphore:
+                await ai_handler.process_agent_message(message)
         except Exception as exc:  # pragma: no cover
             logger.error(
                 "AI 메시지 처리 중 오류: %s",

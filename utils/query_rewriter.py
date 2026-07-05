@@ -74,19 +74,25 @@ async def _get_model() -> SentenceTransformer | None:
     model_name = config.RAG_QUERY_REWRITE_MODEL_NAME or "upskyy/e5-small-korean"
     backend = getattr(config, "RAG_QUERY_REWRITE_BACKEND", None)
 
+    loop = asyncio.get_running_loop()
+
+    def _build_model() -> SentenceTransformer:
+        """SentenceTransformer를 동기적으로 생성한다(수 초 소요될 수 있는 블로킹 작업)."""
+        if backend:
+            ctor_params = set(inspect.signature(SentenceTransformer.__init__).parameters)
+            if "backend" in ctor_params:
+                return SentenceTransformer(model_name, backend=backend)
+            logger.warning("SentenceTransformer 버전이 backend 인자를 지원하지 않아 기본 설정으로 로드합니다.")
+            return SentenceTransformer(model_name)
+        return SentenceTransformer(model_name)
+
     async with _MODEL_LOCK:
         if _MODEL_INSTANCE is not None:
             return _MODEL_INSTANCE
         try:
-            if backend:
-                ctor_params = set(inspect.signature(SentenceTransformer.__init__).parameters)
-                if "backend" in ctor_params:
-                    _MODEL_INSTANCE = SentenceTransformer(model_name, backend=backend)
-                else:
-                    logger.warning("SentenceTransformer 버전이 backend 인자를 지원하지 않아 기본 설정으로 로드합니다.")
-                    _MODEL_INSTANCE = SentenceTransformer(model_name)
-            else:
-                _MODEL_INSTANCE = SentenceTransformer(model_name)
+            # 모델 로드는 가중치 역직렬화로 수 초간 블로킹된다. 이벤트 루프를 멈추지
+            # 않도록 executor에서 로드한다(embeddings._load_model과 동일한 패턴).
+            _MODEL_INSTANCE = await loop.run_in_executor(None, _build_model)
             logger.info("쿼리 재작성용 SentenceTransformer 로드 완료: %s", model_name)
         except Exception as exc:  # pragma: no cover - 외부 모델 로드 실패 대비
             logger.warning("쿼리 재작성 모델 로드 실패(%s): %s", model_name, exc)

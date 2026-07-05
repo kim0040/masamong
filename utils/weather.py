@@ -7,6 +7,7 @@
 from __future__ import annotations
 import asyncio
 import json
+import time
 from datetime import datetime, timedelta
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import pytz
@@ -263,12 +264,47 @@ async def _fetch_kma_api(
     finally:
         session.close()
 
+# 단기예보/현재날씨 캐시 (지진/특보처럼 실시간성이 중요한 경로에는 적용하지 않는다).
+# base_time이 KMA 갱신 경계에서만 바뀌므로 파라미터 시그니처를 키로 쓰면 안전하다.
+_KMA_FORECAST_CACHE: dict[str, tuple[float, dict]] = {}
+_KMA_FORECAST_CACHE_TTL = 600  # 10분
+_KMA_FORECAST_CACHE_MAX = 256
+
+
+def _forecast_cache_get(key: str) -> dict | None:
+    """TTL 이내의 캐시된 예보 응답을 반환하거나, 없으면 None."""
+    entry = _KMA_FORECAST_CACHE.get(key)
+    if not entry:
+        return None
+    ts, val = entry
+    if (time.monotonic() - ts) > _KMA_FORECAST_CACHE_TTL:
+        _KMA_FORECAST_CACHE.pop(key, None)
+        return None
+    return val
+
+
+def _forecast_cache_put(key: str, val: dict | None) -> None:
+    """정상 예보 응답만 캐싱한다(에러/None은 다음 호출에서 재시도하도록 저장하지 않음)."""
+    if not isinstance(val, dict) or val.get("error"):
+        return
+    if len(_KMA_FORECAST_CACHE) >= _KMA_FORECAST_CACHE_MAX:
+        oldest = min(_KMA_FORECAST_CACHE, key=lambda k: _KMA_FORECAST_CACHE[k][0])
+        _KMA_FORECAST_CACHE.pop(oldest, None)
+    _KMA_FORECAST_CACHE[key] = (time.monotonic(), val)
+
+
 async def get_current_weather_from_kma(db: aiosqlite.Connection, nx: str, ny: str) -> dict | None:
     """초단기실황(현재 날씨) 정보를 기상청 API로부터 가져옵니다."""
     now = datetime.now(KST)
     base_dt = now if now.minute >= 45 else now - timedelta(hours=1)
     params = {"base_date": base_dt.strftime("%Y%m%d"), "base_time": base_dt.strftime("%H00"), "nx": nx, "ny": ny}
-    return await _fetch_kma_api(db, "getUltraSrtNcst", params, api_type='forecast')
+    cache_key = f"getUltraSrtNcst:{params['base_date']}:{params['base_time']}:{nx}:{ny}"
+    cached = _forecast_cache_get(cache_key)
+    if cached is not None:
+        return cached
+    result = await _fetch_kma_api(db, "getUltraSrtNcst", params, api_type='forecast')
+    _forecast_cache_put(cache_key, result)
+    return result
 
 async def get_short_term_forecast_from_kma(db: aiosqlite.Connection, nx: str, ny: str) -> dict | None:
     """
@@ -289,7 +325,13 @@ async def get_short_term_forecast_from_kma(db: aiosqlite.Connection, nx: str, ny
         base_time_str = f"{found_hour:02d}00"
 
     params = {"base_date": base_date_str, "base_time": base_time_str, "nx": nx, "ny": ny}
-    return await _fetch_kma_api(db, "getVilageFcst", params, api_type='forecast')
+    cache_key = f"getVilageFcst:{base_date_str}:{base_time_str}:{nx}:{ny}"
+    cached = _forecast_cache_get(cache_key)
+    if cached is not None:
+        return cached
+    result = await _fetch_kma_api(db, "getVilageFcst", params, api_type='forecast')
+    _forecast_cache_put(cache_key, result)
+    return result
 
 async def get_weather_alerts_from_kma(db: aiosqlite.Connection) -> str | dict | None:
     """기상특보 정보를 기상청 API허브로부터 가져옵니다."""

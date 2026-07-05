@@ -83,6 +83,11 @@ class AIHandler(commands.Cog):
         self._updating_news_sources: set[int] = set() # [NEW] 동시성 방어용: 현재 업데이트 중인 메시지 ID 세트
         self.gemini_configured = False
         self.api_call_lock = asyncio.Lock()
+        # [저사양 보호] 전역 AI 처리 동시성 제한.
+        # 저사양 서버에서 동시 유저가 몰리면 임베딩 인코딩 + LLM 호출이 동시에 폭주해
+        # CPU 스래싱/메모리 스파이크가 발생한다. 동시 처리 수를 제한해 백프레셔를 건다.
+        _ai_max_concurrent = max(1, int(getattr(config, "AI_MAX_CONCURRENT_PROCESSING", 3)))
+        self.ai_processing_semaphore = asyncio.Semaphore(_ai_max_concurrent)
         self.discord_embedding_store = DiscordEmbeddingStore(config.DISCORD_EMBEDDING_DB_PATH)
         self.kakao_embedding_store = KakaoEmbeddingStore(
             config.KAKAO_EMBEDDING_DB_PATH,
@@ -137,6 +142,47 @@ class AIHandler(commands.Cog):
 
     # [NEW] 뉴스 출처 안내 메시지 상수
     NEWS_SOURCE_FOOTER = "\n\n📰 *뉴스 리액션을 누르면 출처를 확인할 수 있어!*"
+
+    def _ensure_intent_analyzer(self) -> IntentAnalyzer:
+        """부분 초기화된 테스트 인스턴스에서도 의도 분석기를 사용할 수 있게 보장합니다."""
+        analyzer = getattr(self, "intent_analyzer", None)
+        if analyzer is not None:
+            return analyzer
+
+        class _HandlerLLMClientAdapter:
+            def __init__(self, handler: "AIHandler"):
+                self.handler = handler
+
+            @property
+            def use_cometapi(self) -> bool:
+                llm_client = getattr(self.handler, "llm_client", None)
+                return bool(
+                    getattr(self.handler, "use_cometapi", False)
+                    or getattr(llm_client, "use_cometapi", False)
+                )
+
+            async def fast_generate_text(
+                self,
+                prompt: str,
+                model: str | None,
+                log_extra: dict,
+                *,
+                trace_key: str = "cometapi_fast",
+            ) -> str | None:
+                return await self.handler._cometapi_fast_generate_text(
+                    prompt,
+                    model,
+                    log_extra,
+                    trace_key=trace_key,
+                )
+
+        analyzer = IntentAnalyzer(
+            db=getattr(getattr(self, "bot", None), "db", None),
+            llm_client=_HandlerLLMClientAdapter(self),
+            tools_cog=getattr(self, "tools_cog", None),
+        )
+        self.intent_analyzer = analyzer
+        return analyzer
 
     @property
     def is_ready(self) -> bool:
@@ -194,7 +240,7 @@ class AIHandler(commands.Cog):
 
     async def _load_location_cache(self):
         """DB에서 지역명 데이터를 로드하여 캐싱합니다."""
-        await self.intent_analyzer._load_location_cache()
+        await self._ensure_intent_analyzer()._load_location_cache()
 
     def _message_has_valid_mention(self, message: discord.Message) -> bool:
         """메시지에 봇 멘션이 존재하는지 확인합니다."""
@@ -403,7 +449,16 @@ class AIHandler(commands.Cog):
         trace_key: str = "cometapi_fast",
     ) -> str | None:
         """라우팅 레인 Fast 모델을 통해 텍스트를 생성합니다."""
-        return await self.llm_client.fast_generate_text(prompt, model, log_extra, trace_key=trace_key)
+        llm_client = getattr(self, "llm_client", None)
+        if llm_client is not None:
+            return await llm_client.fast_generate_text(prompt, model, log_extra, trace_key=trace_key)
+
+        targets = self._get_lane_targets("routing", model_override=model)
+        for target in targets:
+            response_text = await self._call_routing_lane_target(target, prompt=prompt, log_extra=log_extra)
+            if response_text:
+                return str(response_text).strip()
+        return None
 
     async def _generate_local_embedding(self, content: str, log_extra: dict, prefix: str = "") -> np.ndarray | None:
         """SentenceTransformer 기반 임베딩을 생성합니다."""
@@ -709,26 +764,26 @@ Generate the optimized English image prompt:"""
 
     def _is_smalltalk_only_query(self, query: str) -> bool:
         """외부 도구 호출이 불필요한 인사/잡담성 질문인지 판별합니다."""
-        return self.intent_analyzer._is_smalltalk_only_query(query)
+        return self._ensure_intent_analyzer()._is_smalltalk_only_query(query)
 
     def _has_explicit_web_search_intent(self, query: str) -> bool:
         """질문이 명시적으로 외부 웹 탐색을 요구하는지 판별합니다."""
-        return self.intent_analyzer._has_explicit_web_search_intent(query)
+        return self._ensure_intent_analyzer()._has_explicit_web_search_intent(query)
 
     def _looks_like_external_fact_query(self, query: str) -> bool:
         """
         웹에서 사실 확인이 필요한 질의인지 휴리스틱으로 판별합니다.
         (명시적 웹검색 키워드가 없어도 외부 정보가 필요한 질문을 놓치지 않기 위한 보정)
         """
-        return self.intent_analyzer._looks_like_external_fact_query(query)
+        return self._ensure_intent_analyzer()._looks_like_external_fact_query(query)
 
     def _is_realtime_web_query(self, query: str) -> bool:
         """질의에 실시간 웹 검색이 필요한지 여부를 판단합니다."""
-        return self.intent_analyzer._is_realtime_web_query(query)
+        return self._ensure_intent_analyzer()._is_realtime_web_query(query)
 
     def _looks_like_finance_query(self, query: str) -> bool:
         """회사명 단독 언급 오탐을 줄이기 위해 금융 의도 문맥까지 함께 확인합니다."""
-        return self.intent_analyzer._looks_like_finance_query(query)
+        return self._ensure_intent_analyzer()._looks_like_finance_query(query)
 
     @staticmethod
     def _normalize_realtime_web_query(query: str) -> str:
@@ -737,7 +792,7 @@ Generate the optimized English image prompt:"""
 
     def _has_tool_keyword_signal(self, query: str) -> bool:
         """질문에 도구 호출이 필요한 명시적 신호가 있는지 판별합니다."""
-        return self.intent_analyzer._has_tool_keyword_signal(query)
+        return self._ensure_intent_analyzer()._has_tool_keyword_signal(query)
 
     def _select_tool_plan_without_intent_llm(
         self,
@@ -751,7 +806,7 @@ Generate the optimized English image prompt:"""
         - 명확한 키워드 도구(날씨/웹검색/금융)는 즉시 라우팅
         - 강한 RAG + 도구 신호 없음이면 intent LLM 호출 자체를 생략
         """
-        return self.intent_analyzer._select_tool_plan_without_intent_llm(
+        return self._ensure_intent_analyzer()._select_tool_plan_without_intent_llm(
             query, rag_top_score=rag_top_score, log_extra=log_extra,
         )
 
@@ -768,11 +823,11 @@ Generate the optimized English image prompt:"""
         자동 웹검색(도구 계획이 없을 때의 fallback) 실행 가능 여부를 판단합니다.
         명시적 웹검색 요청은 쿨다운을 적용하지 않습니다.
         """
-        return self.intent_analyzer._can_run_auto_web_search(message, query, log_extra)
+        return self._ensure_intent_analyzer()._can_run_auto_web_search(message, query, log_extra)
 
     def _mark_auto_web_search_used(self, message: discord.Message) -> None:
         """자동 웹 검색 사용 시점을 기록하여 스코프별 쿨다운을 갱신합니다."""
-        return self.intent_analyzer._mark_auto_web_search_used(message)
+        return self._ensure_intent_analyzer()._mark_auto_web_search_used(message)
 
     def _sanitize_tool_plan(
         self,
@@ -784,21 +839,21 @@ Generate the optimized English image prompt:"""
         trust_llm: bool = False,
     ) -> list[dict]:
         """LLM 도구 계획을 운영 정책(과도한 웹검색 방지) 기준으로 보정합니다."""
-        return self.intent_analyzer._sanitize_tool_plan(
+        return self._ensure_intent_analyzer()._sanitize_tool_plan(
             query, tool_plan, rag_top_score=rag_top_score, log_extra=log_extra, trust_llm=trust_llm,
         )
 
     async def _should_use_web_search(self, query: str, rag_top_score: float, history: list = None) -> bool:
         """외부 정보 탐색(뉴스/웹/블로그/문서) 필요 여부를 판단합니다."""
-        return await self.intent_analyzer._should_use_web_search(query, rag_top_score, history)
+        return await self._ensure_intent_analyzer()._should_use_web_search(query, rag_top_score, history)
 
     async def _detect_tools_by_llm(self, query: str, log_extra: dict, history: list = None) -> list[dict]:
         """사용자의 의도와 대화 맥락을 분석하여 가장 적합한 도구와 최적화된 검색 파라미터를 결정합니다."""
-        return await self.intent_analyzer._detect_tools_by_llm(query, log_extra, history)
+        return await self._ensure_intent_analyzer()._detect_tools_by_llm(query, log_extra, history)
 
     def _detect_tools_by_keyword(self, query: str) -> list[dict]:
         """키워드 기반 도구 감지 (LLM 실패 시 fallback)."""
-        return self.intent_analyzer._detect_tools_by_keyword(query)
+        return self._ensure_intent_analyzer()._detect_tools_by_keyword(query)
 
     @staticmethod
     def _build_finance_news_query(query: str) -> str:
@@ -807,7 +862,7 @@ Generate the optimized English image prompt:"""
 
     def _extract_location_from_query(self, query: str) -> str | None:
         """쿼리에서 지역명을 추출합니다 (DB 캐시 사용)."""
-        return self.intent_analyzer._extract_location_from_query(query)
+        return self._ensure_intent_analyzer()._extract_location_from_query(query)
 
     @staticmethod
     def _extract_us_stock_symbol(query_lower: str) -> str | None:
@@ -816,7 +871,7 @@ Generate the optimized English image prompt:"""
 
     def _extract_kr_stock_ticker(self, query_lower: str) -> str | None:
         """쿼리에서 한국 주식 종목 코드를 추출합니다."""
-        return self.intent_analyzer._extract_kr_stock_ticker(query_lower)
+        return self._ensure_intent_analyzer()._extract_kr_stock_ticker(query_lower)
 
     async def _get_rag_context(
         self,
@@ -1475,8 +1530,10 @@ Generate the optimized English image prompt:"""
         if not tool_name: 
             return {"error": "tool_to_use가 지정되지 않았습니다."}
 
+        intent_analyzer = self._ensure_intent_analyzer()
+
         # 금융 도구는 비활성화하고 웹 검색으로 강제 대체
-        if tool_name in self.intent_analyzer._DEPRECATED_FINANCE_TOOLS:
+        if tool_name in intent_analyzer._DEPRECATED_FINANCE_TOOLS:
             redirected_query = self._build_finance_news_query(
                 parameters.get('query')
                 or parameters.get('user_query')
@@ -1497,8 +1554,17 @@ Generate the optimized English image prompt:"""
             tool_call["tool_name"] = tool_name
             tool_call["parameters"] = parameters
 
-        if tool_name not in self.intent_analyzer._ALLOWED_RUNTIME_TOOLS:
+        if tool_name not in intent_analyzer._ALLOWED_RUNTIME_TOOLS:
             logger.warning("비활성화된 도구 실행 시도 차단: %s", tool_name, extra=log_extra)
+            return {"error": f"'{tool_name}' 도구는 현재 비활성화되어 있습니다."}
+
+        tool_method_requirements = {
+            "get_weather_forecast": "get_weather_forecast",
+            "generate_image": "generate_image",
+        }
+        required_method = tool_method_requirements.get(tool_name)
+        if required_method and not callable(getattr(self.tools_cog, required_method, None)):
+            logger.warning("구현되지 않은 도구 실행 시도 차단: %s", tool_name, extra=log_extra)
             return {"error": f"'{tool_name}' 도구는 현재 비활성화되어 있습니다."}
 
         # web_search는 웹 검색 RAG + LLM 2-step 처리를 사용합니다.
@@ -1600,12 +1666,12 @@ Generate the optimized English image prompt:"""
                 del spam_cache[k]
         self._spam_cache = spam_cache
         
-        # 3. 사용자별/글로벌 일일 LLM 호출 제한 검사 (병렬 실행)
+        # 3. 사용자별/글로벌 일일 LLM 호출 제한 검사
+        # 주의: DB는 단일 커넥션을 공유하므로 gather로 묶어도 실제로는 직렬 실행되며,
+        # 오히려 트랜잭션 인터리빙 위험만 커진다. 순차 await로 처리한다.
         user_daily_key = f"llm_user_{user_id}"
-        user_daily_count, global_daily_count = await asyncio.gather(
-            db_utils.get_daily_api_count(self.bot.db, user_daily_key),
-            db_utils.get_daily_api_count(self.bot.db, "llm_global"),
-        )
+        user_daily_count = await db_utils.get_daily_api_count(self.bot.db, user_daily_key)
+        global_daily_count = await db_utils.get_daily_api_count(self.bot.db, "llm_global")
         if user_daily_count >= config.USER_DAILY_LLM_LIMIT:
             logger.warning(f"사용자 {user_id} 일일 LLM 제한 도달 ({user_daily_count}/{config.USER_DAILY_LLM_LIMIT})", extra=base_log_extra)
             await message.channel.send("오늘 너무 많이 물어봤어! 내일 다시 물어봐~ 😅")
@@ -1624,13 +1690,11 @@ Generate the optimized English image prompt:"""
         if not user_query:
             return
 
-        # 5. DM Rate Limiting Check (New) - 병렬 실행
+        # 5. DM Rate Limiting Check (New) - 순차 실행 (단일 커넥션 공유)
         if not message.guild:
             # 5-1. 사용자별 1:1 제한 (3시간 5회) + 5-2. 전역 일일 DM 제한
-            dm_limit_result, global_dm_allowed = await asyncio.gather(
-                db_utils.check_dm_message_limit(self.bot.db, user_id),
-                db_utils.check_global_dm_limit(self.bot.db),
-            )
+            dm_limit_result = await db_utils.check_dm_message_limit(self.bot.db, user_id)
+            global_dm_allowed = await db_utils.check_global_dm_limit(self.bot.db)
             allowed, reset_time = dm_limit_result
             if not allowed:
                  await message.channel.send(
@@ -1767,10 +1831,8 @@ Generate the optimized English image prompt:"""
                             except:
                                 pass
 
-                        await asyncio.gather(
-                            db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}"),
-                            db_utils.log_api_call(self.bot.db, "llm_global"),
-                        )
+                        await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
+                        await db_utils.log_api_call(self.bot.db, "llm_global")
                         return
 
             # 답변 작성 단계
@@ -1861,20 +1923,18 @@ Generate the optimized English image prompt:"""
                                 await status_msg.delete()
                             except:
                                 pass
-                            # 분석 데이터 로깅 (병렬 실행)
-                            await asyncio.gather(
-                                db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}"),
-                                db_utils.log_api_call(self.bot.db, "llm_global"),
-                                db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {
-                                    "guild_id": message.guild.id if message.guild else "DM",
-                                    "user_id": message.author.id,
-                                    "channel_id": message.channel.id,
-                                    "trace_id": trace_id,
-                                    "user_query": user_query,
-                                    "tool_plan": executed_plan or tool_plan,
-                                    "final_response": final_response_text,
-                                }),
-                            )
+                            # 분석 데이터 로깅 (순차 실행: 단일 커넥션 공유)
+                            await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
+                            await db_utils.log_api_call(self.bot.db, "llm_global")
+                            await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {
+                                "guild_id": message.guild.id if message.guild else "DM",
+                                "user_id": message.author.id,
+                                "channel_id": message.channel.id,
+                                "trace_id": trace_id,
+                                "user_query": user_query,
+                                "tool_plan": executed_plan or tool_plan,
+                                "final_response": final_response_text,
+                            })
                             return
                         except Exception as img_exc:
                             logger.error(f"이미지 전송 실패: {img_exc}", extra=log_extra)
@@ -1897,20 +1957,18 @@ Generate the optimized English image prompt:"""
                         await status_msg.add_reaction("📰")
                     except: pass
                 
-                # 분석 데이터 로깅 (병렬 실행)
-                await asyncio.gather(
-                    db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}"),
-                    db_utils.log_api_call(self.bot.db, "llm_global"),
-                    db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {
-                        "guild_id": message.guild.id if message.guild else "DM",
-                        "user_id": message.author.id,
-                        "channel_id": message.channel.id,
-                        "trace_id": trace_id,
-                        "user_query": user_query,
-                        "tool_plan": executed_plan or tool_plan,
-                        "final_response": final_response_text,
-                    }),
-                )
+                # 분석 데이터 로깅 (순차 실행: 단일 커넥션 공유)
+                await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
+                await db_utils.log_api_call(self.bot.db, "llm_global")
+                await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {
+                    "guild_id": message.guild.id if message.guild else "DM",
+                    "user_id": message.author.id,
+                    "channel_id": message.channel.id,
+                    "trace_id": trace_id,
+                    "user_query": user_query,
+                    "tool_plan": executed_plan or tool_plan,
+                    "final_response": final_response_text,
+                })
             else:
                 await status_msg.edit(content="미안해, 답변을 생성하는 데 실패했어. 😢")
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from functools import lru_cache
 from io import BytesIO
 import os
 from pathlib import Path
@@ -32,8 +33,12 @@ def _prepare_matplotlib_env() -> None:
     os.environ.setdefault("XDG_CACHE_HOME", str(cache_dir))
 
 
+@lru_cache(maxsize=1)
 def _resolve_korean_font_name() -> str:
-    """시스템에서 사용 가능한 한글 폰트를 탐색하여 반환합니다."""
+    """시스템에서 사용 가능한 한글 폰트를 탐색하여 반환합니다.
+
+    font_manager.ttflist 스캔은 비용이 크므로 결과를 1회만 계산해 캐싱한다.
+    """
     try:
         from matplotlib import font_manager
     except Exception:

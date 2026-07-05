@@ -135,8 +135,8 @@ async def get_stock_price(stock_name: str) -> str | None:
         logger.info(f"KRX API 요청: URL='{config.KRX_BASE_URL}', Params='{log_params}'")
 
         # Use a session that forces TLSv1.2 for compatibility with data.go.kr
-        session = http.get_insecure_session()
-        response = await asyncio.to_thread(session.get, url, params=params, timeout=10, verify=True)
+        with http.get_insecure_session() as session:
+            response = await asyncio.to_thread(session.get, url, params=params, timeout=10, verify=True)
         response.raise_for_status()
         try:
             data = response.json()
