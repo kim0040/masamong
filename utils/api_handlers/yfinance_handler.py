@@ -12,6 +12,11 @@ import asyncio
 from typing import Optional, Dict, Any
 from logger_config import logger
 
+# yfinance 내부 requests 호출에는 타임아웃이 없어, 야후 엔드포인트가 멈추면
+# to_thread 워커가 무한 점유되어 공용 스레드풀이 고갈될 수 있다. 조회 전체에
+# 상한을 둬 최소한 호출측은 해제되도록 한다.
+_STOCK_FETCH_TIMEOUT_SEC = 15
+
 async def get_stock_info(ticker: str) -> Dict[str, Any]:
     """
     yfinance를 사용하여 주식/암호화폐 정보를 조회합니다.
@@ -61,8 +66,8 @@ async def get_stock_info(ticker: str) -> Dict[str, Any]:
                 "website": info.get('website')
             }
 
-        data = await asyncio.to_thread(_fetch)
-        
+        data = await asyncio.wait_for(asyncio.to_thread(_fetch), timeout=_STOCK_FETCH_TIMEOUT_SEC)
+
         if data['price'] is None:
             logger.warning(f"yfinance 조회 실패 (Price None): {ticker}")
             return {"error": f"'{ticker}'에 대한 시세 정보를 가져올 수 없습니다."}
@@ -70,6 +75,9 @@ async def get_stock_info(ticker: str) -> Dict[str, Any]:
         logger.info(f"yfinance 조회 성공: {ticker} -> {data.get('price')}")
         return data
 
+    except asyncio.TimeoutError:
+        logger.warning(f"yfinance 조회 타임아웃({_STOCK_FETCH_TIMEOUT_SEC}s): {ticker}")
+        return {"error": f"'{ticker}' 시세 조회가 지연되어 취소되었습니다."}
     except Exception as e:
         logger.error(f"yfinance 조회 실패 ({ticker}): {e}")
         return {"error": "주식 정보를 가져오는 중 오류가 발생했습니다."}

@@ -17,7 +17,7 @@ from database.compat_db import get_table_columns
 from logger_config import logger
 from utils import db as db_utils
 from utils.fortune import FortuneCalculator, get_sign_from_date
-from utils.discord_helpers import send_split_message
+from utils.discord_helpers import send_split_message, split_message_chunks
 
 # 시간 유효성 검사 정규식 (HH:MM)
 TIME_PATTERN = re.compile(r'^([01]\d|2[0-3]):([0-5]\d)$')
@@ -520,13 +520,13 @@ class FortuneCog(commands.Cog):
                  
                  if response:
                      if status_msg:
-                         if len(response) > 1900:
-                             await status_msg.edit(content=response[:1900])
-                             for i in range(1900, len(response), 1900):
-                                 await ctx.send(response[i:i + 1900])
-                                 await asyncio.sleep(0.5)
-                         else:
-                             await status_msg.edit(content=response)
+                         # 자연 경계 분할 헬퍼로 통일(마크다운/단어 중간 절단 방지).
+                         # 첫 청크는 기존 상태 메시지를 편집하고, 나머지는 이어서 전송한다.
+                         chunks = split_message_chunks(response) or [response]
+                         await status_msg.edit(content=chunks[0])
+                         for extra_chunk in chunks[1:]:
+                             await ctx.send(extra_chunk)
+                             await asyncio.sleep(0.5)
                      else:
                          await self._send_split_message(ctx, response)
                      # DM이고 상세 운세(오늘)인 경우 컨텍스트 저장
@@ -827,13 +827,16 @@ class FortuneCog(commands.Cog):
                         logger.error(f"브리핑 생성 실패(pre-gen): {user_id}, {e}")
 
             # === [Task 2: Delivery] ===
-            # 구독 시간이 current_time_str이고, 오늘 아직 안 보낸 사람
+            # 구독 시간이 '이미 지났고(<=)' 오늘 아직 안 보낸 사람.
+            # 정확 일치(=)로 두면 사전생성이 60s를 넘겨 틱이 밀릴 때 해당 분(예: 07:30)이
+            # 관측되지 않아 그 시각 구독자가 그날 브리핑을 통째로 놓친다. <= 캐치업으로
+            # 밀린 경우에도 다음 틱에서 발송하며, 중복은 last_fortune_sent 가드가 막는다.
             cursor = await self.bot.db.execute(
                  """
                 SELECT user_id, birth_date, birth_time, gender, pending_payload
-                FROM user_profiles 
-                WHERE subscription_active = 1 
-                  AND subscription_time = ? 
+                FROM user_profiles
+                WHERE subscription_active = 1
+                  AND subscription_time <= ?
                   AND (last_fortune_sent IS NULL OR last_fortune_sent != ?)
                 """,
                 (current_time_str, today_str)

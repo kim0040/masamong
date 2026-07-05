@@ -6,6 +6,7 @@
 import discord
 from discord.ext import commands
 import aiosqlite
+import asyncio
 import io
 from datetime import datetime, timedelta, timezone
 
@@ -257,7 +258,9 @@ class ActivityCog(commands.Cog):
             sample_note = self._sample_size_note(int(total_msgs or 0), int(total_users or 0))
             chart_delivery_status = "랭킹 차트를 생성하지 못해 텍스트 기반 브리핑만 진행 중"
             try:
-                chart_bytes = build_activity_ranking_chart_bytes(
+                # matplotlib 렌더는 CPU 블로킹이므로 이벤트 루프를 멈추지 않도록 스레드로 오프로드한다.
+                chart_bytes = await asyncio.to_thread(
+                    build_activity_ranking_chart_bytes,
                     channel_name=ctx.channel.name,
                     period_label=period_label,
                     ranking_rows=ranking_rows,

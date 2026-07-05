@@ -46,23 +46,29 @@ class WeatherCog(commands.Cog):
         Rain/Greeting 알림은 각각 별도의 `tasks.loop`로 구현되어 있으며, 필요 없을 때는
         불필요한 리소스를 소비하지 않도록 시작 자체를 건너뜁니다.
         """
+        # 주의: on_ready는 재연결(RESUME)마다 재발화할 수 있다. 이미 실행 중인 loop에
+        # start()를 재호출하면 RuntimeError가 발생하므로 is_running()으로 가드한다.
         if config.ENABLE_RAIN_NOTIFICATION and config.RAIN_NOTIFICATION_CHANNEL_ID:
-            logger.info("주기적 강수 알림 루프를 시작합니다.")
-            self.rain_notification_loop.start()
+            if not self.rain_notification_loop.is_running():
+                logger.info("주기적 강수 알림 루프를 시작합니다.")
+                self.rain_notification_loop.start()
         if config.ENABLE_GREETING_NOTIFICATION and (getattr(config, 'GREETING_NOTIFICATION_CHANNEL_ID', None) or config.RAIN_NOTIFICATION_CHANNEL_ID):
-            logger.info("아침/저녁 인사 알림 루프를 시작합니다.")
-            self.morning_greeting_loop.start()
-            self.evening_greeting_loop.start()
+            if not self.morning_greeting_loop.is_running():
+                logger.info("아침/저녁 인사 알림 루프를 시작합니다.")
+                self.morning_greeting_loop.start()
+            if not self.evening_greeting_loop.is_running():
+                self.evening_greeting_loop.start()
         
         # Earthquake Alert Loop
         has_fallback_channel = bool(getattr(config, "RAIN_NOTIFICATION_CHANNEL_ID", 0))
         has_ai_channels = bool(getattr(config, "CHANNEL_AI_CONFIG", {}))
         if getattr(config, "ENABLE_EARTHQUAKE_ALERT", True) and (has_fallback_channel or has_ai_channels):
-            logger.info(
-                "지진 알림 모니터링 루프를 시작합니다. 주기: %d분",
-                getattr(config, "EARTHQUAKE_CHECK_INTERVAL_MINUTES", 1),
-            )
-            self.earthquake_alert_loop.start()
+            if not self.earthquake_alert_loop.is_running():
+                logger.info(
+                    "지진 알림 모니터링 루프를 시작합니다. 주기: %d분",
+                    getattr(config, "EARTHQUAKE_CHECK_INTERVAL_MINUTES", 1),
+                )
+                self.earthquake_alert_loop.start()
 
     def cog_unload(self):
         """Cog가 언로드될 때, 실행 중인 모든 루프를 안전하게 취소합니다."""
@@ -369,40 +375,44 @@ class WeatherCog(commands.Cog):
 
         예보상 비/눈 확률이 임계값을 넘으면 채널에 안내 메시지를 전송하고, 동일 시간대 중복 알림을 방지합니다.
         """
-        await self.bot.wait_until_ready()
-        if not weather_utils.get_kma_api_key(): return
-        rain_channel_id = getattr(config, "RAIN_NOTIFICATION_CHANNEL_ID", 0)
-        greeting_channel_id = getattr(config, "GREETING_NOTIFICATION_CHANNEL_ID", 0)
-        greeting_enabled = getattr(config, "ENABLE_GREETING_NOTIFICATION", False) and greeting_channel_id
-        if not rain_channel_id and not greeting_enabled:
-            return
-        forecast = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, config.DEFAULT_NX, config.DEFAULT_NY)
-        if not forecast or isinstance(forecast, dict) and forecast.get("error"): return
-        self.notified_rain_event_starts = {k for k in self.notified_rain_event_starts if KST.localize(datetime.strptime(f"{k[0]}{k[1]}","%Y%m%d%H%M")) >= datetime.now(KST) - timedelta(days=1)}
-        for period in self._parse_rain_periods(forecast):
-            if period["start_dt"] >= datetime.now(KST) and period["key"] not in self.notified_rain_event_starts:
-                start_display = period["start_dt"].strftime("%m월 %d일 %H시"); end_display = (period["end_dt"] + timedelta(hours=1)).strftime("%H시")
-                if period["start_dt"].date() != period["end_dt"].date(): end_display = (period["end_dt"] + timedelta(hours=1)).strftime("%m월 %d일 %H시")
-                precip_type = "눈❄️" if period["type"] == "눈" else "비☔"
-                alert_info = f"{config.DEFAULT_LOCATION_NAME}에 '{start_display}'부터 '{end_display}'까지 {precip_type}가 올 것으로 예상됩니다. 최대 확률은 {period['max_pop']}%입니다."
-                self.ai_handler = self.bot.get_cog('AIHandler')
-                channel_ids = set()
-                if rain_channel_id:
-                    channel_ids.add(rain_channel_id)
-                if greeting_enabled and period["max_pop"] >= config.RAIN_NOTIFICATION_GREETING_THRESHOLD_POP:
-                    channel_ids.add(greeting_channel_id)
-                if not channel_ids:
-                    continue
-
-                primary_channel_id = sorted(channel_ids)[0]
-                ai_msg = await self.ai_handler.generate_system_alert_message(primary_channel_id, alert_info, f"{precip_type} 예보") if self.ai_handler and self.ai_handler.is_ready else None
-                fallback_msg = f"{precip_type} **{config.DEFAULT_LOCATION_NAME} {precip_type} 예보** {precip_type}\n{alert_info}"
-                for channel_id in channel_ids:
-                    alert_channel = self.bot.get_channel(channel_id)
-                    if not alert_channel:
+        try:
+            await self.bot.wait_until_ready()
+            if not weather_utils.get_kma_api_key(): return
+            rain_channel_id = getattr(config, "RAIN_NOTIFICATION_CHANNEL_ID", 0)
+            greeting_channel_id = getattr(config, "GREETING_NOTIFICATION_CHANNEL_ID", 0)
+            greeting_enabled = getattr(config, "ENABLE_GREETING_NOTIFICATION", False) and greeting_channel_id
+            if not rain_channel_id and not greeting_enabled:
+                return
+            forecast = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, config.DEFAULT_NX, config.DEFAULT_NY)
+            if not forecast or isinstance(forecast, dict) and forecast.get("error"): return
+            self.notified_rain_event_starts = {k for k in self.notified_rain_event_starts if KST.localize(datetime.strptime(f"{k[0]}{k[1]}","%Y%m%d%H%M")) >= datetime.now(KST) - timedelta(days=1)}
+            for period in self._parse_rain_periods(forecast):
+                if period["start_dt"] >= datetime.now(KST) and period["key"] not in self.notified_rain_event_starts:
+                    start_display = period["start_dt"].strftime("%m월 %d일 %H시"); end_display = (period["end_dt"] + timedelta(hours=1)).strftime("%H시")
+                    if period["start_dt"].date() != period["end_dt"].date(): end_display = (period["end_dt"] + timedelta(hours=1)).strftime("%m월 %d일 %H시")
+                    precip_type = "눈❄️" if period["type"] == "눈" else "비☔"
+                    alert_info = f"{config.DEFAULT_LOCATION_NAME}에 '{start_display}'부터 '{end_display}'까지 {precip_type}가 올 것으로 예상됩니다. 최대 확률은 {period['max_pop']}%입니다."
+                    self.ai_handler = self.bot.get_cog('AIHandler')
+                    channel_ids = set()
+                    if rain_channel_id:
+                        channel_ids.add(rain_channel_id)
+                    if greeting_enabled and period["max_pop"] >= config.RAIN_NOTIFICATION_GREETING_THRESHOLD_POP:
+                        channel_ids.add(greeting_channel_id)
+                    if not channel_ids:
                         continue
-                    await alert_channel.send(ai_msg or fallback_msg, allowed_mentions=discord.AllowedMentions.none())
-                self.notified_rain_event_starts.add(period["key"])
+
+                    primary_channel_id = sorted(channel_ids)[0]
+                    ai_msg = await self.ai_handler.generate_system_alert_message(primary_channel_id, alert_info, f"{precip_type} 예보") if self.ai_handler and self.ai_handler.is_ready else None
+                    fallback_msg = f"{precip_type} **{config.DEFAULT_LOCATION_NAME} {precip_type} 예보** {precip_type}\n{alert_info}"
+                    for channel_id in channel_ids:
+                        alert_channel = self.bot.get_channel(channel_id)
+                        if not alert_channel:
+                            continue
+                        await alert_channel.send(ai_msg or fallback_msg, allowed_mentions=discord.AllowedMentions.none())
+                    self.notified_rain_event_starts.add(period["key"])
+        except Exception as e:
+            # 일시적 오류(네트워크/KMA/파싱)로 루프가 영구 정지되지 않도록 방어한다.
+            logger.error(f"강수 알림 루프 처리 중 오류(무시하고 다음 주기 진행): {e}", exc_info=True)
 
     async def _send_greeting_notification(self, greeting_type: str):
         """아침/저녁 유형에 맞춰 날씨 요약과 인사 메시지를 전송합니다.
@@ -410,18 +420,22 @@ class WeatherCog(commands.Cog):
         Args:
             greeting_type (str): "아침" 또는 "저녁" 중 하나.
         """
-        await self.bot.wait_until_ready()
-        if not weather_utils.get_kma_api_key(): return
-        channel_id = getattr(config, 'GREETING_NOTIFICATION_CHANNEL_ID', 0) or config.RAIN_NOTIFICATION_CHANNEL_ID
-        alert_channel = self.bot.get_channel(channel_id)
-        if not alert_channel: return
-        forecast = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, config.DEFAULT_NX, config.DEFAULT_NY)
-        summary = weather_utils.format_short_term_forecast(forecast, "오늘", 0) if forecast and not forecast.get("error") else f"오늘 {config.DEFAULT_LOCATION_NAME} 날씨 정보를 가져오는 데 실패했어. 😥"
-        if greeting_type == "아침": alert_context = f"좋은 아침! ☀️ 오늘 {config.DEFAULT_LOCATION_NAME} 날씨는 이렇대.\n\n> {summary}\n\n오늘 하루도 활기차게 시작해보자고! 💪"
-        else: alert_context = f"오늘 하루도 수고했어! 참고로 오늘 {config.DEFAULT_LOCATION_NAME} 날씨는 이랬어.\n\n> {summary}\n\n이제 편안한 밤 보내고, 내일 또 보자! 잘 자! 🌙"
-        self.ai_handler = self.bot.get_cog('AIHandler')
-        ai_msg = await self.ai_handler.generate_system_alert_message(channel_id, alert_context, f"{greeting_type} 인사") if self.ai_handler and self.ai_handler.is_ready else None
-        await alert_channel.send(ai_msg or alert_context, allowed_mentions=discord.AllowedMentions.none())
+        try:
+            await self.bot.wait_until_ready()
+            if not weather_utils.get_kma_api_key(): return
+            channel_id = getattr(config, 'GREETING_NOTIFICATION_CHANNEL_ID', 0) or config.RAIN_NOTIFICATION_CHANNEL_ID
+            alert_channel = self.bot.get_channel(channel_id)
+            if not alert_channel: return
+            forecast = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, config.DEFAULT_NX, config.DEFAULT_NY)
+            summary = weather_utils.format_short_term_forecast(forecast, "오늘", 0) if forecast and not forecast.get("error") else f"오늘 {config.DEFAULT_LOCATION_NAME} 날씨 정보를 가져오는 데 실패했어. 😥"
+            if greeting_type == "아침": alert_context = f"좋은 아침! ☀️ 오늘 {config.DEFAULT_LOCATION_NAME} 날씨는 이렇대.\n\n> {summary}\n\n오늘 하루도 활기차게 시작해보자고! 💪"
+            else: alert_context = f"오늘 하루도 수고했어! 참고로 오늘 {config.DEFAULT_LOCATION_NAME} 날씨는 이랬어.\n\n> {summary}\n\n이제 편안한 밤 보내고, 내일 또 보자! 잘 자! 🌙"
+            self.ai_handler = self.bot.get_cog('AIHandler')
+            ai_msg = await self.ai_handler.generate_system_alert_message(channel_id, alert_context, f"{greeting_type} 인사") if self.ai_handler and self.ai_handler.is_ready else None
+            await alert_channel.send(ai_msg or alert_context, allowed_mentions=discord.AllowedMentions.none())
+        except Exception as e:
+            # 일시적 오류(네트워크/KMA/Discord)로 루프가 영구 정지되지 않도록 방어한다.
+            logger.error(f"{greeting_type} 인사 알림 처리 중 오류(무시하고 다음 주기 진행): {e}", exc_info=True)
 
     @tasks.loop(time=dt_time(hour=config.MORNING_GREETING_TIME["hour"], minute=config.MORNING_GREETING_TIME["minute"], tzinfo=KST))
     async def morning_greeting_loop(self):
@@ -470,7 +484,12 @@ class WeatherCog(commands.Cog):
         if not channel_ids:
             return
         
-        earthquakes = await weather_utils.get_recent_earthquakes(self.bot.db)
+        try:
+            earthquakes = await weather_utils.get_recent_earthquakes(self.bot.db)
+        except Exception as e:
+            # 일시적 오류로 루프가 영구 정지되지 않도록 방어한다.
+            logger.error(f"지진 정보 조회 중 오류(무시하고 다음 주기 진행): {e}", exc_info=True)
+            return
         if not earthquakes: return
         
         # Sort by time ascending

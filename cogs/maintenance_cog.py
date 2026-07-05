@@ -72,6 +72,11 @@ class MaintenanceCog(commands.Cog):
         try:
             # db_utils에 정의된 아카이빙 함수를 호출합니다.
             await db_utils.archive_old_conversations(self.bot.db)
+            # user_activity_log 보존정책 적용 (config에서 0이면 비활성).
+            await db_utils.prune_user_activity_log(
+                self.bot.db,
+                config.RAG_ARCHIVING_CONFIG.get("activity_log_retention_days", 0),
+            )
             logger.info("정기 RAG 아카이빙 작업을 성공적으로 완료했습니다.")
         except Exception as e:
             logger.error(f"정기 RAG 아카이빙 작업 중 예외가 발생했습니다: {e}", exc_info=True)
@@ -151,7 +156,11 @@ class MaintenanceCog(commands.Cog):
     @debug.command(name="status")
     async def debug_status(self, ctx: commands.Context):
         """봇의 현재 상태(메모리, 업타임 등)를 확인합니다."""
-        import psutil
+        try:
+            import psutil
+        except ImportError:
+            await ctx.send("⚠️ psutil이 설치되어 있지 않아 시스템 상태를 조회할 수 없습니다. `pip install psutil`")
+            return
         process = psutil.Process()
         mem_info = process.memory_info()
         uptime = datetime.now(timezone.utc) - datetime.fromtimestamp(process.create_time(), tz=timezone.utc)

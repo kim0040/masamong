@@ -164,27 +164,38 @@ async def discord_logging_task():
 
             embed = handler.format_embed(record)
             guild_id = getattr(record, 'guild_id', None)
-            if not guild_id:
-                continue
 
-            guild = _bot_instance.get_guild(guild_id)
-            if not guild:
-                continue
-
-            # 채널 캐시를 확인하고, 없으면 'logs' 채널을 찾아 캐시에 추가합니다.
-            log_channel = log_channel_cache.get(guild.id)
-            if not log_channel:
+            def _resolve_logs_channel(guild):
+                """길드의 'logs' 채널을 캐시 우선으로 해결한다(전송 권한 있는 경우만)."""
+                if not guild:
+                    return None
+                cached = log_channel_cache.get(guild.id)
+                if cached:
+                    return cached
                 channel = discord.utils.get(guild.text_channels, name='logs')
                 if channel and channel.permissions_for(guild.me).send_messages:
                     log_channel_cache[guild.id] = channel
-                    log_channel = channel
+                    return channel
+                return None
+
+            log_channel = _resolve_logs_channel(_bot_instance.get_guild(guild_id) if guild_id else None)
+
+            # guild_id가 없는 레코드(시작/DB/DM/백그라운드 태스크 오류 등 가장 중요한 운영 실패)를
+            # 그냥 버리지 않고, 아무 길드의 'logs' 채널로 폴백하여 유실을 막는다.
+            if not log_channel:
+                for g in _bot_instance.guilds:
+                    log_channel = _resolve_logs_channel(g)
+                    if log_channel:
+                        break
 
             if log_channel:
                 try:
                     await log_channel.send(embed=embed)
                 except discord.Forbidden:
                     # 권한 문제 발생 시 캐시에서 제거하여 다음 시도에 다시 찾도록 함
-                    log_channel_cache.pop(guild.id, None)
+                    guild = getattr(log_channel, "guild", None)
+                    if guild:
+                        log_channel_cache.pop(guild.id, None)
                 except Exception as e:
                     # 로깅 실패가 다른 로깅을 유발하지 않도록 exc_info=False 설정
                     logging.getLogger(__name__).error(f"Discord 로그 채널({log_channel.name}) 전송 중 오류: {e}", exc_info=False)
@@ -259,7 +270,8 @@ def register_discord_logging(bot: commands.Bot):
     discord_handler.setLevel(logging.WARNING) # WARNING 레벨 이상의 로그만 Discord로 전송
     logging.getLogger().addHandler(discord_handler)
     
-    _discord_log_task = asyncio.create_task(discord_logging_task())
+    # 태스크를 지역변수로만 두면 GC되어 로그 전송이 조용히 멈출 수 있으므로 강한 참조를 봇에 보관한다.
+    bot._discord_log_task = asyncio.create_task(discord_logging_task())
     logging.info("Discord 로깅 핸들러가 등록되었으며, 전송 태스크가 시작될 예정입니다.")
 
 # --- 로거 인스턴스 생성 ---

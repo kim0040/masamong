@@ -238,10 +238,15 @@ class LLMClient:
             if client is None:
                 return None
             merged_prompt = f"[System]\n{system_prompt}\n\n[User]\n{user_prompt}"
-            response = await asyncio.to_thread(
-                client.models.generate_content,
-                model=target["model"],
-                contents=merged_prompt,
+            # to_thread는 취소가 불가하지만, wait_for로 호출측이 무한 대기하지 않도록 상한을 둔다.
+            # 타임아웃 시 TimeoutError가 레인 폴백(call_main_lane) 예외처리에서 처리된다.
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.models.generate_content,
+                    model=target["model"],
+                    contents=merged_prompt,
+                ),
+                timeout=config.AI_REQUEST_TIMEOUT,
             )
             return (getattr(response, "text", "") or "").strip() or None
 
@@ -279,10 +284,13 @@ class LLMClient:
             client = self.get_gemini_compat_client(target["base_url"], target["api_key"])
             if client is None:
                 return None
-            response = await asyncio.to_thread(
-                client.models.generate_content,
-                model=target["model"],
-                contents=prompt,
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.models.generate_content,
+                    model=target["model"],
+                    contents=prompt,
+                ),
+                timeout=config.AI_REQUEST_TIMEOUT,
             )
             return (getattr(response, "text", "") or "").strip() or None
 
@@ -373,10 +381,13 @@ class LLMClient:
                 logger.warning(f"Gemini API 호출 제한({limit_key})에 도달했습니다.", extra=log_extra)
                 return None
 
-            response = await model.generate_content_async(
-                prompt,
-                generation_config=generation_config,
-                safety_settings=config.GEMINI_SAFETY_SETTINGS,
+            response = await asyncio.wait_for(
+                model.generate_content_async(
+                    prompt,
+                    generation_config=generation_config,
+                    safety_settings=config.GEMINI_SAFETY_SETTINGS,
+                ),
+                timeout=config.AI_REQUEST_TIMEOUT,
             )
             if self._db:
                 await db_utils.log_api_call(self._db, limit_key)

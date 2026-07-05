@@ -124,10 +124,14 @@ class IntentAnalyzer:
         self.tools_cog: Any = tools_cog
         self._auto_web_search_last_used: dict[int, float] = {}
         self.location_cache: set[str] = set()
+        # 빈 set은 falsy라 self.location_cache로는 '로드했지만 비어있음'과 '미로드'를 구분할 수 없다.
+        # 별도 불린 센티넬로 1회만 로드하도록 하여, locations가 비어있을 때 매 메시지마다
+        # 원격 TiDB를 재조회하는 것을 방지한다.
+        self._location_cache_loaded: bool = False
 
     async def _load_location_cache(self) -> None:
         """DB에서 지역명 데이터를 로드하여 캐싱합니다."""
-        if self.location_cache:
+        if self._location_cache_loaded:
             return
 
         if not self.db:
@@ -136,6 +140,7 @@ class IntentAnalyzer:
         try:
             async with self.db.execute("SELECT name FROM locations WHERE LENGTH(name) >= 2") as cursor:
                 rows = await cursor.fetchall()
+                self._location_cache_loaded = True
                 if rows:
                     self.location_cache = {row['name'] for row in rows}
                     logger.info(f"DB에서 지역명 데이터 {len(self.location_cache)}개를 로드했습니다.")
@@ -639,7 +644,7 @@ class IntentAnalyzer:
                 name = "web_search"
                 params = {"query": self._build_finance_news_query(finance_query_text)}
 
-            # 실행 가능한 도구는 web_search / get_weather_forecast만 허용
+            # 실행 가능한 도구만 허용
             if name not in self._ALLOWED_RUNTIME_TOOLS:
                 logger.info("[도구보정] 허용되지 않은 도구 제거: %s", name, extra=log_extra)
                 continue
@@ -648,6 +653,10 @@ class IntentAnalyzer:
             if self._is_smalltalk_only_query(query):
                 logger.info("[도구보정] 잡담성 질의로 도구 계획을 모두 무효화합니다.", extra=log_extra)
                 return []
+
+            if name == "generate_image" and not any(kw in query_lower for kw in self._IMAGE_GEN_KEYWORDS):
+                logger.info("[도구보정] 이미지 생성 의도가 없어 generate_image 제거", extra=log_extra)
+                continue
 
             if name == "web_search":
                 # LLM 신뢰 모드: 휴리스틱이 판단을 유보했고 LLM이 명시적으로 제안한 경우 차단하지 않음

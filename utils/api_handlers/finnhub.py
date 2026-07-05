@@ -101,8 +101,8 @@ async def _search_symbol(query: str) -> str | None:
     params['q'] = query
 
     try:
-        session = http.get_modern_tls_session()
-        response = await asyncio.to_thread(session.get, f"{BASE_URL}/search", params=params, timeout=10)
+        with http.get_modern_tls_session() as session:
+            response = await asyncio.to_thread(session.get, f"{BASE_URL}/search", params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
 
@@ -138,8 +138,8 @@ async def get_raw_stock_quote(symbol: str) -> dict | None:
     async def _get_quote_for_symbol(ticker: str) -> dict | None:
         """Internal function to fetch quote for a given ticker."""
         params['symbol'] = ticker
-        session = http.get_modern_tls_session()
-        response = await asyncio.to_thread(session.get, f"{BASE_URL}/quote", params=params, timeout=10)
+        with http.get_modern_tls_session() as session:
+            response = await asyncio.to_thread(session.get, f"{BASE_URL}/quote", params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
         # 0, d=None은 유효하지 않은 응답으로 간주
@@ -298,8 +298,8 @@ async def get_company_news(symbol: str, count: int = 3) -> str:
     params['to'] = today.strftime('%Y-%m-%d')
 
     try:
-        session = http.get_modern_tls_session()
-        response = await asyncio.to_thread(session.get, f"{BASE_URL}/company-news", params=params, timeout=15)
+        with http.get_modern_tls_session() as session:
+            response = await asyncio.to_thread(session.get, f"{BASE_URL}/company-news", params=params, timeout=15)
         response.raise_for_status()
         news_items = response.json()
 
@@ -337,8 +337,8 @@ async def get_company_profile(symbol: str) -> dict | None:
     params['symbol'] = normalized_symbol
 
     try:
-        session = http.get_modern_tls_session()
-        response = await asyncio.to_thread(session.get, f"{BASE_URL}/stock/profile2", params=params, timeout=10)
+        with http.get_modern_tls_session() as session:
+            response = await asyncio.to_thread(session.get, f"{BASE_URL}/stock/profile2", params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
         if not data:
@@ -368,8 +368,8 @@ async def get_recommendation_trends(symbol: str) -> str:
     params['symbol'] = normalized_symbol
 
     try:
-        session = http.get_modern_tls_session()
-        response = await asyncio.to_thread(session.get, f"{BASE_URL}/stock/recommendation", params=params, timeout=10)
+        with http.get_modern_tls_session() as session:
+            response = await asyncio.to_thread(session.get, f"{BASE_URL}/stock/recommendation", params=params, timeout=10)
         response.raise_for_status()
         data = response.json() # List of dicts
         

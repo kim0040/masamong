@@ -361,6 +361,9 @@ USER_COOLDOWN_SECONDS = as_int(load_config_value('USER_COOLDOWN_SECONDS', 3), 3)
 USER_DAILY_LLM_LIMIT = as_int(load_config_value('USER_DAILY_LLM_LIMIT', 200), 200)
 # 글로벌 일일 LLM 호출 제한
 GLOBAL_DAILY_LLM_LIMIT = as_int(load_config_value('GLOBAL_DAILY_LLM_LIMIT', 5000), 5000)
+# [저사양 보호] 동시에 처리할 수 있는 AI 메시지 최대 개수 (전역 세마포어).
+# 저사양 서버에서 동시 요청이 몰릴 때 임베딩/LLM 폭주를 막는다. 서버 사양에 맞게 조정.
+AI_MAX_CONCURRENT_PROCESSING = as_int(load_config_value('AI_MAX_CONCURRENT_PROCESSING', 3), 3)
 # 프롬프트 최대 토큰 (초과 시 RAG 컨텍스트 줄임)
 MAX_PROMPT_TOKENS = as_int(load_config_value('MAX_PROMPT_TOKENS', 4000), 4000)
 # 동일 메시지 스팸 방지 시간 (초)
@@ -810,6 +813,11 @@ RAG_ARCHIVING_CONFIG = {
     "run_on_startup": as_bool(
         load_config_value("RAG_ARCHIVE_RUN_ON_STARTUP", False if DB_BACKEND == "tidb" else True),
         False if DB_BACKEND == "tidb" else True,
+    ),
+    # user_activity_log 보존 일수. 0 이하이면 비활성(무한 보존).
+    # 주의: 활성화하면 !랭킹 '전체'(전체기간) 집계가 이 창(window) 이내로 제한된다.
+    "activity_log_retention_days": as_int(
+        load_config_value("USER_ACTIVITY_LOG_RETENTION_DAYS", 0), 0
     ),
 }
 AI_CREATIVE_PROMPTS = {
