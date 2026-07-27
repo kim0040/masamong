@@ -176,7 +176,10 @@ class WeatherCog(commands.Cog):
                 
                 final_context = "\n".join(parts)
                 # Show user what Masamong sees (as requested)
-                logger.info(f"☀️ [Weather Context to AI]:\n{final_context}")
+                logger.info(
+                    "☀️ Weather context prepared. context_chars=%d",
+                    len(final_context),
+                )
                 return final_context.strip(), None
             else:
                 forecast_data = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)

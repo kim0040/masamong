@@ -1,0 +1,7 @@
+{
+  "embedding_enabled": false,
+  "enable_local_embeddings": false,
+  "discord_db_path": "/tmp/masamong-tests/general/discord.db",
+  "kakao_db_path": "/tmp/masamong-tests/general/kakao.db",
+  "kakao_servers": []
+}

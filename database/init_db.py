@@ -10,28 +10,48 @@ API 호출 횟수 제한을 위한 카운터를 초기화하며, 필요한 경�
 """
 
 import sqlite3
-import os
+import sys
 from datetime import datetime
+from pathlib import Path
+
 import pytz
 
-# --- 상수 정의 ---
-DB_DIR = 'database'
-DB_PATH = os.path.join(DB_DIR, 'remasamong.db')
-SCHEMA_PATH = os.path.join(DB_DIR, 'schema.sql')
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-def initialize_database():
+import config
+
+
+def _resolve_project_path(value: str) -> Path:
+    if value == ":memory:":
+        return Path(value)
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
+DB_PATH = _resolve_project_path(config.DATABASE_FILE)
+SCHEMA_PATH = PROJECT_ROOT / "database" / "schema.sql"
+
+
+def initialize_database() -> bool:
     """
     데이터베이스 디렉토리와 파일을 생성하고, 스키마를 적용하여 테이블을 초기화합니다.
     """
-    # 데이터베이스 디렉토리가 없으면 생성
-    if not os.path.exists(DB_DIR):
-        os.makedirs(DB_DIR)
-        print(f"INFO: '{DB_DIR}' 디렉토리를 생성했습니다.")
+    if config.DB_BACKEND != "sqlite":
+        print(
+            "INFO: 현재 프로필은 SQLite가 아니므로 로컬 DB 초기화를 건너뜁니다. "
+            f"(profile={config.PROFILE}, backend={config.DB_BACKEND})"
+        )
+        return True
 
-    if not os.path.exists(SCHEMA_PATH):
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    if not SCHEMA_PATH.is_file():
         print(f"[오류] 스키마 파일 '{SCHEMA_PATH}'을(를) 찾을 수 없습니다.")
-        return
+        return False
 
+    conn: sqlite3.Connection | None = None
     try:
         # 데이터베이스 연결 (파일이 없으면 자동 생성)
         conn = sqlite3.connect(DB_PATH)
@@ -45,7 +65,8 @@ def initialize_database():
         print("INFO: SQL 스키마를 성공적으로 적용하여 테이블을 생성/확인했습니다.")
 
         # 2. 데이터베이스 스키마 마이그레이션 (필요시)
-        migrate_database(cursor)
+        if not migrate_database(cursor):
+            raise sqlite3.OperationalError("SQLite schema migration 검증에 실패했습니다.")
 
         # 3. 시스템 카운터 초기값 설정
         print("INFO: 시스템 카운터 초기값을 확인하고 설정합니다...")
@@ -58,15 +79,24 @@ def initialize_database():
 
         # 변경사항 저장 및 연결 종료
         conn.commit()
-        conn.close()
         print("\n✅ 데이터베이스 초기화가 성공적으로 완료되었습니다.")
+        return True
 
     except sqlite3.Error as e:
+        if conn is not None:
+            conn.rollback()
         print(f"[오류] 데이터베이스 초기화 중 오류가 발생했습니다: {e}")
+        return False
     except Exception as e:
+        if conn is not None:
+            conn.rollback()
         print(f"[오류] 예기치 않은 오류가 발생했습니다: {e}")
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
 
-def migrate_database(cursor):
+def migrate_database(cursor) -> bool:
     """
     기존 데이터베이스 스키마에 필요한 변경사항(예: 새로운 컬럼 추가)을 적용합니다.
     이 함수는 하위 호환성을 유지하기 위해 필요합니다.
@@ -98,9 +128,11 @@ def migrate_database(cursor):
         # --- 향후 필요한 마이그레이션 로직을 여기에 추가 --- #
 
         print("INFO: 데이터베이스 마이그레이션 확인이 완료되었습니다.")
+        return True
     except sqlite3.Error as e:
         print(f"[오류] 데이터베이스 마이그레이션 중 오류가 발생했습니다: {e}")
+        return False
 
 if __name__ == '__main__':
     """스크립트가 직접 실행될 때 데이터베이스 초기화 함수를 호출합니다."""
-    initialize_database()
+    raise SystemExit(0 if initialize_database() else 1)

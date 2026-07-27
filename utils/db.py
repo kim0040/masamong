@@ -9,6 +9,7 @@
 - 오래된 대화 기록 아카이빙
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 import pytz
 import json
@@ -24,6 +25,37 @@ KST = pytz.timezone('Asia/Seoul')
 # api_call_log 정리 주기 제한 (1시간마다)
 _last_api_log_cleanup: datetime | None = None
 _API_LOG_CLEANUP_INTERVAL = timedelta(hours=1)
+_ALLOWED_GUILD_SETTING_COLUMNS = frozenset(
+    {"ai_enabled", "ai_allowed_channels", "persona_text", "language"}
+)
+_ANALYTICS_METADATA_FIELDS = frozenset(
+    {
+        "guild_id",
+        "user_id",
+        "channel_id",
+        "command",
+        "success",
+        "latency_ms",
+        "error",
+        "trace_id",
+        "user_query_chars",
+        "final_response_chars",
+        "tools",
+    }
+)
+_LINKUP_SCHEMA_READY_ATTR = "_masamong_linkup_usage_table_ready"
+_LINKUP_SCHEMA_LOCK_ATTR = "_masamong_linkup_usage_table_lock"
+
+
+def _analytics_details_for_storage(details: dict[str, Any]) -> dict[str, Any]:
+    """본문 저장이 꺼진 경우 명시적으로 허용한 운영 메타데이터만 남깁니다."""
+    if config.ANALYTICS_STORE_CONTENT:
+        return dict(details)
+    return {
+        key: value
+        for key, value in details.items()
+        if key in _ANALYTICS_METADATA_FIELDS
+    }
 
 def get_current_time() -> str:
     """현재 시간을 KST(UTC+9) 기준의 문자열로 반환합니다."""
@@ -32,10 +64,21 @@ def get_current_time() -> str:
 async def log_analytics(db: aiosqlite.Connection, event_type: str, details: dict):
     """봇의 주요 활동(명령어, AI 상호작용 등)을 `analytics_log` 테이블에 기록합니다."""
     try:
-        details_json = json.dumps(details, ensure_ascii=False)
+        stored_details = _analytics_details_for_storage(details)
+        details_json = json.dumps(stored_details, ensure_ascii=False)
         await db.execute(
-            "INSERT INTO analytics_log (event_type, guild_id, user_id, details) VALUES (?, ?, ?, ?)",
-            (event_type, details.get('guild_id'), details.get('user_id'), details_json)
+            """
+            INSERT INTO analytics_log (
+                log_timestamp, event_type, guild_id, user_id, details
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                datetime.now(timezone.utc).isoformat(),
+                event_type,
+                stored_details.get("guild_id"),
+                stored_details.get("user_id"),
+                details_json,
+            )
         )
         await db.commit()
     except Exception as e:
@@ -43,13 +86,9 @@ async def log_analytics(db: aiosqlite.Connection, event_type: str, details: dict
 
 async def get_guild_setting(db: aiosqlite.Connection, guild_id: int, setting_name: str, default: Any = None) -> Any:
     """데이터베이스에서 특정 서버(guild)의 설정 값을 조회합니다."""
+    if setting_name not in _ALLOWED_GUILD_SETTING_COLUMNS:
+        raise ValueError(f"허용되지 않은 서버 설정 이름입니다: {setting_name}")
     try:
-        # 허용된 설정 이름인지 확인하여 SQL Injection 방지
-        allowed_columns = ["ai_enabled", "ai_allowed_channels", "persona_text"]
-        if setting_name not in allowed_columns:
-            logger.error(f"허용되지 않은 설정({setting_name})에 대한 접근 시도.", extra={'guild_id': guild_id})
-            return default
-
         async with db.execute(f"SELECT {setting_name} FROM guild_settings WHERE guild_id = ?", (guild_id,)) as cursor:
             result = await cursor.fetchone()
         return result[0] if result and result[0] is not None else default
@@ -60,27 +99,34 @@ async def get_guild_setting(db: aiosqlite.Connection, guild_id: int, setting_nam
 
 async def set_guild_setting(db: aiosqlite.Connection, guild_id: int, setting_name: str, value: Any):
     """데이터베이스에 특정 서버(guild)의 설정 값을 저장(UPSERT)합니다."""
+    if setting_name not in _ALLOWED_GUILD_SETTING_COLUMNS:
+        raise ValueError(f"허용되지 않은 서버 설정 이름입니다: {setting_name}")
     try:
-        allowed_columns = ["ai_enabled", "ai_allowed_channels", "persona_text"]
-        if setting_name not in allowed_columns:
-            logger.error(f"허용되지 않은 설정({setting_name})에 대한 저장 시도.", extra={'guild_id': guild_id})
-            return
-
+        now_iso = datetime.now(timezone.utc).isoformat()
         # UPSERT (INSERT OR REPLACE) 쿼리 실행
         if config.DB_BACKEND == "tidb":
             query = (
-                f"INSERT INTO guild_settings (guild_id, {setting_name}) VALUES (?, ?) "
-                f"ON DUPLICATE KEY UPDATE {setting_name} = VALUES({setting_name})"
+                f"INSERT INTO guild_settings "
+                f"(guild_id, {setting_name}, created_at, updated_at) "
+                f"VALUES (?, ?, ?, ?) "
+                f"ON DUPLICATE KEY UPDATE "
+                f"{setting_name} = VALUES({setting_name}), "
+                f"updated_at = VALUES(updated_at)"
             )
         else:
             query = (
-                f"INSERT INTO guild_settings (guild_id, {setting_name}) VALUES (?, ?) "
-                f"ON CONFLICT(guild_id) DO UPDATE SET {setting_name} = excluded.{setting_name}"
+                f"INSERT INTO guild_settings "
+                f"(guild_id, {setting_name}, created_at, updated_at) "
+                f"VALUES (?, ?, ?, ?) "
+                f"ON CONFLICT(guild_id) DO UPDATE SET "
+                f"{setting_name} = excluded.{setting_name}, "
+                f"updated_at = excluded.updated_at"
             )
-        await db.execute(query, (guild_id, value))
+        await db.execute(query, (guild_id, value, now_iso, now_iso))
         await db.commit()
     except Exception as e:
         logger.error(f"서버 설정({setting_name}) 저장 중 DB 오류: {e}", exc_info=True, extra={'guild_id': guild_id})
+        raise
 
 async def check_api_rate_limit(db: aiosqlite.Connection, api_type: str, rpm_limit: int, rpd_limit: int) -> bool:
     """
@@ -99,17 +145,30 @@ async def check_api_rate_limit(db: aiosqlite.Connection, api_type: str, rpm_limi
             await db.commit()
             _last_api_log_cleanup = now_utc
 
-        # 2. RPD (일일 제한) 확인
-        async with db.execute("SELECT COUNT(*) FROM api_call_log WHERE api_type = ? AND called_at >= ?", (api_type, one_day_ago)) as cursor:
-            if (await cursor.fetchone())[0] >= rpd_limit:
-                logger.warning(f"API 일일 호출 한도 도달: {api_type}")
-                return True
+        # 2. 일/분 사용량을 한 쿼리로 계산해 원격 DB 왕복을 줄인다.
+        async with db.execute(
+            """
+            SELECT
+                COUNT(*) AS daily_count,
+                COALESCE(
+                    SUM(CASE WHEN called_at >= ? THEN 1 ELSE 0 END),
+                    0
+                ) AS minute_count
+            FROM api_call_log
+            WHERE api_type = ? AND called_at >= ?
+            """,
+            (one_minute_ago, api_type, one_day_ago),
+        ) as cursor:
+            row = await cursor.fetchone()
+        daily_count = int(row[0] or 0) if row else 0
+        minute_count = int(row[1] or 0) if row else 0
 
-        # 3. RPM (분당 제한) 확인
-        async with db.execute("SELECT COUNT(*) FROM api_call_log WHERE api_type = ? AND called_at >= ?", (api_type, one_minute_ago)) as cursor:
-            if (await cursor.fetchone())[0] >= rpm_limit:
-                logger.warning(f"API 분당 호출 한도 도달: {api_type}")
-                return True
+        if daily_count >= rpd_limit:
+            logger.warning(f"API 일일 호출 한도 도달: {api_type}")
+            return True
+        if minute_count >= rpm_limit:
+            logger.warning(f"API 분당 호출 한도 도달: {api_type}")
+            return True
 
         return False # 제한에 도달하지 않음
 
@@ -128,42 +187,61 @@ async def log_api_call(db: aiosqlite.Connection, api_type: str):
 
 async def _ensure_linkup_usage_table(db: aiosqlite.Connection):
     """구버전 DB 호환을 위해 Linkup 사용량 테이블 존재를 보장합니다."""
-    try:
-        backend = str(getattr(db, "backend", "") or "").strip().lower() or "sqlite"
-        if backend == "tidb":
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS linkup_usage_log (
-                    id BIGINT PRIMARY KEY AUTO_RANDOM,
-                    used_at VARCHAR(64) NOT NULL,
-                    endpoint VARCHAR(32) NOT NULL,
-                    depth VARCHAR(32),
-                    render_js BOOLEAN,
-                    cost_eur DOUBLE NOT NULL,
-                    KEY idx_linkup_usage_time (used_at)
+    if not bool(getattr(config, "AUTO_MIGRATE", True)):
+        # 명시적 no-migrate 전환에서는 runtime helper도 DDL을 실행하지 않는다.
+        # 필수 테이블 존재 여부는 startup schema 검증이 담당한다.
+        return
+    if bool(getattr(db, _LINKUP_SCHEMA_READY_ATTR, False)):
+        return
+
+    # 월 예산 확인과 사용량 기록 때마다 원격 TiDB에 CREATE TABLE/COMMIT 왕복을
+    # 반복하지 않도록 연결 단위로 한 번만 점검한다. 동시 첫 요청도 하나만 DDL을
+    # 실행하게 해 저사양 인스턴스와 TiDB RU 사용량을 함께 줄인다.
+    schema_lock = getattr(db, _LINKUP_SCHEMA_LOCK_ATTR, None)
+    if schema_lock is None:
+        schema_lock = asyncio.Lock()
+        setattr(db, _LINKUP_SCHEMA_LOCK_ATTR, schema_lock)
+
+    async with schema_lock:
+        if bool(getattr(db, _LINKUP_SCHEMA_READY_ATTR, False)):
+            return
+        try:
+            backend = str(getattr(db, "backend", "") or "").strip().lower() or "sqlite"
+            if backend == "tidb":
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS linkup_usage_log (
+                        id BIGINT PRIMARY KEY AUTO_RANDOM,
+                        used_at VARCHAR(64) NOT NULL,
+                        endpoint VARCHAR(32) NOT NULL,
+                        depth VARCHAR(32),
+                        render_js BOOLEAN,
+                        cost_eur DOUBLE NOT NULL,
+                        KEY idx_linkup_usage_time (used_at)
+                    )
+                    """
                 )
-                """
-            )
-        else:
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS linkup_usage_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    used_at TEXT NOT NULL,
-                    endpoint TEXT NOT NULL,
-                    depth TEXT,
-                    render_js BOOLEAN,
-                    cost_eur REAL NOT NULL
+            else:
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS linkup_usage_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        used_at TEXT NOT NULL,
+                        endpoint TEXT NOT NULL,
+                        depth TEXT,
+                        render_js BOOLEAN,
+                        cost_eur REAL NOT NULL
+                    )
+                    """
                 )
-                """
-            )
-            await db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_linkup_usage_time ON linkup_usage_log (used_at DESC)"
-            )
-        await db.commit()
-    except Exception as e:
-        logger.error(f"Linkup 사용량 테이블 보장 중 오류: {e}", exc_info=True)
-        raise
+                await db.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_linkup_usage_time ON linkup_usage_log (used_at DESC)"
+                )
+            await db.commit()
+            setattr(db, _LINKUP_SCHEMA_READY_ATTR, True)
+        except Exception as e:
+            logger.error(f"Linkup 사용량 테이블 보장 중 오류: {e}", exc_info=True)
+            raise
 
 
 def _get_month_window_utc(now_utc: datetime | None = None) -> tuple[str, str]:

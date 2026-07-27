@@ -10,6 +10,7 @@
 4. 봇을 실행하여 Discord와 연결합니다.
 """
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -20,7 +21,7 @@ import aiosqlite
 import logging
 
 import config
-from database.compat_db import TiDBSettings, connect_main_db
+from database.compat_db import TiDBSettings, connect_main_db, get_table_columns
 from logger_config import logger, register_discord_logging
 from utils import initial_data
 
@@ -49,16 +50,30 @@ def _format_storage_target() -> str:
         return f"TiDB {config.TIDB_NAME}@{config.TIDB_HOST}:{config.TIDB_PORT}"
     return f"SQLite {config.DATABASE_FILE}"
 
+
+def _missing_startup_cogs(
+    loaded_cogs: set[str],
+    attempted_cogs: set[str],
+) -> list[str]:
+    """운영 프로필에서 부분 기능 상태로 기동하지 않도록 누락 Cog를 계산합니다."""
+    required = set(config.REQUIRED_COGS)
+    if config.REQUIRE_EXPLICIT_PROFILE:
+        required.update(attempted_cogs)
+    return sorted(required - loaded_cogs)
+
+
 # --- 1. 시작 로그 및 환경 확인 ---
 logger.info("=" * 70)
 logger.info(f"🤖 마사몽 Discord 봇 v{__version__} 시작 중...")
 logger.info(f"Python 버전: {sys.version.split()[0]}")
 logger.info(f"Discord.py 버전: {discord.__version__}")
 logger.info(f"작업 디렉터리: {os.getcwd()}")
+logger.info(f"실행 프로필: {config.PROFILE} (instance={config.INSTANCE_NAME})")
 logger.info(f"메인 DB 백엔드: {config.DB_BACKEND} ({_format_storage_target()})")
 logger.info(f"원격 DB 강제 모드: {'enabled' if config.REMOTE_DB_STRICT_MODE else 'disabled'}")
 logger.info(f"Discord 메모리 저장소: {config.DISCORD_EMBEDDING_BACKEND}")
 logger.info(f"Kakao 저장소: {config.KAKAO_STORE_BACKEND}")
+logger.info(f"활성 메모리 소스: {', '.join(sorted(config.MEMORY_SOURCES)) or 'none'}")
 logger.info("=" * 70)
 
 # --- 1. 초기 설정 및 API 키 유효성 검사 ---
@@ -89,6 +104,233 @@ class ReMasamongBot(commands.Bot):
         self.db_path = config.DATABASE_FILE
         # 대화형 커맨드(예: !운세 등록) 진행 중인 사용자를 추적하여 AI 자동응답을 방지합니다.
         self.locked_users = set()
+        self._guild_settings_cache: dict[int, dict[str, object]] = {}
+
+    async def _load_guild_settings_cache(self) -> None:
+        """서버별 AI 정책을 한 번 읽어 메시지마다 원격 DB를 조회하지 않게 합니다."""
+        if config.GUILD_SETTINGS_MODE != "database":
+            self._guild_settings_cache = {}
+            logger.info(
+                "DB guild 설정 적용을 건너뜁니다: mode=%s",
+                config.GUILD_SETTINGS_MODE,
+            )
+            return
+        cache: dict[int, dict[str, object]] = {}
+        async with self.db.execute(
+            """
+            SELECT guild_id, ai_enabled, ai_allowed_channels, persona_text
+            FROM guild_settings
+            """
+        ) as cursor:
+            rows = await cursor.fetchall()
+        for row in rows:
+            try:
+                guild_id = int(row[0])
+            except (TypeError, ValueError):
+                continue
+            raw_channels = row[2]
+            allowed_channels: set[int] | None = None
+            if raw_channels is not None:
+                try:
+                    parsed = json.loads(raw_channels) if isinstance(raw_channels, str) else raw_channels
+                    if isinstance(parsed, list):
+                        allowed_channels = {
+                            int(item)
+                            for item in parsed
+                            if str(item).strip().isdigit()
+                        }
+                    else:
+                        logger.warning(
+                            "guild_settings.ai_allowed_channels가 배열이 아닙니다: guild=%s",
+                            guild_id,
+                        )
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    logger.warning(
+                        "guild_settings.ai_allowed_channels 파싱 실패: guild=%s",
+                        guild_id,
+                    )
+            cache[guild_id] = {
+                "ai_enabled": bool(row[1]),
+                "ai_allowed_channels": allowed_channels,
+                "persona_text": str(row[3]).strip() if row[3] else None,
+            }
+        self._guild_settings_cache = cache
+        logger.info("서버별 AI 설정 캐시 로드 완료: %d개 길드", len(cache))
+
+    def update_guild_setting_cache(self, guild_id: int, setting_name: str, value) -> None:
+        """관리 명령이 DB를 갱신한 직후 런타임 캐시에도 동일 값을 반영합니다."""
+        if config.GUILD_SETTINGS_MODE != "database":
+            return
+        guild_key = int(guild_id)
+        entry = self._guild_settings_cache.setdefault(guild_key, {})
+        if setting_name == "ai_allowed_channels":
+            parsed = json.loads(value) if isinstance(value, str) else value
+            entry[setting_name] = {
+                int(item)
+                for item in (parsed or [])
+                if str(item).strip().isdigit()
+            }
+        elif setting_name == "ai_enabled":
+            entry[setting_name] = bool(value)
+        elif setting_name == "persona_text":
+            entry[setting_name] = str(value).strip() if value else None
+
+    def is_ai_channel_allowed(self, guild_id: int, channel_id: int) -> bool:
+        """DB 정책이 있으면 우선 적용하고, 없을 때만 정적 프롬프트 설정을 사용합니다."""
+        entry = self._guild_settings_cache.get(int(guild_id), {})
+        if entry.get("ai_enabled") is False:
+            return False
+        allowed_channels = entry.get("ai_allowed_channels")
+        if isinstance(allowed_channels, set):
+            return int(channel_id) in allowed_channels
+        channel_conf = config.CHANNEL_AI_CONFIG.get(int(channel_id), {})
+        return bool(channel_conf.get("allowed", False))
+
+    def get_guild_persona(self, guild_id: int | None) -> str | None:
+        """길드 관리자가 지정한 런타임 페르소나를 반환합니다."""
+        if guild_id is None:
+            return None
+        entry = self._guild_settings_cache.get(int(guild_id), {})
+        persona = entry.get("persona_text")
+        return str(persona) if persona else None
+
+    async def _verify_runtime_schema(self) -> None:
+        """DDL 없이 런타임 필수 테이블/컬럼이 이미 존재하는지 검증합니다."""
+        required_tables = {
+            "conversation_history",
+            "guild_settings",
+            "locations",
+            "user_profiles",
+            "user_activity_log",
+            "linkup_usage_log",
+        }
+        if config.REQUIRE_EXPLICIT_PROFILE:
+            # 명시적 운영 프로필은 startup 이후 지연 경로에서 테이블 누락을
+            # 발견하지 않도록 중앙 schema의 핵심 저장소 전체를 먼저 확인한다.
+            required_tables.update(
+                {
+                    "user_activity",
+                    "conversation_windows",
+                    "system_counters",
+                    "api_call_log",
+                    "analytics_log",
+                    "conversation_history_archive",
+                    "user_preferences",
+                    "dm_usage_logs",
+                }
+            )
+        if config.DB_BACKEND == "tidb":
+            required_tables.update(
+                {
+                    "discord_chat_embeddings",
+                    "discord_memory_entries",
+                    "kakao_chunks",
+                }
+            )
+        existing_tables = await self._existing_tables(required_tables)
+        missing_tables = sorted(required_tables - existing_tables)
+        if missing_tables:
+            raise RuntimeError(
+                "런타임 필수 DB 테이블이 없습니다: " + ", ".join(missing_tables)
+            )
+
+        guild_columns = set(await get_table_columns(self.db, "guild_settings"))
+        required_guild_columns = {
+            "guild_id",
+            "ai_enabled",
+            "ai_allowed_channels",
+            "persona_text",
+            "language",
+        }
+        missing_columns = sorted(required_guild_columns - guild_columns)
+        if missing_columns:
+            raise RuntimeError(
+                "guild_settings 필수 컬럼이 없습니다: " + ", ".join(missing_columns)
+            )
+
+        if config.REQUIRE_EXPLICIT_PROFILE:
+            user_profile_columns = set(
+                await get_table_columns(self.db, "user_profiles")
+            )
+            required_user_profile_columns = {
+                "user_id",
+                "birth_date",
+                "birth_time",
+                "gender",
+                "birth_place",
+                "subscription_active",
+                "subscription_time",
+                "pending_payload",
+                "last_fortune_sent",
+                "last_fortune_content",
+                "created_at",
+            }
+            missing_user_profile_columns = sorted(
+                required_user_profile_columns - user_profile_columns
+            )
+            if missing_user_profile_columns:
+                raise RuntimeError(
+                    "user_profiles 필수 컬럼이 없습니다: "
+                    + ", ".join(missing_user_profile_columns)
+                )
+
+        if config.REQUIRE_EXPLICIT_PROFILE and config.DB_BACKEND == "tidb":
+            required_embedding_columns = {
+                "discord_chat_embeddings": {
+                    "id",
+                    "message_id",
+                    "server_id",
+                    "channel_id",
+                    "user_id",
+                    "user_name",
+                    "message",
+                    "timestamp",
+                    "embedding",
+                },
+                "discord_memory_entries": {
+                    "id",
+                    "memory_id",
+                    "anchor_message_id",
+                    "server_id",
+                    "channel_id",
+                    "owner_user_id",
+                    "owner_user_name",
+                    "memory_scope",
+                    "memory_type",
+                    "summary_text",
+                    "memory_text",
+                    "raw_context",
+                    "source_message_ids",
+                    "speaker_names",
+                    "keyword_json",
+                    "timestamp",
+                    "embedding",
+                },
+                "kakao_chunks": {
+                    "id",
+                    "room_key",
+                    "source_room_label",
+                    "chunk_id",
+                    "session_id",
+                    "start_date",
+                    "message_count",
+                    "summary",
+                    "text_long",
+                    "embedding",
+                },
+            }
+            for table_name, expected_columns in required_embedding_columns.items():
+                actual_columns = set(
+                    await get_table_columns(self.db, table_name)
+                )
+                missing_embedding_columns = sorted(
+                    expected_columns - actual_columns
+                )
+                if missing_embedding_columns:
+                    raise RuntimeError(
+                        f"{table_name} 필수 컬럼이 없습니다: "
+                        + ", ".join(missing_embedding_columns)
+                    )
 
     async def _migrate_db(self):
         """데이터베이스 스키마를 확인하고 좌표 데이터를 보강합니다.
@@ -100,7 +342,7 @@ class ReMasamongBot(commands.Bot):
         try:
             # 스키마 파일 실행 (전체 테이블 생성)
             schema_filename = "database/schema_tidb.sql" if config.DB_BACKEND == "tidb" else "database/schema.sql"
-            schema_path = Path(schema_filename)
+            schema_path = Path(config.PROJECT_ROOT) / schema_filename
             if schema_path.exists():
                 if config.DB_BACKEND == "tidb":
                     core_tables = (
@@ -108,8 +350,16 @@ class ReMasamongBot(commands.Bot):
                         "guild_settings",
                         "locations",
                         "user_profiles",
+                        "user_activity",
                         "user_activity_log",
                         "linkup_usage_log",
+                        "conversation_windows",
+                        "system_counters",
+                        "api_call_log",
+                        "analytics_log",
+                        "conversation_history_archive",
+                        "user_preferences",
+                        "dm_usage_logs",
                         "discord_chat_embeddings",
                         "discord_memory_entries",
                         "kakao_chunks",
@@ -120,10 +370,22 @@ class ReMasamongBot(commands.Bot):
                         "guild_settings",
                         "locations",
                         "user_profiles",
+                        "user_activity",
                         "user_activity_log",
                         "linkup_usage_log",
+                        "conversation_windows",
+                        "system_counters",
+                        "api_call_log",
+                        "analytics_log",
+                        "conversation_history_archive",
+                        "user_preferences",
+                        "dm_usage_logs",
                     )
-                missing_tables = [name for name in core_tables if not await self._table_exists(name)]
+                existing_tables = await self._existing_tables(core_tables)
+                missing_tables = [
+                    name for name in core_tables
+                    if name not in existing_tables
+                ]
                 if missing_tables:
                     logger.info("스키마 적용 시작: %s (누락 테이블: %s)", schema_path, ", ".join(missing_tables))
                     with open(schema_path, "r", encoding="utf-8") as f:
@@ -208,10 +470,6 @@ class ReMasamongBot(commands.Bot):
                 except Exception:
                     pass  # 이미 존재하면 무시
 
-            # 로케일 설정 로드
-            from utils.locale import load_guild_languages_from_db
-            await load_guild_languages_from_db(self.db)
-
             # locations 테이블이 비어있거나 구형 데이터(예: 2만개 미만 또는 주요 별칭 누락)일 경우 재시딩합니다.
             async with self.db.execute("SELECT COUNT(*) FROM locations") as cursor:
                 existing_count = (await cursor.fetchone())[0]
@@ -221,49 +479,75 @@ class ReMasamongBot(commands.Bot):
                 has_short_alias = await cursor.fetchone()
 
             if existing_count < 100 or not has_short_alias:
+                # 새 시드가 준비됐는지 먼저 확인한다. 기존 행을 삭제한 뒤 로딩에 실패하면
+                # 운영 위치 데이터가 비는 순서를 피한다.
+                locations_to_seed = initial_data.load_locations_from_csv()
+                if not locations_to_seed:
+                    locations_to_seed = initial_data.LOCATION_DATA
+                if not locations_to_seed:
+                    raise RuntimeError(
+                        "위치 데이터 재시딩이 필요하지만 사용할 시드 데이터가 없습니다."
+                    )
+
                 if existing_count:
                     logger.info("'locations' 테이블의 데이터가 구형이거나 부족하여 재시딩합니다. (현재: %d개, 별칭누락: %s)", 
                                 existing_count, not has_short_alias)
                     await self.db.execute("DELETE FROM locations")
-                    await self.db.commit()
                 else:
                     logger.info("'locations' 테이블이 비어있어 초기 데이터를 시딩합니다.")
-                
-                locations_to_seed = initial_data.load_locations_from_csv()
-                if not locations_to_seed:
-                    locations_to_seed = initial_data.LOCATION_DATA
-                
-                if locations_to_seed:
-                    await self.db.executemany(
-                        "INSERT OR IGNORE INTO locations (name, nx, ny) VALUES (?, ?, ?)",
-                        [(loc['name'], loc['nx'], loc['ny']) for loc in locations_to_seed]
-                    )
-                    await self.db.commit()
-                    logger.info(f"{len(locations_to_seed)}개의 위치 정보 시딩 완료 (별칭 포함).")
+
+                await self.db.executemany(
+                    "INSERT OR IGNORE INTO locations (name, nx, ny) VALUES (?, ?, ?)",
+                    [(loc['name'], loc['nx'], loc['ny']) for loc in locations_to_seed]
+                )
+                await self.db.commit()
+                logger.info(f"{len(locations_to_seed)}개의 위치 정보 시딩 완료 (별칭 포함).")
 
         except aiosqlite.OperationalError as e:
             # 테이블이 아직 존재하지 않는 경우 등
             logger.warning(f"데이터베이스 마이그레이션 중 오류 발생 (무시 가능): {e}")
+            if config.REMOTE_DB_STRICT_MODE:
+                try:
+                    await self.db.rollback()
+                except Exception:
+                    logger.error("마이그레이션 실패 후 rollback에도 실패했습니다.", exc_info=True)
+                raise
         except Exception as e:
             logger.error(f"데이터베이스 마이그레이션 중 심각한 오류 발생: {e}", exc_info=True)
+            try:
+                await self.db.rollback()
+            except Exception:
+                logger.error("마이그레이션 실패 후 rollback에도 실패했습니다.", exc_info=True)
+            if config.REMOTE_DB_STRICT_MODE:
+                raise
+
+    async def _existing_tables(self, table_names) -> set[str]:
+        """필수 테이블 존재 여부를 catalog 단일 쿼리로 확인합니다."""
+        names = tuple(sorted({str(name) for name in table_names if name}))
+        if not names:
+            return set()
+
+        backend = getattr(self.db, "backend", config.DB_BACKEND)
+        placeholders = ", ".join("?" for _ in names)
+        if backend == "tidb":
+            query = f"""
+                SELECT TABLE_NAME
+                FROM information_schema.TABLES
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME IN ({placeholders})
+            """
+        else:
+            query = (
+                "SELECT name FROM sqlite_master "
+                f"WHERE type = 'table' AND name IN ({placeholders})"
+            )
+
+        async with self.db.execute(query, names) as cursor:
+            rows = await cursor.fetchall()
+        return {str(row[0]) for row in rows}
 
     async def _table_exists(self, table_name: str) -> bool:
-        backend = getattr(self.db, "backend", config.DB_BACKEND)
-        if backend == "tidb":
-            query = """
-                SELECT 1
-                FROM information_schema.TABLES
-                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-                LIMIT 1
-            """
-            params = (table_name,)
-        else:
-            query = "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1"
-            params = (table_name,)
-
-        async with self.db.execute(query, params) as cursor:
-            row = await cursor.fetchone()
-        return bool(row)
+        return table_name in await self._existing_tables((table_name,))
 
     async def setup_hook(self):
         """Discord 로그인 직전에 실행되어 필수 리소스를 초기화합니다.
@@ -271,11 +555,22 @@ class ReMasamongBot(commands.Bot):
         여기서는 데이터베이스 파일과 디렉터리를 준비하고, Cog 확장을 순차적으로 로드하며,
         Cog 간에 필요한 의존성을 주입합니다. 이 단계가 성공적으로 끝나야 봇이 정상 작동합니다.
         """
-        # 데이터베이스 디렉토리 생성 확인
-        db_dir = os.path.dirname(self.db_path)
-        if not os.path.exists(db_dir):
-            os.makedirs(db_dir)
-            logger.info(f"데이터베이스 디렉토리 '{db_dir}'을(를) 생성했습니다.")
+        expected_bot_user_id = int(
+            getattr(config, "EXPECTED_DISCORD_BOT_USER_ID", 0) or 0
+        )
+        actual_bot_user_id = getattr(self.user, "id", None)
+        if expected_bot_user_id and actual_bot_user_id != expected_bot_user_id:
+            raise RuntimeError(
+                "Discord bot identity가 선택한 프로필과 다릅니다: "
+                f"actual={actual_bot_user_id!r}, expected={expected_bot_user_id!r}"
+            )
+
+        # SQLite 프로필에서만 로컬 데이터 디렉터리를 준비한다.
+        if config.DB_BACKEND == "sqlite":
+            db_dir = os.path.dirname(self.db_path)
+            if db_dir and not os.path.exists(db_dir):
+                os.makedirs(db_dir)
+                logger.info(f"데이터베이스 디렉토리 '{db_dir}'을(를) 생성했습니다.")
 
         # 데이터베이스 연결
         try:
@@ -289,17 +584,30 @@ class ReMasamongBot(commands.Bot):
                     database=config.TIDB_NAME,
                     ssl_ca=config.TIDB_SSL_CA,
                     ssl_verify_identity=config.TIDB_SSL_VERIFY_IDENTITY,
+                    require_tls=config.REQUIRE_DB_TLS,
+                    connect_timeout=config.TIDB_CONNECT_TIMEOUT,
+                    read_timeout=config.TIDB_READ_TIMEOUT,
+                    write_timeout=config.TIDB_WRITE_TIMEOUT,
+                    conn_max_lifetime_seconds=config.TIDB_CONN_MAX_LIFETIME_SECONDS,
                 )
             self.db = await connect_main_db(config.DB_BACKEND, sqlite_path=self.db_path, tidb_settings=tidb_settings)
             self.db.row_factory = aiosqlite.Row # 결과를 딕셔너리처럼 접근 가능하게 설정
             logger.info("데이터베이스 연결 완료: backend=%s target=%s", config.DB_BACKEND, _format_storage_target())
         except Exception as e:
             logger.critical(f"데이터베이스 연결 실패. 봇을 종료합니다: {e}", exc_info=True)
-            await self.close()
-            return
+            raise RuntimeError("필수 데이터베이스 연결에 실패했습니다.") from e
 
-        # 데이터베이스 초기 데이터 확인 및 마이그레이션
-        await self._migrate_db()
+        # 운영 masamo 첫 프로필 전환에서는 자동 DDL/백필/재시딩을 끌 수 있다.
+        if config.AUTO_MIGRATE:
+            await self._migrate_db()
+        else:
+            logger.warning(
+                "자동 DB migration이 비활성화되어 읽기 전용 schema 검증만 수행합니다."
+            )
+        await self._verify_runtime_schema()
+        from utils.locale import load_guild_languages_from_db
+        await load_guild_languages_from_db(self.db)
+        await self._load_guild_settings_cache()
 
         # Cog(기능 모듈) 로드
         # 의존성 순서를 고려하여 리스트 순서 결정 (예: tools_cog -> 다른 cogs)
@@ -308,15 +616,32 @@ class ReMasamongBot(commands.Bot):
             'fun_cog', 'activity_cog', 'poll_cog', 'settings_cog',
             'maintenance_cog', 'proactive_assistant', 'fortune_cog', 'help_cog'
         ]
+        cog_list = [name for name in cog_list if name not in config.DISABLED_COGS]
+        if config.DISABLED_COGS:
+            logger.info(
+                "프로필에서 비활성화된 Cog: %s",
+                ", ".join(sorted(config.DISABLED_COGS)),
+            )
 
+        loaded_cog_modules: set[str] = set()
         for cog_name in cog_list:
             try:
                 await self.load_extension(f'cogs.{cog_name}')
+                loaded_cog_modules.add(cog_name)
                 logger.info(f"Cog 로드 성공: {cog_name}")
             except commands.ExtensionNotFound:
                 logger.warning(f"Cog 파일을 찾을 수 없습니다: '{cog_name}.py'. 건너뜁니다.")
             except Exception as e:
                 logger.error(f"Cog '{cog_name}' 로드 중 오류 발생: {e}", exc_info=True)
+
+        missing_required_cogs = _missing_startup_cogs(
+            loaded_cog_modules,
+            set(cog_list),
+        )
+        if missing_required_cogs:
+            raise RuntimeError(
+                "필수 Cog 로드에 실패했습니다: " + ", ".join(missing_required_cogs)
+            )
 
         # Cog 간 의존성 주입
         # 일부 Cog는 다른 Cog의 기능을 직접 호출해야 할 수 있습니다.
@@ -370,12 +695,12 @@ class ReMasamongBot(commands.Bot):
                 )
 
         message_content = message.content or ""
-        prefixes_raw = await self.get_prefix(message)
-        if isinstance(prefixes_raw, str):
-            prefixes = [prefixes_raw]
-        else:
-            prefixes = list(prefixes_raw)
-        is_command = any(message_content.startswith(prefix) for prefix in prefixes if prefix)
+        # 이 봇은 config의 고정 문자열 prefix로 생성된다. 모든 일반 메시지마다
+        # get_prefix coroutine과 임시 list를 만들지 않는다.
+        is_command = bool(
+            config.COMMAND_PREFIX
+            and message_content.startswith(config.COMMAND_PREFIX)
+        )
 
         if is_command:
             await self.process_commands(message)
@@ -383,6 +708,14 @@ class ReMasamongBot(commands.Bot):
 
         ai_handler = self.get_cog('AIHandler')
         if ai_handler:
+            # 운세 등록처럼 개인정보를 묻는 대화형 명령 흐름은 AI 대화/RAG 저장 전에
+            # 차단한다. 기존 순서는 저장 후 차단하여 생년월일 등의 답변이 중복 보관됐다.
+            if message.author.id in self.locked_users:
+                logger.debug(
+                    "User %s is locked (interactive command flow); AI history and response skipped.",
+                    message.author.id,
+                )
+                return
             try:
                 # DM은 대화 기록에 저장하지 않거나 별도 처리 (현재 AIHandler는 DM일 경우 0으로 처리하는 로직 등이 있는지 확인 필요하지만, 
                 # 여기서 에러만 안나면 됨. 보통 add_message_to_history 내부에서 guild.id 접근시 에러날 수 있음.)
@@ -404,9 +737,7 @@ class ReMasamongBot(commands.Bot):
 
         # 채널 화이트리스트 체크 (DM은 무조건 통과, 채널은 화이트리스트)
         if message.guild:
-            channel_conf = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
-            ai_enabled_channel = channel_conf.get('allowed', False)
-            if not ai_enabled_channel:
+            if not self.is_ai_channel_allowed(message.guild.id, message.channel.id):
                 return
         else:
             # DM인 경우: 화이트리스트 체크 스킵 (DM은 기본 허용, Rate Limit 등은 AIHandler에서 처리)
@@ -418,11 +749,6 @@ class ReMasamongBot(commands.Bot):
                 logger.debug(f"Message ignored (No valid mention): {message.content}")
                 return
             # DM은 멘션 체크 패스
-
-        # [Safety Lock] 사용자가 대화형 커맨드(예: !운세 등록)를 진행 중이면 AI 응답을 막습니다.
-        if message.author.id in self.locked_users:
-            logger.debug(f"User {message.author.id} is locked (in command flow). AI response skipped.")
-            return
 
         try:
             # [저사양 보호] 전역 세마포어로 동시 AI 처리 수를 제한한다.
@@ -440,10 +766,27 @@ class ReMasamongBot(commands.Bot):
         """
         봇 종료 시 호출되어 데이터베이스 연결을 안전하게 닫습니다.
         """
-        if self.db:
-            await self.db.close()
-            logger.info("데이터베이스 연결을 안전하게 닫았습니다.")
-        await super().close()
+        ai_handler = self.get_cog("AIHandler")
+        rag_manager = getattr(ai_handler, "rag_manager", None) if ai_handler else None
+        if rag_manager is not None:
+            await rag_manager.close()
+        discord_log_task = getattr(self, "_discord_log_task", None)
+        if (
+            discord_log_task is not None
+            and discord_log_task is not asyncio.current_task()
+            and not discord_log_task.done()
+        ):
+            discord_log_task.cancel()
+            await asyncio.gather(discord_log_task, return_exceptions=True)
+        try:
+            # Cog의 scheduler/cleanup을 먼저 중단해 닫힌 DB를 뒤늦게 사용하는
+            # shutdown race를 피한다.
+            await super().close()
+        finally:
+            if self.db:
+                await self.db.close()
+                self.db = None
+                logger.info("데이터베이스 연결을 안전하게 닫았습니다.")
 
 # --- 3. 메인 실행 함수 ---
 async def main():
@@ -452,7 +795,16 @@ async def main():
     이 함수는 `asyncio.run` 진입점에서 호출되며, 봇 토큰 검증과 Discord 세션 수명 관리를 담당합니다.
     """
     # 커스텀 봇 클래스 인스턴스 생성
-    bot = ReMasamongBot(command_prefix=config.COMMAND_PREFIX, intents=config.intents)
+    bot = ReMasamongBot(
+        command_prefix=config.COMMAND_PREFIX,
+        intents=config.intents,
+        member_cache_flags=(
+            discord.MemberCacheFlags.all()
+            if config.MEMBER_CACHE_ENABLED
+            else discord.MemberCacheFlags.none()
+        ),
+        chunk_guilds_at_startup=config.MEMBER_CACHE_ENABLED,
+    )
 
     # Discord 로깅 핸들러 등록 및 백그라운드 태스크 시작
     register_discord_logging(bot)
@@ -463,10 +815,13 @@ async def main():
             await bot.start(config.TOKEN)
         except discord.errors.LoginFailure:
             logger.critical("봇 토큰이 유효하지 않습니다. 설정을 확인해주세요.")
+            raise
         except discord.errors.PrivilegedIntentsRequired:
             logger.critical("Privileged Intents가 활성화되지 않았습니다. Discord 개발자 포털에서 설정을 확인해주세요.")
+            raise
         except Exception as e:
             logger.critical(f"봇 실행 중 치명적인 오류 발생: {e}", exc_info=True)
+            raise
 
 # --- 4. 프로그램 진입점 ---
 if __name__ == "__main__":

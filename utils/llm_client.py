@@ -464,7 +464,11 @@ class LLMClient:
                     break
 
             if final_response and self.looks_like_prompt_leakage(final_response):
-                logger.warning(f"[Security] 프롬프트 유출 감지 및 차단: {final_response[:100]}...", extra=log_extra)
+                logger.warning(
+                    "[Security] 프롬프트 유출 감지 및 차단. response_chars=%d",
+                    len(final_response),
+                    extra=log_extra,
+                )
                 return None
 
             if self.debug_enabled:

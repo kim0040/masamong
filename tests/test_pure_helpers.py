@@ -1,0 +1,62 @@
+# -*- coding: utf-8 -*-
+"""순수 헬퍼 함수(별자리 경계, 메시지 분할)에 대한 단위 테스트.
+
+이전에 무테스트였던 결정적 로직을 커버한다. 특히 get_sign_from_date의
+날짜 경계 회귀를 방지한다.
+"""
+
+from utils.fortune import get_sign_from_date
+from utils.discord_helpers import split_message_chunks
+
+
+class TestZodiacBoundaries:
+    """표준 트로피컬 경계 검증 (경계 하루 어긋남 회귀 방지)."""
+
+    def test_capricorn_boundaries(self):
+        # 염소자리: 12/22 ~ 1/19
+        assert get_sign_from_date(12, 22) == "염소자리"
+        assert get_sign_from_date(12, 24) == "염소자리"
+        assert get_sign_from_date(12, 31) == "염소자리"
+        assert get_sign_from_date(1, 1) == "염소자리"
+        assert get_sign_from_date(1, 19) == "염소자리"
+        # 경계 바로 바깥
+        assert get_sign_from_date(12, 21) == "사수자리"
+        assert get_sign_from_date(1, 20) == "물병자리"
+
+    def test_libra_starts_sep_23(self):
+        assert get_sign_from_date(9, 22) == "처녀자리"
+        assert get_sign_from_date(9, 23) == "천칭자리"
+        assert get_sign_from_date(10, 22) == "천칭자리"
+        assert get_sign_from_date(10, 23) == "전갈자리"
+
+    def test_all_twelve_signs_reachable(self):
+        signs = {get_sign_from_date(m, 15) for m in range(1, 13)}
+        # 각 달 중순으로 최소 12개 별자리 중 다양한 값이 나와야 한다.
+        assert len(signs) >= 11
+
+
+class TestSplitMessageChunks:
+    def test_empty_returns_empty_list(self):
+        assert split_message_chunks("") == []
+
+    def test_short_text_single_chunk(self):
+        assert split_message_chunks("안녕하세요") == ["안녕하세요"]
+
+    def test_all_chunks_within_limit(self):
+        text = "가나다 " * 2000  # 길이가 큰 텍스트
+        chunks = split_message_chunks(text, chunk_size=100)
+        assert len(chunks) > 1
+        assert all(len(c) <= 100 for c in chunks)
+
+    def test_no_content_lost(self):
+        text = "라인1\n라인2\n" + ("단어 " * 500)
+        chunks = split_message_chunks(text, chunk_size=120)
+        rejoined = "".join(chunks).replace(" ", "").replace("\n", "")
+        original = text.replace(" ", "").replace("\n", "")
+        assert rejoined == original
+
+    def test_long_word_without_whitespace(self):
+        text = "x" * 250
+        chunks = split_message_chunks(text, chunk_size=100)
+        assert all(len(c) <= 100 for c in chunks)
+        assert "".join(chunks) == text

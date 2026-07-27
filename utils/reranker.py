@@ -9,13 +9,44 @@ from typing import Any, Iterable, List
 
 from logger_config import logger
 
-try:  # pragma: no cover - 선택적 의존성
-    from transformers import AutoModelForSequenceClassification, AutoTokenizer  # type: ignore
-    import torch  # type: ignore
-except ModuleNotFoundError:  # pragma: no cover - 환경에 따라 미설치 가능
-    AutoModelForSequenceClassification = None  # type: ignore
-    AutoTokenizer = None  # type: ignore
-    torch = None  # type: ignore
+# transformers/torch는 import만으로도 상당한 메모리를 점유한다. Reranker 타입은
+# 비활성 프로필에서도 생성 경로가 import될 수 있으므로 실제 rerank 요청 전에는
+# 패키지를 로드하지 않는다. 모듈 변수는 기존 테스트/호출자의 monkeypatch 호환을
+# 위해 유지한다.
+AutoModelForSequenceClassification: Any | None = None
+AutoTokenizer: Any | None = None
+torch: Any | None = None
+_DEPENDENCIES_IMPORT_ATTEMPTED = False
+
+
+def _load_reranker_dependencies() -> tuple[Any, Any, Any] | None:
+    """선택적 재순위화 의존성을 최초 모델 로드 시 한 번만 import합니다."""
+    global AutoModelForSequenceClassification, AutoTokenizer, torch
+    global _DEPENDENCIES_IMPORT_ATTEMPTED
+
+    if (
+        AutoTokenizer is not None
+        and AutoModelForSequenceClassification is not None
+        and torch is not None
+    ):
+        return AutoTokenizer, AutoModelForSequenceClassification, torch
+    if _DEPENDENCIES_IMPORT_ATTEMPTED:
+        return None
+
+    _DEPENDENCIES_IMPORT_ATTEMPTED = True
+    try:
+        from transformers import (
+            AutoModelForSequenceClassification as model_class,
+            AutoTokenizer as tokenizer_class,
+        )
+        import torch as torch_module
+    except ImportError:  # pragma: no cover - 선택적 의존성이 없는 경량 환경
+        return None
+
+    AutoTokenizer = tokenizer_class
+    AutoModelForSequenceClassification = model_class
+    torch = torch_module
+    return AutoTokenizer, AutoModelForSequenceClassification, torch
 
 
 @dataclass
@@ -45,22 +76,24 @@ class Reranker:
         """모델이 로드되지 않았다면 지연 로딩을 수행합니다."""
         if self._model is not None and self._tokenizer is not None:
             return
-        if AutoTokenizer is None or AutoModelForSequenceClassification is None or torch is None:
-            if not self._dependency_warning_logged:
-                logger.warning("transformers/torch 패키지가 없어 재순위화를 비활성화합니다.")
-                self._dependency_warning_logged = True
-            raise RuntimeError("transformers 또는 torch 패키지가 필요합니다.")
 
         async with self._lock:
             if self._model is not None and self._tokenizer is not None:
                 return
+            dependencies = _load_reranker_dependencies()
+            if dependencies is None:
+                if not self._dependency_warning_logged:
+                    logger.warning("transformers/torch 패키지가 없어 재순위화를 비활성화합니다.")
+                    self._dependency_warning_logged = True
+                raise RuntimeError("transformers 또는 torch 패키지가 필요합니다.")
+            tokenizer_class, model_class, torch_module = dependencies
             loop = asyncio.get_running_loop()
 
             def _load():
                 # 모델과 토크나이저는 CPU/GPU 여부에 따라 한 번만 로딩한다.
-                tokenizer = AutoTokenizer.from_pretrained(self.config.model_name)
-                model = AutoModelForSequenceClassification.from_pretrained(self.config.model_name)
-                device = self.config.device or ("cuda" if torch.cuda.is_available() else "cpu")
+                tokenizer = tokenizer_class.from_pretrained(self.config.model_name)
+                model = model_class.from_pretrained(self.config.model_name)
+                device = self.config.device or ("cuda" if torch_module.cuda.is_available() else "cpu")
                 model.to(device)
                 model.eval()
                 return tokenizer, model, device

@@ -38,11 +38,6 @@ import pytz
 import re
 from typing import Dict, Any, Tuple
 import aiosqlite
-# numpy는 AI 메모리 기능(RAG)에서만 필요하므로, 설치되지 않은 환경에서도 실행되도록 가드한다.
-try:
-    import numpy as np
-except ModuleNotFoundError:  # pragma: no cover - 경량 설치 환경 고려
-    np = None  # type: ignore
 import random
 import time
 import json
@@ -92,7 +87,10 @@ class AIHandler(commands.Cog):
         self.kakao_embedding_store = KakaoEmbeddingStore(
             config.KAKAO_EMBEDDING_DB_PATH,
             config.KAKAO_EMBEDDING_SERVER_MAP,
-        ) if config.KAKAO_EMBEDDING_DB_PATH or config.KAKAO_EMBEDDING_SERVER_MAP else None
+        ) if (
+            config.KAKAO_MEMORY_ENABLED
+            and (config.KAKAO_EMBEDDING_DB_PATH or config.KAKAO_EMBEDDING_SERVER_MAP)
+        ) else None
         self.bm25_manager = BM25IndexManager(config.BM25_DATABASE_PATH) if config.BM25_DATABASE_PATH else None
 
         reranker: Reranker | None = None
@@ -412,6 +410,44 @@ class AIHandler(commands.Cog):
         self._debug(f"정제된 사용자 쿼리: {self._truncate_for_debug(stripped)}", log_extra)
         return stripped
 
+    @staticmethod
+    def _build_interaction_analytics(
+        *,
+        message: discord.Message,
+        trace_id: str,
+        user_query: str,
+        final_response: str,
+        tool_plan: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        """기본적으로 원문 없이 AI 상호작용 메타데이터만 저장합니다."""
+        tool_names: list[str] = []
+        for item in tool_plan or []:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("tool_name") or item.get("name") or item.get("tool")
+            if name:
+                tool_names.append(str(name))
+        details: dict[str, Any] = {
+            # analytics_log.guild_id는 TiDB에서 BIGINT이므로 DM은 문자열 sentinel
+            # 대신 NULL로 저장한다.
+            "guild_id": message.guild.id if message.guild else None,
+            "user_id": message.author.id,
+            "channel_id": message.channel.id,
+            "trace_id": trace_id,
+            "user_query_chars": len(user_query),
+            "final_response_chars": len(final_response),
+            "tools": list(dict.fromkeys(tool_names)),
+        }
+        if config.ANALYTICS_STORE_CONTENT:
+            details.update(
+                {
+                    "user_query": user_query,
+                    "tool_plan": tool_plan or [],
+                    "final_response": final_response,
+                }
+            )
+        return details
+
     async def get_ai_completion(
         self,
         prompt: str,
@@ -460,7 +496,7 @@ class AIHandler(commands.Cog):
                 return str(response_text).strip()
         return None
 
-    async def _generate_local_embedding(self, content: str, log_extra: dict, prefix: str = "") -> np.ndarray | None:
+    async def _generate_local_embedding(self, content: str, log_extra: dict, prefix: str = "") -> Any | None:
         """SentenceTransformer 기반 임베딩을 생성합니다."""
         return await self.rag_manager._generate_local_embedding(content, log_extra, prefix)
 
@@ -522,8 +558,8 @@ class AIHandler(commands.Cog):
         from utils.constants import contains_nsfw
         if contains_nsfw(user_query or ""):
             logger.warning(
-                "이미지 생성 요청이 안전 필터에 의해 차단되었습니다: %s",
-                user_query[:100],
+                "이미지 생성 요청이 안전 필터에 의해 차단되었습니다. chars=%d",
+                len(user_query or ""),
                 extra=log_extra,
             )
             return "A beautiful serene landscape with mountains and a peaceful lake, golden hour lighting, photorealistic, masterpiece, best quality, 8k"
@@ -584,7 +620,11 @@ Generate the optimized English image prompt:"""
             
             # CometAPI 결과에 한국어가 포함되어 있으면 실패로 처리 (재시도 유도)
             if image_prompt and any('\uac00' <= char <= '\ud7a3' for char in image_prompt):
-                logger.warning(f"CometAPI 생성 프롬프트에 한국어 포함됨, 실패 처리: {image_prompt}", extra=log_extra)
+                logger.warning(
+                    "CometAPI 생성 프롬프트에 한국어 포함됨, 실패 처리. response_chars=%d",
+                    len(image_prompt),
+                    extra=log_extra,
+                )
                 image_prompt = None
             
         # CometAPI 실패/한국어포함 또는 비활성화 시 Gemini 폴백(옵션)
@@ -686,7 +726,11 @@ Generate the optimized English image prompt:"""
             return {"error": "ToolsCog가 초기화되지 않았습니다."}
 
         # 1. DuckDuckGo 기반 웹 검색 RAG 파이프라인 실행
-        logger.info(f"[웹 검색] RAG 파이프라인 시작: '{user_query}'", extra=log_extra)
+        logger.info(
+            "[웹 검색] RAG 파이프라인 시작. query_chars=%d",
+            len(user_query),
+            extra=log_extra,
+        )
         news_result = await self.tools_cog.web_search_rag(user_query)
 
         if news_result.get("status") != "success":
@@ -710,7 +754,10 @@ Generate the optimized English image prompt:"""
                  history_summary = "\n[이전 대화 맥락]\n" + "\n".join(history_lines)
 
         channel_id = log_extra.get('channel_id')
-        persona_prompt = self._get_channel_system_prompt(channel_id)
+        persona_prompt = self._get_channel_system_prompt(
+            channel_id,
+            guild_id=log_extra.get("guild_id"),
+        )
 
         system_prompt = (
             f"{persona_prompt}\n\n"
@@ -886,7 +933,11 @@ Generate the optimized English image prompt:"""
             return "", [], 0.0, []
 
         log_extra = {'guild_id': guild_id, 'channel_id': channel_id, 'user_id': user_id}
-        logger.info("RAG 컨텍스트 검색 시작. Query: '%s'", query, extra=log_extra)
+        logger.info(
+            "RAG 컨텍스트 검색 시작. query_chars=%d",
+            len(query),
+            extra=log_extra,
+        )
 
         engine = getattr(self, "hybrid_search_engine", None)
         if engine is None:
@@ -924,23 +975,23 @@ Generate the optimized English image prompt:"""
         prepared_entries: list[dict[str, Any]] = []
         rag_blocks: list[str] = []
 
-        # 항상 RAG 검색 결과를 로그로 출력
+        # INFO 로그에는 대화 원문을 넣지 않고 점수/출처/식별자만 남긴다.
         log_lines = []
         for entry in result.entries[:limit]:
             score = float(entry.get("combined_score", 0.0) or entry.get("score", 0.0) or 0.0)
             dialogue_block = (entry.get("dialogue_block") or entry.get("message") or "").strip()
-            snippet = dialogue_block[:100] + "..." if len(dialogue_block) > 100 else dialogue_block
-            
             # 소스 태그 결정: origin 필드 또는 형식으로 판단
-            origin = entry.get("origin", "")
-            if origin == "kakao" or "[Merged Context]" in snippet:
+            origin = str(entry.get("origin", "")).lower()
+            if origin == "kakao":
                 source_tag = "[KAKAO]"
-            elif origin == "discord" or "[" in snippet and "][2026-" in snippet:
+            elif origin == "discord":
                 source_tag = "[DISCORD]"
             else:
                 source_tag = "[UNKNOWN]"
-            
-            log_lines.append(f"  [{score:.3f}] {source_tag} {snippet}")
+
+            log_lines.append(
+                f"  [{score:.3f}] {source_tag} message_id={entry.get('message_id') or '-'}"
+            )
 
             # 임계값 이하는 무시 (쓰레기값 필터링)
             if score < threshold:
@@ -988,7 +1039,12 @@ Generate the optimized English image prompt:"""
             extra=log_extra,
         )
 
-        logger.debug("RAG 결과: %s", context_str, extra=log_extra)
+        logger.debug(
+            "RAG 컨텍스트 구성 완료. entries=%d context_chars=%d",
+            len(prepared_entries),
+            len(context_str),
+            extra=log_extra,
+        )
         return context_str, prepared_entries, top_score, rag_blocks
 
     async def _collect_recent_search_messages(self, message: discord.Message, limit: int = 10) -> list[str]:
@@ -1155,17 +1211,33 @@ Generate the optimized English image prompt:"""
             return True
         return False
 
-    def _get_channel_system_prompt(self, channel_id: int | None) -> str:
+    def _get_channel_system_prompt(
+        self,
+        channel_id: int | None,
+        *,
+        guild_id: int | None = None,
+    ) -> str:
         """채널별 페르소나와 규칙을 가져와 시스템 프롬프트를 구성합니다."""
-        if not channel_id:
-            # DM인 경우 비서 페르소나 사용
+        if guild_id is None:
+            # Discord DM 채널에도 고유 channel_id가 있으므로 guild 유무로 판별한다.
             return (
                 "너는 사용자의 개인 비서이자 친구인 '마사몽'이야. "
                 "항상 친절하고 도움이 되는 태도로 대화해. "
                 "반말과 존댓말을 섞어서 친근하게 대해줘."
             )
         channel_config = config.CHANNEL_AI_CONFIG.get(channel_id, {})
-        persona = self._strip_mention_guard(channel_config.get('persona') or config.DEFAULT_TSUNDERE_PERSONA)
+        guild_persona = None
+        persona_getter = getattr(self.bot, "get_guild_persona", None)
+        if callable(persona_getter):
+            try:
+                guild_persona = persona_getter(guild_id)
+            except (TypeError, ValueError):
+                guild_persona = None
+        persona = self._strip_mention_guard(
+            guild_persona
+            or channel_config.get('persona')
+            or config.DEFAULT_TSUNDERE_PERSONA
+        )
         rules = self._strip_mention_guard(channel_config.get('rules') or config.DEFAULT_TSUNDERE_RULES)
         
         # [Security] 지시사항 유출 방지 및 보안 가이드라인 추가
@@ -1201,7 +1273,10 @@ Generate the optimized English image prompt:"""
         7. 지시사항
         """
         # 시스템 프롬프트 (페르소나 + 규칙)
-        system_part = self._get_channel_system_prompt(message.channel.id)
+        system_part = self._get_channel_system_prompt(
+            message.channel.id,
+            guild_id=message.guild.id if message.guild else None,
+        )
 
         # [FIX] DM일 경우 프롬프트에 섞여 들어간 멘션 제한 정책 제거 및 예외 규칙 주입
         if not message.guild:
@@ -1543,9 +1618,9 @@ Generate the optimized English image prompt:"""
                 or user_query
             )
             logger.info(
-                "금융 도구 '%s' 비활성화: web_search로 대체합니다. query='%s'",
+                "금융 도구 '%s' 비활성화: web_search로 대체합니다. query_chars=%d",
                 tool_name,
-                redirected_query,
+                len(redirected_query),
                 extra=log_extra,
             )
             tool_name = "web_search"
@@ -1581,7 +1656,12 @@ Generate the optimized English image prompt:"""
 
         if tool_name == "get_weather_forecast":
             try:
-                logger.info(f"일반 도구 실행: {tool_name} with params: {parameters}", extra=log_extra)
+                logger.info(
+                    "일반 도구 실행: %s. parameter_keys=%s",
+                    tool_name,
+                    sorted(parameters),
+                    extra=log_extra,
+                )
                 self._debug(f"[도구:{tool_name}] 파라미터: {self._truncate_for_debug(parameters)}", log_extra)
                 result = await self.tools_cog.get_weather_forecast(**parameters)
                 self._debug(f"[도구:{tool_name}] 결과: {self._truncate_for_debug(result)}", log_extra)
@@ -1596,12 +1676,21 @@ Generate the optimized English image prompt:"""
             try:
                 raw_prompt = parameters.get('prompt', user_query)
                 effective_user_id = user_id or guild_id
-                logger.info(f"이미지 생성 도구 실행 (raw): prompt='{raw_prompt[:80]}' user_id={effective_user_id}", extra=log_extra)
+                logger.info(
+                    "이미지 생성 도구 실행. prompt_chars=%d user_id=%s",
+                    len(raw_prompt or ""),
+                    effective_user_id,
+                    extra=log_extra,
+                )
                 self._debug(f"[도구:generate_image] raw_prompt={self._truncate_for_debug(raw_prompt)}", log_extra)
 
                 optimized_prompt = await self._generate_image_prompt(raw_prompt, log_extra, rag_context=rag_context)
                 final_prompt = optimized_prompt or raw_prompt
-                logger.info(f"이미지 생성 최종 프롬프트: '{final_prompt[:120]}'", extra=log_extra)
+                logger.info(
+                    "이미지 생성 최종 프롬프트 준비 완료. prompt_chars=%d",
+                    len(final_prompt or ""),
+                    extra=log_extra,
+                )
                 self._debug(f"[도구:generate_image] 최종 프롬프트={self._truncate_for_debug(final_prompt)}", log_extra)
 
                 result = await self.tools_cog.generate_image(prompt=final_prompt, user_id=effective_user_id)
@@ -1711,7 +1800,11 @@ Generate the optimized English image prompt:"""
         trace_id = uuid.uuid4().hex[:8]
         log_extra = dict(base_log_extra)
         log_extra['trace_id'] = trace_id
-        logger.info(f"에이전트 처리 시작. Query: '{user_query}'", extra=log_extra)
+        logger.info(
+            "에이전트 처리 시작. query_chars=%d",
+            len(user_query),
+            extra=log_extra,
+        )
         self._debug(f"--- 에이전트 세션 시작 trace_id={trace_id}", log_extra)
 
         # [Progress Update] 초기 상태 메시지 전송
@@ -1809,7 +1902,12 @@ Generate the optimized English image prompt:"""
                     refined_query = user_query
                     if history and getattr(config, "WEB_SEARCH_REFINE_WITH_LLM", False):
                         refined_query = await self._refine_search_query_with_llm(user_query, history, log_extra)
-                        logger.info(f"자동 웹검색 쿼리 정제: '{user_query}' -> '{refined_query}'", extra=log_extra)
+                        logger.info(
+                            "자동 웹검색 쿼리 정제 완료. before_chars=%d after_chars=%d",
+                            len(user_query),
+                            len(refined_query),
+                            extra=log_extra,
+                        )
 
                     web_result = await self._execute_web_search_with_llm(refined_query, log_extra, history=history)
                     self._mark_auto_web_search_used(message)
@@ -1848,7 +1946,10 @@ Generate the optimized English image prompt:"""
 
             # 도구 결과 포맷팅 및 프롬프트 구성
             tool_results_str = self._format_tool_results_for_prompt(tool_results)
-            channel_persona_prompt = self._get_channel_system_prompt(message.channel.id)
+            channel_persona_prompt = self._get_channel_system_prompt(
+                message.channel.id,
+                guild_id=message.guild.id if message.guild else None,
+            )
             agent_system_prompt = self._strip_mention_guard(config.AGENT_SYSTEM_PROMPT)
             system_prompt = f"{channel_persona_prompt}\n\n{agent_system_prompt}"
             
@@ -1926,15 +2027,17 @@ Generate the optimized English image prompt:"""
                             # 분석 데이터 로깅 (순차 실행: 단일 커넥션 공유)
                             await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
                             await db_utils.log_api_call(self.bot.db, "llm_global")
-                            await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {
-                                "guild_id": message.guild.id if message.guild else "DM",
-                                "user_id": message.author.id,
-                                "channel_id": message.channel.id,
-                                "trace_id": trace_id,
-                                "user_query": user_query,
-                                "tool_plan": executed_plan or tool_plan,
-                                "final_response": final_response_text,
-                            })
+                            await db_utils.log_analytics(
+                                self.bot.db,
+                                "AI_INTERACTION",
+                                self._build_interaction_analytics(
+                                    message=message,
+                                    trace_id=trace_id,
+                                    user_query=user_query,
+                                    final_response=final_response_text,
+                                    tool_plan=executed_plan or tool_plan,
+                                ),
+                            )
                             return
                         except Exception as img_exc:
                             logger.error(f"이미지 전송 실패: {img_exc}", extra=log_extra)
@@ -1960,15 +2063,17 @@ Generate the optimized English image prompt:"""
                 # 분석 데이터 로깅 (순차 실행: 단일 커넥션 공유)
                 await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
                 await db_utils.log_api_call(self.bot.db, "llm_global")
-                await db_utils.log_analytics(self.bot.db, "AI_INTERACTION", {
-                    "guild_id": message.guild.id if message.guild else "DM",
-                    "user_id": message.author.id,
-                    "channel_id": message.channel.id,
-                    "trace_id": trace_id,
-                    "user_query": user_query,
-                    "tool_plan": executed_plan or tool_plan,
-                    "final_response": final_response_text,
-                })
+                await db_utils.log_analytics(
+                    self.bot.db,
+                    "AI_INTERACTION",
+                    self._build_interaction_analytics(
+                        message=message,
+                        trace_id=trace_id,
+                        user_query=user_query,
+                        final_response=final_response_text,
+                        tool_plan=executed_plan or tool_plan,
+                    ),
+                )
             else:
                 await status_msg.edit(content="미안해, 답변을 생성하는 데 실패했어. 😢")
 

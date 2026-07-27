@@ -1,0 +1,18 @@
+{
+  "_comment": "Copy the current Masamo embedding settings and room mappings here; never copy them to General.",
+  "embedding_enabled": true,
+  "enable_local_embeddings": true,
+  "reranker_enabled": false,
+  "embedding_model_name": "dragonkue/multilingual-e5-small-ko-v2",
+  "embedding_device": "cpu",
+  "local_files_only": true,
+  "discord_db_path": "/var/lib/masamong/masamo/discord_embeddings.db",
+  "kakao_db_path": "/var/lib/masamong/masamo/kakao_embeddings.db",
+  "kakao_servers": [
+    {
+      "server_id": "REPLACE_WITH_EXISTING_MASAMO_GUILD_ID",
+      "room_key": "REPLACE_WITH_EXISTING_ROOM_KEY",
+      "label": "Masamo"
+    }
+  ]
+}

@@ -8,14 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections import deque
-from typing import Any, Dict
-
 import re
+from collections import OrderedDict, deque
+from typing import Any, Dict
 
 import discord
 import aiosqlite
-import numpy as np
 
 import config
 from logger_config import logger
@@ -61,17 +59,54 @@ class RAGManager:
         self.reranker = reranker
         self.llm_client = llm_client
         self.bot = bot
-        self._window_buffers: dict[tuple[int, int], deque[dict[str, Any]]] = {}
+        # DM/다중 서버에서 한 번이라도 본 채널을 영구 보관하면 프로세스 수명 동안
+        # 버퍼가 계속 늘 수 있다. 최근 사용 채널만 LRU로 유지해 메모리를 제한한다.
+        self._window_buffers: OrderedDict[
+            tuple[int, int],
+            deque[dict[str, Any]],
+        ] = OrderedDict()
         self._window_counts: dict[tuple[int, int], int] = {}
+        self._max_tracked_windows = max(
+            1,
+            int(getattr(config, "RAG_MAX_TRACKED_WINDOWS", 256)),
+        )
         self._embedding_token_limit_cache: int | None = None
         self._background_tasks: set[asyncio.Task] = set()
+        self._closing = False
+        self._max_background_tasks = max(
+            1,
+            int(getattr(config, "RAG_MAX_BACKGROUND_TASKS", 16)),
+        )
+        self._dropped_background_tasks = 0
+
+    def _finalize_background_task(self, task: asyncio.Task) -> None:
+        """백그라운드 태스크 참조를 제거하고 예외를 회수합니다."""
+        self._background_tasks.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.error("RAG 백그라운드 태스크 중 오류: %s", exc, exc_info=True)
+
+    async def close(self) -> None:
+        """종료 시 남은 RAG 태스크를 취소·회수해 DB 종료와 경합하지 않게 합니다."""
+        self._closing = True
+        tasks = list(self._background_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._background_tasks.clear()
+        self._window_buffers.clear()
+        self._window_counts.clear()
 
     @property
     def use_cometapi(self) -> bool:
         """LLMClient에서 CometAPI 사용 여부를 가져옵니다."""
         return bool(self.llm_client and self.llm_client.use_cometapi)
 
-    async def _generate_local_embedding(self, content: str, log_extra: dict, prefix: str = "") -> np.ndarray | None:
+    async def _generate_local_embedding(self, content: str, log_extra: dict, prefix: str = "") -> Any | None:
         """SentenceTransformer 기반 임베딩을 생성합니다."""
         if not config.AI_MEMORY_ENABLED:
             return None
@@ -112,8 +147,13 @@ class RAGManager:
         # Guild인 경우에만 채널 화이트리스트 체크
         if message.guild:
             try:
-                channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
-                if not channel_config.get("allowed", False):
+                policy_check = getattr(self.bot, "is_ai_channel_allowed", None)
+                if callable(policy_check):
+                    allowed = policy_check(message.guild.id, message.channel.id)
+                else:
+                    channel_config = config.CHANNEL_AI_CONFIG.get(message.channel.id, {})
+                    allowed = bool(channel_config.get("allowed", False))
+                if not allowed:
                     return
             except AttributeError:
                 pass  # message.channel has no id? rare.
@@ -278,7 +318,15 @@ class RAGManager:
         key = (guild_id, message.channel.id)
 
         # 채널별 슬라이딩 버퍼에 메시지를 누적한다.
-        buffer = self._window_buffers.setdefault(key, deque(maxlen=window_size))
+        buffer = self._window_buffers.get(key)
+        if buffer is None:
+            while len(self._window_buffers) >= self._max_tracked_windows:
+                evicted_key, _ = self._window_buffers.popitem(last=False)
+                self._window_counts.pop(evicted_key, None)
+            buffer = deque(maxlen=window_size)
+            self._window_buffers[key] = buffer
+        else:
+            self._window_buffers.move_to_end(key)
         entry = {
             "message_id": int(message.id),
             "user_id": int(message.author.id),
@@ -344,8 +392,8 @@ class RAGManager:
                 """
                 INSERT OR REPLACE INTO conversation_windows (
                     guild_id, channel_id, start_message_id, end_message_id,
-                    message_count, messages_json, anchor_timestamp
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    message_count, messages_json, anchor_timestamp, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     guild_id,
@@ -355,14 +403,31 @@ class RAGManager:
                     len(payload),
                     json.dumps(payload, ensure_ascii=False),
                     payload[-1]["created_at"],
+                    payload[-1]["created_at"],
                 ),
             )
-            # 윈도우가 저장될 때 해당 윈도우에 대한 임베딩도 생성 (비동기 처리)
-            task = asyncio.create_task(
-                self._create_window_embedding(guild_id, message.channel.id, payload)
-            )
-            self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
+            # 윈도우가 저장될 때 해당 윈도우에 대한 임베딩도 생성한다. 저사양 서버에서
+            # executor 대기열이 무한히 커지지 않도록 미완료 태스크 수를 제한한다.
+            if self._closing:
+                logger.debug(
+                    "RAGManager 종료 중이어서 새 임베딩 태스크를 생성하지 않습니다.",
+                    extra={"guild_id": guild_id, "channel_id": message.channel.id},
+                )
+            elif len(self._background_tasks) >= self._max_background_tasks:
+                self._dropped_background_tasks += 1
+                if self._dropped_background_tasks == 1 or self._dropped_background_tasks % 100 == 0:
+                    logger.warning(
+                        "RAG 임베딩 태스크 상한(%d)에 도달해 새 작업을 건너뜁니다. skipped=%d",
+                        self._max_background_tasks,
+                        self._dropped_background_tasks,
+                        extra={"guild_id": guild_id, "channel_id": message.channel.id},
+                    )
+            else:
+                task = asyncio.create_task(
+                    self._create_window_embedding(guild_id, message.channel.id, payload)
+                )
+                self._background_tasks.add(task)
+                task.add_done_callback(self._finalize_background_task)
         except Exception as exc:  # pragma: no cover - 방어적 로깅
             logger.error(
                 "대화 윈도우 저장 중 DB 오류: %s",

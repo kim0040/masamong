@@ -8,10 +8,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List
 
-try:  # pragma: no cover - 선택적 의존성
-    import numpy as np  # type: ignore
-except ModuleNotFoundError:  # pragma: no cover
-    np = None  # type: ignore
+np: Any | None = None
+_NUMPY_IMPORT_ATTEMPTED = False
 
 from utils.text_cleaner import clean_profanity
 import config
@@ -24,6 +22,25 @@ from utils.reranker import Reranker
 # 성능 최적화: 정규식 패턴 컴파일 (모듈 레벨에서 한 번만)
 _URL_PATTERN = re.compile(r"https?://\S+")
 _WHITESPACE_PATTERN = re.compile(r"\s+")
+
+
+def _get_numpy() -> Any | None:
+    """임베딩 검색이 실제 실행될 때만 NumPy를 import합니다."""
+    global np, _NUMPY_IMPORT_ATTEMPTED
+
+    if np is not None:
+        return np
+    if _NUMPY_IMPORT_ATTEMPTED:
+        return None
+
+    _NUMPY_IMPORT_ATTEMPTED = True
+    try:
+        import numpy as numpy_module
+    except ImportError:  # pragma: no cover - 선택적 의존성이 없는 경량 환경
+        return None
+
+    np = numpy_module
+    return np
 
 
 @dataclass
@@ -213,7 +230,7 @@ class HybridSearchEngine:
         user_id: int | None,
         dialogue_cache: Dict[tuple[str, int, int], List[dict[str, Any]]] | None = None,
     ) -> List[dict[str, Any]]:
-        if np is None:
+        if _get_numpy() is None:
             if not self._warned_numpy:
                 logger.warning("numpy가 없어 임베딩 기반 검색을 사용할 수 없습니다.")
                 self._warned_numpy = True
@@ -794,6 +811,8 @@ class HybridSearchEngine:
         return merged[: len(entries)]
 
     def _to_vector(self, blob: Any) -> np.ndarray | None:
+        if _get_numpy() is None:
+            return None
         if blob is None:
             return None
         if isinstance(blob, np.ndarray):
@@ -815,6 +834,8 @@ class HybridSearchEngine:
 
     @staticmethod
     def _cosine_similarity(v1: np.ndarray, v2: np.ndarray) -> float:
+        if _get_numpy() is None:
+            return 0.0
         norm_v1 = np.linalg.norm(v1)
         norm_v2 = np.linalg.norm(v2)
         if norm_v1 == 0 or norm_v2 == 0:

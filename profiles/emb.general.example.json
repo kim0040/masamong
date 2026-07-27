@@ -1,0 +1,12 @@
+{
+  "_comment": "General profile starts without local embeddings on the low-spec server.",
+  "embedding_enabled": false,
+  "enable_local_embeddings": false,
+  "reranker_enabled": false,
+  "embedding_model_name": "dragonkue/multilingual-e5-small-ko-v2",
+  "embedding_device": "cpu",
+  "local_files_only": true,
+  "discord_db_path": "/var/lib/masamong/general/discord_embeddings.db",
+  "kakao_db_path": "/var/lib/masamong/general/kakao_embeddings.db",
+  "kakao_servers": []
+}

@@ -74,7 +74,11 @@ async def get_krx_stock_info(stock_name: str) -> Dict[str, Any]:
             async with session.get(full_url, timeout=10) as response:
                 if response.status != 200:
                     text = await response.text()
-                    logger.error(f"KRX API Error {response.status}: {text}")
+                    logger.error(
+                        "KRX API Error %s. response_chars=%d",
+                        response.status,
+                        len(text),
+                    )
                     return {"error": f"HTTP {response.status}"}
                 
                 try:
@@ -82,7 +86,10 @@ async def get_krx_stock_info(stock_name: str) -> Dict[str, Any]:
                 except:
                     # JSON 실패 시 XML일 수 있음 (ServiceKey 에러 시 XML 리턴됨)
                     text = await response.text()
-                    logger.error(f"KRX API JSON Parsing Error. Response: {text[:200]}")
+                    logger.error(
+                        "KRX API JSON Parsing Error. response_chars=%d",
+                        len(text),
+                    )
                     return {"error": "Invalid Response Format"}
 
                 items = data.get("response", {}).get("body", {}).get("items", {}).get("item", [])

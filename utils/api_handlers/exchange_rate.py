@@ -37,7 +37,12 @@ async def _fetch_exchange_rates_for_date(session: aiohttp.ClientSession, date_st
     try:
         async with session.get(base_url, params=params, timeout=_REQ_TIMEOUT) as resp:
             if resp.status != 200:
-                logger.warning("환율 API 호출 실패(HTTP %s): %s", resp.status, await resp.text())
+                error_text = await resp.text()
+                logger.warning(
+                    "환율 API 호출 실패. status=%s response_chars=%d",
+                    resp.status,
+                    len(error_text),
+                )
                 return None
 
             try:
@@ -47,13 +52,19 @@ async def _fetch_exchange_rates_for_date(session: aiohttp.ClientSession, date_st
                 return None
 
             if isinstance(payload, dict) and payload.get("result") != 1:
-                logger.warning("환율 API가 오류를 반환했습니다: %s", payload)
+                logger.warning(
+                    "환율 API가 오류를 반환했습니다. response_type=%s",
+                    type(payload).__name__,
+                )
                 return None
 
             if isinstance(payload, list):
                 return payload
 
-            logger.warning("환율 API 응답 형식을 인식할 수 없습니다: %s", payload)
+            logger.warning(
+                "환율 API 응답 형식을 인식할 수 없습니다. response_type=%s",
+                type(payload).__name__,
+            )
             return None
     except asyncio.TimeoutError:
         logger.warning("환율 API 호출이 시간 초과되었습니다 (%s).", date_str)

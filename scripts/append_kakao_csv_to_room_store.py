@@ -15,6 +15,7 @@ import numpy as np
 import pymysql
 
 import config
+from database.compat_db import TiDBSettings
 from scripts.generate_kakao_embeddings_v2 import (
     DEFAULT_MODEL_NAME,
     SUMMARIZATION_MODELS,
@@ -29,16 +30,16 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Append Kakao CSV data into an existing room store and TiDB.")
     parser.add_argument(
         "--csv",
-        default="/Users/gimhyeonmin/PycharmProjects/masamong/임시/KakaoTalk_Chat_노답형제들_2026-04-02-17-20-44.csv",
+        required=True,
         help="Path to the KakaoTalk CSV export.",
     )
     parser.add_argument(
         "--room-dir",
-        default="/Users/gimhyeonmin/PycharmProjects/masamong/임시/kakao_store/room1",
+        required=True,
         help="Existing local room store directory containing metadata.json and vectors.npy.",
     )
-    parser.add_argument("--room-key", default="room1", help="TiDB room key to append into.")
-    parser.add_argument("--room-label", default="room1", help="Human-friendly source room label stored in TiDB.")
+    parser.add_argument("--room-key", required=True, help="TiDB room key to append into.")
+    parser.add_argument("--room-label", required=True, help="Human-friendly source room label stored in TiDB.")
     parser.add_argument(
         "--model",
         default=getattr(config, "LOCAL_EMBEDDING_MODEL_NAME", DEFAULT_MODEL_NAME),
@@ -65,7 +66,67 @@ def parse_args() -> argparse.Namespace:
         default=getattr(config, "KAKAO_TIDB_TABLE", "kakao_chunks"),
         help="TiDB table name for Kakao chunks.",
     )
+    parser.add_argument(
+        "--confirm-database",
+        help="쓰기 대상 DB 이름을 정확히 다시 입력",
+    )
+    parser.add_argument(
+        "--confirm-profile",
+        help="현재 MASAMONG_PROFILE을 정확히 다시 입력",
+    )
+    parser.add_argument(
+        "--confirm-room-key",
+        help="쓰기 대상 room key를 정확히 다시 입력",
+    )
     return parser.parse_args()
+
+
+def validate_write_target(args: argparse.Namespace) -> None:
+    """Kakao 데이터가 Masamo의 등록된 room 이외로 쓰이지 않게 한다."""
+    if (
+        config.ENV_FILE_PATH is None
+        or not config.REQUIRE_EXPLICIT_PROFILE
+        or config.PROFILE != "masamo"
+    ):
+        raise SystemExit(
+            "Kakao 적재는 MASAMONG_ENV_FILE로 선택한 명시적 masamo 프로필에서만 가능합니다."
+        )
+    if (
+        config.DB_BACKEND != "tidb"
+        or not config.REMOTE_DB_STRICT_MODE
+        or not config.REQUIRE_DB_TLS
+        or not config.TIDB_SSL_VERIFY_IDENTITY
+    ):
+        raise SystemExit("Kakao 적재는 strict TLS TiDB 설정이 필요합니다.")
+    if (
+        not config.EXPECTED_DB_NAME
+        or config.EXPECTED_DB_NAME != config.TIDB_NAME
+        or args.confirm_database != config.TIDB_NAME
+    ):
+        raise SystemExit(
+            "--confirm-database에 현재 masamo 대상 DB 이름을 정확히 입력해야 합니다."
+        )
+    if args.confirm_profile != config.PROFILE:
+        raise SystemExit(
+            "--confirm-profile에 masamo를 정확히 입력해야 합니다."
+        )
+    if args.confirm_room_key != args.room_key:
+        raise SystemExit(
+            "--confirm-room-key에 대상 room key를 정확히 입력해야 합니다."
+        )
+    configured_room_keys = {
+        str(metadata.get("room_key") or "").strip()
+        for metadata in config.KAKAO_EMBEDDING_SERVER_MAP.values()
+        if str(metadata.get("room_key") or "").strip()
+    }
+    if args.room_key not in configured_room_keys:
+        raise SystemExit(
+            "대상 room key가 masamo embedding 설정에 등록되어 있지 않습니다."
+        )
+    if args.tidb_table != config.KAKAO_TIDB_TABLE:
+        raise SystemExit(
+            "--tidb-table은 현재 프로필의 검증된 KAKAO_TIDB_TABLE과 같아야 합니다."
+        )
 
 
 async def build_chunks_with_v2(args: argparse.Namespace) -> list[dict[str, Any]]:
@@ -195,22 +256,21 @@ def build_tidb_connection() -> pymysql.connections.Connection:
     """환경 설정에 따라 PyMySQL TiDB 연결을 생성합니다."""
     if not (config.TIDB_HOST and config.TIDB_USER):
         raise RuntimeError("TiDB connection settings are not configured.")
-    ssl_value: dict[str, Any] | None = None
-    if config.TIDB_SSL_CA:
-        ssl_value = {"ca": config.TIDB_SSL_CA}
-        if config.TIDB_SSL_VERIFY_IDENTITY:
-            ssl_value["check_hostname"] = True
-    return pymysql.connect(
+    settings = TiDBSettings(
         host=config.TIDB_HOST,
         port=config.TIDB_PORT,
         user=config.TIDB_USER,
         password=config.TIDB_PASSWORD or "",
         database=config.TIDB_NAME,
-        charset="utf8mb4",
-        autocommit=False,
-        cursorclass=pymysql.cursors.DictCursor,
-        ssl=ssl_value,
+        ssl_ca=config.TIDB_SSL_CA,
+        ssl_verify_identity=config.TIDB_SSL_VERIFY_IDENTITY,
+        require_tls=config.REQUIRE_DB_TLS,
+        connect_timeout=config.TIDB_CONNECT_TIMEOUT,
+        read_timeout=config.TIDB_READ_TIMEOUT,
+        write_timeout=config.TIDB_WRITE_TIMEOUT,
+        conn_max_lifetime_seconds=config.TIDB_CONN_MAX_LIFETIME_SECONDS,
     )
+    return pymysql.connect(**settings.to_connect_kwargs())
 
 
 def insert_into_tidb(
@@ -266,6 +326,7 @@ def insert_into_tidb(
 def main() -> None:
     """전체 append 워크플로우를 실행합니다."""
     args = parse_args()
+    validate_write_target(args)
     room_dir = Path(args.room_dir).resolve()
 
     existing_metadata, existing_vectors = load_existing_store(room_dir)

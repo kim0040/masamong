@@ -109,17 +109,33 @@ async def _search_symbol(query: str) -> str | None:
         if data.get('result') and len(data['result']) > 0:
             for item in data['result']:
                 if '.' not in item.get('symbol', '') and item.get('type') == 'Common Stock':
-                    logger.info(f"Finnhub search: Found symbol '{item['symbol']}' for query '{query}'")
+                    logger.info(
+                        "Finnhub search: symbol found. symbol=%s query_chars=%d",
+                        item['symbol'],
+                        len(query),
+                    )
                     return item['symbol']
             first_result = data['result'][0]
-            logger.info(f"Finnhub search: Falling back to first result '{first_result['symbol']}' for query '{query}'")
+            logger.info(
+                "Finnhub search: falling back to first result. symbol=%s query_chars=%d",
+                first_result['symbol'],
+                len(query),
+            )
             return first_result['symbol']
 
-        logger.warning(f"Finnhub search: No results found for query '{query}'")
+        logger.warning(
+            "Finnhub search: no results. query_chars=%d",
+            len(query),
+        )
         return None
 
     except requests.exceptions.RequestException as e:
-        logger.error(f"Finnhub search API ('{query}') 요청 중 오류: {e}", exc_info=True)
+        logger.error(
+            "Finnhub search API 요청 중 오류. query_chars=%d error=%s",
+            len(query),
+            e,
+            exc_info=True,
+        )
         return None
 
 async def get_raw_stock_quote(symbol: str) -> dict | None:
@@ -158,7 +174,10 @@ async def get_raw_stock_quote(symbol: str) -> dict | None:
         예: '스타벅스 주식' -> 검색 결과 '...스타벅스(SBUX)...' -> 'SBUX' 추출
         """
         search_query = f"{query} 주식 티커"
-        logger.info(f"Finnhub: '{query}'에 대한 티커를 웹 검색으로 찾습니다... ({search_query})")
+        logger.info(
+            "Finnhub: 티커 웹 검색을 실행합니다. query_chars=%d",
+            len(search_query),
+        )
         
         results = await kakao.search_web(search_query, page_size=3)
         if not results:
@@ -304,7 +323,11 @@ async def get_company_news(symbol: str, count: int = 3) -> str:
         news_items = response.json()
 
         if not isinstance(news_items, list):
-            logger.warning(f"Finnhub 뉴스 API('{normalized_symbol}')에서 예상치 못한 형식의 응답을 받았습니다: {news_items}")
+            logger.warning(
+                "Finnhub 뉴스 API('%s')에서 예상치 못한 형식의 응답을 받았습니다. response_type=%s",
+                normalized_symbol,
+                type(news_items).__name__,
+            )
             return f"'{normalized_symbol}' 관련 뉴스를 가져왔지만, 형식이 올바르지 않습니다."
 
         formatted_news = [

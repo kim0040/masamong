@@ -139,6 +139,7 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     pending_payload TEXT, -- [NEW] 미리 생성된 브리핑 내용
     last_fortune_sent TEXT, -- YYYY-MM-DD (중복 발송 방지)
     last_fortune_content TEXT, -- [NEW] 마지막으로 조회한 운세 내용 (컨텍스트용)
+    birth_place TEXT, -- 출생지
     created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc'))
 );
 

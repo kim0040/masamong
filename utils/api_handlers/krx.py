@@ -81,7 +81,10 @@ async def _search_for_full_name(alias: str) -> str | None:
         return None
     
     query = f'"{alias}" 주식 종목명'
-    logger.info(f"KRX: Kakao 웹 검색으로 종목명 검색: {query}")
+    logger.info(
+        "KRX: Kakao 웹 검색으로 종목명 검색. query_chars=%d",
+        len(query),
+    )
     search_results = await kakao.search_web(query, page_size=1)
 
     if search_results and search_results[0]:
@@ -141,7 +144,11 @@ async def get_stock_price(stock_name: str) -> str | None:
         try:
             data = response.json()
         except requests.exceptions.JSONDecodeError:
-            logger.error(f"KRX API가 유효한 JSON을 반환하지 않았습니다. 응답 내용: {response.text}")
+            logger.error(
+                "KRX API가 유효한 JSON을 반환하지 않았습니다. status=%s response_chars=%d",
+                response.status_code,
+                len(response.text or ""),
+            )
             return None
         
         items = data.get('response', {}).get('body', {}).get('items', {}).get('item', [])
@@ -155,16 +162,25 @@ async def get_stock_price(stock_name: str) -> str | None:
 
         # 3. If first attempt fails, search via web and retry
         if not stock_info_raw:
-            logger.warning(f"KRX API에서 '{normalized_name}' 정보를 찾지 못했습니다. 웹 검색을 시도합니다.")
+            logger.warning(
+                "KRX API에서 종목 정보를 찾지 못해 웹 검색을 시도합니다. name_chars=%d",
+                len(normalized_name),
+            )
             searched_name = await _search_for_full_name(stock_name)
             if searched_name and searched_name.lower() != normalized_name.lower():
-                logger.info(f"KRX: 검색된 종목명 '{searched_name}'(으)로 재시도합니다.")
+                logger.info(
+                    "KRX: 검색된 종목명으로 재시도합니다. name_chars=%d",
+                    len(searched_name),
+                )
                 stock_info_raw = await _get_price_from_krx(searched_name)
                 normalized_name = searched_name # Update name for final output
 
         # 4. Process the final result
         if not stock_info_raw:
-            logger.warning(f"KRX: 최종적으로 '{stock_name}'에 대한 정보를 찾지 못했습니다.")
+            logger.warning(
+                "KRX: 최종적으로 종목 정보를 찾지 못했습니다. name_chars=%d",
+                len(stock_name or ""),
+            )
             return f"'{stock_name}'에 대한 주식 정보를 찾을 수 없습니다. 이름이 정확한지 확인해주세요."
 
         stock_info = {
@@ -175,11 +191,23 @@ async def get_stock_price(stock_name: str) -> str | None:
         return _format_krx_price_data(stock_info)
 
     except requests.exceptions.RequestException as e:
-        logger.error(f"KRX API('{stock_name}') 요청 중 오류: {e}", exc_info=True)
+        logger.error(
+            "KRX API 요청 중 오류. error_type=%s",
+            type(e).__name__,
+            exc_info=True,
+        )
         return "주식 정보 조회 중 네트워크 오류가 발생했습니다."
     except (KeyError, TypeError, ValueError) as e:
-        logger.error(f"KRX API('{stock_name}') 응답 파싱 중 오류: {e}", exc_info=True)
+        logger.error(
+            "KRX API 응답 파싱 중 오류. error_type=%s",
+            type(e).__name__,
+            exc_info=True,
+        )
         return "주식 정보 조회 중 데이터 처리 오류가 발생했습니다."
     except Exception as e:
-        logger.error(f"KRX API('{stock_name}') 처리 중 예기치 않은 오류: {e}", exc_info=True)
+        logger.error(
+            "KRX API 처리 중 예기치 않은 오류. error_type=%s",
+            type(e).__name__,
+            exc_info=True,
+        )
         return "주식 정보 조회 중 알 수 없는 오류가 발생했습니다."

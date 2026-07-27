@@ -14,16 +14,16 @@ import json
 import aiosqlite
 from database.compat_db import TiDBSettings
 
-# numpy/torch 기반 의존성은 저사양 서버에서는 설치하지 않을 수 있으므로, ImportError를 허용한다.
-try:
-    import numpy as np  # type: ignore
-except ModuleNotFoundError:  # pragma: no cover
-    np = None  # type: ignore
+# 저장소 타입은 RAG 비활성 인스턴스에서도 import된다. NumPy도 실제 벡터 연산
+# 시점까지 미뤄 general 저사양 프로필의 기본 RSS를 줄인다.
+np: Any | None = None
+_NUMPY_IMPORT_ATTEMPTED = False
 
-try:  # pragma: no cover - optional dependency guard
-    from sentence_transformers import SentenceTransformer
-except ModuleNotFoundError:  # pragma: no cover
-    SentenceTransformer = None  # type: ignore
+# sentence-transformers는 import 자체가 torch/transformers를 함께 올려 RSS를 크게
+# 늘린다. 일반 프로필처럼 임베딩을 끈 인스턴스도 이 모듈의 저장소 클래스는
+# 사용하므로, 실제 모델이 필요한 순간까지 선택적 ML 의존성을 import하지 않는다.
+SentenceTransformer: Any | None = None
+_SENTENCE_TRANSFORMER_IMPORT_ATTEMPTED = False
 
 try:
     import pymysql
@@ -33,26 +33,56 @@ except ModuleNotFoundError:  # pragma: no cover
 import config
 from logger_config import logger
 
-_MODEL: SentenceTransformer | None = None
+_MODEL: Any | None = None
 _MODEL_LOCK = asyncio.Lock()
+_ENCODE_SEMAPHORE = asyncio.Semaphore(
+    max(1, int(getattr(config, "EMBEDDING_MAX_CONCURRENCY", 1)))
+)
 _WHITESPACE_TOKEN_RE = re.compile(r"\S+")
 
 
-def _build_tidb_settings() -> TiDBSettings | None:
-    """config 값을 바탕으로 TiDB 연결 설정 객체를 생성합니다.
+def _get_numpy() -> Any | None:
+    """NumPy를 최초 벡터 연산 시 한 번만 import합니다."""
+    global np, _NUMPY_IMPORT_ATTEMPTED
 
-    SSL CA 경로가 존재하지 않으면 시스템 CA 번들(certifi)로 폴백합니다.
-    """
-    if not (config.TIDB_HOST and config.TIDB_USER):
+    if np is not None:
+        return np
+    if _NUMPY_IMPORT_ATTEMPTED:
         return None
 
-    ssl_ca = config.TIDB_SSL_CA
-    if ssl_ca and not Path(ssl_ca).exists():
-        try:
-            import certifi
-            ssl_ca = certifi.where()
-        except ImportError:
-            ssl_ca = None
+    _NUMPY_IMPORT_ATTEMPTED = True
+    try:
+        import numpy as numpy_module
+    except ImportError:  # pragma: no cover - 선택적 의존성이 없는 경량 환경
+        return None
+
+    np = numpy_module
+    return np
+
+
+def _get_sentence_transformer_class() -> Any | None:
+    """SentenceTransformer를 최초 모델 로드 시 한 번만 import합니다."""
+    global SentenceTransformer, _SENTENCE_TRANSFORMER_IMPORT_ATTEMPTED
+
+    if SentenceTransformer is not None:
+        return SentenceTransformer
+    if _SENTENCE_TRANSFORMER_IMPORT_ATTEMPTED:
+        return None
+
+    _SENTENCE_TRANSFORMER_IMPORT_ATTEMPTED = True
+    try:
+        from sentence_transformers import SentenceTransformer as transformer_class
+    except ImportError:  # pragma: no cover - 선택적 의존성이 없는 경량 환경
+        return None
+
+    SentenceTransformer = transformer_class
+    return SentenceTransformer
+
+
+def _build_tidb_settings() -> TiDBSettings | None:
+    """config 값을 바탕으로 TiDB 연결 설정 객체를 생성합니다."""
+    if not (config.TIDB_HOST and config.TIDB_USER):
+        return None
 
     return TiDBSettings(
         host=config.TIDB_HOST,
@@ -60,8 +90,13 @@ def _build_tidb_settings() -> TiDBSettings | None:
         user=config.TIDB_USER,
         password=config.TIDB_PASSWORD or "",
         database=config.TIDB_NAME,
-        ssl_ca=ssl_ca,
+        ssl_ca=config.TIDB_SSL_CA,
         ssl_verify_identity=config.TIDB_SSL_VERIFY_IDENTITY,
+        require_tls=config.REQUIRE_DB_TLS,
+        connect_timeout=config.TIDB_CONNECT_TIMEOUT,
+        read_timeout=config.TIDB_READ_TIMEOUT,
+        write_timeout=config.TIDB_WRITE_TIMEOUT,
+        conn_max_lifetime_seconds=config.TIDB_CONN_MAX_LIFETIME_SECONDS,
     )
 
 
@@ -97,7 +132,10 @@ def _resolve_local_model_path(model_name: str) -> Path | None:
 
 def _vector_literal(vector: "np.ndarray") -> str:
     """numpy 배열을 SQL 벡터 리터럴 문자열로 직렬화합니다."""
-    values = np.asarray(vector, dtype=np.float32).tolist()
+    numpy_module = _get_numpy()
+    if numpy_module is None:
+        raise RuntimeError("numpy가 설치되어 있지 않아 벡터를 직렬화할 수 없습니다.")
+    values = numpy_module.asarray(vector, dtype=numpy_module.float32).tolist()
     return "[" + ",".join(f"{float(item):.8f}" for item in values) + "]"
 
 
@@ -110,13 +148,9 @@ class _KakaoTableMeta:
     speaker_column: Optional[str] = None
 
 
-async def _load_model() -> SentenceTransformer:
+async def _load_model() -> Any:
     """SentenceTransformer 모델을 비동기적으로 로드합니다."""
-    if SentenceTransformer is None:
-        raise RuntimeError(
-            "sentence-transformers 패키지가 설치되어 있지 않습니다. `pip install sentence-transformers`로 설치 후 다시 시도하세요."
-        )
-    if np is None:
+    if _get_numpy() is None:
         raise RuntimeError(
             "numpy 패키지가 설치되어 있지 않습니다. AI 메모리 기능을 사용하려면 `pip install numpy`로 설치하세요."
         )
@@ -129,12 +163,33 @@ async def _load_model() -> SentenceTransformer:
         if _MODEL is not None:
             return _MODEL
 
+        transformer_class = _get_sentence_transformer_class()
+        if transformer_class is None:
+            raise RuntimeError(
+                "sentence-transformers 패키지가 설치되어 있지 않습니다. "
+                "`pip install sentence-transformers`로 설치 후 다시 시도하세요."
+            )
+
         loop = asyncio.get_running_loop()
         model_name = getattr(config, "LOCAL_EMBEDDING_MODEL_NAME", "BM-K/KoSimCSE-roberta")
         device = getattr(config, "LOCAL_EMBEDDING_DEVICE", None)
         local_files_only = bool(getattr(config, "LOCAL_EMBEDDING_LOCAL_FILES_ONLY", False))
 
         def _sync_load():
+            thread_limit = int(getattr(config, "CPU_THREAD_LIMIT", 0) or 0)
+            if thread_limit > 0:
+                try:
+                    import torch
+
+                    torch.set_num_threads(thread_limit)
+                    try:
+                        torch.set_num_interop_threads(thread_limit)
+                    except RuntimeError:
+                        # 다른 torch 작업이 먼저 시작된 경우 interop 수는 변경할 수 없다.
+                        pass
+                except (ImportError, RuntimeError, ValueError) as exc:
+                    logger.warning("PyTorch CPU 스레드 제한 적용 실패: %s", exc)
+
             load_kwargs = {"device": device} if device else {}
             target_model = model_name
             if local_files_only:
@@ -146,7 +201,7 @@ async def _load_model() -> SentenceTransformer:
                     target_model = str(resolved_path)
                     logger.info("로컬 임베딩 캐시 snapshot 경로 사용: %s", target_model)
             try:
-                return SentenceTransformer(target_model, **load_kwargs)
+                return transformer_class(target_model, **load_kwargs)
             except TypeError:
                 # 구버전 sentence-transformers는 local_files_only 인자를 지원하지 않을 수 있음
                 if local_files_only:
@@ -155,7 +210,7 @@ async def _load_model() -> SentenceTransformer:
                         "패키지를 업데이트하거나 모델을 사전 캐시한 뒤 옵션을 끄세요."
                     )
                 load_kwargs.pop("local_files_only", None)
-                return SentenceTransformer(target_model, **load_kwargs)
+                return transformer_class(target_model, **load_kwargs)
 
         logger.info("로컬 임베딩 모델 로드 시작: %s", model_name)
         _MODEL = await loop.run_in_executor(None, _sync_load)
@@ -284,13 +339,12 @@ async def get_embedding(text: str, prefix: str = "") -> np.ndarray | None:
     """
     if not text:
         return None
-    if np is None:
+    if _get_numpy() is None:
         logger.warning("numpy가 설치되지 않아 임베딩을 생성할 수 없습니다. `AI_MEMORY_ENABLED` 값을 확인하세요.")
         return None
-    if SentenceTransformer is None:
+    if _get_sentence_transformer_class() is None:
         logger.warning("sentence-transformers가 설치되지 않아 임베딩 생성을 건너뜁니다.")
         return None
-
     model = await _load_model()
     normalize = getattr(config, "LOCAL_EMBEDDING_NORMALIZE", True)
     loop = asyncio.get_running_loop()
@@ -306,7 +360,8 @@ async def get_embedding(text: str, prefix: str = "") -> np.ndarray | None:
         return vector.astype(np.float32)
 
     try:
-        return await loop.run_in_executor(None, _sync_encode)
+        async with _ENCODE_SEMAPHORE:
+            return await loop.run_in_executor(None, _sync_encode)
     except Exception as exc:  # pragma: no cover - encode() 내부 오류 방지용
         logger.error("임베딩 생성 중 오류 발생: %s", exc, exc_info=True)
         return None
@@ -357,8 +412,46 @@ class DiscordEmbeddingStore:
         "CREATE INDEX IF NOT EXISTS idx_discord_memory_scope ON discord_memory_entries (server_id, channel_id, memory_scope, owner_user_id)",
         "CREATE INDEX IF NOT EXISTS idx_discord_memory_timestamp ON discord_memory_entries (timestamp DESC)",
     )
+    _REQUIRED_MESSAGE_COLUMNS = frozenset(
+        {
+            "message_id",
+            "server_id",
+            "channel_id",
+            "user_id",
+            "user_name",
+            "message",
+            "timestamp",
+            "embedding",
+        }
+    )
+    _REQUIRED_MEMORY_COLUMNS = frozenset(
+        {
+            "memory_id",
+            "anchor_message_id",
+            "server_id",
+            "channel_id",
+            "owner_user_id",
+            "owner_user_name",
+            "memory_scope",
+            "memory_type",
+            "summary_text",
+            "memory_text",
+            "raw_context",
+            "source_message_ids",
+            "speaker_names",
+            "keyword_json",
+            "timestamp",
+            "embedding",
+        }
+    )
 
-    def __init__(self, db_path: str, db_connection: Any = None):
+    def __init__(
+        self,
+        db_path: str,
+        db_connection: Any = None,
+        *,
+        read_only: bool = False,
+    ):
         """Discord 임베딩 저장소를 초기화합니다.
 
         Args:
@@ -369,6 +462,7 @@ class DiscordEmbeddingStore:
         self.backend = getattr(config, "DISCORD_EMBEDDING_BACKEND", "sqlite")
         self.tidb_table = getattr(config, "DISCORD_EMBEDDING_TIDB_TABLE", "discord_chat_embeddings")
         self._tidb_settings = _build_tidb_settings()
+        self.read_only = bool(read_only)
         self._init_lock = asyncio.Lock()
         self._initialized = False
         # 스레드 로컬 연결 캐시 (연결 풀 역할)
@@ -383,8 +477,19 @@ class DiscordEmbeddingStore:
             if self._initialized:
                 return
 
+            if self.read_only or not bool(getattr(config, "AUTO_MIGRATE", True)):
+                await self._initialize_existing_only()
+                self._initialized = True
+                logger.info(
+                    "Discord 임베딩 저장소 비변경 schema 확인 완료: backend=%s read_only=%s",
+                    self.backend,
+                    self.read_only,
+                )
+                return
+
             if self.backend == "tidb":
                 await self._initialize_tidb()
+                await self._initialize_existing_only()
                 self._initialized = True
                 logger.info("Discord 임베딩 TiDB 초기화 완료: %s", self.tidb_table)
                 return
@@ -399,8 +504,200 @@ class DiscordEmbeddingStore:
                 for sql in self._CREATE_MEMORY_INDEX_SQL:
                     await db.execute(sql)
                 await db.commit()
+            await self._initialize_existing_only()
             self._initialized = True
             logger.info("Discord 임베딩 DB 초기화 완료: %s", self.db_path)
+
+    def _ensure_writable(self) -> None:
+        """명시적 read-only 저장소에서 모든 mutation을 fail-closed로 거부합니다."""
+        if self.read_only:
+            raise RuntimeError("read-only Discord 임베딩 저장소에는 쓸 수 없습니다.")
+
+    def _sqlite_connect(self):
+        """read-only 모드에서는 SQLite 파일도 mode=ro URI로 엽니다."""
+        if self.read_only:
+            uri = self.db_path.resolve().as_uri() + "?mode=ro"
+            return aiosqlite.connect(uri, uri=True)
+        return aiosqlite.connect(self.db_path)
+
+    async def _initialize_existing_only(self) -> None:
+        """CREATE 없이 기존 임베딩 테이블과 필수 컬럼을 확인합니다."""
+        message_table = (
+            self.tidb_table
+            if self.backend == "tidb"
+            else "discord_chat_embeddings"
+        )
+        required_columns = {
+            message_table: self._REQUIRED_MESSAGE_COLUMNS,
+            "discord_memory_entries": self._REQUIRED_MEMORY_COLUMNS,
+        }
+        required_tables = set(required_columns)
+        columns_by_table: dict[str, set[str]] = {
+            table_name: set()
+            for table_name in required_tables
+        }
+        unique_indexes_by_table: dict[str, set[tuple[str, ...]]] = {
+            table_name: set()
+            for table_name in required_tables
+        }
+        if self.backend == "tidb":
+            rows = await asyncio.to_thread(
+                self._tidb_exec,
+                """
+                SELECT TABLE_NAME
+                FROM information_schema.TABLES
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME IN (%s, %s)
+                """,
+                tuple(required_tables),
+                fetch=True,
+            )
+            existing = {
+                str(row.get("TABLE_NAME") or row.get("table_name") or "")
+                for row in (rows or [])
+            }
+            column_rows = await asyncio.to_thread(
+                self._tidb_exec,
+                """
+                SELECT TABLE_NAME, COLUMN_NAME
+                FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME IN (%s, %s)
+                """,
+                tuple(required_tables),
+                fetch=True,
+            )
+            for row in column_rows or []:
+                table_name = str(
+                    row.get("TABLE_NAME") or row.get("table_name") or ""
+                )
+                column_name = str(
+                    row.get("COLUMN_NAME") or row.get("column_name") or ""
+                )
+                if table_name in columns_by_table and column_name:
+                    columns_by_table[table_name].add(column_name)
+            index_rows = await asyncio.to_thread(
+                self._tidb_exec,
+                """
+                SELECT TABLE_NAME, INDEX_NAME, COLUMN_NAME, SEQ_IN_INDEX
+                FROM information_schema.STATISTICS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME IN (%s, %s)
+                  AND NON_UNIQUE = 0
+                ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX
+                """,
+                tuple(required_tables),
+                fetch=True,
+            )
+            grouped_indexes: dict[tuple[str, str], list[tuple[int, str]]] = {}
+            for row in index_rows or []:
+                table_name = str(
+                    row.get("TABLE_NAME") or row.get("table_name") or ""
+                )
+                index_name = str(
+                    row.get("INDEX_NAME") or row.get("index_name") or ""
+                )
+                column_name = str(
+                    row.get("COLUMN_NAME") or row.get("column_name") or ""
+                )
+                sequence = int(
+                    row.get("SEQ_IN_INDEX") or row.get("seq_in_index") or 0
+                )
+                if table_name in unique_indexes_by_table and index_name and column_name:
+                    grouped_indexes.setdefault(
+                        (table_name, index_name),
+                        [],
+                    ).append((sequence, column_name))
+            for (table_name, _index_name), indexed_columns in grouped_indexes.items():
+                unique_indexes_by_table[table_name].add(
+                    tuple(
+                        column_name
+                        for _, column_name in sorted(indexed_columns)
+                    )
+                )
+        else:
+            if not self.db_path.is_file():
+                raise RuntimeError(
+                    f"read-only 임베딩 DB 파일이 없습니다: {self.db_path}"
+                )
+            uri = self.db_path.resolve().as_uri() + "?mode=ro"
+            async with aiosqlite.connect(uri, uri=True) as db:
+                placeholders = ",".join("?" for _ in required_tables)
+                async with db.execute(
+                    f"SELECT name FROM sqlite_master "
+                    f"WHERE type = 'table' AND name IN ({placeholders})",
+                    tuple(required_tables),
+                ) as cursor:
+                    rows = await cursor.fetchall()
+            existing = {str(row[0]) for row in rows}
+        missing = sorted(required_tables - existing)
+        if missing:
+            raise RuntimeError(
+                "read-only 임베딩 저장소에 필수 테이블이 없습니다: "
+                + ", ".join(missing)
+            )
+        if self.backend != "tidb":
+            uri = self.db_path.resolve().as_uri() + "?mode=ro"
+            async with aiosqlite.connect(uri, uri=True) as db:
+                for table_name in required_tables:
+                    async with db.execute(
+                        "SELECT name FROM pragma_table_info(?)",
+                        (table_name,),
+                    ) as cursor:
+                        columns_by_table[table_name] = {
+                            str(row[0])
+                            for row in await cursor.fetchall()
+                        }
+                    async with db.execute(
+                        'SELECT name FROM pragma_index_list(?) WHERE "unique" = 1',
+                        (table_name,),
+                    ) as cursor:
+                        unique_index_names = [
+                            str(row[0])
+                            for row in await cursor.fetchall()
+                        ]
+                    for index_name in unique_index_names:
+                        async with db.execute(
+                            """
+                            SELECT name
+                            FROM pragma_index_info(?)
+                            ORDER BY seqno
+                            """,
+                            (index_name,),
+                        ) as cursor:
+                            unique_indexes_by_table[table_name].add(
+                                tuple(
+                                    str(row[0])
+                                    for row in await cursor.fetchall()
+                                )
+                            )
+        missing_columns = {
+            table_name: sorted(expected - columns_by_table[table_name])
+            for table_name, expected in required_columns.items()
+            if expected - columns_by_table[table_name]
+        }
+        if missing_columns:
+            rendered = "; ".join(
+                f"{table_name}: {', '.join(columns)}"
+                for table_name, columns in sorted(missing_columns.items())
+            )
+            raise RuntimeError(
+                "read-only 임베딩 저장소에 필수 컬럼이 없습니다: " + rendered
+            )
+        required_unique_columns = {
+            message_table: ("message_id",),
+            "discord_memory_entries": ("memory_id",),
+        }
+        missing_unique = sorted(
+            f"{table_name}({', '.join(columns)})"
+            for table_name, columns in required_unique_columns.items()
+            if columns not in unique_indexes_by_table[table_name]
+        )
+        if missing_unique:
+            raise RuntimeError(
+                "임베딩 저장소에 필수 UNIQUE 제약이 없습니다: "
+                + ", ".join(missing_unique)
+            )
 
     async def _initialize_tidb(self) -> None:
         """TiDB에 Discord 임베딩 테이블과 메모리 엔트리 테이블을 생성합니다."""
@@ -526,8 +823,9 @@ class DiscordEmbeddingStore:
         embedding: np.ndarray,
     ) -> None:
         """메시지의 임베딩을 저장하거나 갱신합니다."""
+        self._ensure_writable()
         await self.initialize()
-        if np is None:
+        if _get_numpy() is None:
             raise RuntimeError("numpy가 설치되어 있지 않아 임베딩을 저장할 수 없습니다.")
         embedding_bytes = np.asarray(embedding, dtype=np.float32).tobytes()
         if self.backend == "tidb":
@@ -557,7 +855,7 @@ class DiscordEmbeddingStore:
             )
             return
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._sqlite_connect() as db:
             await db.execute(
                 """
                 INSERT INTO discord_chat_embeddings (
@@ -616,7 +914,7 @@ class DiscordEmbeddingStore:
         query += " ORDER BY timestamp DESC LIMIT ?"
         params.append(int(limit))
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._sqlite_connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(query, params) as cursor:
                 rows = await cursor.fetchall()
@@ -643,8 +941,9 @@ class DiscordEmbeddingStore:
         embedding: np.ndarray,
     ) -> None:
         """메모리 엔트리를 저장하거나 갱신합니다."""
+        self._ensure_writable()
         await self.initialize()
-        if np is None:
+        if _get_numpy() is None:
             raise RuntimeError("numpy가 설치되어 있지 않아 임베딩을 저장할 수 없습니다.")
         embedding_bytes = np.asarray(embedding, dtype=np.float32).tobytes()
         source_json = json.dumps([int(item) for item in source_message_ids], ensure_ascii=False)
@@ -697,7 +996,7 @@ class DiscordEmbeddingStore:
             )
             return
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._sqlite_connect() as db:
             await db.execute(
                 """
                 INSERT INTO discord_memory_entries (
@@ -851,7 +1150,7 @@ class DiscordEmbeddingStore:
                 LIMIT ?
             """
             params = [str(server_id), str(channel_id), int(limit)]
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._sqlite_connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(query, params) as cursor:
                 rows = await cursor.fetchall()
@@ -859,16 +1158,18 @@ class DiscordEmbeddingStore:
 
     async def clear_memory_entries(self) -> None:
         """모든 메모리 엔트리를 삭제합니다."""
+        self._ensure_writable()
         await self.initialize()
         if self.backend == "tidb":
             await asyncio.to_thread(self._tidb_exec, "DELETE FROM discord_memory_entries", ())
             return
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._sqlite_connect() as db:
             await db.execute("DELETE FROM discord_memory_entries")
             await db.commit()
 
     async def delete_memory_entries(self, memory_ids: Iterable[str]) -> None:
         """지정한 memory_id 목록에 해당하는 메모리 엔트리를 삭제합니다."""
+        self._ensure_writable()
         ids = [str(item) for item in memory_ids if str(item).strip()]
         if not ids:
             return
@@ -879,7 +1180,7 @@ class DiscordEmbeddingStore:
             await asyncio.to_thread(self._tidb_exec, query, tuple(ids))
             return
         placeholders = ",".join("?" for _ in ids)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._sqlite_connect() as db:
             await db.execute(
                 f"DELETE FROM discord_memory_entries WHERE memory_id IN ({placeholders})",
                 ids,
@@ -909,13 +1210,14 @@ class DiscordEmbeddingStore:
             row = await asyncio.to_thread(self._tidb_exec, sql, tuple(params), fetch=True)
             return int((row or [{}])[0].get("cnt", 0))
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._sqlite_connect() as db:
             async with db.execute(f"SELECT COUNT(*) FROM discord_memory_entries{where_sql}", params) as cursor:
                 row = await cursor.fetchone()
         return int(row[0] if row else 0)
 
     async def delete_embeddings(self, message_ids: Iterable[int]) -> None:
         """지정한 메시지 ID 목록의 임베딩을 삭제합니다."""
+        self._ensure_writable()
         ids = [str(mid) for mid in message_ids]
         if not ids:
             return
@@ -927,7 +1229,7 @@ class DiscordEmbeddingStore:
             return
 
         placeholders = ",".join("?" for _ in ids)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._sqlite_connect() as db:
             await db.execute(
                 f"DELETE FROM discord_chat_embeddings WHERE message_id IN ({placeholders})",
                 ids,
@@ -970,11 +1272,14 @@ class KakaoEmbeddingStore:
         self._table_meta_lock = asyncio.Lock()
         self._vector_extension_candidates = self._build_vector_extension_candidates()
         self._vector_extension_warning_logged = False
+        self._vector_extension_unavailable = False
         self._window_size = 3
 
         # Numpy Backend Cache: Path -> (vectors, metadata_list)
         self._numpy_cache: Dict[Path, Any] = {}
         self._numpy_lock = asyncio.Lock()
+        # 큰 memmap 전체 스캔을 직렬화해 저사양 서버의 CPU/메모리 스파이크를 막는다.
+        self._numpy_search_semaphore = asyncio.Semaphore(1)
         # 스레드 로컬 연결 캐시 (연결 풀 역할)
         self._thread_local = __import__('threading').local()
 
@@ -1032,7 +1337,7 @@ class KakaoEmbeddingStore:
                 return False
                 
             try:
-                if np is None:
+                if _get_numpy() is None:
                     logger.warning("Numpy required for offline embeddings at %s", path)
                     return False
                     
@@ -1049,10 +1354,22 @@ class KakaoEmbeddingStore:
 
     @staticmethod
     def _load_numpy_files(vec_path: Path, meta_path: Path):
-        """numpy 벡터 파일과 JSON 메타데이터 파일을 로드합니다."""
-        vectors = np.load(vec_path)
+        """벡터는 memmap으로 열어 대용량 파일 전체를 RAM에 올리지 않습니다."""
+        numpy_module = _get_numpy()
+        if numpy_module is None:
+            raise RuntimeError("numpy가 설치되어 있지 않아 벡터 파일을 읽을 수 없습니다.")
+        vectors = numpy_module.load(vec_path, mmap_mode="r", allow_pickle=False)
         with open(meta_path, 'r', encoding='utf-8') as f:
             metadata = json.load(f)
+        if vectors.ndim != 2:
+            raise ValueError(f"vectors.npy는 2차원 배열이어야 합니다: shape={vectors.shape}")
+        if not isinstance(metadata, list):
+            raise ValueError("metadata.json 최상위 값은 배열이어야 합니다.")
+        if len(vectors) != len(metadata):
+            raise ValueError(
+                "벡터와 메타데이터 개수가 다릅니다: "
+                f"vectors={len(vectors)}, metadata={len(metadata)}"
+            )
         return vectors, metadata
 
     async def fetch_recent_embeddings(
@@ -1250,7 +1567,7 @@ class KakaoEmbeddingStore:
 
     async def _load_vector_extension(self, db: aiosqlite.Connection) -> bool:
         """SQLite 벡터 확장을 로드합니다. 성공 시 True, 실패 시 False를 반환합니다."""
-        if not self._vector_extension_candidates:
+        if self._vector_extension_unavailable or not self._vector_extension_candidates:
             return False
 
         try:
@@ -1277,9 +1594,14 @@ class KakaoEmbeddingStore:
             else:
                 logger.warning("Kakao 임베딩 벡터 확장을 로드할 후보가 없습니다: %s", details)
             self._vector_extension_warning_logged = True
+        self._vector_extension_unavailable = True
         return False
 
-
+    @staticmethod
+    def _sqlite_readonly_connect(path: Path):
+        """누적 Kakao 원본 DB를 실수로 변경하지 않도록 mode=ro로 엽니다."""
+        uri = path.resolve().as_uri() + "?mode=ro"
+        return aiosqlite.connect(uri, uri=True)
 
     async def _fetch_from_path(self, path: Path, label: str, limit: int) -> list[Dict[str, Any]]:
         """SQLite 또는 numpy 백엔드에서 최신 임베딩 레코드를 읽어옵니다."""
@@ -1289,8 +1611,7 @@ class KakaoEmbeddingStore:
 
         # 2. SQLite Backend
         try:
-            async with aiosqlite.connect(path) as db:
-                await self._load_vector_extension(db)
+            async with self._sqlite_readonly_connect(path) as db:
                 db.row_factory = aiosqlite.Row
                 table_meta = await self._get_or_detect_table_meta(path, db)
                 if table_meta is None:
@@ -1325,7 +1646,7 @@ class KakaoEmbeddingStore:
         query_vector: "np.ndarray",
     ) -> list[Dict[str, Any]]:
         """로컬 DB에서 벡터 유사도 기반으로 레코드를 검색합니다."""
-        if np is None:
+        if _get_numpy() is None:
             logger.debug("numpy 미설치로 Kakao 벡터 검색을 건너뜁니다: %s", path)
             return []
 
@@ -1338,9 +1659,15 @@ class KakaoEmbeddingStore:
         try:
             # 1. Numpy Backend
             if await self._ensure_numpy_backend(path):
-                return self._vector_search_numpy(path, query_vector, limit)
+                async with self._numpy_search_semaphore:
+                    return await asyncio.to_thread(
+                        self._vector_search_numpy,
+                        path,
+                        query_vector,
+                        limit,
+                    )
 
-            async with aiosqlite.connect(path) as db:
+            async with self._sqlite_readonly_connect(path) as db:
                 await self._load_vector_extension(db)
                 db.row_factory = aiosqlite.Row
                 query = (
@@ -1369,7 +1696,22 @@ class KakaoEmbeddingStore:
             logger.error("Kakao 벡터 검색 중 오류: %s", exc, exc_info=True)
         return []
 
-        window_rows: list[dict[str, str]] = []
+    async def _fetch_message_window(
+        self,
+        db: aiosqlite.Connection,
+        message_id: int,
+    ) -> list[dict[str, Any]]:
+        """벡터 검색 적중 메시지 주변의 원문 대화를 반환합니다."""
+        window = self._window_size
+        start_id = max(1, message_id - window)
+        end_id = message_id + window
+        async with db.execute(
+            "SELECT id, user_name, message FROM kakao_messages "
+            "WHERE id BETWEEN ? AND ? ORDER BY id",
+            (start_id, end_id),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        window_rows: list[dict[str, Any]] = []
         for row in rows:
             window_rows.append(
                 {
@@ -1382,8 +1724,7 @@ class KakaoEmbeddingStore:
 
     def _fetch_from_numpy(self, path: Path, limit: int) -> list[Dict[str, Any]]:
         """numpy 백엔드에서 최근 N개 아이템을 반환합니다."""
-        """Fetch recent items from numpy store (just returns last N items)."""
-        vectors, metadata = self._numpy_cache[path]
+        _, metadata = self._numpy_cache[path]
         
         # Taking last N items
         slice_start = max(0, len(metadata) - limit)
@@ -1403,38 +1744,62 @@ class KakaoEmbeddingStore:
         return results
 
     def _vector_search_numpy(self, path: Path, query_vector: np.ndarray, limit: int) -> list[Dict[str, Any]]:
-        """numpy 백엔드에서 코사인 유사도 기반으로 Top-K 벡터 검색을 수행합니다."""
+        """memmap을 배치 스캔해 코사인 유사도 Top-K를 구합니다."""
+        if _get_numpy() is None:
+            return []
         vectors, metadata = self._numpy_cache[path]
-        
-        # Cosine Similarity: (A . B) / (|A| * |B|)
-        # encoding normalize_embeddings=True used in generation, so |V| should be ~1
-        # query_vector also likely normalized if from get_embedding
-        
-        norm_q = np.linalg.norm(query_vector)
-        # norm_v is pre-calculated or assumed 1 if normalized during save.
-        # But let's compute to be safe or assume optimized script.
-        # For speed in python, we'll assume vectors are normalized or just do dot if we trust it.
-        # Let's do full cosine for safety.
-        
-        norm_v = np.linalg.norm(vectors, axis=1)
-        norm_v[norm_v == 0] = 1e-10
-        
-        similarities = np.dot(vectors, query_vector) / (norm_v * norm_q)
-        
-        # Top K
-        top_indices = np.argsort(similarities)[::-1][:limit]
+
+        query = np.asarray(query_vector, dtype=np.float32).reshape(-1)
+        if vectors.shape[0] == 0 or query.size != vectors.shape[1]:
+            return []
+        norm_q = float(np.linalg.norm(query))
+        if not np.isfinite(norm_q) or norm_q <= 1e-12:
+            return []
+
+        top_k = min(max(1, int(limit)), int(vectors.shape[0]))
+        best_scores = np.empty(0, dtype=np.float32)
+        best_indices = np.empty(0, dtype=np.int64)
+        batch_size = 4096
+
+        for start in range(0, int(vectors.shape[0]), batch_size):
+            end = min(start + batch_size, int(vectors.shape[0]))
+            block = np.asarray(vectors[start:end], dtype=np.float32)
+            norms = np.linalg.norm(block, axis=1)
+            scores = np.divide(
+                np.dot(block, query),
+                norms * norm_q,
+                out=np.full(end - start, -np.inf, dtype=np.float32),
+                where=norms > 1e-12,
+            )
+            scores = np.where(np.isfinite(scores), scores, -np.inf)
+            indices = np.arange(start, end, dtype=np.int64)
+
+            merged_scores = np.concatenate((best_scores, scores))
+            merged_indices = np.concatenate((best_indices, indices))
+            if merged_scores.size > top_k:
+                selected = np.argpartition(merged_scores, -top_k)[-top_k:]
+                best_scores = merged_scores[selected]
+                best_indices = merged_indices[selected]
+            else:
+                best_scores = merged_scores
+                best_indices = merged_indices
+
+        order = np.argsort(best_scores)[::-1]
+        top_indices = best_indices[order]
+        top_scores = best_scores[order]
         
         results = []
-        for idx in top_indices:
-            score = similarities[idx]
-            meta = metadata[idx]
+        for idx, score in zip(top_indices, top_scores):
+            if not np.isfinite(score):
+                continue
+            meta = metadata[int(idx)]
             
             results.append({
                 "message_id": meta.get("id"),
                 "message": meta.get("text", ""),
                 "timestamp": meta.get("start_date", ""),
                 "speaker": "Merged Context",
-                "distance": 1.0 - score, # Convert similarity to distance-like for compatibility
+                "distance": 1.0 - float(score), # Convert similarity to distance-like for compatibility
                 "score": float(score),
                 "context_window": [], # It's already a chunk
             })
@@ -1458,7 +1823,7 @@ class KakaoEmbeddingStore:
 
             if connection is None:
                 try:
-                    async with aiosqlite.connect(path) as db:
+                    async with self._sqlite_readonly_connect(path) as db:
                         meta = await self._detect_table_meta(db)
                 except aiosqlite.Error as exc:
                     logger.error("Kakao 임베딩 DB 구조 확인 중 오류: %s", exc, exc_info=True)

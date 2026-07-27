@@ -21,6 +21,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-db", default=config.DATABASE_FILE)
     parser.add_argument("--target-db", default=config.DISCORD_EMBEDDING_DB_PATH)
     parser.add_argument("--clear", action="store_true", help="기존 구조화 메모리를 비우고 다시 생성")
+    parser.add_argument(
+        "--confirm-clear",
+        help="--clear 사용 시 오류 메시지에 표시되는 전체 대상 확인 문구를 정확히 입력",
+    )
     parser.add_argument("--guild-id", type=int, default=None)
     parser.add_argument("--channel-id", type=int, default=None)
     return parser.parse_args()
@@ -28,7 +32,10 @@ def parse_args() -> argparse.Namespace:
 
 def load_history_rows(source_db: Path, guild_id: int | None, channel_id: int | None) -> dict[tuple[int, int], list[dict[str, object]]]:
     """SQLite 대화 기록을 (guild_id, channel_id) 기준으로 그룹화하여 로드합니다."""
-    conn = sqlite3.connect(source_db)
+    conn = sqlite3.connect(
+        source_db.resolve().as_uri() + "?mode=ro",
+        uri=True,
+    )
     conn.row_factory = sqlite3.Row
     try:
         clauses: list[str] = []
@@ -134,7 +141,44 @@ async def main() -> None:
     """전체 리빌드 파이프라인을 실행합니다."""
     args = parse_args()
     source_db = Path(args.source_db).resolve()
+    if not source_db.is_file():
+        raise SystemExit(f"대화 원본 SQLite 파일을 찾을 수 없습니다: {source_db}")
+    if args.clear:
+        if args.guild_id is not None or args.channel_id is not None:
+            raise SystemExit(
+                "--clear는 현재 전체 메모리 테이블을 비우므로 guild/channel 필터와 함께 사용할 수 없습니다."
+            )
+        if config.ENV_FILE_PATH is None or not config.REQUIRE_EXPLICIT_PROFILE:
+            raise SystemExit(
+                "--clear는 MASAMONG_ENV_FILE과 명시적 프로필이 필요합니다."
+            )
+        if config.PROFILE == "legacy":
+            raise SystemExit("--clear는 legacy 프로필에서 실행할 수 없습니다.")
+        if config.DISCORD_EMBEDDING_BACKEND == "tidb":
+            if (
+                not config.EXPECTED_DB_NAME
+                or config.EXPECTED_DB_NAME != config.TIDB_NAME
+            ):
+                raise SystemExit(
+                    "--clear는 MASAMONG_EXPECTED_DB_NAME이 대상 TiDB와 일치해야 합니다."
+                )
+            target_identity = (
+                f"{config.TIDB_HOST}:{config.TIDB_PORT}/{config.TIDB_NAME}/"
+                "discord_memory_entries"
+            )
+        else:
+            target_identity = str(Path(args.target_db).resolve())
+        expected_confirmation = f"CLEAR {config.PROFILE} ON {target_identity}"
+        if args.confirm_clear != expected_confirmation:
+            raise SystemExit(
+                "--clear는 --confirm-clear에 다음 문구를 정확히 입력해야 합니다: "
+                + expected_confirmation
+            )
     grouped = load_history_rows(source_db, args.guild_id, args.channel_id)
+    if args.clear and not grouped:
+        raise SystemExit(
+            "--clear 대상 재구축 원본에 대화 행이 없어 기존 메모리를 비우지 않습니다."
+        )
     store = DiscordEmbeddingStore(str(Path(args.target_db).resolve()))
     await store.initialize()
     if args.clear:

@@ -83,7 +83,6 @@ class EventListeners(commands.Cog):
             "user_id": ctx.author.id,
             "command": ctx.command.qualified_name,
             "channel_id": ctx.channel.id,
-            "full_message": ctx.message.content,
             "success": True,
             "latency_ms": round(latency_ms)
         }
@@ -130,15 +129,16 @@ class EventListeners(commands.Cog):
             
         # 3. 기타 예기치 않은 오류 로그 및 기록
         details = {
-            "guild_id": ctx.guild.id if ctx.guild else "DM",
+            # analytics_log.guild_id는 TiDB에서 BIGINT이므로 DM은 NULL로 표현한다.
+            "guild_id": ctx.guild.id if ctx.guild else None,
             "user_id": ctx.author.id,
             "command": ctx.command.qualified_name if ctx.command else "unknown",
             "channel_id": ctx.channel.id,
-            "full_message": ctx.message.content,
             "success": False,
             "error": type(error).__name__,
-            "error_message": str(error)
         }
+        if config.ANALYTICS_STORE_CONTENT:
+            details["error_message"] = str(error)
         
         # DB 로깅 (에러 발생 시만)
         if self.bot.db:
@@ -148,9 +148,19 @@ class EventListeners(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message):
-        """메시지가 삭제되었을 때 로깅합니다."""
+        """메시지가 삭제되었을 때 본문 없이 최소 메타데이터만 로깅합니다."""
         if not message.guild or message.author.bot: return
-        logger.warning(f"메시지 삭제됨 | 작성자: {message.author} | 내용: {message.content or '(내용 없음)'}", extra={'guild_id': message.guild.id})
+        logger.warning(
+            "메시지 삭제됨 | message_id=%s author_id=%s channel_id=%s",
+            message.id,
+            message.author.id,
+            message.channel.id,
+            extra={
+                'guild_id': message.guild.id,
+                'user_id': message.author.id,
+                'channel_id': message.channel.id,
+            },
+        )
 
     @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild):

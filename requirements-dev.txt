@@ -1,0 +1,6 @@
+# Runtime dependencies
+-r requirements.txt
+
+# Test runner
+pytest>=8.0,<10.0
+pytest-asyncio>=0.23,<2.0

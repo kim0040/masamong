@@ -571,11 +571,18 @@ async def run_linkup_search_pipeline(user_query: str, db_conn=None) -> dict[str,
     try:
         url = _extract_first_url(query)
         if url and _should_fetch_first(query, url):
-            logger.info("[web_search] Linkup /fetch 경로 사용: %s", url)
+            logger.info(
+                "[web_search] Linkup /fetch 경로 사용. url_chars=%d",
+                len(url),
+            )
             result = await _run_fetch_pipeline(url, db_conn=db_conn)
         else:
             depth = infer_linkup_depth(query)
-            logger.info("[web_search] Linkup /search 실행 (depth=%s): %s", depth, query)
+            logger.info(
+                "[web_search] Linkup /search 실행. depth=%s query_chars=%d",
+                depth,
+                len(query),
+            )
             result = await _run_search_pipeline(query, depth, db_conn=db_conn)
 
         if result.get("status") == "success":

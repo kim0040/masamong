@@ -1,0 +1,4 @@
+{
+  "_comment": "General starts with no static AI channel IDs copied from Masamo. Configure its own guild/channel after isolation checks.",
+  "channels": {}
+}

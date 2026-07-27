@@ -31,13 +31,22 @@ class FortuneCog(commands.Cog):
         self.calculator = FortuneCalculator()
         self._ready = False
         # 비동기 초기화 작업을 위해 별도 태스크로 실행
-        self.bot.loop.create_task(self._ensure_db_schema())
-        self.morning_briefing_task.start()
+        self._schema_task = self.bot.loop.create_task(self._ensure_db_schema())
+        if config.FORTUNE_MORNING_BRIEFING_ENABLED:
+            self.morning_briefing_task.start()
+        else:
+            logger.info("운세 모닝 브리핑 스케줄러가 비활성화되었습니다.")
         logger.info("FortuneCog가 성공적으로 초기화되었습니다.")
 
     async def _ensure_db_schema(self):
         """pending_payload 컬럼이 없으면 추가합니다."""
         await self.bot.wait_until_ready()
+        if not bool(getattr(config, "AUTO_MIGRATE", True)):
+            logger.info(
+                "자동 migration이 비활성화되어 FortuneCog의 runtime ALTER를 건너뜁니다."
+            )
+            self._ready = True
+            return
         if config.DB_BACKEND == "tidb":
             logger.info("FortuneCog 스키마 점검을 건너뜁니다. TiDB 스키마는 중앙 스키마 파일 기준으로 관리됩니다.")
             self._ready = True
@@ -75,7 +84,10 @@ class FortuneCog(commands.Cog):
 
     def cog_unload(self):
         """Cog 언로드 시 아침 브리핑 태스크를 취소합니다."""
-        self.morning_briefing_task.cancel()
+        if not self._schema_task.done():
+            self._schema_task.cancel()
+        if self.morning_briefing_task.is_running():
+            self.morning_briefing_task.cancel()
 
     @commands.group(name='운세', invoke_without_command=True)
     async def fortune(self, ctx: commands.Context, *, option: str = None):
@@ -207,13 +219,23 @@ class FortuneCog(commands.Cog):
         """사용자 운세 프로필(생년월일/시간/성별/출생지)을 DB에 저장하거나 갱신합니다."""
         if config.DB_BACKEND == "tidb":
             query = """
-                REPLACE INTO user_profiles (user_id, birth_date, birth_time, gender, birth_place, created_at)
+                INSERT INTO user_profiles (user_id, birth_date, birth_time, gender, birth_place, created_at)
                 VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP(6))
+                ON DUPLICATE KEY UPDATE
+                    birth_date = VALUES(birth_date),
+                    birth_time = VALUES(birth_time),
+                    gender = VALUES(gender),
+                    birth_place = VALUES(birth_place)
             """
         else:
             query = """
-                INSERT OR REPLACE INTO user_profiles (user_id, birth_date, birth_time, gender, birth_place, created_at)
+                INSERT INTO user_profiles (user_id, birth_date, birth_time, gender, birth_place, created_at)
                 VALUES (?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(user_id) DO UPDATE SET
+                    birth_date = excluded.birth_date,
+                    birth_time = excluded.birth_time,
+                    gender = excluded.gender,
+                    birth_place = excluded.birth_place
             """
         async with self.bot.db.execute(
             query,
@@ -235,7 +257,7 @@ class FortuneCog(commands.Cog):
     @fortune.command(name='삭제')
     async def fortune_delete(self, ctx: commands.Context):
         """
-        등록된 모든 정보와 구독 설정을 삭제합니다. (DM 전용)
+        등록된 운세 프로필과 구독 설정을 삭제합니다. (DM 전용)
 
         사용법:
         - `!운세 삭제`
@@ -251,7 +273,7 @@ class FortuneCog(commands.Cog):
         try:
              async with self.bot.db.execute("DELETE FROM user_profiles WHERE user_id = ?", (ctx.author.id,)):
                  await self.bot.db.commit()
-             await ctx.send("🗑️ 모든 개인 정보와 운세 구독 설정이 삭제되었습니다.")
+             await ctx.send("🗑️ 운세 등록 정보와 운세 구독 설정이 삭제되었습니다.")
         except Exception as e:
              logger.error(f"운세 정보 삭제 중 오류: {e}", exc_info=True)
              await ctx.send("❌ 삭제 중 오류가 발생했습니다.")
@@ -270,6 +292,9 @@ class FortuneCog(commands.Cog):
         # DM 체크
         if ctx.guild:
             await ctx.reply("⚠️ 구독 설정은 DM에서만 가능합니다.")
+            return
+        if not config.FORTUNE_MORNING_BRIEFING_ENABLED:
+            await ctx.send("ℹ️ 이 마사몽 인스턴스에서는 자동 아침 운세 구독을 운영하지 않습니다.")
             return
 
         if time_str in ["취소", "해제", "off", "cancel", "중단", "비활성", "비활성화"]:

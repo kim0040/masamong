@@ -9,7 +9,9 @@ import asyncio
 from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
+from pathlib import Path
 import re
 from typing import Any, Iterable
 
@@ -546,6 +548,14 @@ async def main() -> int:
     args = parse_args()
     results: list[CheckResult] = []
     selected_backend = config.DB_BACKEND if args.backend == "auto" else args.backend
+    if (
+        selected_backend == "sqlite"
+        and not args.write_check
+        and not Path(config.DATABASE_FILE).is_file()
+    ):
+        raise SystemExit(
+            f"read-only health check 대상 SQLite 파일이 없습니다: {config.DATABASE_FILE}"
+        )
 
     db = await connect_main_db(
         selected_backend,
@@ -558,11 +568,23 @@ async def main() -> int:
             database=config.TIDB_NAME,
             ssl_ca=config.TIDB_SSL_CA,
             ssl_verify_identity=config.TIDB_SSL_VERIFY_IDENTITY,
+            require_tls=config.REQUIRE_DB_TLS,
         ),
     )
 
-    discord_store = DiscordEmbeddingStore(config.DISCORD_EMBEDDING_DB_PATH)
-    kakao_store = KakaoEmbeddingStore(config.KAKAO_EMBEDDING_DB_PATH, config.KAKAO_EMBEDDING_SERVER_MAP)
+    discord_store = DiscordEmbeddingStore(
+        config.DISCORD_EMBEDDING_DB_PATH,
+        read_only=not args.write_check,
+    )
+    memory_enabled = bool(config.AI_MEMORY_ENABLED and config.EMBEDDING_ENABLED)
+    kakao_store = (
+        KakaoEmbeddingStore(
+            config.KAKAO_EMBEDDING_DB_PATH,
+            config.KAKAO_EMBEDDING_SERVER_MAP,
+        )
+        if memory_enabled and config.KAKAO_MEMORY_ENABLED
+        else None
+    )
 
     try:
         table_counts: dict[str, int] = {}
@@ -576,23 +598,54 @@ async def main() -> int:
             table_counts[table_name] = await _select_count(db, table_name)
 
         coords = await get_coords_from_db(db, "서울")
-        db_ok = table_counts["conversation_history"] > 0 and table_counts["locations"] > 0 and bool(coords)
+        history_ok = (
+            table_counts["conversation_history"] >= 0
+            if config.PROFILE == "general"
+            else table_counts["conversation_history"] > 0
+        )
+        db_ok = history_ok and table_counts["locations"] > 0 and bool(coords)
         _append(
             results,
             "main_db",
             db_ok,
             "메인 DB 테이블/좌표 조회 확인" if db_ok else "메인 DB 핵심 데이터 조회 실패",
             backend=selected_backend,
+            empty_history_allowed=config.PROFILE == "general",
             counts=table_counts,
             coords=coords,
         )
-        results.append(await _run_archive_cycle_check(db))
-        embedding_preflight = await _run_embedding_preflight(args.embedding_timeout)
+        # 아카이빙은 live history에서 행을 이동시키는 쓰기 작업이다. 이름이
+        # "health"인 기본 실행은 반드시 읽기 전용이어야 하므로 명시적 opt-in에서만 수행한다.
+        if args.write_check:
+            results.append(await _run_archive_cycle_check(db))
+        if memory_enabled:
+            embedding_preflight = await _run_embedding_preflight(
+                args.embedding_timeout
+            )
+        else:
+            embedding_preflight = CheckResult(
+                name="embedding_preflight",
+                ok=True,
+                details="현재 프로필에서 AI memory/embedding이 비활성화되어 검사를 건너뜁니다.",
+                metrics={"skipped": True},
+            )
         results.append(embedding_preflight)
-        embedding_ready = embedding_preflight.ok
+        embedding_ready = memory_enabled and embedding_preflight.ok
 
-        discord_scope = await _discover_discord_scope(discord_store)
-        if discord_scope is None:
+        discord_scope = (
+            await _discover_discord_scope(discord_store)
+            if memory_enabled
+            else None
+        )
+        if not memory_enabled:
+            _append(
+                results,
+                "discord_scope",
+                True,
+                "현재 프로필에서 Discord RAG가 비활성화되어 검사를 건너뜁니다.",
+                skipped=True,
+            )
+        elif discord_scope is None:
             _append(results, "discord_scope", False, "Discord 메모리 scope를 찾지 못했습니다.", backend=discord_store.backend)
         else:
             server_id, channel_id = discord_scope
@@ -636,7 +689,10 @@ async def main() -> int:
                     )
                     discord_query_results.append(
                         {
-                            "query": query,
+                            "query_fingerprint": hashlib.sha256(
+                                query.encode("utf-8")
+                            ).hexdigest()[:12],
+                            "query_chars": len(query),
                             "entries": len(result.entries),
                             "top_score": round(float(result.top_score), 4),
                         }
@@ -644,7 +700,8 @@ async def main() -> int:
             else:
                 discord_query_results.append(
                     {
-                        "query": "(skipped)",
+                        "query_fingerprint": None,
+                        "query_chars": 0,
                         "entries": 0,
                         "top_score": 0.0,
                         "error": "embedding_preflight_failed",
@@ -660,10 +717,15 @@ async def main() -> int:
                 user_id=user_id,
             )
 
-        kakao_targets = _discover_kakao_targets()
+        kakao_targets = (
+            _discover_kakao_targets()
+            if memory_enabled and config.KAKAO_MEMORY_ENABLED
+            else []
+        )
         kakao_metrics: list[dict[str, Any]] = []
         kakao_failures = 0
         for server_id, room_key in kakao_targets:
+            assert kakao_store is not None
             recent_rows = await _fetch_recent_kakao_rows(kakao_store, server_id, limit=40)
             keywords = _rank_keywords_from_rows(recent_rows, limit=max(1, args.kakao_probes))
             if not keywords:
@@ -673,7 +735,10 @@ async def main() -> int:
                 if not embedding_ready:
                     query_results.append(
                         {
-                            "query": query,
+                            "query_fingerprint": hashlib.sha256(
+                                query.encode("utf-8")
+                            ).hexdigest()[:12],
+                            "query_chars": len(query),
                             "rows": 0,
                             "top_message_id": None,
                             "error": "embedding_preflight_failed",
@@ -684,7 +749,10 @@ async def main() -> int:
                 if vector is None:
                     query_results.append(
                         {
-                            "query": query,
+                            "query_fingerprint": hashlib.sha256(
+                                query.encode("utf-8")
+                            ).hexdigest()[:12],
+                            "query_chars": len(query),
                             "rows": 0,
                             "top_message_id": None,
                             "error": "query_embedding_failed",
@@ -694,7 +762,10 @@ async def main() -> int:
                 rows = await kakao_store.fetch_recent_embeddings([server_id], limit=3, query_vector=vector)
                 query_results.append(
                     {
-                        "query": query,
+                        "query_fingerprint": hashlib.sha256(
+                            query.encode("utf-8")
+                        ).hexdigest()[:12],
+                        "query_chars": len(query),
                         "rows": len(rows),
                         "top_message_id": rows[0].get("message_id") if rows else None,
                     }
@@ -711,19 +782,38 @@ async def main() -> int:
                 }
             )
 
-        _append(
-            results,
-            "kakao_rag",
-            kakao_failures == 0 and bool(kakao_metrics),
-            "Kakao 벡터 검색 확인" if kakao_failures == 0 and kakao_metrics else "Kakao 검색 질의 중 실패가 있습니다.",
-            rooms=kakao_metrics,
-        )
+        if not memory_enabled or not config.KAKAO_MEMORY_ENABLED:
+            _append(
+                results,
+                "kakao_rag",
+                True,
+                "현재 프로필에서 Kakao 기억 소스가 비활성화되어 검사를 건너뜁니다.",
+                skipped=True,
+            )
+        else:
+            _append(
+                results,
+                "kakao_rag",
+                kakao_failures == 0 and bool(kakao_metrics),
+                "Kakao 벡터 검색 확인"
+                if kakao_failures == 0 and kakao_metrics
+                else "Kakao 검색 질의 중 실패가 있습니다.",
+                rooms=kakao_metrics,
+            )
 
         prompt_channel_id = int(discord_scope[1]) if 'discord_scope' in locals() and discord_scope else 0
         results.append(await _run_prompt_injection_check(prompt_channel_id))
 
         if args.write_check:
-            if embedding_ready:
+            if not memory_enabled:
+                _append(
+                    results,
+                    "write_pipeline",
+                    True,
+                    "현재 프로필에서 RAG 쓰기 경로가 비활성화되어 검사를 건너뜁니다.",
+                    skipped=True,
+                )
+            elif embedding_ready:
                 results.append(await _run_write_pipeline_check(db, discord_store))
             else:
                 _append(

@@ -1,6 +1,6 @@
 # Masamong UML Specification
 
-> **Version**: 2.0.0 | **Language**: Python 3.9+ | **Date**: 2026-04-30
+> **Version**: 2.0.0 | **Language**: Python 3.10+ | **Date**: 2026-04-30
 
 This document provides a formal UML analysis of the Masamong Discord bot architecture using Mermaid diagrams.
 
