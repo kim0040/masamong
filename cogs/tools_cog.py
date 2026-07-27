@@ -41,6 +41,7 @@ class ToolsCog(commands.Cog):
         self._linkup_search_loader_lock = asyncio.Lock()
         self._news_search_pipeline = None
         self._news_search_loader_lock = asyncio.Lock()
+        self._cleanup_tasks: set[asyncio.Task] = set()
         logger.info("ToolsCog가 성공적으로 초기화되었습니다.")
 
     def cog_unload(self):
@@ -49,7 +50,9 @@ class ToolsCog(commands.Cog):
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        loop.create_task(kakao.close_kakao_session())
+        task = loop.create_task(kakao.close_kakao_session())
+        self._cleanup_tasks.add(task)
+        task.add_done_callback(self._cleanup_tasks.discard)
 
     # --- 고수준 메타 도구 --- #
 
@@ -139,7 +142,10 @@ class ToolsCog(commands.Cog):
             ticker = None
             
             if user_query and ai_handler:
-                logger.info(f"yfinance 모드: '{user_query}'에서 티커 추출 시도...")
+                logger.info(
+                    "yfinance 모드: 티커 추출 시도. query_chars=%d",
+                    len(user_query),
+                )
                 ticker = await ai_handler.extract_ticker_with_llm(user_query)
             elif symbol or stock_name:
                 # If direct symbol passed (legacy path), assume it might be a ticker or need extraction check
@@ -163,18 +169,26 @@ class ToolsCog(commands.Cog):
                 
                 change_str = f"({change_p:+.2f}%)" if change_p is not None else ""
                 price_str = f"{price:,.2f} {currency}" if price else "N/A"
+                market_cap = data.get("market_cap")
+                market_cap_str = f"{market_cap:,} (추정)" if isinstance(market_cap, (int, float)) else "정보 없음"
+                industry = data.get("industry") or "정보 없음"
+                website = data.get("website")
                 
                 summary = data.get('summary', '')[:300] + "..." if data.get('summary') else "정보 없음"
                 
                 result_str = (
                     f"## 📈 {data.get('name')} ({data.get('symbol')})\n"
                     f"- **현재가**: {price_str} {change_str}\n"
-                    f"- **시가총액**: {data.get('market_cap'):,} (추정)\n"
-                    f"- **산업**: {data.get('industry')}\n"
-                    f"- **개요**: {summary}\n"
-                    f"- [더 보기]({data.get('website')})"
+                    f"- **시가총액**: {market_cap_str}\n"
+                    f"- **산업**: {industry}\n"
+                    f"- **개요**: {summary}"
                 )
-                logger.info(f"get_stock_price 결과 생성 완료: {result_str[:50]}...")
+                if website:
+                    result_str += f"\n- [더 보기]({website})"
+                logger.info(
+                    "get_stock_price 결과 생성 완료. result_chars=%d",
+                    len(result_str),
+                )
                 return result_str
             else:
                 return "주식 정보를 찾으시는 것 같은데, 정확한 종목을 파악하지 못했어요. '삼성전자 주가 알려줘' 처럼 다시 물어봐주시겠어요?"
@@ -255,7 +269,7 @@ class ToolsCog(commands.Cog):
 
     async def kakao_web_search(self, query: str) -> str:
         """(폴백용) Kakao API로 웹/블로그/동영상을 검색하고 결과를 요약하여 반환합니다."""
-        logger.info(f"Kakao 통합 검색 실행: '{query}'")
+        logger.info("Kakao 통합 검색 실행. query_chars=%d", len(query))
         
         # [Rich Context] 웹, 블로그, 동영상을 병렬로 검색
         web_task = kakao.search_web(query, page_size=5) # 늘어난 limit
@@ -308,7 +322,10 @@ class ToolsCog(commands.Cog):
         if prefer_linkup:
             try:
                 run_linkup_search_pipeline = await self._load_linkup_search_pipeline()
-                logger.info(f"웹 검색 RAG(Linkup) 실행: '{query}'")
+                logger.info(
+                    "웹 검색 RAG(Linkup) 실행. query_chars=%d",
+                    len(query),
+                )
                 linkup_result = await run_linkup_search_pipeline(query, db_conn=self.bot.db)
                 if linkup_result.get("status") == "success":
                     return linkup_result
@@ -321,7 +338,10 @@ class ToolsCog(commands.Cog):
 
         try:
             run_news_search_pipeline = await self._load_news_search_pipeline()
-            logger.info(f"웹 검색 RAG(legacy) 실행: '{query}'")
+            logger.info(
+                "웹 검색 RAG(legacy) 실행. query_chars=%d",
+                len(query),
+            )
             return await run_news_search_pipeline(query)
         except Exception as e:
             logger.error(f"웹 검색 RAG 파이프라인 실행 중 오류: {e}", exc_info=True)
@@ -375,7 +395,7 @@ class ToolsCog(commands.Cog):
           2) Google Custom Search API (config.GOOGLE_API_KEY & config.GOOGLE_CX)
           3) kakao_web_search()로 폴백
         """
-        logger.info(f"웹 검색 실행: '{query}'")
+        logger.info("웹 검색 실행. query_chars=%d", len(query))
         try:
             rag_result = await self.web_search_rag(query)
             if rag_result.get("status") == "success":
@@ -405,7 +425,12 @@ class ToolsCog(commands.Cog):
                                 formatted.append(f"{i}. {title}\n   - {snippet}\n   - {link}")
                             return f"'{query}'에 대한 웹 검색 결과 (Google CSE):\n" + "\n\n".join(formatted)
                         else:
-                            logger.warning(f"Google CSE API가 오류를 반환했습니다 (상태 코드: {resp.status}): {await resp.text()}")
+                            error_text = await resp.text()
+                            logger.warning(
+                                "Google CSE API가 오류를 반환했습니다. status=%s response_chars=%d",
+                                resp.status,
+                                len(error_text),
+                            )
 
             # 3. Kakao Web Search (최후의 폴백)
             logger.info("Google CSE API 실패, Kakao 웹 검색으로 폴백합니다.")
@@ -420,7 +445,7 @@ class ToolsCog(commands.Cog):
 
     async def search_images(self, query: str, count: int = 3) -> str:
         """주어진 쿼리로 이미지를 검색하고, 결과 이미지 URL 목록을 문자열로 반환합니다."""
-        logger.info(f"이미지 검색 실행: '{query}'")
+        logger.info("이미지 검색 실행. query_chars=%d", len(query))
         image_results = await kakao.search_image(query, page_size=count)
         if not image_results:
             return f"'{query}'에 대한 이미지를 찾을 수 없습니다."
@@ -470,7 +495,7 @@ class ToolsCog(commands.Cog):
         Returns:
             {'image_data': bytes, 'remaining': int} 또는 {'error': str}
         """
-        log_extra = {'user_id': user_id, 'prompt_preview': prompt[:100] if prompt else ''}
+        log_extra = {'user_id': user_id, 'prompt_chars': len(prompt or '')}
 
         # 1. 이미지 생성 기능 활성화 확인
         if not getattr(config, 'COMETAPI_IMAGE_ENABLED', False):
@@ -486,7 +511,11 @@ class ToolsCog(commands.Cog):
         # 3. 프롬프트 안전성 검사 (NSFW 차단)
         is_safe, blocked_keyword = self._is_prompt_safe(prompt)
         if not is_safe:
-            logger.warning(f"NSFW 프롬프트 차단: '{blocked_keyword}'", extra=log_extra)
+            logger.warning(
+                "NSFW 프롬프트 차단. matched_category_present=%s",
+                bool(blocked_keyword),
+                extra=log_extra,
+            )
             return {"error": "요청한 이미지를 생성할 수 없어요. 부적절한 내용이 포함되어 있는 것 같아요."}
 
         # 4. 유저별 제한 확인
@@ -554,7 +583,12 @@ class ToolsCog(commands.Cog):
                 async with session.post(endpoint, json=payload, headers=headers, timeout=600) as resp:
                     if resp.status != 200:
                         error_text = await resp.text()
-                        logger.error(f"CometAPI 이미지 생성 API 오류 ({resp.status}): {error_text}", extra=log_extra)
+                        logger.error(
+                            "CometAPI 이미지 생성 API 오류. status=%s response_chars=%d",
+                            resp.status,
+                            len(error_text),
+                            extra=log_extra,
+                        )
                         return {"error": f"API 서버가 오류를 반환했습니다. ({resp.status})"}
                     
                     data = await resp.json()

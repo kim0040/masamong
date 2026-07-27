@@ -9,9 +9,10 @@ LLM 레인 구성, API 키, RAG 파라미터, Rate Limit 등 모든 설정 상�
 
 import os
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 import discord
 
 try:  # Optional dependency for YAML-based prompt configuration
@@ -19,7 +20,94 @@ try:  # Optional dependency for YAML-based prompt configuration
 except ModuleNotFoundError:  # pragma: no cover - yaml is optional
     yaml = None  # type: ignore
 
-load_dotenv()
+PROJECT_ROOT = Path(__file__).resolve().parent
+_ENV_REFERENCE_RE = re.compile(
+    r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}"
+)
+
+
+def _resolve_profile_env_values(path: Path) -> dict[str, str]:
+    """선택한 env 파일 내부 값만 사용해 `${VAR}` 참조를 해석합니다."""
+    raw_values = {
+        str(key): "" if value is None else str(value)
+        for key, value in dotenv_values(path, interpolate=False).items()
+        if key
+    }
+    resolved: dict[str, str] = {}
+
+    def resolve_key(key: str, stack: tuple[str, ...] = ()) -> str:
+        if key in resolved:
+            return resolved[key]
+        if key in stack:
+            chain = " -> ".join((*stack, key))
+            raise RuntimeError(f"env 파일 변수 참조가 순환합니다: {chain}")
+        raw_value = raw_values.get(key, "")
+
+        def replace_reference(match: re.Match[str]) -> str:
+            referenced_key = match.group(1)
+            default = match.group(2)
+            if referenced_key in raw_values:
+                value = resolve_key(referenced_key, (*stack, key))
+                if value or default is None:
+                    return value
+            return default or ""
+
+        value = _ENV_REFERENCE_RE.sub(replace_reference, raw_value)
+        resolved[key] = value
+        return value
+
+    for env_key in raw_values:
+        resolve_key(env_key)
+    return resolved
+
+# 운영 인스턴스별 환경 파일을 명시할 수 있게 한다. 명시한 파일이 없는데
+# 암묵적으로 다른 .env로 폴백하면 일반/마사모 설정이 뒤섞일 수 있으므로 즉시 실패한다.
+_explicit_env_file = os.environ.get("MASAMONG_ENV_FILE", "").strip()
+_EXPLICIT_ENV_VALUES: dict[str, str] = {}
+_EXPLICIT_ENV_KEYS: frozenset[str] = frozenset()
+if _explicit_env_file:
+    _env_path = Path(_explicit_env_file).expanduser()
+    if not _env_path.is_absolute():
+        _env_path = PROJECT_ROOT / _env_path
+    if not _env_path.is_file():
+        raise RuntimeError(f"MASAMONG_ENV_FILE을 찾을 수 없습니다: {_env_path}")
+    # 명시한 인스턴스 파일이 해당 프로세스 설정을 소유해야 한다. 상위 shell/systemd에
+    # 남은 다른 인스턴스 값이 파일보다 우선하면 general이 masamo DB로 붙을 수 있다.
+    _EXPLICIT_ENV_VALUES = _resolve_profile_env_values(_env_path)
+    _EXPLICIT_ENV_KEYS = frozenset(_EXPLICIT_ENV_VALUES)
+    for _inherited_key in tuple(os.environ):
+        if (
+            _inherited_key.startswith("MASAMONG_")
+            and _inherited_key != "MASAMONG_ENV_FILE"
+            and _inherited_key not in _EXPLICIT_ENV_KEYS
+        ):
+            os.environ.pop(_inherited_key, None)
+    os.environ.update(_EXPLICIT_ENV_VALUES)
+    ENV_FILE_PATH: Path | None = _env_path.resolve()
+    _declared_env_file = _EXPLICIT_ENV_VALUES.get(
+        "MASAMONG_ENV_FILE",
+        _explicit_env_file,
+    ).strip()
+    if _declared_env_file:
+        _declared_env_path = Path(_declared_env_file).expanduser()
+        if not _declared_env_path.is_absolute():
+            _declared_env_path = PROJECT_ROOT / _declared_env_path
+        if _declared_env_path.resolve() != ENV_FILE_PATH:
+            raise RuntimeError(
+                "선택한 MASAMONG_ENV_FILE과 프로필 파일 내부 경로가 다릅니다: "
+                f"selected={ENV_FILE_PATH}, declared={_declared_env_path.resolve()}"
+            )
+else:
+    # 기존 배포와의 호환성을 위해 명시하지 않은 경우 python-dotenv의 기본 탐색을 유지한다.
+    load_dotenv()
+    ENV_FILE_PATH = None
+
+
+def _direct_config_value(key: str, default: str) -> str:
+    """명시 프로필에서는 상속 환경이 아닌 선택 파일의 직접 값만 반환합니다."""
+    if ENV_FILE_PATH is not None:
+        return _EXPLICIT_ENV_VALUES.get(key, default)
+    return os.environ.get(key, default)
 
 # 로케일 시스템 초기화 (다국어 지원)
 from utils.locale import msg as _locale_msg, SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE
@@ -31,6 +119,12 @@ YFINANCE_CACHE_TTL = 600 # 10분 캐시
 # config.json 메모리 캐시 (매 호출마다 디스크 I/O 방지)
 _CONFIG_JSON_CACHE: dict | None = None
 _CONFIG_JSON_LOADED: bool = False
+_CONFIG_JSON_ERROR: str | None = None
+CONFIG_JSON_PATH = Path(
+    _direct_config_value("MASAMONG_CONFIG_FILE", "config.json")
+).expanduser()
+if not CONFIG_JSON_PATH.is_absolute():
+    CONFIG_JSON_PATH = PROJECT_ROOT / CONFIG_JSON_PATH
 
 
 def _read_config_json() -> dict:
@@ -42,19 +136,31 @@ def _read_config_json() -> dict:
     Returns:
         dict: config.json의 파싱 결과 또는 빈 dict
     """
-    global _CONFIG_JSON_CACHE, _CONFIG_JSON_LOADED
+    global _CONFIG_JSON_CACHE, _CONFIG_JSON_LOADED, _CONFIG_JSON_ERROR
     if _CONFIG_JSON_LOADED:
         return _CONFIG_JSON_CACHE or {}
     _CONFIG_JSON_LOADED = True
     try:
-        with open('config.json', 'r', encoding='utf-8') as f:
-            _CONFIG_JSON_CACHE = json.load(f)
-            return _CONFIG_JSON_CACHE or {}
+        with CONFIG_JSON_PATH.open('r', encoding='utf-8') as f:
+            data = json.load(f)
+            if not isinstance(data, dict):
+                _CONFIG_JSON_ERROR = "root is not an object"
+                print("경고: config.json 최상위 값은 JSON 객체여야 합니다.")
+                _CONFIG_JSON_CACHE = {}
+                return {}
+            _CONFIG_JSON_CACHE = data
+            return _CONFIG_JSON_CACHE
     except FileNotFoundError:
         _CONFIG_JSON_CACHE = {}
         return {}
     except json.JSONDecodeError:
         print("경고: config.json 파일이 유효한 JSON 형식이 아닙니다.")
+        _CONFIG_JSON_ERROR = "invalid JSON"
+        _CONFIG_JSON_CACHE = {}
+        return {}
+    except OSError as exc:
+        print(f"경고: config.json 파일을 읽을 수 없습니다: {exc}")
+        _CONFIG_JSON_ERROR = type(exc).__name__
         _CONFIG_JSON_CACHE = {}
         return {}
 
@@ -69,13 +175,16 @@ def load_config_value(key, default=None):
     Returns:
         Any: 발견된 설정값 또는 기본값.
     """
-    value = os.environ.get(key)
-    if value:
-        return value
+    if ENV_FILE_PATH is not None:
+        if key in _EXPLICIT_ENV_KEYS:
+            return _EXPLICIT_ENV_VALUES[key]
+    else:
+        value = os.environ.get(key)
+        if value is not None and value != "":
+            return value
     config_json = _read_config_json()
-    value = config_json.get(key)
-    if value:
-        return value
+    if key in config_json:
+        return config_json[key]
     return default
 
 
@@ -86,6 +195,22 @@ def as_bool(value, default: bool = False) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "on"}
     return default
+
+
+def as_strict_bool(key: str, value, default: bool = False) -> bool:
+    """운영 경계용 불리언을 모호한 값 없이 변환합니다."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise RuntimeError(
+        f"{key}은 true 또는 false 계열 값이어야 합니다: {value!r}"
+    )
 
 
 def as_float(value, default: float) -> float:
@@ -119,6 +244,37 @@ def as_str(value, default: str = "") -> str:
     return rendered if rendered else default
 
 
+def _resolve_project_storage_path(value: Any, default: str) -> str:
+    """상대 저장소 경로를 실행 cwd가 아닌 repository root 기준으로 고정합니다."""
+    rendered = as_str(value, default)
+    if rendered == ":memory:":
+        return rendered
+    path = Path(rendered).expanduser()
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return str(path.resolve())
+
+
+def _normalize_profile_name(value: Any, default: str = "legacy") -> str:
+    """프로필/인스턴스 식별자를 파일·로그에 안전한 형태로 검증합니다."""
+    rendered = as_str(value, default).lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", rendered):
+        raise RuntimeError(
+            "MASAMONG_PROFILE/MASAMONG_INSTANCE_NAME은 영문 소문자, 숫자, _, -만 "
+            "사용한 1~32자 식별자여야 합니다."
+        )
+    return rendered
+
+
+def _parse_csv_set(value: Any) -> frozenset[str]:
+    """쉼표 구분 설정을 소문자 집합으로 정규화합니다."""
+    return frozenset(
+        item.strip().lower()
+        for item in str(value or "").split(",")
+        if item.strip()
+    )
+
+
 def normalize_llm_provider(value: Any, default: str = "none") -> str:
     """LLM provider 식별자를 정규화합니다."""
     raw = as_str(value, default).lower()
@@ -149,29 +305,48 @@ def default_reasoning_effort_for_model(model: Any) -> str:
     return ""
 
 
-EMBED_CONFIG_PATH = os.environ.get('EMB_CONFIG_PATH', 'emb_config.json')
+_embed_config_path = Path(
+    _direct_config_value('EMB_CONFIG_PATH', 'emb_config.json')
+).expanduser()
+if not _embed_config_path.is_absolute():
+    _embed_config_path = PROJECT_ROOT / _embed_config_path
+EMBED_CONFIG_PATH = str(_embed_config_path)
+_EMBED_CONFIG_ERROR: str | None = None
 
 
 def load_emb_config() -> dict:
     """임베딩 관련 별도 설정 파일을 읽어옵니다."""
+    global _EMBED_CONFIG_ERROR
     try:
         with open(EMBED_CONFIG_PATH, 'r', encoding='utf-8') as f:
             data = json.load(f)
             if isinstance(data, dict):
                 return data
             print("경고: emb_config.json 내용이 JSON 객체가 아닙니다.")
+            _EMBED_CONFIG_ERROR = "root is not an object"
     except FileNotFoundError:
-        pass
+        _EMBED_CONFIG_ERROR = "file not found"
     except json.JSONDecodeError:
         print("경고: emb_config.json 파일이 유효한 JSON 형식이 아닙니다.")
+        _EMBED_CONFIG_ERROR = "invalid JSON"
     return {}
 
 
 EMBED_CONFIG = load_emb_config()
 
 
-PROMPT_CONFIG_PATH = os.environ.get("PROMPT_CONFIG_PATH", "prompts.json")
-_PROMPT_CONFIG_EXPLICIT = "PROMPT_CONFIG_PATH" in os.environ
+_prompt_config_path = Path(
+    _direct_config_value("PROMPT_CONFIG_PATH", "prompts.json")
+).expanduser()
+if not _prompt_config_path.is_absolute():
+    _prompt_config_path = PROJECT_ROOT / _prompt_config_path
+PROMPT_CONFIG_PATH = str(_prompt_config_path)
+_PROMPT_CONFIG_EXPLICIT = (
+    "PROMPT_CONFIG_PATH" in _EXPLICIT_ENV_KEYS
+    if ENV_FILE_PATH is not None
+    else "PROMPT_CONFIG_PATH" in os.environ
+)
+_PROMPT_CONFIG_ERROR: str | None = None
 
 
 def _read_prompt_file(path: Path) -> dict[str, Any]:
@@ -188,34 +363,33 @@ def _read_prompt_file(path: Path) -> dict[str, Any]:
             data = json.load(fp)
             if isinstance(data, dict):
                 return data
-            print("경고: 프롬프트 설정 파일이 JSON 객체 형식이 아닙니다.")
-            return {}
+            raise ValueError("프롬프트 JSON 최상위 값은 객체여야 합니다.")
     if path.suffix.lower() in {".yaml", ".yml"}:
         if yaml is None:
-            print("경고: YAML 프롬프트 파일을 읽으려면 PyYAML 패키지가 필요합니다.")
-            return {}
+            raise RuntimeError("YAML 프롬프트 파일을 읽으려면 PyYAML 패키지가 필요합니다.")
         with path.open("r", encoding="utf-8") as fp:
             data = yaml.safe_load(fp)
             if isinstance(data, dict):
                 return data
-            print("경고: YAML 프롬프트 설정이 매핑 형태가 아닙니다.")
-            return {}
-    print(f"경고: 지원하지 않는 프롬프트 파일 형식입니다: {path.suffix}")
-    return {}
+            raise ValueError("YAML 프롬프트 설정 최상위 값은 매핑이어야 합니다.")
+    raise ValueError(f"지원하지 않는 프롬프트 파일 형식입니다: {path.suffix}")
 
 
 def load_prompt_config() -> dict[str, Any]:
     """프롬프트 관련 별도 설정 파일을 읽어옵니다."""
+    global _PROMPT_CONFIG_ERROR
     if not PROMPT_CONFIG_PATH:
         return {}
     path = Path(PROMPT_CONFIG_PATH)
     if not path.exists():
+        _PROMPT_CONFIG_ERROR = "file not found"
         if _PROMPT_CONFIG_EXPLICIT:
             print(f"경고: 프롬프트 설정 파일 '{path}'을(를) 찾을 수 없습니다.")
         return {}
     try:
         return _read_prompt_file(path)
     except Exception as exc:  # pragma: no cover - 방어적 로깅
+        _PROMPT_CONFIG_ERROR = f"{type(exc).__name__}"
         print(f"경고: 프롬프트 설정 파일을 읽는 중 오류가 발생했습니다: {exc}")
         return {}
 
@@ -313,20 +487,387 @@ def _normalize_kakao_servers(raw_value) -> dict[str, dict[str, str]]:
 
     return {}
 
+PROFILE = _normalize_profile_name(load_config_value("MASAMONG_PROFILE", "legacy"))
+INSTANCE_NAME = _normalize_profile_name(
+    load_config_value("MASAMONG_INSTANCE_NAME", PROFILE),
+    PROFILE,
+)
+_require_explicit_profile_raw = load_config_value(
+    "MASAMONG_REQUIRE_EXPLICIT_PROFILE",
+    "false",
+)
+REQUIRE_EXPLICIT_PROFILE = as_strict_bool(
+    "MASAMONG_REQUIRE_EXPLICIT_PROFILE",
+    _require_explicit_profile_raw,
+)
+if (
+    PROFILE in {"masamo", "general"}
+    and str(_require_explicit_profile_raw).strip().lower() != "true"
+):
+    raise RuntimeError(
+        "masamo/general 운영 프로필은 "
+        "MASAMONG_REQUIRE_EXPLICIT_PROFILE=true를 파일에 명시해야 합니다."
+    )
+if REQUIRE_EXPLICIT_PROFILE and PROFILE == "legacy":
+    raise RuntimeError(
+        "MASAMONG_REQUIRE_EXPLICIT_PROFILE=true 이지만 MASAMONG_PROFILE이 지정되지 않았습니다."
+    )
+if REQUIRE_EXPLICIT_PROFILE and PROFILE not in {"masamo", "general"}:
+    raise RuntimeError(
+        "명시적 운영 프로필은 masamo 또는 general이어야 합니다."
+    )
+if REQUIRE_EXPLICIT_PROFILE and ENV_FILE_PATH is None:
+    raise RuntimeError(
+        "명시적 프로필은 MASAMONG_ENV_FILE을 프로세스 외부에서 지정해야 합니다. "
+        "env 파일 안의 MASAMONG_ENV_FILE 항목만으로는 그 파일을 선택할 수 없습니다."
+    )
+if REQUIRE_EXPLICIT_PROFILE:
+    if PROFILE != INSTANCE_NAME:
+        raise RuntimeError(
+            "명시적 프로필의 MASAMONG_PROFILE과 MASAMONG_INSTANCE_NAME이 다릅니다: "
+            f"profile={PROFILE!r}, instance={INSTANCE_NAME!r}"
+        )
+    if PROFILE == "masamo":
+        # 기존 저사양 서버의 값을 코드가 추정하면 배포 시 CPU/RU 제한이 조용히
+        # 풀릴 수 있다. 현재 운영값을 선택한 masamo env 파일에 그대로 옮기도록
+        # 강제하고, 무제한이나 오타는 시작 전에 거부한다.
+        _masamo_positive_limit_keys = (
+            "MASAMONG_CPU_THREADS",
+            "AI_MAX_CONCURRENT_PROCESSING",
+            "EMBEDDING_MAX_CONCURRENCY",
+            "RAG_MAX_BACKGROUND_TASKS",
+            "RAG_MAX_TRACKED_WINDOWS",
+        )
+        _masamo_resource_errors: list[str] = []
+        for _limit_key in _masamo_positive_limit_keys:
+            _limit_raw = _EXPLICIT_ENV_VALUES.get(_limit_key)
+            try:
+                _limit_value = int(str(_limit_raw).strip())
+            except (TypeError, ValueError):
+                _limit_value = 0
+            if _limit_value <= 0:
+                _masamo_resource_errors.append(
+                    f"{_limit_key} (파일 내 양의 정수 필요)"
+                )
+        _tokenizers_parallelism_raw = _EXPLICIT_ENV_VALUES.get(
+            "TOKENIZERS_PARALLELISM"
+        )
+        if (
+            _tokenizers_parallelism_raw is None
+            or str(_tokenizers_parallelism_raw).strip().lower()
+            not in {"0", "false", "no", "n", "off"}
+        ):
+            _masamo_resource_errors.append(
+                "TOKENIZERS_PARALLELISM (파일 내 false 필요)"
+            )
+        if _masamo_resource_errors:
+            raise RuntimeError(
+                "명시적 masamo 프로필은 현재 운영 서버의 저사양 제한값을 "
+                "코드가 추정하지 않고 선택 env 파일에 그대로 복사해야 합니다: "
+                + ", ".join(_masamo_resource_errors)
+            )
+    # config.json은 값이 없어도 인스턴스별 빈 객체 파일을 명시해 공용 fallback을 막는다.
+    _read_config_json()
+    _profile_file_errors: list[str] = []
+    if "MASAMONG_CONFIG_FILE" not in _EXPLICIT_ENV_KEYS:
+        _profile_file_errors.append("MASAMONG_CONFIG_FILE 미지정")
+    elif not CONFIG_JSON_PATH.is_file():
+        _profile_file_errors.append(f"config 파일 없음: {CONFIG_JSON_PATH}")
+    elif _CONFIG_JSON_ERROR:
+        _profile_file_errors.append(f"config 파일 오류: {_CONFIG_JSON_ERROR}")
+    if "EMB_CONFIG_PATH" not in _EXPLICIT_ENV_KEYS:
+        _profile_file_errors.append("EMB_CONFIG_PATH 미지정")
+    elif not Path(EMBED_CONFIG_PATH).is_file() or _EMBED_CONFIG_ERROR:
+        _profile_file_errors.append(
+            f"embedding 설정 오류: {_EMBED_CONFIG_ERROR or 'file not found'}"
+        )
+    if "PROMPT_CONFIG_PATH" not in _EXPLICIT_ENV_KEYS:
+        _profile_file_errors.append("PROMPT_CONFIG_PATH 미지정")
+    elif not Path(PROMPT_CONFIG_PATH).is_file() or _PROMPT_CONFIG_ERROR:
+        _profile_file_errors.append(
+            f"prompt 설정 오류: {_PROMPT_CONFIG_ERROR or 'file not found'}"
+        )
+    if _profile_file_errors:
+        raise RuntimeError(
+            "명시적 프로필의 필수 설정 파일 검증에 실패했습니다: "
+            + "; ".join(_profile_file_errors)
+        )
+
 TOKEN = load_config_value('DISCORD_BOT_TOKEN')
-COMMAND_PREFIX = "!"
-LOG_FILE_NAME = "discord_logs.txt"
-ERROR_LOG_FILE_NAME = "error_logs.txt"
+if REQUIRE_EXPLICIT_PROFILE and (
+    not str(TOKEN or "").strip()
+    or "replace-with" in str(TOKEN).strip().lower()
+):
+    raise RuntimeError(
+        "명시적 운영 프로필은 실제 DISCORD_BOT_TOKEN을 지정해야 합니다."
+    )
+EXPECTED_DISCORD_BOT_USER_ID = as_int(
+    load_config_value("MASAMONG_EXPECTED_DISCORD_BOT_USER_ID", 0),
+    0,
+)
+if REQUIRE_EXPLICIT_PROFILE and EXPECTED_DISCORD_BOT_USER_ID <= 0:
+    raise RuntimeError(
+        "명시적 운영 프로필은 MASAMONG_EXPECTED_DISCORD_BOT_USER_ID를 "
+        "양의 정수로 지정해야 합니다."
+    )
+COMMAND_PREFIX = as_str(load_config_value("MASAMONG_COMMAND_PREFIX", "!"), "!")
+_LOG_FILE_NAME_RAW = as_str(
+    load_config_value("MASAMONG_LOG_FILE", "discord_logs.txt"),
+    "discord_logs.txt",
+)
+_ERROR_LOG_FILE_NAME_RAW = as_str(
+    load_config_value("MASAMONG_ERROR_LOG_FILE", "error_logs.txt"),
+    "error_logs.txt",
+)
+if REQUIRE_EXPLICIT_PROFILE:
+    _invalid_log_paths = [
+        setting_name
+        for setting_name, configured_path in (
+            ("MASAMONG_LOG_FILE", _LOG_FILE_NAME_RAW),
+            ("MASAMONG_ERROR_LOG_FILE", _ERROR_LOG_FILE_NAME_RAW),
+        )
+        if not Path(configured_path).expanduser().is_absolute()
+    ]
+    if _invalid_log_paths:
+        raise RuntimeError(
+            "명시적 운영 프로필의 로그 경로는 절대 경로여야 합니다: "
+            + ", ".join(_invalid_log_paths)
+        )
+    if (
+        Path(_LOG_FILE_NAME_RAW).expanduser().resolve()
+        == Path(_ERROR_LOG_FILE_NAME_RAW).expanduser().resolve()
+        and Path(_LOG_FILE_NAME_RAW).expanduser().resolve()
+        != Path(os.devnull).resolve()
+    ):
+        raise RuntimeError(
+            "명시적 운영 프로필의 일반/오류 로그 파일은 서로 달라야 합니다."
+        )
+LOG_FILE_NAME = _resolve_project_storage_path(
+    _LOG_FILE_NAME_RAW,
+    "discord_logs.txt",
+)
+ERROR_LOG_FILE_NAME = _resolve_project_storage_path(
+    _ERROR_LOG_FILE_NAME_RAW,
+    "error_logs.txt",
+)
+LOG_MAX_BYTES = max(
+    1024 * 1024,
+    as_int(load_config_value("MASAMONG_LOG_MAX_BYTES", 10 * 1024 * 1024), 10 * 1024 * 1024),
+)
+LOG_BACKUP_COUNT = max(
+    1,
+    as_int(load_config_value("MASAMONG_LOG_BACKUP_COUNT", 5), 5),
+)
+DISCORD_LOG_QUEUE_MAXSIZE = max(
+    10,
+    as_int(load_config_value("MASAMONG_DISCORD_LOG_QUEUE_MAXSIZE", 500), 500),
+)
+DISCORD_OPERATIONS_LOG_CHANNEL_ID = as_int(
+    load_config_value("MASAMONG_OPERATIONS_LOG_CHANNEL_ID", 0),
+    0,
+)
+ANALYTICS_STORE_CONTENT = as_bool(
+    load_config_value("MASAMONG_ANALYTICS_STORE_CONTENT", "false")
+)
+DISABLED_COGS = _parse_csv_set(load_config_value("MASAMONG_DISABLED_COGS", ""))
+REQUIRED_COGS = _parse_csv_set(load_config_value("MASAMONG_REQUIRED_COGS", ""))
+if REQUIRED_COGS & DISABLED_COGS:
+    raise RuntimeError(
+        "같은 Cog를 필수와 비활성 목록에 동시에 지정할 수 없습니다: "
+        + ", ".join(sorted(REQUIRED_COGS & DISABLED_COGS))
+    )
+_auto_migrate_default = (
+    "false"
+    if REQUIRE_EXPLICIT_PROFILE and PROFILE == "masamo"
+    else "true"
+)
+_auto_migrate_raw = load_config_value(
+    "MASAMONG_AUTO_MIGRATE",
+    _auto_migrate_default,
+)
+if REQUIRE_EXPLICIT_PROFILE and "MASAMONG_AUTO_MIGRATE" not in _EXPLICIT_ENV_KEYS:
+    raise RuntimeError(
+        "명시적 운영 프로필은 MASAMONG_AUTO_MIGRATE를 env 파일에 "
+        "true 또는 false로 지정해야 합니다."
+    )
+AUTO_MIGRATE = (
+    as_strict_bool("MASAMONG_AUTO_MIGRATE", _auto_migrate_raw)
+    if REQUIRE_EXPLICIT_PROFILE
+    else as_bool(_auto_migrate_raw, _auto_migrate_default == "true")
+)
+if REQUIRE_EXPLICIT_PROFILE and PROFILE == "masamo" and AUTO_MIGRATE:
+    raise RuntimeError(
+        "누적 운영 데이터가 있는 masamo 프로필에서는 런타임 "
+        "MASAMONG_AUTO_MIGRATE=true를 허용하지 않습니다. "
+        "MASAMONG_AUTO_MIGRATE=false로 기동하고 별도 검증된 migration 절차를 사용하세요."
+    )
+GUILD_SETTINGS_MODE = as_str(
+    load_config_value("MASAMONG_GUILD_SETTINGS_MODE", "static"),
+    "static",
+).lower()
+if GUILD_SETTINGS_MODE not in {"static", "database"}:
+    raise RuntimeError(
+        "MASAMONG_GUILD_SETTINGS_MODE은 static 또는 database여야 합니다."
+    )
+
+_cpu_thread_default = 1 if PROFILE == "general" else 0
+CPU_THREAD_LIMIT = max(
+    0,
+    as_int(
+        load_config_value("MASAMONG_CPU_THREADS", _cpu_thread_default),
+        _cpu_thread_default,
+    ),
+)
+if CPU_THREAD_LIMIT > 0:
+    # torch/numpy가 import되기 전에 운영 제한을 전달한다. 명시적 프로필에서는
+    # 상위 service/shell의 오래된 값이 선택한 프로필의 CPU 예산을 우회하지 못하게 한다.
+    for _thread_env in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    ):
+        if REQUIRE_EXPLICIT_PROFILE:
+            os.environ[_thread_env] = str(CPU_THREAD_LIMIT)
+        else:
+            os.environ.setdefault(_thread_env, str(CPU_THREAD_LIMIT))
+    if REQUIRE_EXPLICIT_PROFILE:
+        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    else:
+        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 DB_BACKEND = str(load_config_value('MASAMONG_DB_BACKEND', 'sqlite')).strip().lower()
-DATABASE_FILE = "database/remasamong.db"
+if DB_BACKEND not in {"sqlite", "tidb"}:
+    raise RuntimeError(f"지원하지 않는 MASAMONG_DB_BACKEND 값입니다: {DB_BACKEND}")
+if REQUIRE_EXPLICIT_PROFILE and DB_BACKEND == "tidb":
+    _relative_profile_config_paths = [
+        setting_name
+        for setting_name in (
+            "MASAMONG_CONFIG_FILE",
+            "EMB_CONFIG_PATH",
+            "PROMPT_CONFIG_PATH",
+        )
+        if not Path(_EXPLICIT_ENV_VALUES.get(setting_name, "")).expanduser().is_absolute()
+    ]
+    if _relative_profile_config_paths:
+        raise RuntimeError(
+            "명시적 TiDB 프로필의 설정 파일 경로는 절대 경로여야 합니다: "
+            + ", ".join(_relative_profile_config_paths)
+        )
+_DATABASE_FILE_RAW = load_config_value(
+    "MASAMONG_DATABASE_FILE",
+    "database/remasamong.db",
+)
+DATABASE_FILE = _resolve_project_storage_path(
+    _DATABASE_FILE_RAW,
+    "database/remasamong.db",
+)
+if REQUIRE_EXPLICIT_PROFILE and DB_BACKEND == "sqlite":
+    if "MASAMONG_DATABASE_FILE" not in _EXPLICIT_ENV_KEYS:
+        raise RuntimeError(
+            "명시적 SQLite 프로필은 MASAMONG_DATABASE_FILE을 파일에 지정해야 합니다."
+        )
+    _database_file_text = str(_DATABASE_FILE_RAW).strip()
+    if _database_file_text != ":memory:":
+        _database_file_path = Path(_database_file_text).expanduser()
+        if not _database_file_path.is_absolute():
+            raise RuntimeError(
+                "명시적 SQLite 프로필의 MASAMONG_DATABASE_FILE은 "
+                "절대 경로여야 합니다."
+            )
+        if not re.search(
+            rf"(^|[^a-z0-9]){re.escape(PROFILE)}([^a-z0-9]|$)",
+            _database_file_path.as_posix().lower(),
+        ):
+            raise RuntimeError(
+                "명시적 SQLite 프로필의 MASAMONG_DATABASE_FILE 경로에는 "
+                f"인스턴스 이름 {PROFILE!r}이 포함되어야 합니다."
+            )
 TIDB_HOST = load_config_value('MASAMONG_DB_HOST')
 TIDB_PORT = as_int(load_config_value('MASAMONG_DB_PORT', 4000), 4000)
-TIDB_NAME = load_config_value('MASAMONG_DB_NAME', 'masamong')
+TIDB_NAME = as_str(load_config_value('MASAMONG_DB_NAME', 'masamong'), 'masamong')
 TIDB_USER = load_config_value('MASAMONG_DB_USER')
 TIDB_PASSWORD = load_config_value('MASAMONG_DB_PASSWORD')
 TIDB_SSL_CA = load_config_value('MASAMONG_DB_SSL_CA')
 TIDB_SSL_VERIFY_IDENTITY = as_bool(load_config_value('MASAMONG_DB_SSL_VERIFY_IDENTITY', 'true'))
+TIDB_CONNECT_TIMEOUT = max(
+    1,
+    as_int(load_config_value("MASAMONG_DB_CONNECT_TIMEOUT", 10), 10),
+)
+TIDB_READ_TIMEOUT = max(
+    1,
+    as_int(load_config_value("MASAMONG_DB_READ_TIMEOUT", 30), 30),
+)
+TIDB_WRITE_TIMEOUT = max(
+    1,
+    as_int(load_config_value("MASAMONG_DB_WRITE_TIMEOUT", 30), 30),
+)
+TIDB_CONN_MAX_LIFETIME_SECONDS = max(
+    60,
+    as_int(load_config_value("MASAMONG_DB_CONN_MAX_LIFETIME_SECONDS", 600), 600),
+)
 REMOTE_DB_STRICT_MODE = as_bool(load_config_value('MASAMONG_DB_STRICT_REMOTE_ONLY', 'false'))
+# 기존 strict 운영 환경에 별도 REQUIRE_TLS 키가 없어도 strict 모드 자체가
+# TLS 필수를 의미하도록 한다. 명시적으로 false를 적어도 strict를 우회할 수 없다.
+REQUIRE_DB_TLS = (
+    as_bool(load_config_value("MASAMONG_DB_REQUIRE_TLS", "false"))
+    or REMOTE_DB_STRICT_MODE
+)
+EXPECTED_DB_NAME = as_str(load_config_value("MASAMONG_EXPECTED_DB_NAME", ""), "")
+if REQUIRE_EXPLICIT_PROFILE and DB_BACKEND == "tidb" and not EXPECTED_DB_NAME:
+    raise RuntimeError(
+        "명시적 TiDB 프로필은 MASAMONG_EXPECTED_DB_NAME을 지정해야 합니다."
+    )
+if EXPECTED_DB_NAME and DB_BACKEND == "tidb" and TIDB_NAME != EXPECTED_DB_NAME:
+    raise RuntimeError(
+        "설정된 TiDB 이름이 MASAMONG_EXPECTED_DB_NAME과 다릅니다: "
+        f"configured={TIDB_NAME!r}, expected={EXPECTED_DB_NAME!r}"
+    )
+if REQUIRE_EXPLICIT_PROFILE and DB_BACKEND == "tidb":
+    _profile_db_name = {
+        "masamo": "masamong",
+        "general": "masamong_general",
+    }[PROFILE]
+    if TIDB_NAME != _profile_db_name:
+        raise RuntimeError(
+            "명시적 운영 프로필의 TiDB 이름이 고정 경계와 다릅니다: "
+            f"profile={PROFILE!r}, configured={TIDB_NAME!r}, "
+            f"required={_profile_db_name!r}"
+        )
+    _explicit_tidb_missing = [
+        setting_name
+        for setting_name, setting_value in (
+            ("MASAMONG_DB_HOST", TIDB_HOST),
+            ("MASAMONG_DB_USER", TIDB_USER),
+            ("MASAMONG_DB_PASSWORD", TIDB_PASSWORD),
+            ("MASAMONG_DB_SSL_CA", TIDB_SSL_CA),
+        )
+        if not setting_value
+    ]
+    if _explicit_tidb_missing:
+        raise RuntimeError(
+            "명시적 TiDB 프로필의 필수 설정이 누락되었습니다: "
+            + ", ".join(_explicit_tidb_missing)
+        )
+    if not REMOTE_DB_STRICT_MODE or not REQUIRE_DB_TLS:
+        raise RuntimeError(
+            "명시적 TiDB 프로필은 strict remote 및 TLS 필수 모드여야 합니다."
+        )
+    if not TIDB_SSL_VERIFY_IDENTITY:
+        raise RuntimeError(
+            "명시적 TiDB 프로필은 TLS hostname 검증을 켜야 합니다."
+        )
+    _explicit_ca_path = Path(str(TIDB_SSL_CA)).expanduser()
+    if not _explicit_ca_path.is_absolute() or not _explicit_ca_path.is_file():
+        raise RuntimeError(
+            "명시적 TiDB 프로필의 MASAMONG_DB_SSL_CA는 "
+            f"존재하는 절대 파일이어야 합니다: {_explicit_ca_path}"
+        )
+if DB_BACKEND == "tidb" and REQUIRE_DB_TLS and not TIDB_SSL_CA:
+    raise RuntimeError(
+        "MASAMONG_DB_REQUIRE_TLS=true 이지만 MASAMONG_DB_SSL_CA가 없습니다."
+    )
 if REMOTE_DB_STRICT_MODE:
     if DB_BACKEND != "tidb":
         raise RuntimeError(
@@ -339,10 +880,17 @@ if REMOTE_DB_STRICT_MODE:
         _missing_tidb.append("MASAMONG_DB_USER")
     if not TIDB_NAME:
         _missing_tidb.append("MASAMONG_DB_NAME")
+    if REQUIRE_DB_TLS and not TIDB_SSL_CA:
+        _missing_tidb.append("MASAMONG_DB_SSL_CA")
     if _missing_tidb:
         raise RuntimeError(
             "MASAMONG_DB_STRICT_REMOTE_ONLY=true 이지만 TiDB 필수 설정이 누락되었습니다: "
             + ", ".join(_missing_tidb)
+        )
+    if not TIDB_SSL_VERIFY_IDENTITY:
+        raise RuntimeError(
+            "MASAMONG_DB_STRICT_REMOTE_ONLY=true 인 경우 "
+            "MASAMONG_DB_SSL_VERIFY_IDENTITY=true 여야 합니다."
         )
 GEMINI_API_KEY = load_config_value('GEMINI_API_KEY')
 GOOGLE_API_KEY = load_config_value('GOOGLE_API_KEY')
@@ -363,7 +911,44 @@ USER_DAILY_LLM_LIMIT = as_int(load_config_value('USER_DAILY_LLM_LIMIT', 200), 20
 GLOBAL_DAILY_LLM_LIMIT = as_int(load_config_value('GLOBAL_DAILY_LLM_LIMIT', 5000), 5000)
 # [저사양 보호] 동시에 처리할 수 있는 AI 메시지 최대 개수 (전역 세마포어).
 # 저사양 서버에서 동시 요청이 몰릴 때 임베딩/LLM 폭주를 막는다. 서버 사양에 맞게 조정.
-AI_MAX_CONCURRENT_PROCESSING = as_int(load_config_value('AI_MAX_CONCURRENT_PROCESSING', 3), 3)
+_ai_concurrency_default = 1 if PROFILE == "general" else 3
+AI_MAX_CONCURRENT_PROCESSING = max(
+    1,
+    as_int(
+        load_config_value(
+            'AI_MAX_CONCURRENT_PROCESSING',
+            _ai_concurrency_default,
+        ),
+        _ai_concurrency_default,
+    ),
+)
+# 로컬 임베딩 encode는 CPU 사용량이 크므로 별도 동시성/대기 태스크 상한을 둔다.
+EMBEDDING_MAX_CONCURRENCY = max(
+    1,
+    as_int(load_config_value("EMBEDDING_MAX_CONCURRENCY", 1), 1),
+)
+_rag_background_tasks_default = 2 if PROFILE == "general" else 16
+RAG_MAX_BACKGROUND_TASKS = max(
+    1,
+    as_int(
+        load_config_value(
+            "RAG_MAX_BACKGROUND_TASKS",
+            _rag_background_tasks_default,
+        ),
+        _rag_background_tasks_default,
+    ),
+)
+_rag_tracked_windows_default = 64 if PROFILE == "general" else 256
+RAG_MAX_TRACKED_WINDOWS = max(
+    1,
+    as_int(
+        load_config_value(
+            "RAG_MAX_TRACKED_WINDOWS",
+            _rag_tracked_windows_default,
+        ),
+        _rag_tracked_windows_default,
+    ),
+)
 # 프롬프트 최대 토큰 (초과 시 RAG 컨텍스트 줄임)
 MAX_PROMPT_TOKENS = as_int(load_config_value('MAX_PROMPT_TOKENS', 4000), 4000)
 # 동일 메시지 스팸 방지 시간 (초)
@@ -615,19 +1200,110 @@ DISCORD_EMBEDDING_BACKEND = str(
 KAKAO_STORE_BACKEND = str(
     load_config_value('KAKAO_STORE_BACKEND', 'tidb' if DB_BACKEND == 'tidb' else 'local')
 ).strip().lower()
+if DISCORD_EMBEDDING_BACKEND not in {"sqlite", "tidb"}:
+    raise RuntimeError(
+        "DISCORD_EMBEDDING_BACKEND는 sqlite 또는 tidb여야 합니다."
+    )
+if KAKAO_STORE_BACKEND not in {"local", "tidb"}:
+    raise RuntimeError("KAKAO_STORE_BACKEND는 local 또는 tidb여야 합니다.")
+MEMORY_SOURCES = _parse_csv_set(
+    load_config_value("MASAMONG_MEMORY_SOURCES", "discord,kakao")
+)
+_unsupported_memory_sources = MEMORY_SOURCES - {"discord", "kakao"}
+if _unsupported_memory_sources:
+    raise RuntimeError(
+        "지원하지 않는 MASAMONG_MEMORY_SOURCES 값입니다: "
+        + ", ".join(sorted(_unsupported_memory_sources))
+    )
+KAKAO_MEMORY_ENABLED = "kakao" in MEMORY_SOURCES
+if PROFILE == "general" and MEMORY_SOURCES != {"discord"}:
+    raise RuntimeError(
+        "general 프로필의 MASAMONG_MEMORY_SOURCES는 정확히 discord여야 합니다."
+    )
+if PROFILE == "masamo" and MEMORY_SOURCES != {"discord", "kakao"}:
+    raise RuntimeError(
+        "masamo 프로필의 MASAMONG_MEMORY_SOURCES는 discord,kakao여야 합니다."
+    )
 if REMOTE_DB_STRICT_MODE:
     # 원격 DB 강제 모드에서는 로컬 파일 기반 저장소를 사용하지 않는다.
     DISCORD_EMBEDDING_BACKEND = "tidb"
     KAKAO_STORE_BACKEND = "tidb"
-DISCORD_EMBEDDING_DB_PATH = EMBED_CONFIG.get("discord_db_path", "database/discord_embeddings.db")
-KAKAO_EMBEDDING_DB_PATH = EMBED_CONFIG.get("kakao_db_path", "database/kakao_embeddings.db")
+_DISCORD_EMBEDDING_DB_PATH_RAW = as_str(
+    load_config_value(
+        "DISCORD_EMBEDDING_DB_PATH",
+        EMBED_CONFIG.get("discord_db_path", "database/discord_embeddings.db"),
+    ),
+    "database/discord_embeddings.db",
+)
+DISCORD_EMBEDDING_DB_PATH = _resolve_project_storage_path(
+    _DISCORD_EMBEDDING_DB_PATH_RAW,
+    "database/discord_embeddings.db",
+)
+_KAKAO_EMBEDDING_DB_PATH_RAW = as_str(
+    load_config_value(
+        "KAKAO_EMBEDDING_DB_PATH",
+        EMBED_CONFIG.get("kakao_db_path", "database/kakao_embeddings.db"),
+    ),
+    "database/kakao_embeddings.db",
+)
+KAKAO_EMBEDDING_DB_PATH = _resolve_project_storage_path(
+    _KAKAO_EMBEDDING_DB_PATH_RAW,
+    "database/kakao_embeddings.db",
+)
 KAKAO_EMBEDDING_SERVER_MAP = _normalize_kakao_servers(EMBED_CONFIG.get("kakao_servers", []))
 KAKAO_VECTOR_EXTENSION = EMBED_CONFIG.get("kakao_vector_extension")
 DISCORD_EMBEDDING_TIDB_TABLE = str(load_config_value('DISCORD_EMBEDDING_TIDB_TABLE', 'discord_chat_embeddings')).strip()
 KAKAO_TIDB_TABLE = str(load_config_value('KAKAO_TIDB_TABLE', 'kakao_chunks')).strip()
+for _table_setting_name, _table_name in (
+    ("DISCORD_EMBEDDING_TIDB_TABLE", DISCORD_EMBEDDING_TIDB_TABLE),
+    ("KAKAO_TIDB_TABLE", KAKAO_TIDB_TABLE),
+):
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", _table_name):
+        raise RuntimeError(
+            f"{_table_setting_name}은 단순 SQL 식별자만 사용할 수 있습니다."
+        )
+if REQUIRE_EXPLICIT_PROFILE and (
+    DISCORD_EMBEDDING_TIDB_TABLE != "discord_chat_embeddings"
+    or KAKAO_TIDB_TABLE != "kakao_chunks"
+):
+    raise RuntimeError(
+        "명시적 운영 프로필은 검증된 기본 임베딩 테이블 이름만 사용할 수 있습니다."
+    )
+if REQUIRE_EXPLICIT_PROFILE:
+    _profile_embedding_errors: list[str] = []
+    if DISCORD_EMBEDDING_TIDB_TABLE != "discord_chat_embeddings":
+        _profile_embedding_errors.append(
+            "DISCORD_EMBEDDING_TIDB_TABLE은 discord_chat_embeddings여야 함"
+        )
+    if KAKAO_TIDB_TABLE != "kakao_chunks":
+        _profile_embedding_errors.append(
+            "KAKAO_TIDB_TABLE은 kakao_chunks여야 함"
+        )
+    for _embedding_path_key, _embedding_path_value in (
+        ("discord_db_path", _DISCORD_EMBEDDING_DB_PATH_RAW),
+        ("kakao_db_path", _KAKAO_EMBEDDING_DB_PATH_RAW),
+    ):
+        if not Path(_embedding_path_value).expanduser().is_absolute():
+            _profile_embedding_errors.append(
+                f"{_embedding_path_key}는 절대 경로여야 함"
+            )
+    if PROFILE == "general" and KAKAO_EMBEDDING_SERVER_MAP:
+        _profile_embedding_errors.append("general에는 Kakao mapping을 둘 수 없음")
+    if PROFILE == "masamo" and not KAKAO_EMBEDDING_SERVER_MAP:
+        _profile_embedding_errors.append(
+            "기존 Kakao 기억 보존을 위한 server mapping이 없음"
+        )
+    if _profile_embedding_errors:
+        raise RuntimeError(
+            "명시적 프로필의 embedding 경계 검증에 실패했습니다: "
+            + "; ".join(_profile_embedding_errors)
+        )
 
-# 검색 엔진 활성화 설정 (emb_config.json에서 관리)
-EMBEDDING_ENABLED = as_bool(EMBED_CONFIG.get("embedding_enabled", True))
+# 검색 엔진 활성화 설정. 환경변수로 프로필별 강제 비활성화할 수 있다.
+EMBEDDING_ENABLED = as_bool(
+    load_config_value("EMBEDDING_ENABLED", EMBED_CONFIG.get("embedding_enabled", True)),
+    True,
+)
 # BM25는 현재 운영 정책상 사용하지 않음 (로컬/서버 공통 비활성화)
 BM25_ENABLED = False
 BM25_DATABASE_PATH = None
@@ -702,19 +1378,25 @@ BM25_AUTO_REBUILD_CONFIG = {
         ),
         False,
     ),
-    "idle_minutes": as_int(
-        load_config_value(
-            "BM25_AUTO_REBUILD_IDLE_MINUTES",
-            _BM25_AUTO_REBUILD_RAW.get("idle_minutes", 180),
+    "idle_minutes": max(
+        1,
+        as_int(
+            load_config_value(
+                "BM25_AUTO_REBUILD_IDLE_MINUTES",
+                _BM25_AUTO_REBUILD_RAW.get("idle_minutes", 180),
+            ),
+            180,
         ),
-        180,
     ),
-    "poll_minutes": as_int(
-        load_config_value(
-            "BM25_AUTO_REBUILD_POLL_MINUTES",
-            _BM25_AUTO_REBUILD_RAW.get("poll_minutes", 15),
+    "poll_minutes": max(
+        1,
+        as_int(
+            load_config_value(
+                "BM25_AUTO_REBUILD_POLL_MINUTES",
+                _BM25_AUTO_REBUILD_RAW.get("poll_minutes", 15),
+            ),
+            15,
         ),
-        15,
     ),
 }
 CONVERSATION_WINDOW_SIZE = as_int(load_config_value('CONVERSATION_WINDOW_SIZE'), 12) # 윈도우 크기 (메시지 개수)
@@ -747,6 +1429,13 @@ AI_INTENT_MODEL_NAME = as_str(load_config_value('AI_INTENT_MODEL_NAME', 'gemini-
 AI_RESPONSE_MODEL_NAME = as_str(load_config_value('AI_RESPONSE_MODEL_NAME', 'gemini-2.5-flash'), 'gemini-2.5-flash')
 FORTUNE_MODEL_LITE = as_str(load_config_value('FORTUNE_MODEL_LITE', 'DeepSeek-V3.2-Exp-nothinking'), 'DeepSeek-V3.2-Exp-nothinking')
 FORTUNE_MODEL_PRO = as_str(load_config_value('FORTUNE_MODEL_PRO', 'DeepSeek-V3.2-Exp-thinking'), 'DeepSeek-V3.2-Exp-thinking')
+FORTUNE_MORNING_BRIEFING_ENABLED = as_bool(
+    load_config_value(
+        "FORTUNE_MORNING_BRIEFING_ENABLED",
+        "false" if PROFILE == "general" else "true",
+    ),
+    PROFILE != "general",
+)
 RPM_LIMIT_INTENT = max(1, as_int(load_config_value('RPM_LIMIT_INTENT', 15), 15))
 RPM_LIMIT_RESPONSE = max(1, as_int(load_config_value('RPM_LIMIT_RESPONSE', 15), 15))
 RPD_LIMIT_INTENT = max(1, as_int(load_config_value('RPD_LIMIT_INTENT', 250), 250))
@@ -785,7 +1474,15 @@ RAG_GUILD_SCOPE = str(load_config_value('RAG_GUILD_SCOPE', EMBED_CONFIG.get("gui
 if RAG_GUILD_SCOPE not in {"channel", "user"}:
     RAG_GUILD_SCOPE = "channel"
 # AI 메모리/RAG 기능은 기본 활성화지만, 저사양 환경에서는 환경변수/설정으로 비활성화할 수 있다.
-AI_MEMORY_ENABLED = as_bool(load_config_value('AI_MEMORY_ENABLED', EMBED_CONFIG.get("enable_local_embeddings", True)))
+# 과거 embedding_enabled=false가 실제 실행을 끄지 못하던 불일치를 없애기 위해
+# enable_local_embeddings가 없으면 EMBEDDING_ENABLED를 기본값으로 사용한다.
+AI_MEMORY_ENABLED = as_bool(
+    load_config_value(
+        'AI_MEMORY_ENABLED',
+        EMBED_CONFIG.get("enable_local_embeddings", EMBEDDING_ENABLED),
+    ),
+    EMBEDDING_ENABLED,
+)
 LITE_MODEL_SYSTEM_PROMPT = _extract_prompt_value("lite_system_prompt", FALLBACK_LITE_PROMPT)
 AGENT_SYSTEM_PROMPT = _extract_prompt_value("agent_system_prompt", FALLBACK_AGENT_PROMPT)
 WEB_FALLBACK_PROMPT = _extract_prompt_value("web_fallback_prompt", FALLBACK_WEB_PROMPT)
@@ -805,10 +1502,19 @@ AI_PROACTIVE_RESPONSE_CONFIG = {
     "min_message_length": 10
 }
 RAG_ARCHIVING_CONFIG = {
-    "enabled": as_bool(load_config_value("RAG_ARCHIVING_ENABLED", True)),
+    "enabled": as_bool(
+        load_config_value(
+            "RAG_ARCHIVING_ENABLED",
+            False if PROFILE == "general" else True,
+        ),
+        PROFILE != "general",
+    ),
     "history_limit": as_int(load_config_value("RAG_ARCHIVE_HISTORY_LIMIT", 20000), 20000),
     "batch_size": as_int(load_config_value("RAG_ARCHIVE_BATCH_SIZE", 1000), 1000),
-    "check_interval_hours": as_int(load_config_value("RAG_ARCHIVE_INTERVAL_HOURS", 24), 24),
+    "check_interval_hours": max(
+        1,
+        as_int(load_config_value("RAG_ARCHIVE_INTERVAL_HOURS", 24), 24),
+    ),
     "startup_delay_seconds": as_int(load_config_value("RAG_ARCHIVE_STARTUP_DELAY_SECONDS", 0), 0),
     "run_on_startup": as_bool(
         load_config_value("RAG_ARCHIVE_RUN_ON_STARTUP", False if DB_BACKEND == "tidb" else True),
@@ -875,12 +1581,21 @@ DEFAULT_NX = str(load_config_value("DEFAULT_NX", "73"))
 DEFAULT_NY = str(load_config_value("DEFAULT_NY", "70"))
 ENABLE_RAIN_NOTIFICATION = as_bool(load_config_value("ENABLE_RAIN_NOTIFICATION", False))
 RAIN_NOTIFICATION_CHANNEL_ID = as_int(load_config_value("RAIN_NOTIFICATION_CHANNEL_ID", 0), 0)
-WEATHER_CHECK_INTERVAL_MINUTES = as_int(load_config_value("WEATHER_CHECK_INTERVAL_MINUTES", 60), 60)
+WEATHER_CHECK_INTERVAL_MINUTES = max(
+    1,
+    as_int(load_config_value("WEATHER_CHECK_INTERVAL_MINUTES", 60), 60),
+)
 RAIN_NOTIFICATION_THRESHOLD_POP = as_int(load_config_value("RAIN_NOTIFICATION_THRESHOLD_POP", 30), 30)
 RAIN_NOTIFICATION_GREETING_THRESHOLD_POP = as_int(load_config_value("RAIN_NOTIFICATION_GREETING_THRESHOLD_POP", 60), 60)
 ENABLE_GREETING_NOTIFICATION = as_bool(load_config_value("ENABLE_GREETING_NOTIFICATION", False))
 GREETING_NOTIFICATION_CHANNEL_ID = as_int(load_config_value("GREETING_NOTIFICATION_CHANNEL_ID", 0), 0)
-ENABLE_EARTHQUAKE_ALERT = as_bool(load_config_value("ENABLE_EARTHQUAKE_ALERT", True))
+ENABLE_EARTHQUAKE_ALERT = as_bool(
+    load_config_value(
+        "ENABLE_EARTHQUAKE_ALERT",
+        False if PROFILE == "general" else True,
+    ),
+    PROFILE != "general",
+)
 EARTHQUAKE_CHECK_INTERVAL_MINUTES = max(
     1,
     as_int(load_config_value("EARTHQUAKE_CHECK_INTERVAL_MINUTES", 1), 1),
@@ -960,11 +1675,31 @@ GEMINI_SAFETY_SETTINGS = {
     'HARM_CATEGORY_SEXUALLY_EXPLICIT': 'BLOCK_NONE',
     'HARM_CATEGORY_DANGEROUS_CONTENT': 'BLOCK_NONE',
 }
+MEMBERS_INTENT_ENABLED = as_bool(
+    load_config_value(
+        "MASAMONG_MEMBERS_INTENT_ENABLED",
+        "false" if PROFILE == "general" else "true",
+    ),
+    PROFILE != "general",
+)
+MEMBER_CACHE_ENABLED = as_bool(
+    load_config_value(
+        "MASAMONG_MEMBER_CACHE_ENABLED",
+        "false" if PROFILE == "general" else "true",
+    ),
+    PROFILE != "general",
+)
+if MEMBER_CACHE_ENABLED and not MEMBERS_INTENT_ENABLED:
+    raise RuntimeError(
+        "MASAMONG_MEMBER_CACHE_ENABLED=true이면 "
+        "MASAMONG_MEMBERS_INTENT_ENABLED=true가 필요합니다."
+    )
+
 intents = discord.Intents.default()
 intents.messages = True
 intents.message_content = True
 intents.guilds = True
-intents.members = True
+intents.members = MEMBERS_INTENT_ENABLED
 intents.emojis = True # [NEW] Enable access to custom emojis/expressions (compatible with older 2.x versions)
 
 # ========== 다국어 설정 ==========

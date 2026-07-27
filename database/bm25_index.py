@@ -49,7 +49,7 @@ _TRIGGER_UPDATE_SQL = """
 CREATE TRIGGER IF NOT EXISTS conversation_history_bm25_au
 AFTER UPDATE ON conversation_history
 BEGIN
-    INSERT INTO conversation_bm25(conversation_bm25, rowid) VALUES('delete', OLD.message_id);
+    DELETE FROM conversation_bm25 WHERE rowid = OLD.message_id;
     INSERT INTO conversation_bm25(
         rowid, content, guild_id, channel_id, user_id, user_name, created_at, message_id
     ) VALUES (
@@ -69,7 +69,7 @@ _TRIGGER_DELETE_SQL = """
 CREATE TRIGGER IF NOT EXISTS conversation_history_bm25_ad
 AFTER DELETE ON conversation_history
 BEGIN
-    INSERT INTO conversation_bm25(conversation_bm25, rowid) VALUES('delete', OLD.message_id);
+    DELETE FROM conversation_bm25 WHERE rowid = OLD.message_id;
 END;
 """
 
@@ -120,22 +120,39 @@ class BM25IndexManager:
 
             if not self.db_path.exists():
                 logger.warning("BM25 인덱스를 위한 DB 파일이 존재하지 않습니다: %s", self.db_path)
-                self._initialized = True
                 return
 
             try:
                 async with aiosqlite.connect(self.db_path) as db:
                     # FTS 테이블과 동기화 트리거를 준비하고, 기존 데이터를 재색인한다.
                     await db.execute(_FTS_TABLE_SQL)
+                    # 이전 버전의 잘못된 delete 특수명령 트리거도 교체되도록 명시적으로 재생성한다.
+                    await db.execute("DROP TRIGGER IF EXISTS conversation_history_bm25_ai")
+                    await db.execute("DROP TRIGGER IF EXISTS conversation_history_bm25_au")
+                    await db.execute("DROP TRIGGER IF EXISTS conversation_history_bm25_ad")
                     await db.execute(_TRIGGER_INSERT_SQL)
                     await db.execute(_TRIGGER_UPDATE_SQL)
                     await db.execute(_TRIGGER_DELETE_SQL)
-                    await db.execute("INSERT INTO conversation_bm25(conversation_bm25) VALUES('rebuild');")
+                    await db.execute("DELETE FROM conversation_bm25")
+                    await db.execute(
+                        """
+                        INSERT INTO conversation_bm25(
+                            rowid, content, guild_id, channel_id, user_id,
+                            user_name, created_at, message_id
+                        )
+                        SELECT
+                            message_id, content, guild_id, channel_id, user_id,
+                            user_name, created_at, message_id
+                        FROM conversation_history
+                        """
+                    )
                     await db.commit()
                 logger.info("BM25 FTS 인덱스 초기화 완료: %s", self.db_path)
             except aiosqlite.Error as exc:
                 logger.error("BM25 인덱스 초기화 중 오류: %s", exc, exc_info=True)
-            finally:
+            else:
+                # 일시적인 lock/I/O 오류가 발생했을 때 다음 호출에서 다시 시도할 수
+                # 있도록 실제 커밋이 끝난 경우에만 초기화 완료로 표시한다.
                 self._initialized = True
 
     async def search(
@@ -154,14 +171,18 @@ class BM25IndexManager:
             return []
 
         normalized_query = self._normalize_query(query)
+        if not normalized_query:
+            return []
         filters: list[str] = []
         params: list[Any] = [normalized_query]
         if guild_id is not None:
             filters.append("guild_id = ?")
-            params.append(str(guild_id))
+            # FTS5 UNINDEXED 컬럼은 삽입 당시 INTEGER 타입을 보존하므로 문자열
+            # 파라미터("10")로 비교하면 숫자 10과 일치하지 않는다.
+            params.append(int(guild_id))
         if channel_id is not None:
             filters.append("channel_id = ?")
-            params.append(str(channel_id))
+            params.append(int(channel_id))
 
         # MATCH 구문은 파라미터화된 자리표시자를 사용해야 SQL 인젝션을 방지할 수 있다.
         where_clause = "WHERE conversation_bm25 MATCH ?"
@@ -421,13 +442,7 @@ class BM25IndexManager:
 async def bulk_rebuild(db_path: str) -> None:
     """대화 기록 전체를 대상으로 BM25 인덱스를 재구축합니다."""
     manager = BM25IndexManager(db_path)
+    # ensure_index 자체가 FTS 테이블을 비우고 원본 대화를 다시 삽입한다.
+    # 이어서 FTS5 rebuild 명령을 실행하면 저사양 서버에서 같은 전체 작업을
+    # 한 번 더 수행하므로 중복 재구축을 하지 않는다.
     await manager.ensure_index()
-    if not Path(db_path).exists():
-        return
-    try:
-        async with aiosqlite.connect(db_path) as db:
-            await db.execute("INSERT INTO conversation_bm25(conversation_bm25) VALUES('rebuild');")
-            await db.commit()
-        logger.info("BM25 인덱스 재구축 완료: %s", db_path)
-    except aiosqlite.Error as exc:
-        logger.error("BM25 인덱스 재구축 실패: %s", exc, exc_info=True)

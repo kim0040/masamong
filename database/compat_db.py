@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import ssl
 import time
 from dataclasses import dataclass
 from typing import Any, Iterable
@@ -150,6 +151,7 @@ class TiDBSettings:
     database: str
     ssl_ca: str | None = None
     ssl_verify_identity: bool = True
+    require_tls: bool = False
     connect_timeout: int = 10
     read_timeout: int = 30
     write_timeout: int = 30
@@ -157,17 +159,21 @@ class TiDBSettings:
 
     @classmethod
     def from_env(cls) -> "TiDBSettings":
-        """환경 변수에서 TiDB 접속 설정을 읽어 TiDBSettings 인스턴스를 생성합니다.
-
-        SSL CA 경로가 존재하지 않으면 시스템 CA 번들(certifi)로 폴백합니다.
-        """
+        """환경 변수에서 TiDB 접속 설정을 읽어 TiDBSettings 인스턴스를 생성합니다."""
         ssl_ca = os.environ.get("MASAMONG_DB_SSL_CA", "").strip() or None
-        if ssl_ca and not os.path.exists(ssl_ca):
-            try:
-                import certifi
-                ssl_ca = certifi.where()
-            except ImportError:
-                ssl_ca = None
+        strict_remote = os.environ.get(
+            "MASAMONG_DB_STRICT_REMOTE_ONLY", "false"
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        require_tls = strict_remote or os.environ.get(
+            "MASAMONG_DB_REQUIRE_TLS", "false"
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        ssl_verify_identity = os.environ.get(
+            "MASAMONG_DB_SSL_VERIFY_IDENTITY", "true"
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if strict_remote and not ssl_verify_identity:
+            raise ValueError(
+                "strict remote 모드에서는 TLS hostname 검증을 끌 수 없습니다."
+            )
 
         return cls(
             host=os.environ.get("MASAMONG_DB_HOST", "").strip(),
@@ -176,7 +182,8 @@ class TiDBSettings:
             password=os.environ.get("MASAMONG_DB_PASSWORD", ""),
             database=os.environ.get("MASAMONG_DB_NAME", "masamong").strip() or "masamong",
             ssl_ca=ssl_ca,
-            ssl_verify_identity=os.environ.get("MASAMONG_DB_SSL_VERIFY_IDENTITY", "true").strip().lower() in {"1", "true", "yes", "on"},
+            ssl_verify_identity=ssl_verify_identity,
+            require_tls=require_tls,
             connect_timeout=max(1, int(os.environ.get("MASAMONG_DB_CONNECT_TIMEOUT", "10"))),
             read_timeout=max(1, int(os.environ.get("MASAMONG_DB_READ_TIMEOUT", "30"))),
             write_timeout=max(1, int(os.environ.get("MASAMONG_DB_WRITE_TIMEOUT", "30"))),
@@ -198,13 +205,50 @@ class TiDBSettings:
             "read_timeout": int(self.read_timeout),
             "write_timeout": int(self.write_timeout),
         }
+        if self.require_tls and not self.ssl_ca:
+            raise ValueError("TLS 필수 모드인데 MASAMONG_DB_SSL_CA가 없습니다.")
         if self.ssl_ca:
-            kwargs["ssl"] = {"ca": self.ssl_ca}
+            if not os.path.isfile(self.ssl_ca):
+                raise ValueError(f"TiDB CA 파일을 찾을 수 없습니다: {self.ssl_ca}")
+            kwargs["ssl"] = {
+                "ca": self.ssl_ca,
+                "check_hostname": bool(self.ssl_verify_identity),
+                "verify_mode": ssl.CERT_REQUIRED,
+            }
         return kwargs
 
 
 _INSERT_OR_IGNORE_RE = re.compile(r"INSERT\s+OR\s+IGNORE", re.IGNORECASE)
 _INSERT_OR_REPLACE_RE = re.compile(r"INSERT\s+OR\s+REPLACE", re.IGNORECASE)
+_READ_ONLY_RETRY_KEYWORDS = frozenset(
+    {"SELECT", "SHOW", "DESCRIBE", "DESC"}
+)
+
+
+def _leading_sql_keyword(sql: str) -> str:
+    """선행 공백/주석을 제외한 첫 SQL 키워드를 보수적으로 반환한다."""
+    remaining = str(sql or "").lstrip()
+    while remaining:
+        if remaining.startswith("--") or remaining.startswith("#"):
+            newline = remaining.find("\n")
+            if newline < 0:
+                return ""
+            remaining = remaining[newline + 1 :].lstrip()
+            continue
+        if remaining.startswith("/*"):
+            end = remaining.find("*/", 2)
+            if end < 0:
+                return ""
+            remaining = remaining[end + 2 :].lstrip()
+            continue
+        break
+    match = re.match(r"([A-Za-z]+)", remaining)
+    return match.group(1).upper() if match else ""
+
+
+def _is_safe_read_retry(sql: str) -> bool:
+    """연결 단절 후 새 트랜잭션에서 재실행해도 데이터 쓰기가 없는 문장인지 판별한다."""
+    return _leading_sql_keyword(sql) in _READ_ONLY_RETRY_KEYWORDS
 
 
 def rewrite_sql_for_tidb(query: str) -> str:
@@ -253,6 +297,7 @@ class TiDBConnection:
         self._lock = asyncio.Lock()
         self.backend = "tidb"
         self._connected_at_monotonic: float | None = None
+        self._transaction_dirty = False
 
     async def connect(self) -> "TiDBConnection":
         """PyMySQL 연결을 생성하고 연결 시각을 기록합니다."""
@@ -260,6 +305,7 @@ class TiDBConnection:
             raise CompatOperationalError("PyMySQL 패키지가 필요합니다.")
         self._conn = await asyncio.to_thread(pymysql.connect, **self.settings.to_connect_kwargs())
         self._connected_at_monotonic = time.monotonic()
+        self._transaction_dirty = False
         return self
 
     def _is_connection_stale(self) -> bool:
@@ -293,6 +339,7 @@ class TiDBConnection:
                 pass
         self._conn = pymysql.connect(**self.settings.to_connect_kwargs())
         self._connected_at_monotonic = time.monotonic()
+        self._transaction_dirty = False
 
     async def _ensure_connected_locked(self) -> None:
         """연결 상태 점검/재연결.
@@ -304,35 +351,56 @@ class TiDBConnection:
         성능: 매 쿼리마다 `ping()`으로 서버 왕복을 추가하지 않는다(원격 TiDB에서
         쿼리당 왕복이 2배가 되어 지연/RU 비용이 커진다). 최대 수명을 초과했을 때만
         선제적으로 재연결하고, 그 사이에 끊긴 연결은 실행 시점의 재시도 경로
-        (`_is_retryable_disconnect` 기반 1회 재연결+재실행)에서 처리한다.
+        (`_is_retryable_disconnect` 기반 재연결)에서 처리한다. 결과가 불확실한
+        쓰기는 재실행하지 않고, 진행 중 트랜잭션이 없는 읽기만 1회 재실행한다.
         """
         if self._conn is None:
             await self.connect()
             return
-        if self._is_connection_stale():
+        if self._is_connection_stale() and not self._transaction_dirty:
             await asyncio.to_thread(self._reconnect_sync)
             return
 
     async def _execute_buffered(self, query: str, params: Iterable[Any] | None = None) -> BufferedCursor:
         """SQL을 TiDB 문법으로 변환 후 실행하고 BufferedCursor로 결과를 반환합니다.
 
-        연결 끊김 감지 시 1회 자동 재연결을 시도합니다.
+        연결 끊김 감지 시 재연결하되, 쓰기는 중복 반영 위험 때문에 재실행하지 않습니다.
         """
         sql = rewrite_sql_for_tidb(query)
         bind = tuple(params or ())
+        retry_safe = _is_safe_read_retry(sql)
         async with self._lock:
             await self._ensure_connected_locked()
+            # 실행 도중 오류가 나더라도 서버가 문장의 일부 또는 DDL의 implicit
+            # commit을 반영했을 수 있다. 성공 뒤가 아니라 실행 전에 dirty로
+            # 표시해야 다음 호출의 선제 재연결로 미확정 트랜잭션을 버리지 않는다.
+            if not retry_safe:
+                self._transaction_dirty = True
             try:
-                return await asyncio.to_thread(self._execute_sync, sql, bind)
+                result = await asyncio.to_thread(self._execute_sync, sql, bind)
+                return result
             except Exception as exc:
                 if self._is_retryable_disconnect(exc):
+                    transaction_was_dirty = self._transaction_dirty
                     try:
                         await asyncio.to_thread(self._reconnect_sync)
-                        return await asyncio.to_thread(self._execute_sync, sql, bind)
                     except Exception as retry_exc:  # pragma: no cover
                         raise CompatOperationalError(str(retry_exc)) from retry_exc
+                    if retry_safe and not transaction_was_dirty:
+                        try:
+                            return await asyncio.to_thread(
+                                self._execute_sync,
+                                sql,
+                                bind,
+                            )
+                        except Exception as retry_exc:  # pragma: no cover
+                            raise CompatOperationalError(str(retry_exc)) from retry_exc
+                    raise CompatOperationalError(
+                        "연결 단절 시 쓰기 또는 진행 중 트랜잭션은 결과가 불확실하여 "
+                        "자동 재실행하지 않았습니다."
+                    ) from exc
                 raise CompatOperationalError(str(exc)) from exc
-            
+
     def _execute_sync(self, sql: str, params: tuple[Any, ...]) -> BufferedCursor:
         """PyMySQL 커서로 SQL을 동기 실행하고 결과를 BufferedCursor로 래핑합니다."""
         assert self._conn is not None
@@ -352,18 +420,24 @@ class TiDBConnection:
         """여러 행을 한 번에 실행합니다. (INSERT 다중행 등)"""
         sql = rewrite_sql_for_tidb(query)
         values = [tuple(item) for item in seq_of_params]
+        if not values:
+            return
         async with self._lock:
             await self._ensure_connected_locked()
+            # 드라이버가 큰 batch를 여러 문장으로 나눈 뒤 후반부에서 실패할 수
+            # 있으므로, 일부 행이 반영됐을 가능성까지 보수적으로 추적한다.
+            self._transaction_dirty = True
             try:
                 await asyncio.to_thread(self._executemany_sync, sql, values)
             except Exception as exc:  # pragma: no cover
                 if self._is_retryable_disconnect(exc):
                     try:
                         await asyncio.to_thread(self._reconnect_sync)
-                        await asyncio.to_thread(self._executemany_sync, sql, values)
-                        return
                     except Exception as retry_exc:
                         raise CompatOperationalError(str(retry_exc)) from retry_exc
+                    raise CompatOperationalError(
+                        "연결 단절 시 executemany 결과가 불확실하여 자동 재실행하지 않았습니다."
+                    ) from exc
                 raise CompatOperationalError(str(exc)) from exc
 
     def _executemany_sync(self, sql: str, values: list[tuple[Any, ...]]) -> None:
@@ -385,11 +459,13 @@ class TiDBConnection:
             await self._ensure_connected_locked()
             try:
                 await asyncio.to_thread(self._conn.commit)
+                self._transaction_dirty = False
             except Exception as exc:  # pragma: no cover
                 if self._is_retryable_disconnect(exc):
                     await asyncio.to_thread(self._reconnect_sync)
                     raise CompatOperationalError(
-                        "커밋 중 연결이 끊어졌습니다. 트랜잭션 상태가 불확실하므로 상위 레벨에서 재시도해야 합니다."
+                        "커밋 중 연결이 끊어져 결과가 불확실합니다. 멱등성 키나 "
+                        "read-back 확인 없이 작업 전체를 자동 재시도하면 안 됩니다."
                     ) from exc
                 raise CompatOperationalError(str(exc)) from exc
 
@@ -401,6 +477,7 @@ class TiDBConnection:
             await self._ensure_connected_locked()
             try:
                 await asyncio.to_thread(self._conn.rollback)
+                self._transaction_dirty = False
             except Exception as exc:  # pragma: no cover
                 if self._is_retryable_disconnect(exc):
                     await asyncio.to_thread(self._reconnect_sync)
@@ -416,6 +493,8 @@ class TiDBConnection:
         async with self._lock:
             await asyncio.to_thread(self._conn.close)
         self._conn = None
+        self._connected_at_monotonic = None
+        self._transaction_dirty = False
 
 
 async def connect_main_db(backend: str, *, sqlite_path: str | None = None, tidb_settings: TiDBSettings | None = None):

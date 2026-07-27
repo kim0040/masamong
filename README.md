@@ -16,7 +16,7 @@
 
 Masamong is a modular Discord bot that integrates AI conversation, structured memory (RAG), KakaoTalk chat vector search, and external tools (weather, finance, web search, image generation) into a single runtime.
 
-- **Language**: Python 3.9+
+- **Language**: Python 3.10+
 - **Framework**: `discord.py` >=2.7.1
 - **LLM**: CometAPI (OpenAI-compatible) + optional Gemini fallback
 - **DB Backend**: TiDB (production) / SQLite (development)
@@ -27,7 +27,7 @@ Masamong is a modular Discord bot that integrates AI conversation, structured me
 ## Quick Start
 
 ### Prerequisites
-- Python 3.9+
+- Python 3.10+
 - Discord Bot Token ([Developer Portal](https://discord.com/developers/applications))
 - CometAPI Key (or Gemini API Key)
 
@@ -71,6 +71,9 @@ USE_COMETAPI=true
 ```
 
 > **Tip:** Run `python setup.py` for an interactive setup wizard.
+>
+> Running isolated General and Masamo instances? Read the
+> [instance separation runbook](docs/INSTANCE_SEPARATION.ko.md) before touching production data.
 
 ### Run
 

@@ -37,6 +37,7 @@ async def main() -> None:
             database=config.TIDB_NAME,
             ssl_ca=config.TIDB_SSL_CA,
             ssl_verify_identity=config.TIDB_SSL_VERIFY_IDENTITY,
+            require_tls=config.REQUIRE_DB_TLS,
         ),
     )
     try:
@@ -47,7 +48,10 @@ async def main() -> None:
         coords = await get_coords_from_db(db, "서울")
         print("coords", coords)
 
-        discord_store = DiscordEmbeddingStore(config.DISCORD_EMBEDDING_DB_PATH)
+        discord_store = DiscordEmbeddingStore(
+            config.DISCORD_EMBEDDING_DB_PATH,
+            read_only=not args.write_check,
+        )
         discord_rows = await discord_store.fetch_recent_embeddings(
             server_id=659398210275770368,
             channel_id=659398210980151307,

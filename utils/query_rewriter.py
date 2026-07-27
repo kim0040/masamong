@@ -4,21 +4,16 @@
 from __future__ import annotations
 
 import asyncio
-from typing import List
+from typing import Any, List
 import inspect
 
 import config
 from logger_config import logger
 
-try:  # pragma: no cover - 경량 환경에서는 sentence-transformers가 없을 수 있다.
-    from sentence_transformers import SentenceTransformer
-except ModuleNotFoundError:  # pragma: no cover
-    SentenceTransformer = None  # type: ignore
-
-import numpy as np
-
 _MODEL_LOCK = asyncio.Lock()
-_MODEL_INSTANCE: SentenceTransformer | None = None
+_MODEL_INSTANCE: Any | None = None
+SentenceTransformer: Any | None = None
+_SENTENCE_TRANSFORMER_IMPORT_ATTEMPTED = False
 
 _SYNONYM_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("알려줘", ("말해줘", "설명해줘", "얘기해줘", "알려줄래", "알려줄 수 있어?")),
@@ -53,7 +48,26 @@ def _normalize_query(text: str) -> str:
     return stripped
 
 
-async def _async_encode(model: SentenceTransformer, sentences: List[str]) -> np.ndarray:
+def _get_sentence_transformer_class() -> Any | None:
+    """실제 쿼리 재작성 요청이 들어올 때만 무거운 ML 패키지를 import합니다."""
+    global SentenceTransformer, _SENTENCE_TRANSFORMER_IMPORT_ATTEMPTED
+
+    if SentenceTransformer is not None:
+        return SentenceTransformer
+    if _SENTENCE_TRANSFORMER_IMPORT_ATTEMPTED:
+        return None
+
+    _SENTENCE_TRANSFORMER_IMPORT_ATTEMPTED = True
+    try:
+        from sentence_transformers import SentenceTransformer as transformer_class
+    except ImportError:  # pragma: no cover - 선택적 의존성이 없는 경량 환경
+        return None
+
+    SentenceTransformer = transformer_class
+    return SentenceTransformer
+
+
+async def _async_encode(model: Any, sentences: List[str]) -> Any:
     """SentenceTransformer 인코딩을 별도 스레드에서 실행합니다."""
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
@@ -62,10 +76,11 @@ async def _async_encode(model: SentenceTransformer, sentences: List[str]) -> np.
     )
 
 
-async def _get_model() -> SentenceTransformer | None:
+async def _get_model() -> Any | None:
     """쿼리 재작성용 SentenceTransformer 모델을 지연 로딩합니다."""
     global _MODEL_INSTANCE
-    if SentenceTransformer is None:
+    transformer_class = _get_sentence_transformer_class()
+    if transformer_class is None:
         logger.warning("sentence-transformers 패키지를 찾을 수 없어 쿼리 재작성을 비활성화합니다.")
         return None
     if _MODEL_INSTANCE is not None:
@@ -76,15 +91,15 @@ async def _get_model() -> SentenceTransformer | None:
 
     loop = asyncio.get_running_loop()
 
-    def _build_model() -> SentenceTransformer:
+    def _build_model() -> Any:
         """SentenceTransformer를 동기적으로 생성한다(수 초 소요될 수 있는 블로킹 작업)."""
         if backend:
-            ctor_params = set(inspect.signature(SentenceTransformer.__init__).parameters)
+            ctor_params = set(inspect.signature(transformer_class.__init__).parameters)
             if "backend" in ctor_params:
-                return SentenceTransformer(model_name, backend=backend)
+                return transformer_class(model_name, backend=backend)
             logger.warning("SentenceTransformer 버전이 backend 인자를 지원하지 않아 기본 설정으로 로드합니다.")
-            return SentenceTransformer(model_name)
-        return SentenceTransformer(model_name)
+            return transformer_class(model_name)
+        return transformer_class(model_name)
 
     async with _MODEL_LOCK:
         if _MODEL_INSTANCE is not None:

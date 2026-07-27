@@ -16,7 +16,7 @@
 
 マサモンはDiscordサーバーで動作する**韓国語中心のAIチャットボット**です。メンションベースの会話、構造化メモリ/RAG、Kakao Talkベクトル検索、天気/金融/Web検索ツール、運勢、画像生成、コミュニティ機能を単一ランタイムで統合しています。
 
-- **言語**: Python 3.9+
+- **言語**: Python 3.10+
 - **フレームワーク**: `discord.py` >=2.7.1
 - **LLM**: CometAPI (OpenAI互換) + Gemini (オプション fallback)
 - **DB**: TiDB (本番) / SQLite (開発)
@@ -27,7 +27,7 @@
 ## クイックスタート
 
 ### 前提条件
-- Python 3.9+
+- Python 3.10+
 - Discord Bot Token ([Developer Portal](https://discord.com/developers/applications))
 - CometAPI Key (または Gemini API Key)
 

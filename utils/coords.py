@@ -62,9 +62,17 @@ async def get_coords_from_db(db: aiosqlite.Connection, location_name: str) -> Op
 
     # 2. 부분 일치로 검색 (LIKE)
     if config.DB_BACKEND == "tidb":
-        partial_query = "SELECT name, nx, ny FROM locations WHERE LOCATE(name, ?) > 0"
+        partial_query = (
+            "SELECT name, nx, ny FROM locations "
+            "WHERE LOCATE(name, ?) > 0 "
+            "ORDER BY CHAR_LENGTH(name) DESC LIMIT 1"
+        )
     else:
-        partial_query = "SELECT name, nx, ny FROM locations WHERE ? LIKE '%' || name || '%'"
+        partial_query = (
+            "SELECT name, nx, ny FROM locations "
+            "WHERE ? LIKE '%' || name || '%' "
+            "ORDER BY LENGTH(name) DESC LIMIT 1"
+        )
 
     async with db.execute(partial_query, (location_name,)) as cursor:
         result = await cursor.fetchone()

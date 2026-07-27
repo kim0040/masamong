@@ -457,7 +457,10 @@ class IntentAnalyzer:
 
         # 금융 관련 질문은 직접 시세 도구 대신 웹 검색으로 대체
         if self._looks_like_finance_query(query):
-            logger.info(f"금융 관련 질문 감지: '{query}' -> web_search로 대체")
+            logger.info(
+                "금융 관련 질문 감지. query_chars=%d; web_search로 대체",
+                len(query),
+            )
             tools.append({
                 'tool_to_use': 'web_search',
                 'tool_name': 'web_search',

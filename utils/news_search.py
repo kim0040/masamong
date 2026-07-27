@@ -15,9 +15,13 @@ news/news_summarizer.py에서 이식, 마사몽 아키텍처에 맞게 수정:
 from __future__ import annotations  # Python 3.9 호환: X | Y 타입 힌트 지원
 
 import asyncio
+import http.client
+import ipaddress
 import re
 import json
-from urllib.parse import urlparse
+import socket
+import ssl
+from urllib.parse import urljoin, urlparse
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 import threading
@@ -26,7 +30,6 @@ import hashlib
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-import requests
 import trafilatura
 from ddgs import DDGS
 from newspaper import Article
@@ -74,17 +77,18 @@ _REALTIME_HINTS = (
     "동향",
 )
 
-# [Security/Fix] NLTK resources check
+# NLTK 리소스 확인. 모듈 import 중 네트워크 다운로드는 테스트/운영 기동을
+# 비결정적으로 만들므로 수행하지 않고 Newspaper 실패 시 Trafilatura로 폴백한다.
+_NLTK_RESOURCES_READY = True
 try:
     import nltk
-    # punkt, punkt_tab are needed for newspaper4k
     for res in ['punkt', 'punkt_tab']:
         try:
             nltk.data.find(f'tokenizers/{res}')
         except LookupError:
-            nltk.download(res, quiet=True)
+            _NLTK_RESOURCES_READY = False
 except ImportError:
-    pass
+    _NLTK_RESOURCES_READY = False
 
 # ─────────────────────────────────────────────
 # Fast 모델 클라이언트 (의도 분석 / 키워드 / 기사 요약 전용)
@@ -146,6 +150,7 @@ class FastLLMQuotaManager:
                 database=config.TIDB_NAME,
                 ssl_ca=config.TIDB_SSL_CA,
                 ssl_verify_identity=config.TIDB_SSL_VERIFY_IDENTITY,
+                require_tls=config.REQUIRE_DB_TLS,
             )
 
     def try_consume(self) -> bool:
@@ -530,47 +535,270 @@ def _save_pipeline_cache(user_query: str, payload: dict[str, Any]) -> None:
 
 _REQUEST_TIMEOUT = 15
 _MIN_ARTICLE_LENGTH = 30
+_MAX_ARTICLE_BYTES = 2 * 1024 * 1024
+_MAX_REDIRECTS = 3
+_MAX_RESOLVED_ADDRESSES = 4
+_SOCKET_IO_SLICE_TIMEOUT = 1.0
+
+
+class _PublicHTTPResponse:
+    """고정 IP로 읽어 온 제한된 HTTP 응답의 requests 호환 최소 래퍼."""
+
+    def __init__(self, status_code: int, headers: dict[str, str], content: bytes):
+        self.status_code = int(status_code)
+        self.headers = {str(key).lower(): str(value) for key, value in headers.items()}
+        self.content = content
+        content_type = self.headers.get("content-type", "")
+        charset_match = re.search(
+            r"(?:^|;)\s*charset\s*=\s*[\"']?([A-Za-z0-9._-]+)",
+            content_type,
+            flags=re.IGNORECASE,
+        )
+        self.encoding = charset_match.group(1) if charset_match else "utf-8"
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise ValueError(f"HTTP status {self.status_code}")
+
+    def iter_content(self, chunk_size: int = 64 * 1024):
+        for offset in range(0, len(self.content), max(1, int(chunk_size))):
+            yield self.content[offset : offset + chunk_size]
+
+    def close(self) -> None:
+        return None
+
+
+def _resolve_public_addresses(url: str) -> tuple[Any, list[str], int]:
+    """URL을 검증하고 실제 연결에 사용할 공인 IP 목록을 반환합니다."""
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"} or parsed.username or parsed.password:
+        raise ValueError("허용되지 않는 URL 형식입니다.")
+    hostname = (parsed.hostname or "").strip().lower()
+    if not hostname:
+        raise ValueError("URL hostname이 없습니다.")
+    default_port = 443 if scheme == "https" else 80
+    port = parsed.port or default_port
+    if port != default_port:
+        raise ValueError("기본 HTTP(S) 포트만 허용됩니다.")
+
+    addresses: list[str] = []
+    seen_addresses: set[str] = set()
+    for item in socket.getaddrinfo(
+        hostname,
+        port,
+        type=socket.SOCK_STREAM,
+    ):
+        address = item[4][0]
+        if address not in seen_addresses:
+            seen_addresses.add(address)
+            addresses.append(address)
+    if not addresses:
+        raise ValueError("DNS 결과가 없습니다.")
+    parsed_addresses = [ipaddress.ip_address(address) for address in addresses]
+    if not all(
+        address.is_global
+        and not address.is_multicast
+        and not address.is_reserved
+        and not getattr(address, "is_site_local", False)
+        for address in parsed_addresses
+    ):
+        raise ValueError("공인 주소가 아닌 DNS 결과가 포함되어 있습니다.")
+    return parsed, addresses[:_MAX_RESOLVED_ADDRESSES], port
 
 
 def _is_safe_url(url: str) -> bool:
-    """
-    URL의 안전성을 검사합니다.
-    - 내부 네트워크(SSRF) 차단
-    - 파일 크기 제한 (2MB)
-    - Content-Type 제한 (HTML/TEXT)
-    """
+    """URL의 scheme과 모든 DNS 결과가 공인 주소인지 fail-closed로 검사합니다."""
     try:
-        parsed = urlparse(url)
-        hostname = (parsed.hostname or "").lower()
-        
-        # 1. 내부/루프백 IP 및 호스트 차단
-        if hostname in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
-            logger.warning(f"[web_search] 차단된 로컬 호스트: {hostname}")
-            return False
-        if hostname.startswith("192.168.") or hostname.startswith("10.") or hostname.startswith("172.16."):
-            logger.warning(f"[web_search] 차단된 내부 IP 대역: {hostname}")
-            return False
-
-        # 2. HEAD 요청으로 메타데이터 확인 (최대 2MB)
-        headers = {"User-Agent": "Mozilla/5.0"}
-        response = requests.head(url, headers=headers, timeout=5, allow_redirects=True)
-        
-        # Content-Type 체크
-        content_type = response.headers.get("Content-Type", "").lower()
-        if "text/html" not in content_type and "text/plain" not in content_type:
-            logger.warning(f"[web_search] 허용되지 않는 Content-Type: {content_type} ({url})")
-            return False
-            
-        # Content-Length 체크
-        content_length = response.headers.get("Content-Length")
-        if content_length and int(content_length) > 2 * 1024 * 1024:
-            logger.warning(f"[web_search] 파일 크기 초과: {content_length} bytes ({url})")
-            return False
-            
+        _resolve_public_addresses(url)
         return True
-    except Exception as e:
-        logger.warning(f"[web_search] URL 안전성 검사 중 오류 (건너뜀): {e}")
-        return True # 오류 시 본문 추출 단계에서 처리되도록 허용
+    except Exception as exc:
+        logger.warning("[web_search] URL 안전성 검사 실패: %s", exc)
+        return False
+
+
+def _request_pinned_once(
+    url: str,
+    headers: dict[str, str],
+    parsed: Any,
+    addresses: list[str],
+    port: int,
+    *,
+    deadline: float | None = None,
+) -> _PublicHTTPResponse:
+    """검증한 IP에 직접 연결하되 TLS SNI/인증서는 원래 hostname으로 검증합니다."""
+    raw_hostname = str(parsed.hostname)
+    try:
+        ipaddress.ip_address(raw_hostname)
+        hostname = raw_hostname
+    except ValueError:
+        hostname = raw_hostname.encode("idna").decode("ascii")
+    target = parsed.path or "/"
+    if parsed.params:
+        target += ";" + parsed.params
+    if parsed.query:
+        target += "?" + parsed.query
+    request_headers = {
+        str(key): str(value)
+        for key, value in headers.items()
+        if str(key).lower() not in {"host", "accept-encoding"}
+    }
+    request_headers["Host"] = f"[{hostname}]" if ":" in hostname else hostname
+    request_headers["Accept-Encoding"] = "identity"
+    last_error: Exception | None = None
+    request_deadline = deadline or (time.monotonic() + _REQUEST_TIMEOUT)
+
+    for address_index, address in enumerate(addresses):
+        remaining = request_deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        addresses_left = len(addresses) - address_index
+        connection_timeout = remaining / max(1, addresses_left)
+        attempt_deadline = time.monotonic() + connection_timeout
+        connection: http.client.HTTPConnection
+        if parsed.scheme.lower() == "https":
+            context = ssl.create_default_context()
+
+            class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+                def connect(self_inner):
+                    attempt_remaining = attempt_deadline - time.monotonic()
+                    if attempt_remaining <= 0:
+                        raise TimeoutError("검증된 IP 연결 시간이 초과되었습니다.")
+                    raw_socket = socket.create_connection(
+                        (address, port),
+                        timeout=attempt_remaining,
+                    )
+                    try:
+                        attempt_remaining = attempt_deadline - time.monotonic()
+                        if attempt_remaining <= 0:
+                            raise TimeoutError("TLS 연결 시간이 초과되었습니다.")
+                        raw_socket.settimeout(attempt_remaining)
+                        self_inner.sock = self_inner._context.wrap_socket(
+                            raw_socket,
+                            server_hostname=hostname,
+                        )
+                        attempt_remaining = attempt_deadline - time.monotonic()
+                        if attempt_remaining <= 0:
+                            raise TimeoutError("TLS 연결 시간이 초과되었습니다.")
+                        self_inner.sock.settimeout(attempt_remaining)
+                    except Exception:
+                        raw_socket.close()
+                        raise
+
+            connection = _PinnedHTTPSConnection(
+                hostname,
+                port=port,
+                timeout=connection_timeout,
+                context=context,
+            )
+        else:
+            class _PinnedHTTPConnection(http.client.HTTPConnection):
+                def connect(self_inner):
+                    attempt_remaining = attempt_deadline - time.monotonic()
+                    if attempt_remaining <= 0:
+                        raise TimeoutError("검증된 IP 연결 시간이 초과되었습니다.")
+                    self_inner.sock = socket.create_connection(
+                        (address, port),
+                        timeout=attempt_remaining,
+                    )
+                    attempt_remaining = attempt_deadline - time.monotonic()
+                    if attempt_remaining <= 0:
+                        self_inner.sock.close()
+                        self_inner.sock = None
+                        raise TimeoutError("검증된 IP 연결 시간이 초과되었습니다.")
+                    self_inner.sock.settimeout(attempt_remaining)
+
+            connection = _PinnedHTTPConnection(
+                hostname,
+                port=port,
+                timeout=connection_timeout,
+            )
+
+        response: http.client.HTTPResponse | None = None
+        try:
+            connection.request("GET", target, headers=request_headers)
+            remaining = request_deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("기사 요청 전체 시간이 초과되었습니다.")
+            if connection.sock is not None:
+                connection.sock.settimeout(
+                    min(remaining, _SOCKET_IO_SLICE_TIMEOUT)
+                )
+            response = connection.getresponse()
+            status = int(response.status)
+            response_headers = {
+                str(key).lower(): str(value)
+                for key, value in response.getheaders()
+            }
+
+            if status in {301, 302, 303, 307, 308}:
+                response.close()
+                return _PublicHTTPResponse(status, response_headers, b"")
+
+            content_length = response_headers.get("content-length")
+            if content_length and int(content_length) > _MAX_ARTICLE_BYTES:
+                response.close()
+                return _PublicHTTPResponse(status, response_headers, b"")
+
+            chunks: list[bytes] = []
+            downloaded = 0
+            while True:
+                remaining = request_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("기사 본문 전체 읽기 시간이 초과되었습니다.")
+                if connection.sock is not None:
+                    connection.sock.settimeout(
+                        min(remaining, _SOCKET_IO_SLICE_TIMEOUT)
+                    )
+                read_chunk = getattr(response, "read1", response.read)
+                chunk = read_chunk(
+                    min(64 * 1024, _MAX_ARTICLE_BYTES + 1 - downloaded)
+                )
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                downloaded += len(chunk)
+                if downloaded > _MAX_ARTICLE_BYTES:
+                    break
+            response.close()
+            return _PublicHTTPResponse(status, response_headers, b"".join(chunks))
+        except Exception as exc:
+            last_error = exc
+        finally:
+            if response is not None:
+                response.close()
+            connection.close()
+
+    raise ValueError("검증된 공개 IP 연결에 실패했습니다.") from last_error
+
+
+def _request_public_url(url: str, headers: dict[str, str]) -> _PublicHTTPResponse:
+    """DNS 검사에 사용한 IP로 연결하고 각 redirect hop을 다시 검증합니다."""
+    current_url = url
+    deadline = time.monotonic() + _REQUEST_TIMEOUT
+    for redirect_count in range(_MAX_REDIRECTS + 1):
+        if time.monotonic() >= deadline:
+            raise TimeoutError("기사 요청 전체 시간이 초과되었습니다.")
+        parsed, addresses, port = _resolve_public_addresses(current_url)
+        if time.monotonic() >= deadline:
+            raise TimeoutError("기사 요청 전체 시간이 초과되었습니다.")
+        response = _request_pinned_once(
+            current_url,
+            headers,
+            parsed,
+            addresses,
+            port,
+            deadline=deadline,
+        )
+        if response.status_code in {301, 302, 303, 307, 308}:
+            location = response.headers.get("location")
+            response.close()
+            if not location or redirect_count >= _MAX_REDIRECTS:
+                raise ValueError("허용된 redirect 횟수를 초과했습니다.")
+            current_url = urljoin(current_url, location)
+            continue
+        return response
+    raise ValueError("허용된 redirect 횟수를 초과했습니다.")
 
 
 def _extract_article_text(url: str) -> tuple[str | None, str]:
@@ -589,9 +817,35 @@ def _extract_article_text(url: str) -> tuple[str | None, str]:
         )
     }
     try:
-        response = requests.get(url, headers=headers, timeout=_REQUEST_TIMEOUT)
-        response.raise_for_status()
-        html_content = response.text
+        response = _request_public_url(url, headers)
+        try:
+            response.raise_for_status()
+            content_type = response.headers.get("content-type", "").lower()
+            media_type = content_type.split(";", 1)[0].strip()
+            if media_type not in {
+                "text/html",
+                "application/xhtml+xml",
+                "text/plain",
+            }:
+                return None, f"허용되지 않는 Content-Type: {content_type or '(없음)'}"
+            content_length = response.headers.get("content-length")
+            if content_length and int(content_length) > _MAX_ARTICLE_BYTES:
+                return None, "본문 크기가 2MB를 초과합니다."
+
+            chunks: list[bytes] = []
+            downloaded = 0
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                downloaded += len(chunk)
+                if downloaded > _MAX_ARTICLE_BYTES:
+                    return None, "본문 크기가 2MB를 초과합니다."
+                chunks.append(chunk)
+            raw_content = b"".join(chunks)
+            encoding = response.encoding or "utf-8"
+            html_content = raw_content.decode(encoding, errors="replace")
+        finally:
+            response.close()
         text = ""
 
         # 단계 1: Newspaper4k
@@ -826,7 +1080,11 @@ def _search_web_sync(user_query: str, region: str = "kr-kr", *, keywords: list[s
                         })
                         seen_urls.add(url)
         except Exception as e:
-            logger.warning(f"[web_search] DDGS Web 오류 ({kw[:30]}): {e}")
+            logger.warning(
+                "[web_search] DDGS Web 오류. keyword_chars=%d error_type=%s",
+                len(kw),
+                type(e).__name__,
+            )
 
     if not all_raw:
         return None, f"[{label}] 검색 결과가 없습니다."
@@ -1013,7 +1271,11 @@ def _search_news_sync(
                     )
                 )
         except Exception as e:
-            logger.warning(f"[web_search] DDGS 오류 ({keyword[:30]}): {e}")
+            logger.warning(
+                "[web_search] DDGS 오류. keyword_chars=%d error_type=%s",
+                len(keyword),
+                type(e).__name__,
+            )
             return []
 
     if realtime:
@@ -1151,19 +1413,20 @@ def _process_single_article(
     ThreadPoolExecutor에서 각 워커가 독립적으로 실행하는 단위 작업입니다.
     본문 추출 실패 시 DDGS snippet을 fallback으로 활용합니다.
     """
-    if not _is_safe_url(url):
-        logger.warning(f"[web_search] URL 안전성 검사 실패로 건너뜀: {url}")
-        if snippet or title:
-            return {"url": url, "summary": _snippet_fallback_summary(user_query, title, snippet, url), "mode": "snippet"}
-        return None
-
     text, msg = _extract_article_text(url)
 
     if not text:
         if snippet or title:
-            logger.info(f"[web_search] 본문 추출 실패 → snippet/title 기반 폴백: {url[:50]}")
+            logger.info(
+                "[web_search] 본문 추출 실패 → snippet/title 기반 폴백. host=%s",
+                urlparse(url).hostname or "(invalid)",
+            )
             return {"url": url, "summary": _snippet_fallback_summary(user_query, title, snippet, url), "mode": "snippet"}
-        logger.warning(f"[web_search] 본문 추출 실패({url[:50]}): {msg}")
+        logger.warning(
+            "[web_search] 본문 추출 실패. host=%s reason=%s",
+            urlparse(url).hostname or "(invalid)",
+            msg,
+        )
         return None
 
     summary_prompt = (
@@ -1193,7 +1456,10 @@ async def run_news_search_pipeline(user_query: str) -> dict[str, Any]:
     if not getattr(config, "DDGS_ENABLED", True):
         return {"status": "error", "message": "검색 기능이 비활성화되어 있습니다."}
 
-    logger.info(f"[web_search] 파이프라인 시작: \"{user_query}\"")
+    logger.info(
+        "[web_search] 파이프라인 시작. query_chars=%d",
+        len(user_query or ""),
+    )
     now_kst = datetime.now(KST)
     realtime_query = _is_realtime_query(user_query)
     if realtime_query:
@@ -1216,7 +1482,10 @@ async def run_news_search_pipeline(user_query: str) -> dict[str, Any]:
     url_match = re.search(r"https?://[^\s<>\"']+", user_query)
     if url_match:
         target_url = url_match.group()
-        logger.info(f"[web_search] 직접 URL 감지: {target_url}")
+        logger.info(
+            "[web_search] 직접 URL 감지. host=%s",
+            urlparse(target_url).hostname or "(invalid)",
+        )
         
         # 바로 요약 단계로 진행
         res = await asyncio.to_thread(

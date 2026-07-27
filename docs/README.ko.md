@@ -17,7 +17,7 @@
 마사몽은 Discord 서버에서 동작하는 **한국어 중심 AI 챗봇**입니다.  
 멘션 기반 대화, 구조화 메모리/RAG, Kakao 대화 벡터 검색, 날씨/금융/웹 검색 도구, 운세, 이미지 생성, 커뮤니티 기능을 하나의 런타임으로 통합 운영합니다.
 
-- **언어**: Python 3.9+
+- **언어**: Python 3.10+
 - **프레임워크**: `discord.py` >=2.7.1
 - **LLM**: CometAPI (OpenAI-compatible) + Gemini (선택적 fallback)
 - **DB**: TiDB (운영) / SQLite (개발)
@@ -28,7 +28,7 @@
 ## 빠른 시작
 
 ### 사전 요구사항
-- Python 3.9+
+- Python 3.10+
 - Discord Bot Token ([Developer Portal](https://discord.com/developers/applications))
 - CometAPI Key (또는 Gemini API Key)
 
@@ -72,6 +72,9 @@ USE_COMETAPI=true
 ```
 
 > **팁:** `python setup.py`를 실행하면 대화형 설정 마법사를 사용할 수 있습니다.
+>
+> 일반판과 마사모판을 함께 운영하려면 운영 데이터에 손대기 전에
+> [인스턴스 분리 가이드](INSTANCE_SEPARATION.ko.md)를 먼저 확인하세요.
 
 ### 실행
 

@@ -9,9 +9,9 @@ import subprocess
 import json
 
 def check_python_version():
-    """Python 버전이 3.9 이상인지 확인"""
-    if sys.version_info < (3, 9):
-        print("❌ Python 3.9 이상이 필요합니다.")
+    """Python 버전이 3.10 이상인지 확인"""
+    if sys.version_info < (3, 10):
+        print("❌ Python 3.10 이상이 필요합니다.")
         print(f"현재 버전: {sys.version}")
         return False
     print(f"✅ Python 버전 확인: {sys.version}")

@@ -153,6 +153,12 @@ temp/
 
 # 환경별 설정
 local_settings.py
+profiles/*.env
+!profiles/*.env.example
+profiles/*.json
+!profiles/*.example.json
+profiles/*.yaml
+profiles/*.yml
 
 # 백업 파일
 *.backup
@@ -179,15 +185,10 @@ test_data/
 data/
 임시/
 
-# 테스트 파일
-tests/
-test_*.py
-*_spec.py
-*_test.py
-
 # 일회성 검증 / 디버그 스크립트
 scripts/verify_*.py
 scripts/check_*.py
+scripts/test_*.py
 scripts/deep_diag_*.py
 scripts/reproduce_*.py
 scripts/server_conn_test.py

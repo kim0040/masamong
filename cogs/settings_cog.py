@@ -54,6 +54,9 @@ class PersonaSetModal(Modal, title="AI 페르소나 설정"):
         try:
             # UPSERT 구문을 사용하여 설정이 없으면 INSERT, 있으면 UPDATE를 수행합니다.
             await db_utils.set_guild_setting(self.bot.db, guild_id, 'persona_text', new_persona)
+            cache_update = getattr(self.bot, "update_guild_setting_cache", None)
+            if callable(cache_update):
+                cache_update(guild_id, "persona_text", new_persona)
             await interaction.response.send_message("✅ AI 페르소나를 성공적으로 변경했습니다.", ephemeral=True)
             logger.info(f"AI 페르소나가 변경되었습니다.", extra=log_extra)
         except aiosqlite.Error as e:
@@ -80,6 +83,9 @@ class SettingsCog(commands.Cog):
         guild_id = interaction.guild_id
         try:
             await db_utils.set_guild_setting(self.bot.db, guild_id, 'ai_enabled', enabled)
+            cache_update = getattr(self.bot, "update_guild_setting_cache", None)
+            if callable(cache_update):
+                cache_update(guild_id, "ai_enabled", enabled)
             status = "활성화" if enabled else "비활성화"
             await interaction.response.send_message(f"✅ AI 기능을 성공적으로 **{status}**했습니다.", ephemeral=True)
             logger.info(f"AI 기능이 {status}되었습니다.", extra={'guild_id': guild_id, 'user_id': interaction.user.id})
@@ -120,7 +126,16 @@ class SettingsCog(commands.Cog):
                     return
 
             # 변경된 채널 목록을 다시 JSON으로 저장합니다.
-            await db_utils.set_guild_setting(self.bot.db, guild_id, 'ai_allowed_channels', json.dumps(allowed_channels))
+            serialized_channels = json.dumps(allowed_channels)
+            await db_utils.set_guild_setting(
+                self.bot.db,
+                guild_id,
+                'ai_allowed_channels',
+                serialized_channels,
+            )
+            cache_update = getattr(self.bot, "update_guild_setting_cache", None)
+            if callable(cache_update):
+                cache_update(guild_id, "ai_allowed_channels", serialized_channels)
             await interaction.response.send_message(message, ephemeral=True)
             logger.info(f"AI 허용 채널 목록 변경: {action} {channel.name}", extra=log_extra)
 

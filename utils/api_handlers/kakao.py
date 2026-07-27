@@ -139,7 +139,12 @@ async def _request_kakao_json(url: str, params: dict[str, Any], endpoint_name: s
                 if resp.status == 200:
                     return await resp.json()
                 error_text = await resp.text()
-                logger.error(f"카카오 {endpoint_name} API 오류 (상태: {resp.status}): {error_text}")
+                logger.error(
+                    "카카오 %s API 오류. status=%s response_chars=%d",
+                    endpoint_name,
+                    resp.status,
+                    len(error_text),
+                )
                 return None
     except asyncio.TimeoutError:
         logger.error(f"카카오 {endpoint_name} API 시간 초과")
