@@ -1,316 +1,304 @@
-# 학교 공지 추적 기능 마사몽 통합 계획
+# 학교 공지 추적 기능 명세와 마사몽 통합 계획
 
-## 0. 이 문서의 전제
-
-외부 프로젝트 `학교 공지 추적`(이하 **코어**)을 마사몽에 통합한다. 작업은 클라우드
-세션에서 진행하며 **코어 폴더는 업로드하지 않는다.**
-
-그래서 이 문서는 "코어를 보고 알아내라"가 아니라 **코어의 계약을 동결해 옮겨 적은
-문서**다. 4장의 계약과 5장의 fixture만으로 마사몽 쪽 통합 코드를 전부 작성하고
-테스트할 수 있게 구성했다. 코어 소스가 필요한 작업은 11장에 따로 분리했다.
-
-작업 순서 원칙:
-
-- 클라우드 세션은 **마사몽 저장소 안에서만** 작업한다.
-- 코어 패키지는 나중에 로컬에서 vendoring한다. 그 전까지는 4장 계약을 구현한
-  **fake adapter**로 개발·테스트한다.
-- 계약이 바뀌면 이 문서를 먼저 고치고 코드를 고친다.
+이 문서 하나로 기능의 의도·설계·규칙·데이터 계약을 모두 파악할 수 있게 작성했다.
+원본 코어(`school_notice`, 17개 모듈 4,887 LOC, 테스트 1,781 LOC)는 이 저장소에
+없으므로, 여기 적힌 내용이 구현 기준이다. 수치와 규칙은 전부 코어 소스에서 확인해
+옮겼다.
 
 ---
 
-## 1. 코어 현황 요약
+## 1. 이 기능이 푸는 문제
 
-폴더를 열지 않고도 판단할 수 있도록 실측 인벤토리를 남긴다.
+학교 공지는 게시판·학과·캠퍼스마다 흩어져 있고, 같은 글이 여러 곳에 다시 올라오며,
+중요한 조건과 마감이 긴 본문 안에 묻혀 있다.
 
-| 항목 | 값 |
+목적은 **모든 공지를 대신 읽어주는 것도, 사용자를 대신해 신청하는 것도 아니다.**
+하루 한 번 공개 게시판의 최근 글을 제한적으로 확인해 다음 세 질문에 **근거 있는
+후보**를 제시하는 것이다.
+
+1. 내가 반드시 확인하거나 해야 할 일인가? → `action`
+2. 내 조건에 맞고 도움이 될 기회인가? → `opportunity`
+3. 당장 행동하지 않아도 알아둘 공지인가? → `reference`
+
+출력은 최종 판단이 아니라 **우선순위가 붙은 후보 목록과 그 근거**다. 신청 전 원문
+확인은 항상 사용자 몫이며, UI는 이를 명시해야 한다.
+
+## 2. 설계 원칙
+
+이 여섯 가지가 구현 전반을 지배한다. 통합 과정에서 깨뜨리면 기능의 성격이 바뀐다.
+
+| 원칙 | 의미 |
 |---|---|
-| 패키지명 | `school_notice` (`school-notice-research` 0.4.0) |
-| 코드 규모 | 17개 모듈, 4,887 LOC |
-| 테스트 | 12개 파일, 1,781 LOC |
-| Python | >= 3.11 |
-| 런타임 의존성 | `aiohttp`, `beautifulsoup4`, `soupsieve`, `olefile`, `pypdf` |
-| 지원 학교 | 16개 source (전북대·서울대·부산대·고려대·전주대·성균관대·가천대·숭실대·전남대·순천대·명지대·건국대·국민대·한양대 서울/ERICA) |
-| 저장소 | SQLite 단일 파일 (동기 `sqlite3`, WAL, busy_timeout 5초) |
-| LLM | DeepSeek `deepseek-v4-flash` (선택), 규칙 fallback |
-| 실행 형태 | 1회성 CLI batch (상주 루프 없음) |
-| 실측 자원 | `--low-resource --no-llm` 기준 HTTP 12회 / 3.95초 / RSS 약 68 MiB |
+| **사실 추출과 사용자 판단 분리** | LLM은 공지에서 사실만 뽑는다. "이 학생에게 추천할지"는 로컬 규칙이 정한다. 그래야 같은 분석을 여러 사용자에게 재사용하고 판정 이유를 재현할 수 있다 |
+| **놓칠 위험과 과잉 알림을 함께 관리** | 명시적 자격 불일치는 숨기되, 프로필 값이 없어 판단 불가한 것은 `UNKNOWN`으로 남기고 상한만 건다. 임의로 지워버리지 않는다 |
+| **피드백을 완만하게 반영** | `관심 없음` 한 번으로 비슷한 공지를 영구 차단하지 않는다. 90일 반감기로 서서히 중립에 돌아온다 |
+| **실패를 성공처럼 보이지 않기** | "오늘 새 공지 없음"과 "오늘 확인 실패"를 반드시 구분해 표시한다 |
+| **저사양 상한을 분명히** | 한 번 실행 후 종료. 요청 수·응답 크기·첨부·LLM 호출 전부 상한이 있다 |
+| **학교와 전달 채널 분리** | 학교별 차이는 JSON 설정으로, Discord는 얇은 어댑터로 처리한다 |
 
-### 1.1 마사몽과의 의존성 겹침
-
-마사몽 venv에 **이미 설치된 것**: `aiohttp` 3.13.5, `beautifulsoup4` 4.14.3,
-`soupsieve` 2.8.3.
-
-**추가 필요**: `olefile`, `pypdf` — 단, 첨부 분석은 기본값 OFF이므로 Phase 1에서는
-설치하지 않아도 된다. 첨부 기능을 켤 때만 추가한다.
-
-### 1.2 코어가 이미 갖춘 것 / 없는 것
-
-갖춘 것: 다대학 파싱, 증분 저장·revision, 규칙+LLM 구조화 분석, 프로필 기반
-점수화, 피드백, digest 생성, robots·SSRF·크기·요청·LLM 예산 상한.
-
-**없는 것 (통합 전 반드시 인지)**:
-
-- Discord 객체 일절 없음 (의도된 설계)
-- 다중 사용자 배치 분리 없음 — `DailyNoticeJob` 1회 = **프로필 1명 + 학교 1개**
-- 오래된 `active` 공지 만료 정책 없음
-- 사용자별 output 파일 분리 없음 (같은 날짜·디렉터리면 **덮어씀**)
-- 전달 성공/재시도/interaction 멱등성 없음
-- OCR 없음, 목록 첫 페이지만 읽음, 제목 중복은 정규화 일치(semantic 아님)
-
----
-
-## 2. 통합 아키텍처 결정
-
-### 2.1 결정 1 — 대상 프로필은 `general`부터
-
-마사몽은 직전 작업에서 `masamo`(운영)와 `general`(신규)로 완전히 분리됐다.
-이 기능은 **`general` 프로필에 먼저 올린다.**
-
-| 근거 | 내용 |
-|---|---|
-| DDL 필요 | 신규 테이블이 필요한데 `masamo`는 `MASAMONG_AUTO_MIGRATE=true`가 **코드에서 금지**됨 (config.py). general은 bootstrap 시 허용 |
-| 누적 데이터 위험 | general DB는 비어 있어 실패해도 운영 데이터 영향 0 |
-| 자원 | 운영 서버는 저사양. 검증 전 masamo 프로세스에 부하를 더하지 않음 |
-| 롤백 | general 유닛만 내리면 끝 |
-
-`masamo` 승격은 Phase 4에서 **별도 승인된 migration**으로만 진행한다.
-
-### 2.2 결정 2 — 크롤링을 봇 프로세스 안에서 돌리지 않는다
-
-**이것이 가장 중요한 결정이다.**
-
-코어는 batch로 설계됐고 실행 중 RSS가 약 68 MiB 뛴다. 이를 `tasks.loop`로 봇
-이벤트 루프 안에서 돌리면:
-
-- 저사양 서버에서 봇 상주 RSS에 크롤링 피크가 더해진다
-- HTML 파싱(bs4)은 CPU 바운드 → `MASAMONG_CPU_THREADS=1` 환경에서 이벤트 루프를 막는다
-- 크롤링 실패가 봇 프로세스 안정성에 영향을 준다
-
-**채택 구조**: 코어는 **systemd timer / cron으로 별도 프로세스** 실행. 봇은
-산출된 digest JSON을 읽어 전달만 한다.
+## 3. 한 번의 실행에서 일어나는 일
 
 ```
-[systemd timer 08:00]
-   └─> python -m school_notice daily --low-resource ... --output-dir /var/lib/masamong/general/notice
-          └─> daily-digest-<user>-<date>.json  +  sidecar SQLite
-
-[마사몽 봇 프로세스 (상주)]
-   └─> tasks.loop(08:10) → digest JSON 읽기 → Discord DM/Embed 전달 → 전달 상태 기록
-   └─> 버튼 interaction → feedback 이벤트를 마사몽 DB에 기록
-                                  └─> 다음 batch 실행 시 코어가 읽어감
+프로필 검증
+  → 같은 school_id의 source 선택
+  → source별 robots 확인 · 목록 첫 페이지 수집
+  → 최근 N개 상세 수집 · 본문 정규화
+  → (선택) 첨부 텍스트 추출
+  → 공지 upsert · 내용 변경 시 revision 저장
+  → 학교 DB의 active 공지 분석 또는 분석 캐시 조회
+  → 사용자 프로필·피드백으로 로컬 점수화
+  → 중복 묶기 · 알림 설정 적용
+  → Markdown/JSON digest와 실행 보고서 저장
+  → 프로세스 종료
 ```
 
-봇과 batch의 유일한 접점은 **파일시스템(digest JSON)과 feedback 테이블**이다.
+책임 분리:
 
-### 2.3 결정 3 — 저장소는 2단 분리
-
-| 데이터 | 위치 | 이유 |
+| 구성 요소 | 하는 일 | 하지 않는 일 |
 |---|---|---|
-| 공지 snapshot·revision·분석 캐시·API 예산 | **sidecar SQLite** (코어 소유) | 크롤링 부산물. 운영 TiDB에 넣을 이유 없음. 재생성 가능 |
-| 사용자 프로필·피드백·전달 상태 | **마사몽 DB** (신규 테이블) | Discord 사용자와 결합. 봇이 읽고 씀 |
+| `sources.json` | 학교 URL·CSS 선택자·검증 계약 | 네트워크 요청 |
+| `http` | 안전한 제한 HTTP·robots·재시도 | HTML 의미 해석 |
+| `parsing` | 목록/상세 HTML → 공통 Notice | 사용자 관련성 판단 |
+| `attachments` | 선택 첨부의 제한적 텍스트 추출 | OCR·무제한 압축 해제 |
+| `storage` | 공지·revision·분석·프로필·피드백·digest 저장 | 외부 알림 전송 |
+| `analysis`, `llm` | 사실·날짜·자격 후보 구조화 | 사용자별 최종 결정 |
+| `personalization` | 프로필·피드백 기반 점수와 자격 판정 | 공지 원문 변경 |
+| `digest` | 중복 묶기·알림 설정·표현 | Discord API 호출 |
+| `daily` | 위 단계를 한 번 조율 | 상주 스케줄링 |
 
-코어 `storage.py`를 async/TiDB로 포팅하지 **않는다**. 710 LOC를 포팅하는 위험 대비
-이득이 없다.
+모든 source가 같은 selector 기반 파서를 쓴다. 학교별 분기 클래스는 없고 특수한 URL도
+JSON의 정규식·template으로 표현한다.
 
-접점은 batch 실행 전후로 **프로필 export / 피드백 import**하는 얇은 동기화다.
+## 4. 공지의 식별·변경·중복
 
-### 2.4 결정 4 — LLM은 Phase 1에서 끈다
+- 영속 식별자는 `(source_id, external_id)`.
+- 제목·게시일·본문·첨부 URL·본문 이미지 URL을 정규화해 `content_hash`를 만든다.
+  첨부 추출을 켜면 첨부 SHA-256도 최종 hash에 포함한다.
+- hash가 바뀌면 revision을 1 올리고 전체 snapshot을 저장한다.
+- 게시판 간 중복은 **정규화한 제목의 SHA 키**로 묶는다. 점수가 높은 한 건을 대표로
+  보여주고 나머지는 `duplicate_sources`에 원문 링크로 남긴다.
 
-코어는 DeepSeek을 쓰고 자체 예산·캐시·회로차단기를 갖췄다. 마사몽은 NanoGPT/CometAPI
-레인 구조다. 섞으면 예산 추적이 이원화된다.
+**한계**: 의미 기반(fuzzy/embedding) 비교가 아니다. 제목이 크게 다른 재게시는 놓치고,
+우연히 제목이 같은 다른 공지는 합쳐질 수 있다.
 
-Phase 1은 `--no-llm`(규칙 분석)으로 간다. 실측에서 규칙만으로도 동작이 검증됐고,
-비용 0에 장애 경로가 단순하다. LLM은 Phase 3에서 별도 판단.
+## 5. 분석 — 규칙과 LLM의 경계
 
----
+### 5.1 규칙 우선
 
-## 3. 단계별 계획
+분석 입력은 제목 + 본문 (+선택적 첨부 텍스트)을 합쳐 **최대 18,000자**로 자른다.
+먼저 규칙으로 뽑는다.
 
-각 단계에 **클라우드 가능 여부**를 표시한다.
+- 명시 날짜와 마감/행사 구분
+- 행동: `신청`, `지원`, `제출`, `등록`, `수강신청`, `납부`, `신고`, `참여`
+- 대상: `학부생`, `대학원생`, `재학생`, `휴학생`, `복학생`, `신입생`, `졸업예정자`,
+  `교직원`, `외국인학생`, `편입생`
+- 주제: `장학`, `등록금`, `수강`, `학적`, `졸업`, `취업`, `기숙사`, `국제교류`,
+  `공모전`, `병무`
+- 자격 조건: 학년 1~6, 학번 연도, 이수 학기, 편입 대상, GPA
+- 필수 표현, 근거 문장
 
-### Phase 0 — 계약 고정과 fixture (클라우드 ✅)
+연도 없는 `월/일`은 제목이나 게시일에서 기준 연도를 찾은 경우에만 보완하고
+`inferred_year: true`로 표시한다. **날짜가 안 보이면 만들지 않는다.**
 
-코어 없이 진행. 이 문서 4·5장을 코드로 옮긴다.
+### 5.2 LLM(DeepSeek)의 역할과 제한
 
-산출물:
-- `utils/school_notice_contract.py` — digest JSON 파싱·검증 (dataclass 또는 TypedDict)
-- `tests/fixtures/school_notice_digest.json` — 5장 fixture 커밋
-- `tests/school_notice_contract_spec.py` — 스키마 검증·잘못된 입력 거부 테스트
+LLM을 켜면 규칙 결과와 공지 텍스트를 보내 구조화 JSON의 품질을 보완한다.
 
-완료 조건: fixture를 읽어 타입 안전한 객체로 변환하고, 필수 필드 누락·enum 위반·
-스키마 버전 불일치를 거부한다.
+- **프로필·피드백·API 키는 프롬프트에 넣지 않는다.**
+- 공지 내용은 신뢰할 수 없는 입력으로 취급하고, 그 안의 지시를 따르지 않도록
+  system prompt에서 분리한다.
 
-### Phase 1 — 읽기 전용 전달 (클라우드 ✅)
+LLM 결과를 그대로 신뢰하지 않고 다음을 **버린다**:
 
-digest JSON → Discord Embed. 크롤링·DB 쓰기 없음.
+| 검증 | 처리 |
+|---|---|
+| 규칙이 못 찾은 날짜를 LLM이 새로 만듦 | 버림 |
+| 근거 문장이 원문에 실제로 없음 | 버림 |
+| 자격 조건이 검증 가능한 학년·편입·GPA 범위 밖 | 버림 |
+| 필수 여부에 필수 표현 근거가 없음 | 받지 않음 |
+| JSON 오류 | 의미를 더하지 않는 1회 수리 후 실패 처리 |
+| API 장애·예산 소진·계약 위반 | 규칙 결과로 fallback |
 
-산출물:
-- `cogs/school_notice_cog.py` — 신규 Cog
-- `utils/school_notice_render.py` — digest → Embed 변환
-- `!공지` 계열 명령 (수동 조회)
-- config 키 (9장)
+분석 캐시 키는 `notice_id + content_hash + analyzer_version`이며 analyzer version에
+모델명이 들어간다. 내용·규칙 버전·모델이 같으면 같은 DB에서 재호출하지 않는다.
 
-완료 조건: fixture만으로 Embed가 생성되고, band별 분리·중복 source 표기·
-`collection_health` 경고가 렌더링된다. Discord 연결 없이 단위 테스트 가능해야 한다.
+기본 예산: 실행당 20회, 한국 날짜 기준 하루 30회, 요청당 재시도 2회, 연속 실패 3회 시
+회로 차단, JSON 수리 호출 1회.
 
-### Phase 2 — 프로필·피드백 저장 (클라우드 ✅, DDL 포함)
+## 6. 개인화 점수 규칙
 
-산출물:
-- 8장 DDL을 `database/schema.sql` + `database/schema_tidb.sql`에 추가
-- `main.py`의 `_verify_runtime_schema` / `_migrate_db` 테이블 목록에 추가
-  (**주의**: 기존 `kakao_chunks`처럼 프로필 조건부로 할지 판단. 이 기능은
-  general 전용이므로 `SCHOOL_NOTICE_ENABLED` 조건부 권장)
-- 프로필 등록·수정 명령 (4.2 스키마 enum 검증 그대로)
-- 피드백 버튼 View + interaction 멱등성 (`interaction.id` 중복 차단)
+**기능의 핵심.** 점수는 20점에서 시작한다. 아래가 코드의 실제 규칙이다.
 
-완료 조건: 프로필 CRUD와 피드백 기록이 sqlite/TiDB 양쪽에서 동작. 같은 버튼을
-두 번 눌러도 이벤트가 1건만 남는다.
+| 신호 | 효과 |
+|---|---:|
+| 학부/대학원 대상 일치 | +20 |
+| 학부생 프로필에 재학생 대상 | +10 |
+| 학위 대상이 반대인 공지 | −40 |
+| 명시 학년 일치 / 불일치 | +15 / −35 및 `INELIGIBLE` |
+| 학번·이수학기·GPA·입학유형 일치 | `ELIGIBLE` |
+| 위 강한 조건 불일치 | −45 및 `INELIGIBLE` |
+| 위 조건이 있으나 프로필 값 없음 | `UNKNOWN`, 최종 **69점 상한** |
+| 전공 직접 일치 / 다른 전공 전용 게시판 | +22 / −20 |
+| source 학위 tag 일치 / 불일치 | +10 / −35 |
+| 캠퍼스 일치 / 불일치 | +12 / −15 |
+| `strict_campus`에서 캠퍼스 불일치 | −60 및 `INELIGIBLE` |
+| 편입 프로필 + 편입 관련 원문 | +15 |
+| 학적 대상 일치 | +10 |
+| 휴학생인데 재학생 전용 | −25 |
+| 관심·선호 항목 일치 | 항목당 +6, 최대 +18 |
+| 우선 키워드 일치 | 항목당 +10, 최대 +20 |
+| 해야 할 행동 존재 / 필수 표현 | +10 / +20 |
+| 긴급도 low / normal / high / critical | +0 / +3 / +10 / +18 |
+| 마감 3일 / 7일 / 30일 이내 / 그 이후 | +20 / +15 / +8 / +2 |
+| 마감 지남 | −50, 필수가 아니면 숨김 |
 
-### Phase 3 — batch 연동 (클라우드 ⚠️ 부분 / 로컬 필요)
+적용 순서가 중요하다.
 
-코어 패키지가 있어야 실제 실행이 된다. 클라우드에서는 **fake batch**로 인터페이스만
-완성한다.
+1. 위 신호를 합산하고 **0~100으로 clamp**
+2. 주제 피드백 가중치를 **곱한다** (7장)
+3. `muted_topics` 또는 제외 키워드 일치 → **20점 상한**
+4. 단, **필수 행정 공지 보호**: 주제가 `등록금·수강·학적·졸업·병무` 중 하나이고
+   필수 표현이 있으며 `INELIGIBLE`이 아니면 → **최소 70점 보장** (3번을 무시)
+5. 확인 불가 자격 조건이 있으면 → **69점 상한**
+6. 다시 0~100 clamp 후 반올림
 
-산출물:
-- `scripts/run_school_notice_batch.py` — 프로필 export → 코어 CLI 호출 → 결과 검증
-- 피드백 import 경로
-- systemd timer / cron 예시 (docs)
-- 전달 상태 기록 및 재시도
-
-완료 조건: fake batch로 전체 흐름이 돌고, 코어 vendoring 후 실 실행으로 교체만 하면 됨.
-
-### Phase 4 — 다중 사용자 분리와 masamo 승격 (클라우드 ⚠️ 설계만)
-
-코어의 최대 구조적 한계를 해소하는 단계. **Phase 3까지 검증 전에는 착수 금지.**
-
-- 학교별 collect/analyze 1회 → 사용자별 score N회 분리
-- 오래된 active 공지 만료 정책
-- 사용자별 output 파일 분리
-- masamo 승격용 승인된 migration
-
----
-
-## 4. 동결된 계약 (코어 폴더 없이 작업하기 위한 핵심)
-
-여기 적힌 것이 **코어의 실제 계약**이다. 클라우드 세션은 이것만 보고 구현한다.
-
-### 4.1 digest JSON 최상위
+밴드:
 
 ```
-schema_version: int          # 현재 1. 다르면 거부할 것
+마감 지났고 필수 아님 → hidden
+score >= 80 → action
+score >= 60 → opportunity
+score >= 40 → reference
+그 외        → hidden
+INELIGIBLE  → 점수와 무관하게 숨김
+```
+
+digest 단계에서 사용자의 `minimum_score`, `include_bands`, 밴드별 최대 개수를 한 번 더
+적용한다.
+
+**이 점수는 확률이나 모델 confidence가 아니다.** 설명 가능하고 조정 가능한 우선순위
+휴리스틱이다. 그래서 `score.reasons`에 근거가 함께 나오며, UI는 이것을 반드시
+노출해야 한다.
+
+## 7. 피드백 설계
+
+두 종류로 나뉜다.
+
+**선호 학습** — 공지의 topic에 완만한 가중치를 남긴다.
+
+| 피드백 | 가중치 델타 |
+|---|---:|
+| `applied` | +0.10 |
+| `useful` | +0.06 |
+| `saved` | +0.04 |
+| `already_knew` | −0.03 |
+| `not_interested` | −0.06 |
+
+누적 효과는 **90일 반감기**(`0.5 ^ (경과일/90)`)로 감쇠하고, 최종 가중치는
+**0.70~1.30**으로 제한된다.
+
+**해당 공지 상태** — 그 공지에 직접 적용된다.
+
+- `completed`, `dismiss_once`: 즉시 숨김
+- `not_eligible`: 명시적 자격 없음 처리
+- `mute_topic`: 사용자가 고른 주제를 강하게 낮춤 (단 6장 4번 보호 규칙이 우선)
+
+**의도적으로 하지 않는 것**: `not_interested`를 여러 번 눌러도 자동으로 `mute_topic`으로
+승격하지 않는다. 사용자 의도를 과도하게 추측하지 않기 위한 선택이다.
+
+topic 분류가 틀리면 피드백이 인접 공지에도 영향을 준다. 그래서 UI는 **"왜 덜 보이는지"
+근거를 표시하고 명시적 음소거 해제 기능을 제공해야 한다.** "영구 차단"처럼 표현하면
+설계 의도와 어긋난다.
+
+## 8. 실패 처리
+
+source 상태:
+
+- `healthy`: 오류 없이 선택한 상세를 처리
+- `degraded`: 일부 상세는 성공했지만 오류 있음
+- `failed`: 오류가 있고 상세 성공 0건
+
+전체 실행은 모든 source 실패 시 `failed`, 오류가 하나라도 있으면 `partial`, 그 외
+`succeeded`.
+
+| 상황 | 동작 | 사용자가 알아야 할 것 |
+|---|---|---|
+| 목록 요청 실패 | 그 source 신규 수집 생략 | 이전 active 공지가 다시 표시될 수 있음 |
+| 일부 상세 실패 | 성공한 글만 갱신 | 실패한 새 글은 당일 digest에서 빠질 수 있음 |
+| HTML 구조 변경 | 최소 계약 경고·실패 | source 설정 수정 필요 |
+| LLM 키 없음/장애 | 규칙 분석으로 계속 | 요약·자격 정밀도 하락 |
+| 요청/LLM 예산 소진 | 유한 실패 | 무한 재시도 안 함 |
+| 이미지 전용 본문 | 텍스트 부족 경고 | 세부 조건을 놓칠 수 있음 |
+| 자격 정보 없음 | `UNKNOWN`, 69점 상한 | 원문 확인 필요 |
+| 마감 추출 실패 | 날짜를 만들지 않음 | 원문 일정 확인 필요 |
+
+실패한 source가 있으면 `may_include_stale_notices: true`가 되고, **digest에 오래된
+공지가 섞였을 수 있다는 경고를 반드시 함께 표시해야 한다.** 이것이 원칙 4를 구현하는
+유일한 신호다.
+
+## 9. 보안·자원 경계
+
+- **공개·비로그인 페이지만** 수집. 로그인/SSO/CAPTCHA 우회 없음.
+- URL scheme은 HTTP/HTTPS만. source의 `allowed_hosts` 밖으로 나가는 redirect 차단.
+- DNS·IP가 private/loopback/link-local/reserved/multicast면 차단 (SSRF 방어).
+- HTML 3 MB, binary 기본 최대 20 MB.
+- HTTP connector 전체 4, host당 1, host별 최소 0.2초 간격.
+- 429·5xx·네트워크/timeout만 최대 2회 재시도.
+- robots 401/403은 전체 금지로 처리. 200이면 내용을 따름.
+- ZIP 계열 문서는 엔트리 100개, 개별 20 MB, 총 해제 100 MB 상한.
+- `--low-resource`: source당 상세 **4건**, 첨부 **0**, 전체 HTTP **30회** 강제.
+
+실측(`--low-resource --no-llm`, 전북대 2개 source): **HTTP 12회, 3.95초, 최대 RSS 약
+68 MiB.**
+
+`--ignore-robots`가 구현되어 있으나 **운영에서 사용 금지.** 자동 신청·대리 제출 기능은
+범위 밖이며 추가하지 않는다.
+
+## 10. 지원 학교 (16개 source)
+
+`jbnu_campus`(전북대 교내), `jbnu_software`(전북대 소프트웨어공학과), `snu_general`(서울대),
+`pnu_general`(부산대), `korea_cs_undergrad`(고려대 컴퓨터학과), `jj_academic`(전주대),
+`skku_general`(성균관대), `gachon_general`(가천대), `ssu_general`(숭실대),
+`jnu_software`(전남대 소프트웨어공학과), `scnu_academic`(순천대), `mju_general`(명지대),
+`konkuk_academic`(건국대), `kookmin_academic`(국민대), `hanyang_seoul`, `hanyang_erica`.
+
+전남대 중앙 홈페이지는 `robots.txt`가 전체 수집을 금지하므로 **우회하지 않고** 학과
+게시판을 쓴다. 한양대는 한 목록에서 캠퍼스 표식을 읽어 두 source로 분리한다.
+
+새 학교 추가는 `sources.json`에 항목을 복제하고 selector·정규식을 지정한 뒤
+`live-check --source <id>`로 계약을 확인한다. 인증·SPA·브라우저 렌더링이 필요한
+게시판은 범위 밖이다.
+
+## 11. 알려진 한계 (구현됨으로 오해하면 안 되는 것)
+
+- `DailyNoticeJob` 1회 = **프로필 1명 + 학교 1개**. 사용자가 늘면 같은 학교를 사람 수만큼
+  재크롤링한다.
+- 오래된 `active` 공지의 자동 만료 정책이 없다. 마감이 없거나 추출 실패한 옛 글이 남을 수 있다.
+- 목록 **첫 페이지만** 읽는다. 과거 backfill 없음.
+- 제목 기반 중복은 semantic 판정이 아니다 (4장).
+- OCR·이미지 비전 없음. 스캔 PDF는 `ocr_required`로 보존만 한다.
+- `language_scores`, 인정학점, 이수과목은 저장은 되지만 **자격 판정에 쓰이지 않는다.**
+- digest 파일명에 user_key가 없다. 같은 날짜·디렉터리면 **덮어쓴다.**
+- 전달 성공·재전송·interaction 멱등성은 코어 범위 밖이다 (마사몽이 구현해야 함).
+
+---
+
+## 12. 데이터 계약
+
+코어가 산출하는 구조. 통합 코드는 이것만 보고 작성한다.
+
+### 12.1 digest JSON
+
+```
+schema_version: int          # 현재 1. 다르면 전달 중단
 user_key: str
 date: str                    # "YYYY-MM-DD" (Asia/Seoul)
 summary: {action: int, opportunity: int, reference: int}
-collection_health: object | null      # 4.5 참조
+collection_health: object | null
 items: [ item, ... ]
 ```
 
-### 4.2 item 구조
-
-```
-notice_id: int
-dedup_key: str
-revision_count: int
-change: "new" | "updated" | "unchanged"
-duplicate_sources: [ {source_id: str, url: str}, ... ]
-
-notice:
-  candidate: {source_id, external_id, title, url,
-              published_text|null, author|null, category|null, pinned: bool,
-              source_university|null, source_board|null, source_tags: [str]}
-  title: str
-  body_text: str            # 길다. Embed에 그대로 넣지 말 것
-  body_characters: int
-  published_text: str|null
-  author: str|null
-  attachments: [ {kind, url, name|null} ]
-  inline_images: [ ... ]
-  attachment_extractions: [ ... ]
-  content_hash: str
-  base_content_hash: str
-  warnings: [str]
-
-analysis:
-  schema_version: int
-  summary: str
-  audiences: [str]
-  topics: [str]
-  actions: [str]
-  required: bool
-  urgency: "low" | "normal" | "high" | "critical"
-  dates: [ {date: "YYYY-MM-DD", kind: str, evidence: str, inferred_year?: bool} ]
-  eligibility_rules: [ ... ]
-  evidence: [str]
-  confidence: float
-  analysis_source: "rules" | (LLM 사용 시 모델 표기)
-  warnings: [str]
-
-score:
-  score: float                 # 0~100
-  band: "action" | "opportunity" | "reference" | "hidden"
-  eligibility: "ELIGIBLE" | "LIKELY_ELIGIBLE" | "INELIGIBLE" | "UNKNOWN"
-  reasons: [str]               # 사용자에게 "왜 추천됨" 표시용
-  topics: [str]
-  deadline: "YYYY-MM-DD" | null
-  next_event: "YYYY-MM-DD" | null
-  profile_version: int
-  mandatory_protected: bool
-```
-
-렌더링 주의:
-- `body_text`는 수백~수천 자다. Embed에는 `analysis.summary`를 쓴다.
-- `score.reasons`가 "왜 추천됨" 화면의 근거다. 반드시 노출한다.
-- `eligibility == "UNKNOWN"`이면 "원문 확인 필요"를 명시한다 (코어가 69점 상한을 건다).
-- `analysis.dates[].inferred_year == true`는 연도를 추론한 값이다. 마감 표시 시 주의 문구 필요.
-
-### 4.3 사용자 프로필 스키마
-
-필수: `user_key`, `school_id`, `degree_level`.
-
-```
-degree_level ∈ {undergraduate, master, doctorate, integrated, non_degree}
-grade: int 1~6   # undergraduate이면 필수
-```
-
-리스트 필드(각 최대 100개, 항목당 최대 100자):
-`career_interests`, `preferred_topics`, `muted_topics`, `include_keywords`,
-`exclude_keywords`, `double_majors`, `minors`, `completed_courses`, `unknown_fields`
-
-숫자 범위:
-```
-student_number_year   1900 ~ 2100
-completed_semesters   0 ~ 30
-gpa_last_semester     0 ~ 4.5
-transfer_approved_credits  0 ~ 300
-```
-
-`language_scores`: 최대 20개 항목 객체. `timezone`: 기본 `Asia/Seoul`.
-
-`notification_preferences`:
-```
-minimum_score: float (기본 40)
-include_bands: ["action","opportunity","reference"] 부분집합
-max_action / max_opportunity / max_reference: int
-strict_campus: bool
-```
-
-**마사몽 매핑**: `user_key`는 Discord 사용자와 1:1이어야 한다.
-`user_key = f"discord-{user_id}"` 규칙을 쓰고 8장 테이블에 원본 `user_id`를 함께 둔다.
-
-### 4.4 피드백 타입
-
-```
-선호 학습(완만):  useful, saved, applied, not_interested, already_knew
-공지 상태:        completed, dismiss_once, not_eligible
-강한 설정:        mute_topic
-```
-
-의미상 주의: `not_interested` 1회는 영구 차단이 아니다(90일 반감기). UI에서
-"영구 차단"처럼 표현하면 안 된다. 음소거 해제 경로를 반드시 제공한다.
-
-식별은 `notice_id` 대신 `(source_id, external_id)`도 가능하다.
-
-### 4.5 collection_health
+`collection_health`:
 
 ```
 status: "healthy" | "degraded" | "failed"
@@ -320,45 +308,112 @@ sources: { <source_id>: {status, list_candidates, details_succeeded,
                          details_failed, errors: [str]} }
 ```
 
-`may_include_stale_notices == true`면 **digest에 오래된 공지가 섞였을 수 있다**는
-경고를 사용자에게 반드시 표시한다. 이것이 "오늘 새 공지 없음"과 "오늘 확인 실패"를
-구분하는 유일한 신호다.
+`item`:
 
-### 4.6 배치 실행 상태 / 종료 코드
+```
+notice_id: int
+dedup_key: str
+revision_count: int
+change: "new" | "updated" | "unchanged"
+duplicate_sources: [ {source_id, url} ]
+
+notice:
+  candidate: {source_id, external_id, title, url, published_text|null,
+              author|null, category|null, pinned: bool,
+              source_university|null, source_board|null, source_tags: [str]}
+  title, body_text, body_characters, published_text, author
+  attachments: [ {kind, url, name|null} ]
+  inline_images, attachment_extractions
+  base_content_hash, content_hash
+  warnings: [str]
+
+analysis:
+  schema_version, summary, audiences[], topics[], actions[]
+  required: bool
+  urgency: "low" | "normal" | "high" | "critical"
+  dates: [ {date: "YYYY-MM-DD", kind, evidence, inferred_year?: bool} ]
+  eligibility_rules[], evidence[], confidence: float
+  analysis_source: "rules" | <모델명>
+  warnings: [str]
+
+score:
+  score: float (0~100)
+  band: "action" | "opportunity" | "reference" | "hidden"
+  eligibility: "ELIGIBLE" | "LIKELY_ELIGIBLE" | "INELIGIBLE" | "UNKNOWN"
+  reasons: [str]
+  topics: [str]
+  deadline: "YYYY-MM-DD" | null
+  next_event: "YYYY-MM-DD" | null
+  profile_version: int
+  mandatory_protected: bool
+```
+
+렌더링 규칙:
+
+- `body_text`는 수백~수천 자다. Embed에는 **`analysis.summary`**를 쓴다.
+- `score.reasons`가 "왜 추천됨"의 근거다. **반드시 노출한다.**
+- `eligibility == "UNKNOWN"`이면 "원문 확인 필요"를 명시한다.
+- `dates[].inferred_year == true`는 연도를 추론한 값이므로 마감 표시 시 주의 문구를 붙인다.
+- 밴드·최소점수 필터는 코어가 이미 적용했으므로 **재적용하지 않는다.**
+
+### 12.2 사용자 프로필
+
+필수: `user_key`, `school_id`, `degree_level`.
+
+```
+degree_level ∈ {undergraduate, master, doctorate, integrated, non_degree}
+grade: int 1~6            # undergraduate이면 필수
+```
+
+리스트 필드 (각 최대 100개, 항목당 100자): `career_interests`, `preferred_topics`,
+`muted_topics`, `include_keywords`, `exclude_keywords`, `double_majors`, `minors`,
+`completed_courses`, `unknown_fields`
+
+숫자 범위: `student_number_year` 1900~2100, `completed_semesters` 0~30,
+`gpa_last_semester` 0~4.5, `transfer_approved_credits` 0~300
+
+`language_scores`: 최대 20개 객체. `timezone`: 기본 `Asia/Seoul`.
+
+`notification_preferences`: `minimum_score`(기본 40), `include_bands`,
+`max_action` / `max_opportunity` / `max_reference`, `strict_campus`.
+
+**마사몽 매핑**: `user_key = f"discord-{user_id}"`로 고정하고 테이블에 원본 `user_id`를 함께 둔다.
+
+### 12.3 피드백 타입
+
+```
+선호 학습:  useful, saved, applied, not_interested, already_knew
+공지 상태:  completed, dismiss_once, not_eligible
+강한 설정:  mute_topic
+```
+
+식별은 `notice_id` 또는 `(source_id, external_id)`.
+
+### 12.4 실행 상태
 
 ```
 status: "succeeded" | "partial" | "failed"
 exit code: failed → 2, 그 외 → 0
 ```
 
-`partial`은 exit 0이므로 **종료 코드만으로 성공 판정하면 안 된다.**
-반드시 `daily-run-YYYY-MM-DD.json`의 status와 `collection_health`를 확인한다.
+**`partial`은 exit 0이다.** 종료 코드만으로 성공 판정하면 안 되고 `daily-run-*.json`의
+status와 `collection_health`를 확인해야 한다.
 
-### 4.7 코어 CLI (Phase 3용)
+### 12.5 CLI
 
 ```
 python -m school_notice daily \
   --no-llm --low-resource \
-  --profile <profile.json> \
-  --db <sqlite path> \
-  --output-dir <dir> \
+  --profile <profile.json> --db <sqlite> --output-dir <dir> \
   [--date YYYY-MM-DD] [--max-details-per-source N] [--max-requests N]
 ```
 
 산출: `daily-digest-<date>.md`, `daily-digest-<date>.json`, `daily-run-<date>.json`
-
 기타 명령: `list-sources`, `init-db`, `live-check`, `feedback`, `llm-check`
 
-`--low-resource` 강제 상한: source당 상세 4건, 첨부 0, 전체 HTTP 30회.
+### 12.6 테스트 fixture
 
-**파일명에 user_key가 없다.** 다중 사용자면 `--output-dir`를 사용자별로 분리해야
-덮어쓰지 않는다.
-
----
-
-## 5. 테스트 fixture
-
-`tests/fixtures/school_notice_digest.json`으로 커밋할 실제 구조 샘플(축약).
+`tests/fixtures/school_notice_digest.json`으로 커밋할 실제 구조 (축약).
 
 ```json
 {
@@ -452,100 +507,57 @@ python -m school_notice daily \
 }
 ```
 
-추가로 만들어야 할 fixture:
-- `..._empty.json` — items 0건 (오늘 새 공지 없음)
-- `..._failed_health.json` — `may_include_stale_notices: true`
-- `..._unknown_eligibility.json` — `eligibility: "UNKNOWN"`
-- `..._bad_schema.json` — `schema_version: 99` (거부 확인용)
+추가 fixture: 빈 결과(items 0건), `may_include_stale_notices: true`,
+`eligibility: "UNKNOWN"`, `schema_version: 99`(거부 확인용).
 
 ---
 
-## 6. 마사몽 코드베이스 영향 지점
+## 13. 마사몽 통합
 
-| 파일 | 변경 | Phase |
+### 13.1 대상 프로필은 `general`
+
+신규 테이블이 필요한데 `masamo`는 `MASAMONG_AUTO_MIGRATE=true`가 config에서 금지되어
+있다. general은 빈 DB라 실패해도 누적 운영 데이터에 영향이 없고, 롤백은 유닛 하나만
+내리면 된다. `masamo` 승격은 별도 승인된 migration으로만 한다.
+
+### 13.2 크롤링을 봇 프로세스 안에서 돌리지 않는다
+
+코어는 실행당 RSS가 약 68 MiB 뛰고 bs4 파싱은 CPU 바운드다. `tasks.loop`로 봇
+이벤트 루프에 넣으면 `MASAMONG_CPU_THREADS=1` 환경에서 봇 응답성이 무너지고,
+크롤링 실패가 봇 안정성에 전이된다.
+
+```
+[systemd timer 08:00]  코어 batch (별도 프로세스)
+        └─> digest JSON  +  sidecar SQLite
+
+[마사몽 봇 (상주)]  tasks.loop 08:10
+        └─> digest JSON 읽기 → Embed 변환 → DM 발송 → 전달 상태 기록
+        └─> 버튼 interaction → 피드백 기록 → 다음 batch가 반영
+```
+
+접점은 **digest JSON 파일과 피드백 테이블뿐**이다.
+
+### 13.3 저장소 2단 분리
+
+| 데이터 | 위치 | 이유 |
 |---|---|---|
-| `config.py` | 9장 config 키 추가. **명시적 프로필 자격증명 검증 블록에 영향 없게** 주의 | 1 |
-| `database/schema.sql` | 8장 DDL (SQLite) | 2 |
-| `database/schema_tidb.sql` | 8장 DDL (TiDB) | 2 |
-| `main.py` `_verify_runtime_schema` | 신규 테이블 검증 추가 (조건부) | 2 |
-| `main.py` `_migrate_db` | `core_tables`에 추가 (조건부) | 2 |
-| `main.py` `cog_list` | `school_notice_cog` 등록 | 1 |
-| `cogs/school_notice_cog.py` | 신규 | 1 |
-| `utils/school_notice_contract.py` | 신규 (digest 파싱) | 0 |
-| `utils/school_notice_render.py` | 신규 (Embed 변환) | 1 |
-| `scripts/run_school_notice_batch.py` | 신규 | 3 |
-| `requirements.txt` | 첨부 기능 켤 때만 `olefile`, `pypdf` | 3 |
-| `profiles/general.env.example` | 신규 키 예시 | 1 |
-| `scripts/validate_profile_separation.py` | 신규 키 경계 검사 | 2 |
+| 공지 snapshot·revision·분석 캐시·API 예산 | sidecar SQLite (코어 소유) | 재생성 가능한 크롤링 부산물 |
+| 사용자 프로필·피드백·전달 상태 | 마사몽 DB (신규 테이블) | Discord 사용자와 결합 |
 
-### 6.1 반드시 지킬 기존 제약
+코어 `storage`(710 LOC)를 async/TiDB로 포팅하지 않는다. 위험 대비 이득이 없다.
 
-직전 프로필 격리 작업에서 세운 규칙을 깨지 않아야 한다.
+### 13.4 신규 테이블
 
-1. **`masamo`에서 이 기능이 기본으로 켜지면 안 된다.** `SCHOOL_NOTICE_ENABLED`
-   기본값을 `false`로 두고 general env에서만 켠다.
-2. **신규 테이블을 무조건 required로 만들면 안 된다.** masamo는
-   `AUTO_MIGRATE=false`라 테이블이 없으면 **기동이 실패한다.**
-   `kakao_chunks`와 같은 방식으로 `if config.SCHOOL_NOTICE_ENABLED:` 조건부로 넣는다.
-3. **명시적 프로필은 env 파일 밖의 값을 읽지 않는다.** 신규 config 키는 반드시
-   env 파일에 적어야 하며, `load_config_value`로 읽는다.
-4. **저사양 예산을 넘기지 않는다.** 봇 프로세스 안에서 크롤링하지 않는다(2.2).
-5. 새 Cog는 `MASAMONG_REQUIRED_COGS`에 넣지 않는다. 로드 실패가 봇 기동을 막으면 안 된다.
+마사몽 `compat_db`가 `?`를 TiDB용 `%s`로 변환하므로 쿼리는 **`?` 스타일로만** 쓴다.
 
----
-
-## 7. 프로세스·데이터 흐름 상세
-
-```
-① [batch, systemd timer 08:00]
-   마사몽 DB에서 활성 프로필 export → <user_key>.json
-   for each 프로필:
-       python -m school_notice daily --no-llm --low-resource
-              --profile <user>.json --db /var/lib/masamong/general/notice/core.db
-              --output-dir /var/lib/masamong/general/notice/out/<user_key>/
-   결과 status/collection_health 검증 → batch 결과 요약 기록
-
-② [봇, tasks.loop 08:10]
-   out/<user_key>/daily-digest-<today>.json 읽기
-   → schema_version 검증 (4.1)
-   → band/minimum_score 필터는 코어가 이미 적용했으므로 재적용하지 않음
-   → Embed 변환 (utils/school_notice_render.py)
-   → DM 발송 (기존 dm_usage_logs 제한 경로 준수)
-   → school_notice_deliveries에 idempotency key로 기록
-
-③ [봇, interaction]
-   버튼 클릭 → school_notice_feedback에 기록 (interaction 중복 차단)
-
-④ [다음 batch]
-   ①에서 프로필 export 시 피드백을 함께 반영
-```
-
-### 7.1 idempotency
-
-- 전달 키: `(user_key, digest_date, notice_id)` — 같은 날 같은 공지 재전송 금지
-- 피드백 키: `interaction_id` UNIQUE — 버튼 연타 방지
-- batch 키: `(user_key, run_date)` — 같은 날 중복 실행 방지
-
-### 7.2 동시 실행 방지
-
-코어 SQLite는 WAL + busy_timeout 5초지만 중복 배치를 띄울 이유가 없다.
-systemd timer에 `Persistent=true`, 서비스에 flock 또는 `RemainAfterExit` 조합으로
-single-flight를 보장한다.
-
----
-
-## 8. 신규 테이블 DDL 초안
-
-마사몽 기존 컨벤션(TiDB `AUTO_RANDOM` / SQLite `AUTOINCREMENT`, 시각은 `VARCHAR(64)`/`TEXT`)을 따른다.
-
-### 8.1 SQLite (`database/schema.sql`)
+SQLite (`database/schema.sql`):
 
 ```sql
 CREATE TABLE IF NOT EXISTS school_notice_profiles (
-    user_id INTEGER PRIMARY KEY,          -- Discord user id
-    user_key TEXT NOT NULL UNIQUE,        -- "discord-<user_id>"
+    user_id INTEGER PRIMARY KEY,
+    user_key TEXT NOT NULL UNIQUE,
     school_id TEXT NOT NULL,
-    profile_json TEXT NOT NULL,           -- 4.3 스키마 전체
+    profile_json TEXT NOT NULL,
     profile_version INTEGER NOT NULL DEFAULT 1,
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc')),
@@ -557,11 +569,11 @@ CREATE TABLE IF NOT EXISTS school_notice_feedback (
     user_key TEXT NOT NULL,
     source_id TEXT NOT NULL,
     external_id TEXT NOT NULL,
-    feedback_type TEXT NOT NULL,          -- 4.4 enum
-    topic TEXT,                           -- mute_topic 전용
-    interaction_id TEXT NOT NULL UNIQUE,  -- 중복 interaction 차단
+    feedback_type TEXT NOT NULL,
+    topic TEXT,
+    interaction_id TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL,
-    consumed_at TEXT                      -- batch가 반영한 시각
+    consumed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_school_notice_feedback_user
     ON school_notice_feedback (user_key, created_at);
@@ -571,7 +583,7 @@ CREATE TABLE IF NOT EXISTS school_notice_deliveries (
     user_key TEXT NOT NULL,
     digest_date TEXT NOT NULL,
     notice_id INTEGER NOT NULL,
-    status TEXT NOT NULL,                 -- sent | failed | skipped
+    status TEXT NOT NULL,
     failure_reason TEXT,
     attempt_count INTEGER NOT NULL DEFAULT 1,
     delivered_at TEXT NOT NULL,
@@ -582,8 +594,8 @@ CREATE TABLE IF NOT EXISTS school_notice_batch_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_key TEXT NOT NULL,
     run_date TEXT NOT NULL,
-    status TEXT NOT NULL,                 -- succeeded | partial | failed
-    collection_status TEXT,               -- healthy | degraded | failed
+    status TEXT NOT NULL,
+    collection_status TEXT,
     may_include_stale INTEGER NOT NULL DEFAULT 0,
     item_count INTEGER NOT NULL DEFAULT 0,
     http_requests INTEGER,
@@ -593,170 +605,78 @@ CREATE TABLE IF NOT EXISTS school_notice_batch_runs (
 );
 ```
 
-### 8.2 TiDB (`database/schema_tidb.sql`)
+TiDB (`database/schema_tidb.sql`) — 같은 구조에 `BIGINT PRIMARY KEY AUTO_RANDOM`,
+`VARCHAR(n)`, `KEY` / `UNIQUE KEY` 문법을 적용한다. 시각 컬럼은 기존 관례대로
+`VARCHAR(64)`.
 
-```sql
-CREATE TABLE IF NOT EXISTS school_notice_profiles (
-    user_id BIGINT PRIMARY KEY,
-    user_key VARCHAR(128) NOT NULL UNIQUE,
-    school_id VARCHAR(64) NOT NULL,
-    profile_json TEXT NOT NULL,
-    profile_version INT NOT NULL DEFAULT 1,
-    enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at VARCHAR(64),
-    updated_at VARCHAR(64)
-);
+멱등성 키: 전달 `(user_key, digest_date, notice_id)`, 피드백 `interaction_id`,
+batch `(user_key, run_date)`.
 
-CREATE TABLE IF NOT EXISTS school_notice_feedback (
-    id BIGINT PRIMARY KEY AUTO_RANDOM,
-    user_key VARCHAR(128) NOT NULL,
-    source_id VARCHAR(64) NOT NULL,
-    external_id VARCHAR(128) NOT NULL,
-    feedback_type VARCHAR(32) NOT NULL,
-    topic VARCHAR(128),
-    interaction_id VARCHAR(64) NOT NULL UNIQUE,
-    created_at VARCHAR(64) NOT NULL,
-    consumed_at VARCHAR(64),
-    KEY idx_school_notice_feedback_user (user_key, created_at)
-);
+### 13.5 config 키
 
-CREATE TABLE IF NOT EXISTS school_notice_deliveries (
-    id BIGINT PRIMARY KEY AUTO_RANDOM,
-    user_key VARCHAR(128) NOT NULL,
-    digest_date VARCHAR(32) NOT NULL,
-    notice_id BIGINT NOT NULL,
-    status VARCHAR(16) NOT NULL,
-    failure_reason TEXT,
-    attempt_count INT NOT NULL DEFAULT 1,
-    delivered_at VARCHAR(64) NOT NULL,
-    UNIQUE KEY uk_school_notice_delivery (user_key, digest_date, notice_id)
-);
-
-CREATE TABLE IF NOT EXISTS school_notice_batch_runs (
-    id BIGINT PRIMARY KEY AUTO_RANDOM,
-    user_key VARCHAR(128) NOT NULL,
-    run_date VARCHAR(32) NOT NULL,
-    status VARCHAR(16) NOT NULL,
-    collection_status VARCHAR(16),
-    may_include_stale BOOLEAN NOT NULL DEFAULT FALSE,
-    item_count INT NOT NULL DEFAULT 0,
-    http_requests INT,
-    llm_calls INT,
-    finished_at VARCHAR(64) NOT NULL,
-    UNIQUE KEY uk_school_notice_run (user_key, run_date)
-);
-```
-
-**SQL 작성 규칙**: 마사몽 `compat_db`는 `?`를 TiDB용 `%s`로 자동 변환한다
-(`compat_db.py:270`). 쿼리는 **`?` 스타일로만** 작성한다.
-
----
-
-## 9. config 키
-
-`config.py`에 `load_config_value`로 추가한다. 전부 기본값을 두어 legacy/masamo에
-영향이 없어야 한다.
+전부 기본값을 두어 legacy/masamo에 영향이 없어야 한다.
 
 ```
 SCHOOL_NOTICE_ENABLED                 기본 false   # 마스터 스위치
-SCHOOL_NOTICE_DIGEST_DIR              기본 ""      # 절대 경로. 명시적 프로필은 필수
+SCHOOL_NOTICE_DIGEST_DIR              기본 ""      # 절대 경로
 SCHOOL_NOTICE_CORE_DB                 기본 ""      # sidecar SQLite 절대 경로
 SCHOOL_NOTICE_DELIVERY_HOUR           기본 8
 SCHOOL_NOTICE_DELIVERY_MINUTE         기본 10
-SCHOOL_NOTICE_MAX_ITEMS_PER_DM        기본 10      # Discord 메시지 상한 보호
-SCHOOL_NOTICE_SCHEMA_VERSION          기본 1       # 4.1과 불일치면 전달 중단
+SCHOOL_NOTICE_MAX_ITEMS_PER_DM        기본 10
+SCHOOL_NOTICE_SCHEMA_VERSION          기본 1
 SCHOOL_NOTICE_STALE_WARNING_ENABLED   기본 true
 ```
 
-주의:
-- `SCHOOL_NOTICE_ENABLED=true`인데 `DIGEST_DIR`가 비었거나 상대 경로면 **기동 실패**로
-  처리한다 (기존 명시적 프로필 fail-closed 패턴과 일치).
-- 명시적 프로필에서는 이 키들이 env 파일에 없으면 무시되고 기본값이 된다.
-  `general.env.example`에 반드시 예시를 넣는다.
+`SCHOOL_NOTICE_ENABLED=true`인데 `DIGEST_DIR`가 비었거나 상대 경로면 기동 실패로
+처리한다 (기존 명시적 프로필 fail-closed 패턴과 일치). 명시적 프로필은 env 파일 밖의
+값을 읽지 않으므로 `general.env.example`에 예시를 넣는다.
 
----
+### 13.6 영향 지점
 
-## 10. 리스크와 완화
+| 파일 | 변경 |
+|---|---|
+| `config.py` | 13.5 키 추가 |
+| `database/schema.sql`, `schema_tidb.sql` | 13.4 DDL |
+| `main.py` `_verify_runtime_schema`, `_migrate_db` | 신규 테이블 **조건부** 추가 |
+| `main.py` `cog_list` | `school_notice_cog` 등록 |
+| `cogs/school_notice_cog.py` | 신규 |
+| `utils/school_notice_contract.py` | digest 파싱·검증 |
+| `utils/school_notice_render.py` | digest → Embed |
+| `scripts/run_school_notice_batch.py` | 프로필 export → 코어 호출 → 피드백 import |
+| `profiles/general.env.example` | 신규 키 예시 |
 
-| 리스크 | 영향 | 완화 |
-|---|---|---|
-| 신규 테이블 required → masamo 기동 실패 | **운영 중단** | 6.1-②. `SCHOOL_NOTICE_ENABLED` 조건부. masamo는 false |
-| 봇 프로세스 내 크롤링 | 저사양 서버 CPU/RSS 초과 | 2.2. 별도 프로세스 강제 |
-| `partial` 상태를 성공으로 오판 | 조용한 데이터 누락 | 4.6. exit code 아닌 status/health 확인 |
-| 오래된 공지 재전송 | 사용자 신뢰 하락 | 7.1 idempotency + Phase 4 만료 정책 |
-| 다중 사용자 시 output 덮어씀 | digest 유실 | 사용자별 `--output-dir` 분리 (4.7) |
-| 다중 사용자 시 재크롤링 | 학교 사이트 부하·차단 | Phase 4까지 사용자 수 제한(권장 5명 이하) |
-| 버튼 연타 중복 피드백 | 점수 왜곡 | `interaction_id` UNIQUE |
-| 학교 HTML 구조 변경 | 조용한 파싱 실패 | `live-check` 주기 실행 + `collection_health` 알림 |
-| 코어 스키마 버전 변경 | 렌더링 오류 | `schema_version` 불일치 시 전달 중단·경고 |
-| DeepSeek 키 유출 | 비용·보안 | Phase 1은 `--no-llm`. 켤 때 env로만 주입 |
+### 13.7 반드시 지킬 제약
 
-### 10.1 법적·윤리적 경계 (반드시 유지)
+1. **신규 테이블을 무조건 required로 만들면 masamo 기동이 실패한다.** `AUTO_MIGRATE=false`라
+   테이블이 없으면 startup에서 막힌다. `kakao_chunks`와 같은 방식으로
+   `if config.SCHOOL_NOTICE_ENABLED:` 조건부로 넣고, **조건부 검증을 먼저 작성한 뒤
+   테이블을 추가한다.**
+2. `SCHOOL_NOTICE_ENABLED` 기본값은 `false`. masamo에서 기본으로 켜지지 않는다.
+3. 새 Cog를 `MASAMONG_REQUIRED_COGS`에 넣지 않는다. 로드 실패가 봇 기동을 막으면 안 된다.
+4. 봇 프로세스 안에서 크롤링하지 않는다 (13.2).
+5. 다중 사용자 분리(11장) 전까지 사용자 수를 제한한다 (권장 5명 이하). 안 그러면 같은
+   학교를 사람 수만큼 재크롤링해 차단당할 수 있다.
 
-- 공개·비로그인 페이지만 수집한다. 로그인/SSO/CAPTCHA 우회 금지.
-- `--ignore-robots`는 **운영에서 사용 금지**.
-- 자동 신청·대리 제출 기능을 붙이지 않는다.
-- 사용자에게 "원문 확인 필요"를 항상 함께 표시한다 (분석은 보조 수단).
+### 13.8 착수 순서
 
----
+1. `utils/school_notice_contract.py` + fixture — 계약이 없으면 나머지가 추측이 된다.
+2. `utils/school_notice_render.py` — Discord 없이 순수 함수로. 테스트가 쉬워진다.
+3. Cog와 명령 — 수동 조회부터.
+4. DDL + 조건부 검증 (13.7-①의 순서 준수) → 프로필 CRUD, 피드백 버튼.
+5. batch 스크립트 — 코어가 아직 없으면 fixture를 복사하고 12.4 상태 계약만 재현하는
+   fake로 인터페이스를 완성한다. 나중에 실행 경로만 교체된다.
 
-## 11. 클라우드에서 할 수 없는 것
-
-폴더가 없으므로 아래는 **로컬에서만** 가능하다. 클라우드 세션은 손대지 않는다.
-
-| 항목 | 이유 | 대체 |
-|---|---|---|
-| `school_notice` 패키지 vendoring | 소스 4,887 LOC가 없음 | Phase 3에서 로컬 수행 |
-| 코어 단위 테스트 실행 | 테스트 1,781 LOC가 없음 | 마사몽 쪽 테스트만 작성 |
-| `live-check` 실사이트 검증 | 코어 CLI 필요 | 로컬에서 사전 수행 |
-| 실제 digest 생성 | 코어 필요 | 5장 fixture 사용 |
-| DeepSeek 계약 검증 | 코어 + 키 필요 | Phase 3 이후 |
-
-### 11.1 클라우드 세션용 fake adapter
-
-Phase 3 인터페이스를 코어 없이 완성하기 위해 아래 형태의 fake를 만든다.
-
-```python
-# tests/fakes/fake_school_notice_batch.py
-# 실제 코어 CLI 대신 fixture를 output-dir에 복사하고
-# 4.6의 status/exit code 계약만 재현한다.
-```
-
-이렇게 하면 코어 vendoring 후 **호출부 교체 없이** 실행 경로만 바뀐다.
-
----
-
-## 12. 완료 기준
-
-### Phase 0~2 (클라우드에서 검증 가능)
+### 13.9 완료 기준
 
 - [ ] `schema_version` 불일치 digest를 거부한다
 - [ ] fixture 4종(정상·빈·health 실패·UNKNOWN)이 모두 렌더링된다
 - [ ] `may_include_stale_notices: true`면 경고가 표시된다
 - [ ] `eligibility: "UNKNOWN"`이면 원문 확인 안내가 표시된다
 - [ ] `score.reasons`가 "왜 추천됨"으로 노출된다
-- [ ] 프로필 CRUD가 4.3 enum·범위를 그대로 검증한다
+- [ ] 음소거 해제 경로가 있고 "영구 차단"으로 표현하지 않는다
+- [ ] 프로필 CRUD가 12.2 enum·범위를 그대로 검증한다
 - [ ] 같은 `interaction_id` 피드백이 1건만 저장된다
-- [ ] 신규 테이블이 **masamo 프로필 기동을 막지 않는다** (조건부 검증)
+- [ ] 신규 테이블이 masamo 기동을 막지 않는다
 - [ ] `SCHOOL_NOTICE_ENABLED=false`에서 기존 동작이 완전히 동일하다
-- [ ] legacy 경로에 영향이 없다
-
-### Phase 3~4 (로컬 검증 필요)
-
-- [ ] batch가 별도 프로세스로 실행되고 봇 RSS에 영향이 없다
 - [ ] `partial` 상태가 성공으로 오판되지 않는다
 - [ ] 같은 날 같은 공지가 두 번 전달되지 않는다
-- [ ] 사용자별 output이 덮어써지지 않는다
-- [ ] 피드백이 다음 실행 점수에 반영된다
-- [ ] general에서 충분히 검증된 뒤에만 masamo 승격을 논의한다
-
----
-
-## 13. 권장 착수 순서
-
-1. Phase 0을 먼저 끝낸다. 계약과 fixture가 없으면 나머지가 전부 추측이 된다.
-2. Phase 1은 Discord 연결 없이 순수 함수로 만든다. 테스트가 쉬워진다.
-3. Phase 2의 DDL은 **조건부 검증**을 먼저 작성하고 테이블을 추가한다.
-   순서를 바꾸면 masamo 기동이 깨질 수 있다.
-4. Phase 3은 fake로 인터페이스를 완성한 뒤 로컬에서 코어를 붙인다.
-5. Phase 4는 실사용 데이터가 쌓인 뒤에 판단한다.
