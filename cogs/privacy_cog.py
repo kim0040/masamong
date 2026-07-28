@@ -37,15 +37,20 @@ class ConsentDecisionView(discord.ui.View):
         self,
         cog: "PrivacyCog",
         *,
-        user_id: int,
+        user_id: int | None,
         scope: str,
         on_granted: Callable[[discord.Interaction], Awaitable[None]] | None = None,
+        persistent_fallback: bool = False,
     ) -> None:
-        super().__init__(timeout=180)
+        # 명령 직후에는 사용자별 callback으로 원래 기능을 이어간다. 이 View가
+        # 만료되거나 프로세스가 재시작된 뒤에는 PrivacyCog가 등록한 동일 custom_id의
+        # stateless persistent fallback이 처리한다.
+        super().__init__(timeout=None if persistent_fallback else 15 * 60)
         self._cog = cog
-        self._user_id = int(user_id)
+        self._user_id = int(user_id) if user_id is not None else None
         self._scope = normalize_scope(scope)
         self._on_granted = on_granted
+        self._persistent_fallback = bool(persistent_fallback)
 
         agree = discord.ui.Button(
             label="동의합니다",
@@ -63,7 +68,15 @@ class ConsentDecisionView(discord.ui.View):
         self.add_item(cancel)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if int(interaction.user.id) == self._user_id:
+        # 개인정보 동의는 DM에서만 받는다. persistent fallback에는 사용자 ID를
+        # 저장하지 않고 실제 DM을 누른 당사자의 ID를 사용한다.
+        if getattr(interaction, "guild", None) is not None:
+            await interaction.response.send_message(
+                "개인정보 동의는 마사몽과의 DM에서만 진행할 수 있습니다.",
+                ephemeral=True,
+            )
+            return False
+        if self._user_id is None or int(interaction.user.id) == self._user_id:
             return True
         await interaction.response.send_message(
             "이 동의 버튼은 명령을 실행한 사용자만 누를 수 있습니다.",
@@ -79,28 +92,47 @@ class ConsentDecisionView(discord.ui.View):
 
     async def _grant(self, interaction: discord.Interaction) -> None:
         policy = get_policy(self._scope)
+        user_id = (
+            self._user_id
+            if self._user_id is not None
+            else int(interaction.user.id)
+        )
+
+        # Discord component는 약 3초 안에 acknowledgement가 필요하다. 원격 TiDB
+        # 왕복을 먼저 기다리면 저장은 성공해도 클라이언트에는 "적시에 응답하지
+        # 않았어요"가 표시될 수 있으므로, 네트워크/DB 작업 전에 즉시 defer한다.
+        await interaction.response.defer()
         try:
-            await grant_consent(
-                self._cog.bot.db,
-                self._user_id,
-                policy.scope,
+            await asyncio.wait_for(
+                grant_consent(
+                    self._cog.bot.db,
+                    user_id,
+                    policy.scope,
+                ),
+                timeout=10,
             )
         except Exception as exc:
             logger.error(
                 "개인정보 동의 저장 실패: scope=%s user_id=%s error=%s",
                 policy.scope,
-                self._user_id,
+                user_id,
                 type(exc).__name__,
                 exc_info=True,
             )
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "동의 상태를 저장하지 못했습니다. 잠시 후 다시 시도해주세요.",
                 ephemeral=True,
             )
             return
 
-        self._disable()
-        await interaction.response.edit_message(
+        if self._persistent_fallback:
+            # 공유 persistent View 자체를 disable/stop하면 다른 사용자의 오래된
+            # 동의 버튼까지 모두 멈춘다. 처리된 메시지의 버튼만 제거한다.
+            rendered_view = None
+        else:
+            self._disable()
+            rendered_view = self
+        await interaction.edit_original_response(
             content=(
                 f"✅ **{policy.display_name}** 개인정보 처리에 동의했습니다. "
                 f"(정책 `{policy.version}`)\n"
@@ -112,7 +144,7 @@ class ConsentDecisionView(discord.ui.View):
                 + f"언제든 `!개인정보 철회 {consent_command_name(policy.scope)}`로 "
                 "향후 이용을 중단할 수 있습니다."
             ),
-            view=self,
+            view=rendered_view,
         )
         if self._on_granted is not None:
             try:
@@ -132,13 +164,17 @@ class ConsentDecisionView(discord.ui.View):
 
     async def _cancel(self, interaction: discord.Interaction) -> None:
         policy = get_policy(self._scope)
-        self._disable()
+        if self._persistent_fallback:
+            rendered_view = None
+        else:
+            self._disable()
+            rendered_view = self
         await interaction.response.edit_message(
             content=(
                 f"동의하지 않았습니다. **{policy.display_name}** 개인정보는 "
                 "새로 수집하거나 기존 프로필에서 이용하지 않습니다."
             ),
-            view=self,
+            view=rendered_view,
         )
 
 
@@ -148,6 +184,20 @@ class PrivacyCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self._legacy_prompt_lock = asyncio.Lock()
+        self._persistent_consent_views: list[ConsentDecisionView] = []
+        # 오래된 DM의 component는 View timeout 또는 봇 재시작 뒤에도 동일
+        # custom_id로 복구한다. 사용자 ID는 버튼에 넣지 않고 DM을 누른 당사자를
+        # 사용하므로 개인 식별정보가 Discord component payload에 남지 않는다.
+        if hasattr(bot, "add_view"):
+            for policy in all_policies():
+                view = ConsentDecisionView(
+                    self,
+                    user_id=None,
+                    scope=policy.scope,
+                    persistent_fallback=True,
+                )
+                bot.add_view(view)
+                self._persistent_consent_views.append(view)
         # 테스트용 최소 bot 객체에는 Discord readiness API가 없다. 실제 Bot에서만
         # 기존 활성 구독자 안내 worker를 시작해 import/단위 테스트 부작용을 막는다.
         if hasattr(bot, "wait_until_ready"):
