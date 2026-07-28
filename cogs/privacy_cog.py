@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+
 import discord
 from discord.ext import commands
 
@@ -25,11 +27,19 @@ from utils.privacy_consent import (
 class ConsentDecisionView(discord.ui.View):
     """정책 고지를 읽은 본인만 명시적으로 동의할 수 있는 버튼."""
 
-    def __init__(self, cog: "PrivacyCog", *, user_id: int, scope: str) -> None:
+    def __init__(
+        self,
+        cog: "PrivacyCog",
+        *,
+        user_id: int,
+        scope: str,
+        on_granted: Callable[[discord.Interaction], Awaitable[None]] | None = None,
+    ) -> None:
         super().__init__(timeout=180)
         self._cog = cog
         self._user_id = int(user_id)
         self._scope = normalize_scope(scope)
+        self._on_granted = on_granted
 
         agree = discord.ui.Button(
             label="동의합니다",
@@ -88,12 +98,31 @@ class ConsentDecisionView(discord.ui.View):
             content=(
                 f"✅ **{policy.display_name}** 개인정보 처리에 동의했습니다. "
                 f"(정책 `{policy.version}`)\n"
-                "이제 원래 사용하려던 명령을 다시 실행해주세요. "
-                f"언제든 `!개인정보 철회 {consent_command_name(policy.scope)}`로 "
+                + (
+                    "요청하신 기능을 이어서 진행할게요. "
+                    if self._on_granted is not None
+                    else "이제 원하는 기능을 바로 사용할 수 있습니다. "
+                )
+                + f"언제든 `!개인정보 철회 {consent_command_name(policy.scope)}`로 "
                 "향후 이용을 중단할 수 있습니다."
             ),
             view=self,
         )
+        if self._on_granted is not None:
+            try:
+                await self._on_granted(interaction)
+            except Exception:
+                logger.error(
+                    "개인정보 동의 후 기능 이어하기 실패: scope=%s user_id=%s",
+                    policy.scope,
+                    self._user_id,
+                    exc_info=True,
+                )
+                await interaction.followup.send(
+                    "동의는 정상 저장했지만 기능을 이어서 시작하지 못했습니다. "
+                    "`!메뉴`에서 다시 선택해주세요.",
+                    ephemeral=True,
+                )
 
     async def _cancel(self, interaction: discord.Interaction) -> None:
         policy = get_policy(self._scope)
@@ -120,29 +149,34 @@ class PrivacyCog(commands.Cog):
         user_id: int,
         scope: str,
         prefix: str | None = None,
+        on_granted: Callable[[discord.Interaction], Awaitable[None]] | None = None,
+        replace_message: discord.Message | None = None,
     ):
         """다른 Cog도 동일한 정책 고지와 명시 동의 버튼을 사용하게 한다."""
         policy = get_policy(scope)
         content = format_policy_notice(policy.scope)
         if prefix:
             content = f"{prefix}\n\n{content}"
+        view = ConsentDecisionView(
+            self,
+            user_id=int(user_id),
+            scope=policy.scope,
+            on_granted=on_granted,
+        )
+        if replace_message is not None:
+            return await replace_message.edit(
+                content=content,
+                view=view,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
         return await destination.send(
             content,
-            view=ConsentDecisionView(
-                self,
-                user_id=int(user_id),
-                scope=policy.scope,
-            ),
+            view=view,
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
-    @commands.group(name="개인정보", invoke_without_command=True)
-    @commands.dm_only()
-    async def privacy(self, ctx: commands.Context) -> None:
-        """현재 목적별 동의 상태를 확인합니다."""
-        if ctx.invoked_subcommand is not None:
-            return
-
+    async def status_text(self, user_id: int) -> str:
+        """명령과 통합 메뉴가 동일한 개인정보 상태 설명을 사용하게 한다."""
         lines = [
             "🔐 **개인정보 동의 현황**",
             "일반 Discord 대화와 서버가 제공하는 정보는 아래 동의 대상이 아닙니다.",
@@ -150,7 +184,7 @@ class PrivacyCog(commands.Cog):
         for policy in all_policies():
             state = await get_consent_state(
                 self.bot.db,
-                ctx.author.id,
+                int(user_id),
                 policy.scope,
             )
             if is_current_consent_state(state, policy.scope):
@@ -162,19 +196,27 @@ class PrivacyCog(commands.Cog):
             else:
                 label = "미동의"
             lines.append(f"- **{policy.display_name}**: {label}")
-
         lines.extend(
             (
                 "",
-                "동의: `!개인정보 동의 운세` / `!개인정보 동의 학교공지`",
+                "기능을 시작하면 필요한 경우 동의 버튼이 바로 표시됩니다.",
                 "철회: `!개인정보 철회 운세` / `!개인정보 철회 학교공지`",
                 "철회는 향후 이용만 중단합니다. 저장 데이터 삭제는 "
                 "`!운세 삭제` 또는 `!공지 삭제`를 별도로 실행해야 합니다. "
                 "동의·철회 증빙용 감사 이력은 기능 데이터 삭제 후에도 별도 보관됩니다.",
             )
         )
+        return "\n".join(lines)
+
+    @commands.group(name="개인정보", invoke_without_command=True)
+    @commands.dm_only()
+    async def privacy(self, ctx: commands.Context) -> None:
+        """현재 목적별 동의 상태를 확인합니다."""
+        if ctx.invoked_subcommand is not None:
+            return
+
         await ctx.send(
-            "\n".join(lines),
+            await self.status_text(ctx.author.id),
             allowed_mentions=discord.AllowedMentions.none(),
         )
 

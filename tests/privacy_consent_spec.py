@@ -227,3 +227,62 @@ async def test_agree_button_records_current_policy_for_initiating_user():
         assert response.edited
     finally:
         await db.close()
+
+
+@pytest.mark.asyncio
+async def test_agree_button_continues_original_feature_exactly_once():
+    db = await _db()
+    try:
+        continued = []
+
+        async def continue_feature(interaction):
+            continued.append(interaction)
+
+        cog = PrivacyCog(SimpleNamespace(db=db))
+        view = ConsentDecisionView(
+            cog,
+            user_id=USER_ID,
+            scope=FORTUNE_SCOPE,
+            on_granted=continue_feature,
+        )
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=USER_ID),
+            response=_Response(),
+        )
+
+        await view._grant(interaction)
+
+        assert await has_current_consent(db, USER_ID, FORTUNE_SCOPE)
+        assert continued == [interaction]
+        assert view.is_finished()
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_reject_button_never_continues_original_feature():
+    db = await _db()
+    try:
+        continued = []
+
+        async def continue_feature(interaction):
+            continued.append(interaction)
+
+        cog = PrivacyCog(SimpleNamespace(db=db))
+        view = ConsentDecisionView(
+            cog,
+            user_id=USER_ID,
+            scope=FORTUNE_SCOPE,
+            on_granted=continue_feature,
+        )
+        await view._cancel(
+            SimpleNamespace(
+                user=SimpleNamespace(id=USER_ID),
+                response=_Response(),
+            )
+        )
+
+        assert continued == []
+        assert not await has_current_consent(db, USER_ID, FORTUNE_SCOPE)
+    finally:
+        await db.close()

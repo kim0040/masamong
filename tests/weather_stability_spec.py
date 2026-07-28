@@ -1,5 +1,6 @@
 """날씨 스케줄/알림/응답 계약 회귀 테스트."""
 
+import asyncio
 from datetime import date, datetime, timedelta
 
 import pytest
@@ -116,12 +117,13 @@ async def test_rain_partial_channel_and_llm_failure_are_consumed_once(monkeypatc
 
 @pytest.mark.asyncio
 async def test_earthquake_partial_channel_failure_advances_watermark(monkeypatch):
-    """한 채널 전송 실패가 다음 polling에서 같은 지진을 재과금하지 않는다."""
+    """지진은 LLM 없이 고정 형식으로 한 번만 보내고 실패 채널을 격리한다."""
     ok_channel = _FakeChannel()
     failed_channel = _FakeChannel(fail=True)
     ai = _FakeAI()
     bot = _FakeBot({10: ok_channel, 20: failed_channel}, ai)
     cog = WeatherCog(bot)
+    cog._earthquake_watermark_exists = True
 
     occurred_at = datetime.now(KST).replace(microsecond=0)
     cog.last_earthquake_time = occurred_at - timedelta(hours=1)
@@ -147,10 +149,105 @@ async def test_earthquake_partial_channel_failure_advances_watermark(monkeypatch
     await WeatherCog.earthquake_alert_loop.coro(cog)
     await WeatherCog.earthquake_alert_loop.coro(cog)
 
-    assert ai.calls == 1
+    assert ai.calls == 0
     assert ok_channel.attempts == 1
     assert failed_channel.attempts == 1
     assert cog.last_earthquake_time == occurred_at
+    assert "**🚨 지진 발생 알림**" in ok_channel.payloads[0]
+    assert "테스트 지역" in ok_channel.payloads[0]
+    assert "AI 알림" not in ok_channel.payloads[0]
+
+
+@pytest.mark.asyncio
+async def test_earthquake_first_start_seeds_latest_without_replaying(monkeypatch):
+    """새 watermark의 첫 기동은 기존 사건을 기준점으로만 저장하고 보내지 않는다."""
+    ok_channel = _FakeChannel()
+    ai = _FakeAI()
+    bot = _FakeBot({10: ok_channel}, ai)
+    cog = WeatherCog(bot)
+
+    older = datetime.now(KST).replace(microsecond=0) - timedelta(minutes=20)
+    latest = older + timedelta(minutes=10)
+    events = [
+        {
+            "tmEqk": occurred.strftime("%Y%m%d%H%M%S"),
+            "loc": "기존 사건",
+            "mt": "4.2",
+            "rem": "테스트",
+        }
+        for occurred in (older, latest)
+    ]
+    persisted: list[datetime] = []
+
+    async def fake_earthquakes(*_args, **_kwargs):
+        return [dict(item) for item in events]
+
+    async def fake_persist(occurred_at):
+        persisted.append(occurred_at)
+
+    monkeypatch.setattr(weather_utils, "get_kma_api_key", lambda: "test-key")
+    monkeypatch.setattr(weather_utils, "get_recent_earthquakes", fake_earthquakes)
+    monkeypatch.setattr(cog, "_persist_earthquake_watermark", fake_persist)
+    monkeypatch.setattr(config, "CHANNEL_AI_CONFIG", {10: {"allowed": True}})
+    monkeypatch.setattr(config, "RAIN_NOTIFICATION_CHANNEL_ID", 0)
+
+    await WeatherCog.earthquake_alert_loop.coro(cog)
+
+    assert ok_channel.attempts == 0
+    assert ai.calls == 0
+    assert persisted == [latest]
+    assert cog.last_earthquake_time == latest
+    assert cog._earthquake_watermark_exists is True
+
+
+@pytest.mark.asyncio
+async def test_earthquake_empty_first_start_creates_baseline(monkeypatch):
+    """과거 사건이 없어도 기준점을 만들어 이후 첫 실제 지진은 놓치지 않는다."""
+    bot = _FakeBot({10: _FakeChannel()}, _FakeAI())
+    cog = WeatherCog(bot)
+    persisted: list[datetime] = []
+
+    async def fake_earthquakes(*_args, **_kwargs):
+        return []
+
+    async def fake_persist(occurred_at):
+        persisted.append(occurred_at)
+
+    monkeypatch.setattr(weather_utils, "get_kma_api_key", lambda: "test-key")
+    monkeypatch.setattr(weather_utils, "get_recent_earthquakes", fake_earthquakes)
+    monkeypatch.setattr(cog, "_persist_earthquake_watermark", fake_persist)
+    monkeypatch.setattr(config, "CHANNEL_AI_CONFIG", {10: {"allowed": True}})
+    monkeypatch.setattr(config, "RAIN_NOTIFICATION_CHANNEL_ID", 0)
+
+    before = datetime.now(KST)
+    await WeatherCog.earthquake_alert_loop.coro(cog)
+
+    assert len(persisted) == 1
+    assert persisted[0] >= before
+    assert cog._earthquake_watermark_exists is True
+
+
+def test_earthquake_alert_is_official_fixed_format_with_useful_fields():
+    payload = weather_utils.format_earthquake_alert(
+        {
+            "tmEqk": "20260728162700",
+            "tmFc": "202607281634",
+            "loc": "일본 규슈 구마모토현 인근",
+            "mt": "6.1",
+            "dep": "10",
+            "inT": "최대진도 Ⅳ",
+            "rem": "국내 일부 지역에서 지진동을 느낄 수 있음",
+            "cor": "없음",
+        }
+    )
+
+    assert "2026년 07월 28일 16시 27분 00초" in payload
+    assert "**기상청 발표:** 2026년 07월 28일 16시 34분" in payload
+    assert "**깊이:** 10 km" in payload
+    assert "**계기진도:** 최대진도 Ⅳ" in payload
+    assert "엘리베이터를 사용하지 말고 계단" in payload
+    assert "최신 기상청·재난문자 안내가 우선" in payload
+    assert "대피 요망" not in payload
 
 
 @pytest.mark.asyncio
@@ -192,18 +289,18 @@ async def test_weather_overview_accepts_normalized_and_raw_contract(
 
 
 @pytest.mark.asyncio
-async def test_mid_term_v2_uses_shared_region_mapping(monkeypatch):
-    captured: list[str] = []
+async def test_mid_term_weather_uses_structured_json_path(monkeypatch):
+    captured: list[tuple[str, int]] = []
 
-    async def fake_v2(_db, region_code):
-        captured.append(region_code)
+    async def fake_mid(_db, location_name, day_offset):
+        captured.append((location_name, day_offset))
         return "제주 중기예보"
 
-    monkeypatch.setattr(weather_utils, "get_mid_term_forecast_v2", fake_v2)
+    monkeypatch.setattr(weather_utils, "get_mid_term_forecast", fake_mid)
     cog = WeatherCog(_FakeBot({}, _FakeAI()))
 
     assert await cog.get_mid_term_weather(3, "제주시") == "제주 중기예보"
-    assert captured == ["11G00000"]
+    assert captured == [("제주시", 3)]
 
 
 def test_short_term_forecast_preserves_zero_degree_and_missing_pop():
@@ -235,3 +332,132 @@ def test_short_term_forecast_preserves_zero_degree_and_missing_pop():
 
     assert "0.0°C ~ 2.0°C" in rendered
     assert "강수확률: ~0%" in rendered
+
+
+def test_weather_formats_all_useful_observation_and_short_range_fields():
+    observed = weather_utils.format_current_weather(
+        {
+            "item": [
+                {
+                    "baseDate": "20260728",
+                    "baseTime": "1700",
+                    "category": "T1H",
+                    "obsrValue": "31.2",
+                },
+                {"category": "REH", "obsrValue": "72"},
+                {"category": "PTY", "obsrValue": "1"},
+                {"category": "RN1", "obsrValue": "3.0"},
+                {"category": "VEC", "obsrValue": "225"},
+                {"category": "WSD", "obsrValue": "6.4"},
+            ]
+        }
+    )
+
+    assert "07/28 17:00 관측" in observed
+    assert "31.2°C" in observed
+    assert "습도:** 72%" in observed
+    assert "1시간 3.0 mm" in observed
+    assert "남서풍 6.4 m/s" in observed
+
+    nowcast = weather_utils.format_ultra_short_forecast(
+        {
+            "item": [
+                {
+                    "fcstDate": "20260728",
+                    "fcstTime": "1800",
+                    "category": "PTY",
+                    "fcstValue": "1",
+                },
+                {
+                    "fcstDate": "20260728",
+                    "fcstTime": "1800",
+                    "category": "POP",
+                    "fcstValue": "80",
+                },
+                {
+                    "fcstDate": "20260728",
+                    "fcstTime": "1800",
+                    "category": "RN1",
+                    "fcstValue": "5.0",
+                },
+                {
+                    "fcstDate": "20260728",
+                    "fcstTime": "1800",
+                    "category": "LGT",
+                    "fcstValue": "1",
+                },
+                {
+                    "fcstDate": "20260728",
+                    "fcstTime": "1800",
+                    "category": "VEC",
+                    "fcstValue": "90",
+                },
+                {
+                    "fcstDate": "20260728",
+                    "fcstTime": "1800",
+                    "category": "WSD",
+                    "fcstValue": "9.1",
+                },
+                {
+                    "fcstDate": "20260728",
+                    "fcstTime": "1800",
+                    "category": "REH",
+                    "fcstValue": "85",
+                },
+            ]
+        }
+    )
+
+    assert "18시 비 80%" in nowcast
+    assert "5.0 mm" in nowcast
+    assert "동풍 9.1 m/s" in nowcast
+    assert "낙뢰 신호:** 있음" in nowcast
+
+
+def test_active_warning_format_prefers_requested_location():
+    payload = """# REG_UP,REG_UP_KO,REG_ID,REG_KO,TM_FC,TM_EF,WRN,LVL,CMD
+#START7777
+L1000000,전라북도,L1010000,전라북도 전주시,202607281600,202607281700,R,3,1
+L2000000,부산광역시,L2010000,부산광역시 해운대구,202607281500,202607281600,W,2,1
+#7777END"""
+
+    rendered = weather_utils.format_weather_alerts(payload, "전주시")
+
+    assert "전라북도 전주시: 호우 경보" in rendered
+    assert "부산" not in rendered
+    assert "07/28 17:00 발효" in rendered
+
+
+@pytest.mark.asyncio
+async def test_kma_cache_collapses_concurrent_identical_requests(monkeypatch):
+    weather_utils._KMA_RESPONSE_CACHE.clear()
+    weather_utils._KMA_INFLIGHT.clear()
+    calls = 0
+
+    async def fake_fetch(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return {"item": [{"category": "T1H", "obsrValue": "20"}]}
+
+    monkeypatch.setattr(weather_utils, "_fetch_kma_api", fake_fetch)
+    results = await asyncio.gather(
+        weather_utils._fetch_kma_cached(
+            object(),
+            "getUltraSrtNcst",
+            {},
+            api_type="forecast",
+            cache_key="same-request",
+            ttl_seconds=60,
+        ),
+        weather_utils._fetch_kma_cached(
+            object(),
+            "getUltraSrtNcst",
+            {},
+            api_type="forecast",
+            cache_key="same-request",
+            ttl_seconds=60,
+        ),
+    )
+
+    assert calls == 1
+    assert results[0] == results[1]

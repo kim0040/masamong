@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 import config
 from logger_config import logger
+from utils.discord_helpers import split_message_chunks
 from .ai_handler import AIHandler
 
 
@@ -163,8 +164,22 @@ class FunCog(commands.Cog):
                     else: await channel.send(response_text or "대화 내용을 요약하다가 머리에 쥐났어요. 다시 시도해주세요.")
                 else:
                     self._update_summary_cache(channel_id, latest_message_id, response_text)
-                    if status_msg: await status_msg.edit(content=f"**📈 최근 대화 요약 (마사몽 ver.)**\n{response_text}")
-                    else: await channel.send(f"**📈 최근 대화 요약 (마사몽 ver.)**\n{response_text}")
+                    rendered = (
+                        "**📈 최근 대화 요약 (마사몽 ver.)**\n"
+                        f"{response_text}"
+                    )
+                    chunks = split_message_chunks(rendered) or [rendered]
+                    if status_msg:
+                        await status_msg.edit(
+                            content=chunks[0],
+                            allowed_mentions=discord.AllowedMentions.none(),
+                        )
+                        chunks = chunks[1:]
+                    for chunk in chunks:
+                        await channel.send(
+                            chunk,
+                            allowed_mentions=discord.AllowedMentions.none(),
+                        )
             except Exception as e:
                 # [Fix] Handle logs safely even if guild is None (though we return early above, good for safety)
                 guild_id = channel.guild.id if channel.guild else 'DM'

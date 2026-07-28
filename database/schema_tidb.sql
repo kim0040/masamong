@@ -238,54 +238,56 @@ CREATE TABLE IF NOT EXISTS school_notice_profiles (
 CREATE TABLE IF NOT EXISTS school_notice_feedback (
     id BIGINT PRIMARY KEY AUTO_RANDOM,
     user_key VARCHAR(128) NOT NULL,
-    source_id VARCHAR(64) NOT NULL,
+    source_id VARCHAR(128) NOT NULL,
     external_id VARCHAR(128) NOT NULL,
     feedback_type VARCHAR(32) NOT NULL,
-    topic VARCHAR(128),
-    interaction_id VARCHAR(64) NOT NULL UNIQUE,
+    topic VARCHAR(256),
+    interaction_id VARCHAR(128) NOT NULL UNIQUE,
     created_at VARCHAR(64) NOT NULL,
     consumed_at VARCHAR(64),
-    KEY idx_school_notice_feedback_user (user_key, created_at)
+    KEY idx_school_notice_feedback_pending (user_key, consumed_at, created_at)
 );
 
 CREATE TABLE IF NOT EXISTS school_notice_deliveries (
     id BIGINT PRIMARY KEY AUTO_RANDOM,
     user_key VARCHAR(128) NOT NULL,
-    digest_date VARCHAR(32) NOT NULL,
+    digest_date VARCHAR(10) NOT NULL,
     notice_id BIGINT NOT NULL,
     revision_count INT NOT NULL DEFAULT 1,
-    status VARCHAR(16) NOT NULL,
-    failure_reason TEXT,
+    status VARCHAR(32) NOT NULL,
+    failure_reason VARCHAR(64),
     attempt_count INT NOT NULL DEFAULT 1,
     delivered_at VARCHAR(64) NOT NULL,
-    UNIQUE KEY uk_school_notice_delivery_revision
-        (user_key, notice_id, revision_count)
+    UNIQUE KEY uq_school_notice_delivery_revision
+        (user_key, notice_id, revision_count),
+    KEY idx_school_notice_deliveries_user_date (user_key, digest_date)
 );
 
 CREATE TABLE IF NOT EXISTS school_notice_batch_runs (
     id BIGINT PRIMARY KEY AUTO_RANDOM,
     user_key VARCHAR(128) NOT NULL,
-    run_date VARCHAR(32) NOT NULL,
-    profile_version INT NOT NULL DEFAULT 0,
-    profile_hash VARCHAR(64) NOT NULL DEFAULT '',
-    status VARCHAR(16) NOT NULL,
-    collection_status VARCHAR(16),
+    run_date VARCHAR(10) NOT NULL,
+    profile_version INT NOT NULL,
+    profile_hash CHAR(64) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    collection_status VARCHAR(32),
     may_include_stale BOOLEAN NOT NULL DEFAULT FALSE,
     item_count INT NOT NULL DEFAULT 0,
     http_requests INT,
     llm_calls INT,
     finished_at VARCHAR(64) NOT NULL,
-    UNIQUE KEY uk_school_notice_run (user_key, run_date)
+    UNIQUE KEY uq_school_notice_batch_run (user_key, run_date)
 );
 
 CREATE TABLE IF NOT EXISTS school_notice_delivery_runs (
     user_key VARCHAR(128) NOT NULL,
-    digest_date VARCHAR(32) NOT NULL,
-    status VARCHAR(16) NOT NULL,
+    digest_date VARCHAR(10) NOT NULL,
+    status VARCHAR(32) NOT NULL,
     attempt_count INT NOT NULL DEFAULT 0,
     next_attempt_at VARCHAR(64),
     last_error VARCHAR(64),
     finished_at VARCHAR(64),
     updated_at VARCHAR(64) NOT NULL,
-    PRIMARY KEY (user_key, digest_date)
+    PRIMARY KEY (user_key, digest_date),
+    KEY idx_school_notice_delivery_due (status, next_attempt_at, updated_at)
 );

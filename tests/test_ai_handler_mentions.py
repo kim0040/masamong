@@ -130,3 +130,28 @@ def test_guild_runtime_persona_takes_priority_over_channel_default(monkeypatch):
 
     assert "서버 맞춤 페르소나" in prompt
     assert "채널 기본 페르소나" not in prompt
+
+
+def test_guild_personas_are_strictly_isolated(monkeypatch):
+    handler, _ = _build_handler()
+    personas = {
+        123: "A 서버 전용 말투",
+        987: "B 서버 전용 말투",
+    }
+    handler.bot.get_guild_persona = lambda guild_id: personas.get(guild_id)
+    monkeypatch.setattr(
+        config,
+        "CHANNEL_AI_CONFIG",
+        {
+            456: {"persona": "정적 기본 말투", "rules": "A 규칙"},
+            654: {"persona": "정적 기본 말투", "rules": "B 규칙"},
+        },
+    )
+
+    prompt_a = handler._get_channel_system_prompt(456, guild_id=123)
+    prompt_b = handler._get_channel_system_prompt(654, guild_id=987)
+
+    assert "A 서버 전용 말투" in prompt_a
+    assert "B 서버 전용 말투" not in prompt_a
+    assert "B 서버 전용 말투" in prompt_b
+    assert "A 서버 전용 말투" not in prompt_b

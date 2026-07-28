@@ -26,6 +26,10 @@ openai>=2.20.0
 # --- HTTP/네트워크 ---
 requests>=2.31.0
 aiohttp>=3.9.0
+beautifulsoup4>=4.12,<5
+soupsieve>=2.6,<3
+olefile>=0.47,<1
+pypdf>=5,<7
 
 # --- 주식 / 금융 ---
 yfinance>=0.2.30

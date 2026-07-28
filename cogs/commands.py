@@ -14,6 +14,7 @@ from collections import OrderedDict
 
 import config
 from logger_config import logger
+from utils.discord_helpers import clip_discord_text
 
 class UserCommands(commands.Cog):
     """사용자 명령어들을 그룹화하는 클래스입니다."""
@@ -382,7 +383,7 @@ class UserCommands(commands.Cog):
                 if summary:
                     embed = discord.Embed(
                         title="🚀 마사몽 업데이트 소식 (자동 요약)",
-                        description=summary,
+                        description=clip_discord_text(summary, 4096),
                         color=0xff6b6b,
                     )
                     embed.set_footer(text="최근 깃허브 변경 내역을 바탕으로 생성되었습니다.")

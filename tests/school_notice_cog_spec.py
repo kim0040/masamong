@@ -59,6 +59,7 @@ class _FakeBot:
         self.locked_users: set[int] = set()
         self.wait_messages: list[_FakeMessage] = []
         self.cogs: dict[str, object] = {}
+        self.context = None
 
     def get_user(self, _user_id):
         return self.user_obj
@@ -77,12 +78,17 @@ class _FakeBot:
         assert check(message)
         return message
 
+    async def get_context(self, _message):
+        assert self.context is not None
+        return self.context
+
 
 class _FakeMessage:
     def __init__(self, content: str, *, channel_id: int = 77) -> None:
         self.content = content
-        self.author = SimpleNamespace(id=USER_ID)
+        self.author = SimpleNamespace(id=USER_ID, bot=False)
         self.channel = SimpleNamespace(id=channel_id)
+        self.guild = None
 
 
 class _FakeContext:
@@ -1283,6 +1289,136 @@ async def test_delete_removes_delivery_runs_but_preserves_consent_audit(
         ) as cursor:
             assert (await cursor.fetchone())[0] >= 2
         assert any("감사 이력은 보존" in str(item["content"]) for item in ctx.messages)
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_natural_school_notice_request_routes_without_general_ai(
+    tmp_path,
+    monkeypatch,
+):
+    cog, bot, db = await _make_cog(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "SCHOOL_NOTICE_ENABLED", True)
+    ctx = _FakeContext()
+    bot.context = ctx
+    routed = []
+
+    async def fake_begin(
+        received_ctx,
+        *,
+        initial_text,
+        prefer_existing,
+    ):
+        routed.append((received_ctx, initial_text, prefer_existing))
+
+    monkeypatch.setattr(cog, "begin_profile_setup", fake_begin)
+    try:
+        handled = await cog.try_handle_natural_message(
+            _FakeMessage(
+                "전북대 소프트웨어공학과 3학년 공지를 오전 9시에 알려줘"
+            )
+        )
+
+        assert handled is True
+        assert routed == [
+            (
+                ctx,
+                "전북대 소프트웨어공학과 3학년 공지를 오전 9시에 알려줘",
+                False,
+            )
+        ]
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_bare_notice_command_opens_unified_dashboard(
+    tmp_path,
+    monkeypatch,
+):
+    cog, _bot, db = await _make_cog(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "SCHOOL_NOTICE_ENABLED", True)
+    ctx = _FakeContext()
+    try:
+        await SchoolNoticeCog.school_notice.callback(cog, ctx)
+
+        assert len(ctx.messages) == 1
+        message = ctx.messages[0]
+        assert message["embed"].title == "🎓 학교 공지"
+        assert "23:00" in message["embed"].description
+        labels = {
+            child.label
+            for child in message["view"].children
+            if isinstance(child, discord.ui.Button)
+        }
+        assert labels == {"설정·변경", "최근 공지", "알림 시간", "알림 재개"}
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_school_chat_and_locked_user_are_not_intercepted(
+    tmp_path,
+    monkeypatch,
+):
+    cog, bot, db = await _make_cog(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "SCHOOL_NOTICE_ENABLED", True)
+    bot.context = _FakeContext()
+    try:
+        assert not await cog.try_handle_natural_message(
+            _FakeMessage("학교 공지가 왜 이렇게 늦게 올라오지?")
+        )
+        bot.locked_users.add(USER_ID)
+        assert not await cog.try_handle_natural_message(
+            _FakeMessage("학교 공지 설정")
+        )
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_profile_is_not_read_until_consent_then_original_setup_resumes(
+    tmp_path,
+    monkeypatch,
+):
+    cog, _bot, db = await _make_cog(tmp_path, monkeypatch)
+    await withdraw_consent(db, USER_ID, SCHOOL_NOTICE_SCOPE)
+    ctx = _FakeContext()
+    prompt = {}
+    profile_reads = []
+    sessions = []
+
+    async def fake_prompt(_ctx, *, on_granted=None):
+        prompt["callback"] = on_granted
+
+    async def fake_profile_row(user_id):
+        profile_reads.append(user_id)
+        return None
+
+    async def fake_session(_ctx, *, initial_text, current_profile):
+        sessions.append((initial_text, current_profile))
+
+    monkeypatch.setattr(cog, "_send_school_notice_consent_prompt", fake_prompt)
+    monkeypatch.setattr(cog, "_profile_row", fake_profile_row)
+    monkeypatch.setattr(cog, "_run_profile_session", fake_session)
+    monkeypatch.setattr(config, "SCHOOL_NOTICE_ENABLED", True)
+    try:
+        await cog.begin_profile_setup(
+            ctx,
+            initial_text="전북대 3학년",
+            prefer_existing=True,
+        )
+
+        assert profile_reads == []
+        assert sessions == []
+        assert prompt["callback"] is not None
+
+        await grant_consent(db, USER_ID, SCHOOL_NOTICE_SCOPE)
+        await prompt["callback"](SimpleNamespace())
+
+        assert profile_reads == [USER_ID]
+        assert sessions == [("전북대 3학년", None)]
     finally:
         await db.close()
 

@@ -11,6 +11,7 @@ Discord API에서 발생하는 주요 이벤트를 수신하고 처리하는 Cog
 """
 
 from __future__ import annotations
+import difflib
 from typing import TYPE_CHECKING
 
 import discord
@@ -95,9 +96,37 @@ class EventListeners(commands.Cog):
         if not ctx.guild and not isinstance(ctx.channel, discord.DMChannel):
             return
 
-        # 1. 아예 무시할 오류 (명령어 없음 등)
-        # CommandNotFound는 반응하지 않아야 채팅 스팸을 방지할 수 있습니다.
+        # 프리픽스를 직접 입력한 사용자를 침묵시키면 기능이 고장 난 것처럼
+        # 보인다. 가까운 명령을 제안하고 통합 메뉴로 되돌아갈 길을 제공한다.
         if isinstance(error, commands.CommandNotFound):
+            prefix = ctx.clean_prefix or config.COMMAND_PREFIX or "!"
+            invoked = str(ctx.invoked_with or "").strip()
+            command_names = sorted(
+                {
+                    command.name
+                    for command in self.bot.commands
+                    if not command.hidden
+                }
+            )
+            suggestions = difflib.get_close_matches(
+                invoked,
+                command_names,
+                n=3,
+                cutoff=0.45,
+            )
+            suggestion_text = (
+                "\n혹시 "
+                + ", ".join(f"`{prefix}{name}`" for name in suggestions)
+                + "을(를) 찾으셨나요?"
+                if suggestions
+                else ""
+            )
+            await ctx.send(
+                f"`{prefix}{invoked}` 명령은 찾지 못했어요.{suggestion_text}\n"
+                f"`{prefix}메뉴`에서 기능을 버튼으로 고르거나 "
+                f"`{prefix}도움`에서 전체 목록을 확인해주세요.",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
             return
         
         # 2. 사용자에게 안내가 필요한 오류 (잘못된 사용)

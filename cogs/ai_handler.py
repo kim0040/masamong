@@ -53,6 +53,7 @@ from utils.llm_client import (
 )
 from utils.intent_analyzer import IntentAnalyzer
 from utils.rag_manager import RAGManager
+from utils.discord_helpers import normalize_discord_text, split_message_chunks
 from utils.embeddings import (
     DiscordEmbeddingStore,
     KakaoEmbeddingStore,
@@ -1046,6 +1047,11 @@ Generate the optimized English image prompt:"""
         log_lines = []
         for entry in result.entries[:limit]:
             score = float(entry.get("combined_score", 0.0) or entry.get("score", 0.0) or 0.0)
+            try:
+                entry_threshold = float(entry.get("acceptance_threshold", threshold))
+            except (TypeError, ValueError):
+                entry_threshold = threshold
+            entry_threshold = max(-1.0, min(1.0, entry_threshold))
             dialogue_block = (entry.get("dialogue_block") or entry.get("message") or "").strip()
             # 소스 태그 결정: origin 필드 또는 형식으로 판단
             origin = str(entry.get("origin", "")).lower()
@@ -1057,11 +1063,15 @@ Generate the optimized English image prompt:"""
                 source_tag = "[UNKNOWN]"
 
             log_lines.append(
-                f"  [{score:.3f}] {source_tag} message_id={entry.get('message_id') or '-'}"
+                f"  [{score:.3f}/≥{entry_threshold:.3f}] "
+                f"{source_tag} message_id={entry.get('message_id') or '-'}"
             )
 
-            # 임계값 이하는 무시 (쓰레기값 필터링)
-            if score < threshold:
+            # 검색 엔진은 저장소 유형별로 서로 다른 임계값을 적용한다.
+            # 구조화 메모리(기본 0.50)를 통과한 결과를 여기서 전역 0.60으로
+            # 다시 잘라내면 누적 메모리가 사실상 사용되지 않으므로, 후보가
+            # 생성될 때 기록한 임계값을 그대로 존중한다.
+            if score < entry_threshold:
                 continue
 
             if not dialogue_block:
@@ -1075,6 +1085,7 @@ Generate the optimized English image prompt:"""
                     "similarity": entry.get("similarity"),
                     "bm25_score": entry.get("bm25_score"),
                     "sources": entry.get("sources"),
+                    "acceptance_threshold": entry_threshold,
                     "origin": entry.get("origin"),
                     "speaker": entry.get("speaker"),
                     "message_id": entry.get("message_id"),
@@ -1723,32 +1734,7 @@ Generate the optimized English image prompt:"""
     @staticmethod
     def _split_message_chunks(text: str, chunk_size: int = 1900) -> list[str]:
         """Discord 메시지 제한보다 작은 단위로 텍스트를 나눕니다."""
-        if not text:
-            return []
-
-        chunks: list[str] = []
-        remaining = str(text).strip()
-        while remaining:
-            if len(remaining) <= chunk_size:
-                chunks.append(remaining)
-                break
-
-            split_at = max(
-                remaining.rfind("\n\n", 0, chunk_size),
-                remaining.rfind("\n", 0, chunk_size),
-                remaining.rfind(" ", 0, chunk_size),
-            )
-            if split_at < chunk_size // 2:
-                split_at = chunk_size
-
-            chunk = remaining[:split_at].rstrip()
-            if not chunk:
-                chunk = remaining[:chunk_size]
-                split_at = chunk_size
-            chunks.append(chunk)
-            remaining = remaining[split_at:].lstrip()
-
-        return chunks
+        return split_message_chunks(text, chunk_size=chunk_size)
 
     async def _send_split_message(self, message: discord.Message, text: str):
         """
@@ -1756,7 +1742,10 @@ Generate the optimized English image prompt:"""
         Discord의 메시지 길이 제한(2000자)을 준수합니다.
         """
         for chunk in self._split_message_chunks(text):
-            await message.channel.send(chunk)
+            await message.channel.send(
+                chunk,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
             # 순서 보장을 위한 짧은 텀
             await asyncio.sleep(0.5)
 
@@ -1766,10 +1755,18 @@ Generate the optimized English image prompt:"""
         if not chunks:
             return []
 
-        await status_msg.edit(content=chunks[0])
+        await status_msg.edit(
+            content=chunks[0],
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
         sent_messages = [status_msg]
         for chunk in chunks[1:]:
-            sent_messages.append(await status_msg.channel.send(chunk))
+            sent_messages.append(
+                await status_msg.channel.send(
+                    chunk,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            )
             await asyncio.sleep(0.5)
         return sent_messages
 
@@ -2277,6 +2274,7 @@ Generate the optimized English image prompt:"""
             if final_response_text:
                 # 멘션 제거 및 후처리
                 final_response_text = re.sub(r'^@마사몽\s*|^@masamong\s*|^<@!?[0-9]+>\s*', '', final_response_text, flags=re.IGNORECASE)
+                final_response_text = normalize_discord_text(final_response_text)
                 
                 # 이미지 생성 결과가 있으면 Discord 파일로 전송
                 image_result = next((res for res in tool_results if res.get("tool_name") == "generate_image"), None)
@@ -2286,7 +2284,19 @@ Generate the optimized English image prompt:"""
                     if img_data:
                         try:
                             image_file = discord.File(io.BytesIO(img_data), filename="generated.png")
-                            await message.channel.send(content=final_response_text[:2000], file=image_file)
+                            chunks = self._split_message_chunks(
+                                final_response_text
+                            ) or ["이미지를 생성했습니다."]
+                            await message.channel.send(
+                                content=chunks[0],
+                                file=image_file,
+                                allowed_mentions=discord.AllowedMentions.none(),
+                            )
+                            for chunk in chunks[1:]:
+                                await message.channel.send(
+                                    chunk,
+                                    allowed_mentions=discord.AllowedMentions.none(),
+                                )
                             try:
                                 await status_msg.delete()
                             except:
@@ -2652,19 +2662,27 @@ Generate the optimized English image prompt:"""
             return 0
 
     async def generate_system_alert_message(self, channel_id: int, alert_context: str, alert_title: str | None = None) -> str | None:
-        """주기적 알림 등 시스템 메시지를 AI 말투로 재작성합니다."""
+        """일상 알림을 해당 채널이 속한 서버의 말투로만 재작성합니다.
+
+        지진 등 공통 재난 경보는 이 메서드를 호출하지 않고 고정 문구로
+        전송한다. 일반 알림도 ``channel.guild.id``를 반드시 함께 사용해 다른
+        서버의 DB 페르소나가 섞일 여지를 없앤다.
+        """
         if not self.is_ready:
             return None
 
-        log_extra = {'channel_id': channel_id, 'alert_title': alert_title}
+        channel = self.bot.get_channel(int(channel_id))
+        guild = getattr(channel, "guild", None)
+        guild_id = int(guild.id) if guild is not None else None
+        log_extra = {
+            'guild_id': guild_id,
+            'channel_id': channel_id,
+            'alert_title': alert_title,
+        }
 
         try:
-            channel_config = config.CHANNEL_AI_CONFIG.get(channel_id, {})
-            persona = channel_config.get('persona', config.DEFAULT_TSUNDERE_PERSONA)
-            rules = channel_config.get('rules', config.DEFAULT_TSUNDERE_RULES)
-
             system_prompt = (
-                f"{persona}\n\n{rules}\n\n"
+                f"{self._get_channel_system_prompt(channel_id, guild_id=guild_id)}\n\n"
                 "### 추가 지침\n"
                 "- 지금은 서버 구성원에게 전달할 시스템 공지를 작성하는 중이다.\n"
                 "- 핵심 정보는 빠뜨리지 말되 2~3문장 이내로 간결하게 정리한다.\n"
@@ -2724,14 +2742,24 @@ Generate the optimized English image prompt:"""
     async def generate_creative_text(self, channel: discord.TextChannel, author: discord.User, prompt_key: str, context: dict) -> str:
         """`!운세`, `!랭킹` 등 특정 명령어에 대한 창의적인 AI 답변을 생성합니다."""
         if not self.is_ready: return config.MSG_AI_ERROR
-        log_extra = {'guild_id': channel.guild.id, 'user_id': author.id, 'prompt_key': prompt_key}
+        guild = getattr(channel, "guild", None)
+        guild_id = int(guild.id) if guild is not None else None
+        log_extra = {
+            'guild_id': guild_id,
+            'channel_id': int(channel.id),
+            'user_id': author.id,
+            'prompt_key': prompt_key,
+        }
 
         try:
             prompt_template = config.AI_CREATIVE_PROMPTS.get(prompt_key)
             if not prompt_template: return config.MSG_CMD_ERROR
 
             user_prompt = prompt_template.format(**context)
-            system_prompt = f"{config.CHANNEL_AI_CONFIG.get(channel.id, {}).get('persona', '')}\n\n{config.CHANNEL_AI_CONFIG.get(channel.id, {}).get('rules', '')}"
+            system_prompt = self._get_channel_system_prompt(
+                int(channel.id),
+                guild_id=guild_id,
+            )
 
             # [FIX] 명령어로 호출된 경우 멘션 정책 무시 (가드 제거)
             if config.MENTION_GUARD_SNIPPET in system_prompt:

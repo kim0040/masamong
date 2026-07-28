@@ -52,8 +52,9 @@ def _format_storage_target() -> str:
     return f"SQLite {config.DATABASE_FILE}"
 
 
-# 학교 공지 기능을 켠 인스턴스에서만 필요한 테이블.
-# SCHOOL_NOTICE_ENABLED=false인 인스턴스(masamo 포함)는 이 테이블 없이 기동한다.
+# 학교 공지 기능을 켠 인스턴스에서만 필요한 테이블. 현재 운영 소유자는
+# Masamo이며, General처럼 SCHOOL_NOTICE_ENABLED=false인 인스턴스는 이 테이블
+# 없이도 기동한다.
 SCHOOL_NOTICE_TABLES = (
     "school_notice_profiles",
     "school_notice_feedback",
@@ -857,6 +858,27 @@ class ReMasamongBot(commands.Bot):
         if is_command:
             await self.process_commands(message)
             return
+
+        # DM에서 "전북대 3학년 공지 알려줘"처럼 명확한 학교 공지 설정
+        # 문장은 일반 AI 대화로 흘려보내지 않고 전용 확인→동의→저장 흐름으로
+        # 연결한다. 매칭되지 않은 평범한 학교 이야기는 기존 AI 대화로 유지한다.
+        school_notice_cog = self.get_cog("SchoolNoticeCog")
+        if school_notice_cog is not None:
+            try:
+                if await school_notice_cog.try_handle_natural_message(message):
+                    return
+            except Exception as exc:  # pragma: no cover - Discord 경계 방어
+                logger.error(
+                    "학교 공지 자연어 진입 처리 중 오류: %s",
+                    type(exc).__name__,
+                    exc_info=True,
+                    extra={"guild_id": guild_id, "channel_id": channel_id},
+                )
+                await message.channel.send(
+                    "학교 공지 설정을 시작하지 못했습니다. 잠시 후 `!공지` 메뉴에서 "
+                    "다시 시도해주세요."
+                )
+                return
 
         ai_handler = self.get_cog('AIHandler')
         if ai_handler:

@@ -51,6 +51,7 @@ def _profile_env(tmp_path: Path, *, memory_sources: str = "discord") -> Path:
                 "AI_MEMORY_ENABLED=false",
                 "EMBEDDING_ENABLED=false",
                 "RERANK_ENABLED=false",
+                "SCHOOL_NOTICE_ENABLED=false",
                 "DISCORD_BOT_TOKEN=general-token",
                 "MASAMONG_EXPECTED_DISCORD_BOT_USER_ID=replace-with-current-masamo-bot-user-id",
                 # 명시적 프로필은 켜 둔 기능의 자격증명을 기동 시점에 요구한다.
@@ -198,12 +199,56 @@ def test_general_profile_rejects_kakao_memory(tmp_path):
     assert "정확히 discord" in result.stderr
 
 
-def test_masamo_runtime_rejects_school_notice_enablement(tmp_path):
+def test_masamo_runtime_accepts_owned_school_notice_paths(tmp_path):
     profile_path = _masamo_profile_env(tmp_path)
+    catalog_path = ROOT / "profiles" / "catalogs" / "school_notice_catalog.v1.json"
+    source_path = ROOT / "school_notice" / "sources.json"
     profile_path.write_text(
         profile_path.read_text(encoding="utf-8").replace(
             "SCHOOL_NOTICE_ENABLED=false",
-            "SCHOOL_NOTICE_ENABLED=true",
+            "\n".join(
+                [
+                    "SCHOOL_NOTICE_ENABLED=true",
+                    f"SCHOOL_NOTICE_DIGEST_DIR={tmp_path / 'masamo' / 'notice' / 'out'}",
+                    f"SCHOOL_NOTICE_CORE_DB={tmp_path / 'masamo' / 'notice' / 'core.db'}",
+                    f"SCHOOL_NOTICE_CATALOG_PATH={catalog_path}",
+                    f"SCHOOL_NOTICE_SOURCE_CONFIG={source_path}",
+                ]
+            ),
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["MASAMONG_ENV_FILE"] = str(profile_path)
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import config"],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_masamo_runtime_rejects_cross_instance_school_notice_paths(tmp_path):
+    profile_path = _masamo_profile_env(tmp_path)
+    catalog_path = ROOT / "profiles" / "catalogs" / "school_notice_catalog.v1.json"
+    source_path = ROOT / "school_notice" / "sources.json"
+    profile_path.write_text(
+        profile_path.read_text(encoding="utf-8").replace(
+            "SCHOOL_NOTICE_ENABLED=false",
+            "\n".join(
+                [
+                    "SCHOOL_NOTICE_ENABLED=true",
+                    f"SCHOOL_NOTICE_DIGEST_DIR={tmp_path / 'general' / 'notice' / 'out'}",
+                    f"SCHOOL_NOTICE_CORE_DB={tmp_path / 'general' / 'notice' / 'core.db'}",
+                    f"SCHOOL_NOTICE_CATALOG_PATH={catalog_path}",
+                    f"SCHOOL_NOTICE_SOURCE_CONFIG={source_path}",
+                ]
+            ),
         ),
         encoding="utf-8",
     )
@@ -220,7 +265,7 @@ def test_masamo_runtime_rejects_school_notice_enablement(tmp_path):
     )
 
     assert result.returncode != 0
-    assert "general 인스턴스가 소유" in result.stderr
+    assert "인스턴스 이름 'masamo'" in result.stderr
 
 
 def test_explicit_profile_rejects_non_object_config_json(tmp_path):

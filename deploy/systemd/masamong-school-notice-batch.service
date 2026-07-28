@@ -3,21 +3,20 @@ Description=Masamong school notice collection batch
 Documentation=https://github.com/lastdefiance20/Masamong
 Wants=network-online.target
 After=network-online.target
-ConditionPathExists=/etc/masamong/general.env
+ConditionPathExists=/etc/masamong/masamo.env
 
 [Service]
 Type=oneshot
-User=masamong
-Group=masamong
+User=root
 WorkingDirectory=/srv/masamong/current
-Environment=MASAMONG_ENV_FILE=/etc/masamong/general.env
+Environment=MASAMONG_ENV_FILE=/etc/masamong/masamo.env
 Environment=OMP_NUM_THREADS=1
 Environment=OPENBLAS_NUM_THREADS=1
 Environment=MKL_NUM_THREADS=1
 Environment=NUMEXPR_NUM_THREADS=1
 Environment=TOKENIZERS_PARALLELISM=false
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/srv/masamong/current/venv/bin/python /srv/masamong/current/scripts/run_school_notice_batch.py --core-python /srv/school-notice/venv/bin/python --core-cwd /srv/school-notice --no-llm --low-resource
+ExecStart=/usr/bin/python3 /srv/masamong/current/scripts/run_school_notice_batch.py --core-python /usr/bin/python3 --core-cwd /srv/masamong/current --no-llm --low-resource
 RuntimeMaxSec=7800
 TimeoutStopSec=30
 Nice=10

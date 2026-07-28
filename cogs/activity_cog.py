@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 import config
 from logger_config import logger
 from .ai_handler import AIHandler
+from utils.discord_helpers import send_split_message
 from utils.ranking_chart import build_activity_ranking_chart_bytes
 
 KST = timezone(timedelta(hours=9))
@@ -238,7 +239,8 @@ class ActivityCog(commands.Cog):
                 grade, share = self._grade_for_channel(count, int(total_msgs or 0), int(total_users or 0))
                 share_display = 0.1 if count > 0 and share < 0.1 else share
                 ranking_lines.append(
-                    f"{i+1}위: {user_name} | {count}회 | 점유율 {share_display:.1f}% | {grade}"
+                    f"{i+1}위: {user_name} · {count}회 · "
+                    f"점유율 {share_display:.1f}% · {grade}"
                 )
                 ranking_rows.append(
                     {
@@ -252,8 +254,8 @@ class ActivityCog(commands.Cog):
 
             ranking_data_str = "\n".join(ranking_lines)
             server_stat_str = (
-                f"집계 범위: #{ctx.channel.name} | 기간: {period_label} | "
-                f"총 메시지: {int(total_msgs or 0)}개 | 참여 인원: {int(total_users or 0)}명"
+                f"집계 범위: #{ctx.channel.name} · 기간: {period_label} · "
+                f"총 메시지: {int(total_msgs or 0)}개 · 참여 인원: {int(total_users or 0)}명"
             )
             sample_note = self._sample_size_note(int(total_msgs or 0), int(total_users or 0))
             chart_delivery_status = "랭킹 차트를 생성하지 못해 텍스트 기반 브리핑만 진행 중"
@@ -306,9 +308,12 @@ class ActivityCog(commands.Cog):
 
             # 상태 메시지를 최종 브리핑으로 교체
             try:
-                await status_msg.edit(content=final_response)
+                await self.ai_handler._edit_status_with_split_response(
+                    status_msg,
+                    final_response,
+                )
             except:
-                await ctx.send(final_response)
+                await send_split_message(ctx, final_response)
 
 async def setup(bot: commands.Bot):
     """Cog를 봇에 등록하는 함수"""

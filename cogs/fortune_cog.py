@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Awaitable, Callable
 import discord
 from discord.ext import commands, tasks
 import asyncio
@@ -23,7 +24,11 @@ from logger_config import logger
 from utils import db as db_utils
 from utils.constants import FORTUNE_DAILY_LIMIT
 from utils.fortune import FortuneCalculator, get_sign_from_date
-from utils.discord_helpers import send_split_message, split_message_chunks
+from utils.discord_helpers import (
+    clip_discord_text,
+    send_split_message,
+    split_message_chunks,
+)
 from utils.privacy_consent import (
     CONSENT_GRANTED,
     FORTUNE_SCOPE,
@@ -345,26 +350,22 @@ class FortuneCog(commands.Cog):
         ctx: commands.Context,
         *,
         status_msg: discord.Message | None = None,
+        on_granted: Callable[[discord.Interaction], Awaitable[None]] | None = None,
     ) -> None:
         """개인정보를 읽기 전에 중앙 동의 흐름으로 안내한다."""
         message = (
             "🔐 운세 프로필을 새로 수집하거나 기존 프로필에서 이용하려면 "
             "현재 개인정보 정책에 대한 명시적 동의가 필요합니다."
         )
-        if status_msg is not None:
-            await status_msg.edit(
-                content=(
-                    f"{message}\nDM에서 `!개인정보 동의 "
-                    f"{consent_command_name(FORTUNE_SCOPE)}`를 실행한 뒤 다시 시도해주세요."
-                )
-            )
-            return
         if ctx.guild:
-            await ctx.reply(
+            content = (
                 f"{message}\n동의 처리는 공개 채널이 아닌 DM에서 "
-                f"`!개인정보 동의 {consent_command_name(FORTUNE_SCOPE)}`를 실행해주세요.",
-                mention_author=True,
+                f"`!메뉴`를 열고 **오늘 운세**를 선택해주세요."
             )
+            if status_msg is not None:
+                await status_msg.edit(content=content)
+            else:
+                await ctx.reply(content, mention_author=True)
             return
 
         privacy_cog = self.bot.get_cog("PrivacyCog")
@@ -374,12 +375,18 @@ class FortuneCog(commands.Cog):
                 user_id=ctx.author.id,
                 scope=FORTUNE_SCOPE,
                 prefix=message,
+                on_granted=on_granted,
+                replace_message=status_msg,
             )
             return
-        await ctx.send(
+        content = (
             f"{message}\n`!개인정보 동의 {consent_command_name(FORTUNE_SCOPE)}`를 "
-            "실행한 뒤 다시 시도해주세요."
+            "실행해주세요."
         )
+        if status_msg is not None:
+            await status_msg.edit(content=content)
+        else:
+            await ctx.send(content)
 
     async def _collect_registration_input(
         self,
@@ -466,7 +473,13 @@ class FortuneCog(commands.Cog):
         - `!운세 등록`
         """
         if not await self._has_fortune_consent(ctx.author.id):
-            await self._send_fortune_consent_prompt(ctx)
+            await self._send_fortune_consent_prompt(
+                ctx,
+                on_granted=lambda _interaction: FortuneCog.fortune_register.callback(
+                    self,
+                    ctx,
+                ),
+            )
             return
 
         registration_users = getattr(self, "_registration_users", None)
@@ -659,7 +672,14 @@ class FortuneCog(commands.Cog):
             return
 
         if not await self._has_fortune_consent(ctx.author.id):
-            await self._send_fortune_consent_prompt(ctx)
+            await self._send_fortune_consent_prompt(
+                ctx,
+                on_granted=lambda _interaction: FortuneCog.fortune_subscribe.callback(
+                    self,
+                    ctx,
+                    time_str,
+                ),
+            )
             return
 
         if not TIME_PATTERN.match(time_str):
@@ -1180,6 +1200,12 @@ class FortuneCog(commands.Cog):
             await self._send_fortune_consent_prompt(
                 ctx,
                 status_msg=status_msg,
+                on_granted=lambda _interaction: self._check_fortune_logic(
+                    ctx,
+                    option,
+                    mode,
+                    status_msg,
+                ),
             )
             return
 
@@ -1288,7 +1314,8 @@ class FortuneCog(commands.Cog):
                     "사용자의 운세와 별자리 정보를 깊이 있게 분석해서 상세한 답변을 제공해줘. "
                     "동양(사주)과 서양(별자리) 관점을 종합하고, 사용자가 성별을 제공한 경우에만 이를 고려해. "
                     "미제공 항목을 추측하지 마. "
-                    "출력 형식은 가독성 좋은 마크다운(Markdown)을 사용해."
+                    "Discord에서 안정적으로 보이도록 굵은 제목과 단순 불릿만 사용해. "
+                    "마크다운 표, # 헤더, HTML, 복잡한 중첩 목록은 사용하지 마."
                 )
                 user_prompt = (
                     f"{fortune_data}\n\n"
@@ -1337,16 +1364,25 @@ class FortuneCog(commands.Cog):
                              if not await self._has_fortune_consent(user_id):
                                  return
                              if index == 0:
-                                 await status_msg.edit(content=chunk)
+                                 await status_msg.edit(
+                                     content=chunk,
+                                     allowed_mentions=discord.AllowedMentions.none(),
+                                 )
                              else:
-                                 await ctx.send(chunk)
+                                 await ctx.send(
+                                     chunk,
+                                     allowed_mentions=discord.AllowedMentions.none(),
+                                 )
                                  await asyncio.sleep(0.5)
                      else:
                          chunks = split_message_chunks(response) or [response]
                          for chunk in chunks:
                              if not await self._has_fortune_consent(user_id):
                                  return
-                             await ctx.send(chunk)
+                             await ctx.send(
+                                 chunk,
+                                 allowed_mentions=discord.AllowedMentions.none(),
+                             )
                              await asyncio.sleep(0.5)
                      # 저장/후속 전송 시점에도 최신 상태를 사용한다.
                      if not await self._has_fortune_consent(user_id):
@@ -1470,7 +1506,8 @@ class FortuneCog(commands.Cog):
         system_prompt = (
             "너는 점성술사 '마사몽'이야. 현재 천체 배치를 분석해서 12별자리의 오늘의 운세 순위를 매겨줘. "
             "1위부터 12위까지 순위를 매기고, 각 별자리에 대해 한 줄 코멘트를 달아줘. "
-            "출력 형식은 마크다운(##, **)을 사용하여 매우 깔끔하고 보기 좋게 보여줘."
+            "Discord에서 안정적으로 보이도록 굵은 제목과 한 단계 불릿만 사용하고, "
+            "마크다운 표, # 헤더, HTML은 사용하지 마."
         )
         user_prompt = (
             f"[현재 천체 배치]\n{astro_chart}\n\n"
@@ -1493,7 +1530,7 @@ class FortuneCog(commands.Cog):
         if response:
             embed = discord.Embed(
                 title=f"🏆 오늘의 별자리 운세 랭킹 ({now.strftime('%m/%d')})",
-                description=response,
+                description=clip_discord_text(response, 4096),
                 color=0xffd700
             )
             await ctx.send(embed=embed)
@@ -1561,13 +1598,14 @@ class FortuneCog(commands.Cog):
                 "당신은 친절하고 통찰력 있는 '점성술사 마사몽'입니다. "
                 "현재 천체 배치(Transit)를 바탕으로 특정 별자리의 오늘 운세를 상세히 분석해줍니다. "
                 "추상적인 표현보다는 실질적인 조언 위주로, 다정하고 희망찬 어조를 유지하세요. "
-                "출력은 마크다운 형식을 사용하여 가독성을 높이세요."
+                "Discord에서 안정적으로 보이도록 굵은 제목과 한 단계 불릿만 사용하고, "
+                "마크다운 표, # 헤더, HTML은 사용하지 마세요."
             )
             user_prompt = (
                 f"[현재 천체 배치]\n{astro_chart}\n\n"
                 f"[타겟 별자리]: {normalized_sign}\n"
                 f"오늘 {normalized_sign} 사람들을 위한 상세한 운세를 작성해주세요. "
-                f"가독성을 위해 마크다운(##, **, -)을 적극 활용하고, 다음 항목을 포함하세요:\n"
+                f"각 항목명은 굵게 표시하고 단순 불릿으로 작성하며 다음 항목을 포함하세요:\n"
                 f"1. 🌟 오늘의 기운 (총평)\n"
                 f"2. 💘 사랑과 인간관계\n"
                 f"3. 💰 일과 금전\n"
@@ -1602,7 +1640,7 @@ class FortuneCog(commands.Cog):
         if response:
             embed = discord.Embed(
                 title=f"✨ {normalized_sign}의 오늘 운세 ({'요약' if not is_dm else '상세'})",
-                description=response,
+                description=clip_discord_text(response, 4096),
                 color=0x9b59b6
             )
             embed.set_footer(text=f"기준 시각: {now.strftime('%Y-%m-%d %H:%M')}")
@@ -1642,18 +1680,19 @@ class FortuneCog(commands.Cog):
         prompts = {
             "fortune_summary": (
                 "너는 사용자의 친구이자 개인 비서인 '마사몽'이야. 제공된 운세 데이터를 바탕으로, "
-                "오늘의 핵심 운세를 요약해줘. 마크다운(**)을 사용해. 이모지를 적절히 사용해."
+                "오늘의 핵심 운세를 요약해줘. Discord용 굵은 제목과 단순 불릿만 사용하고 "
+                "표, # 헤더, HTML은 사용하지 마. 이모지는 적절히 사용해."
             ),
             "fortune_detail": (
                 "너는 전문 점성가이자 명리하자인 '마사몽'이야. 제공된 데이터를 깊이 있게 분석해서 "
                 "[총평], [재물운], [연애/대인관계], [오늘의 조언] 항목으로 나누어 자세히 설명해줘. "
-                "마크다운(##, **)을 사용하여 가독성 있게 작성해."
+                "항목은 굵은 제목으로 표시하고 단순 불릿만 사용해. 표, # 헤더, HTML은 사용하지 마."
             ),
             "fortune_morning": (
                 "너는 사용자의 아침을 여는 든든한 비서 '마사몽'이야. 오늘 하루의 흐름을 예측하고, "
                 "주의할 점과 행운의 포인트를 짚어줘. 닉네임을 꼭 부르며 다정하게 인사해.\n"
                 "중요: '행운의 시간'을 추천할 때는 7시 30분에 집착하지 말고, 천체 배치나 운세 기운에 맞춰 매번 다르게 추천해줘. "
-                "마크다운을 활용해 예쁘게 작성해."
+                "Discord용 굵은 제목과 단순 불릿만 사용하고 표, # 헤더, HTML은 사용하지 마."
             )
         }
         return prompts.get(key, prompts['fortune_summary'])
