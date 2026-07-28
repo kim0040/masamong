@@ -251,6 +251,7 @@ class ReMasamongBot(commands.Bot):
                     "conversation_history_archive",
                     "user_preferences",
                     "dm_usage_logs",
+                    "channel_summary_state",
                 }
             )
         if config.DB_BACKEND == "tidb":
@@ -368,6 +369,25 @@ class ReMasamongBot(commands.Bot):
                         f"{table_name} 필수 컬럼이 없습니다: "
                         + ", ".join(missing_privacy_columns)
                     )
+
+            summary_columns = set(
+                await get_table_columns(self.db, "channel_summary_state")
+            )
+            required_summary_columns = {
+                "guild_id",
+                "channel_id",
+                "anchor_message_id",
+                "summary_text",
+                "updated_at",
+            }
+            missing_summary_columns = sorted(
+                required_summary_columns - summary_columns
+            )
+            if missing_summary_columns:
+                raise RuntimeError(
+                    "channel_summary_state 필수 컬럼이 없습니다: "
+                    + ", ".join(missing_summary_columns)
+                )
 
         if config.SCHOOL_NOTICE_ENABLED:
             required_school_notice_columns = {
@@ -562,6 +582,7 @@ class ReMasamongBot(commands.Bot):
                         "user_activity",
                         "user_activity_log",
                         "linkup_usage_log",
+                        "channel_summary_state",
                         "conversation_windows",
                         "system_counters",
                         "api_call_log",
@@ -599,6 +620,7 @@ class ReMasamongBot(commands.Bot):
                         "user_activity",
                         "user_activity_log",
                         "linkup_usage_log",
+                        "channel_summary_state",
                         "conversation_windows",
                         "system_counters",
                         "api_call_log",

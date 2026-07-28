@@ -364,7 +364,7 @@ def test_drop_runs_only_with_exact_guards_and_connected_database_readback(
         for statement in connection.statements[1:]
         if statement.startswith("DROP TABLE IF EXISTS ")
     ]
-    assert len(drop_statements) == 17
+    assert len(drop_statements) == 18
     assert all(settings.password not in sql for sql in connection.statements)
 
 

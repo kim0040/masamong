@@ -9,8 +9,10 @@ from discord.ext import commands
 import os
 import io
 import asyncio
+import json
 import time
 from collections import OrderedDict
+from pathlib import Path
 
 import config
 from logger_config import logger
@@ -302,13 +304,49 @@ class UserCommands(commands.Cog):
             raise RuntimeError(error_text or f"git {' '.join(args)} 실행 실패")
         return stdout.decode("utf-8", errors="replace").strip()
 
+    @staticmethod
+    def _load_release_metadata() -> tuple[str, str] | None:
+        """불변 배포 아카이브의 커밋 SHA와 최근 로그를 읽습니다."""
+        configured = str(os.getenv("MASAMONG_RELEASE_METADATA_FILE", "") or "").strip()
+        candidates = []
+        if configured:
+            candidates.append(Path(configured))
+        candidates.append(Path(__file__).resolve().parents[1] / ".release-metadata.json")
+
+        for path in candidates:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError, TypeError) as exc:
+                logger.warning("배포 메타데이터 읽기 실패(%s): %s", path, exc)
+                continue
+            if not isinstance(payload, dict):
+                continue
+            head_sha = str(payload.get("commit_sha") or "").strip()
+            raw_commits = payload.get("commits") or []
+            if not head_sha or not isinstance(raw_commits, list):
+                continue
+            commits = [
+                f"- {str(item).strip()[:240]}"
+                for item in raw_commits[:10]
+                if str(item).strip()
+            ]
+            return head_sha, "\n".join(commits)
+        return None
+
     async def _get_update_summary(self, ai_handler) -> str | None:
         """현재 HEAD의 최근 커밋을 한 번만 AI 요약하고 TTL 동안 재사용합니다."""
-        try:
-            head_sha = await self._run_git("rev-parse", "HEAD")
-        except Exception as exc:
-            logger.warning("업데이트 HEAD 조회 실패: %s", exc)
-            head_sha = "__unknown_head__"
+        release_metadata = self._load_release_metadata()
+        metadata_logs = ""
+        if release_metadata is not None:
+            head_sha, metadata_logs = release_metadata
+        else:
+            try:
+                head_sha = await self._run_git("rev-parse", "HEAD")
+            except Exception as exc:
+                logger.warning("업데이트 HEAD 조회 실패: %s", exc)
+                head_sha = "__unknown_head__"
 
         cache_hit, cached_summary = self._get_cached_update_summary(head_sha)
         if cache_hit:
@@ -320,16 +358,18 @@ class UserCommands(commands.Cog):
             if cache_hit:
                 return cached_summary
 
-            try:
-                git_logs = await self._run_git(
-                    "log",
-                    "-n",
-                    "10",
-                    "--pretty=format:- %s",
-                )
-            except Exception as exc:
-                logger.warning("업데이트 git log 조회 실패: %s", exc)
-                git_logs = ""
+            git_logs = metadata_logs
+            if not git_logs:
+                try:
+                    git_logs = await self._run_git(
+                        "log",
+                        "-n",
+                        "10",
+                        "--pretty=format:- %s",
+                    )
+                except Exception as exc:
+                    logger.warning("업데이트 git log 조회 실패: %s", exc)
+                    git_logs = ""
 
             summary = None
             if git_logs and ai_handler:

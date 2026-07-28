@@ -1,6 +1,7 @@
 """비용이 큰 사용자 명령의 cache/cooldown/precheck 회귀 테스트."""
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -97,6 +98,38 @@ def test_update_cache_is_bounded_lru():
 
     assert list(cog._update_cache) == ["head-a", "head-c"]
     assert cog._get_cached_update_summary("head-b", now=5) == (False, None)
+
+
+@pytest.mark.asyncio
+async def test_update_summary_uses_release_metadata_without_git(
+    monkeypatch,
+    tmp_path,
+):
+    metadata_path = tmp_path / "release.json"
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "commit_sha": "abc123",
+                "commits": ["검색 품질 개선", "명령어 복구"],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MASAMONG_RELEASE_METADATA_FILE", str(metadata_path))
+
+    ai = _FakeAI()
+    cog = UserCommands(_FakeBot(ai))
+
+    async def git_must_not_run(*_args, **_kwargs):
+        raise AssertionError("불변 release에서는 git을 호출하면 안 됩니다")
+
+    monkeypatch.setattr(cog, "_run_git", git_must_not_run)
+
+    result = await cog._get_update_summary(ai)
+
+    assert result == "업데이트 요약"
+    assert ai.summary_calls == 1
 
 
 def test_update_user_cooldown_is_per_user_and_bounded():

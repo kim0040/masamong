@@ -174,3 +174,68 @@ def test_finance_disambiguation_still_routes_real_stock_questions():
     assert plan
     assert plan[0]["tool_to_use"] == "web_search"
     assert "금융 뉴스" in plan[0]["parameters"]["query"]
+
+
+@pytest.mark.asyncio
+async def test_execute_web_search_raw_does_not_call_answer_llm():
+    handler = _build_handler_without_init()
+
+    class _Tools:
+        async def web_search_rag(self, query):
+            assert query == "최신 모델"
+            return {
+                "status": "success",
+                "context": "[출처 1] 공식 문서\n본문",
+                "source_urls": ["https://example.com/docs"],
+                "provider": "linkup",
+            }
+
+    handler.tools_cog = _Tools()
+    handler._cometapi_generate_content = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("raw 검색 단계에서 LLM을 호출하면 안 됩니다")
+    )
+
+    result = await handler._execute_web_search_raw("최신 모델", {})
+
+    assert result["result"] == "[출처 1] 공식 문서\n본문"
+    assert result["source_urls"] == ["https://example.com/docs"]
+
+
+def test_short_web_followup_uses_only_same_users_previous_turn():
+    handler = _build_handler_without_init()
+    history = [
+        {
+            "role": "user",
+            "speaker": "다른 사람",
+            "is_current_user": False,
+            "parts": ["제주도 항공편"],
+        },
+        {
+            "role": "user",
+            "speaker": "질문자",
+            "is_current_user": True,
+            "parts": ["OpenAI 새 모델 발표 알려줘"],
+        },
+    ]
+
+    query = handler._contextualize_web_query("가격은?", "가격은?", history)
+
+    assert "OpenAI 새 모델" in query
+    assert "제주도" not in query
+
+
+def test_discord_source_footer_is_deduplicated_and_suppresses_embeds():
+    footer = AIHandler._format_web_source_footer(
+        [
+            "https://a.example.com",
+            "https://a.example.com",
+            "javascript:alert(1)",
+            "https://b.example.com",
+        ]
+    )
+
+    assert footer == (
+        "\n\n**출처**\n"
+        "1. <https://a.example.com>\n"
+        "2. <https://b.example.com>"
+    )

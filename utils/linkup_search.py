@@ -16,6 +16,7 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
 
@@ -51,7 +52,6 @@ _DEEP_HINTS = (
     "각각",
     "목록",
     "리스트",
-    "정리해줘",
     "자세히",
     "심층",
     "trend",
@@ -98,6 +98,7 @@ _FETCH_HINTS = (
 )
 
 _pipeline_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_pipeline_inflight: dict[str, asyncio.Task] = {}
 _pipeline_cache_lock = asyncio.Lock()
 _linkup_budget_lock = asyncio.Lock()
 
@@ -166,7 +167,7 @@ def _error_result(
 
 
 def _cache_key(query: str) -> str:
-    base = (query or "").strip().lower()
+    base = re.sub(r"\s+", " ", (query or "").strip().lower())
     return hashlib.sha256(base.encode("utf-8")).hexdigest()
 
 
@@ -252,16 +253,39 @@ def _extract_first_url(query: str) -> str | None:
     match = _URL_RE.search(query or "")
     if not match:
         return None
-    return match.group(0).strip()
+    candidate = match.group(0).strip().rstrip(".,!?;:)]}>\"'")
+    try:
+        parsed = urlsplit(candidate)
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parsed.query, ""))
 
 
 def _should_fetch_first(query: str, url: str) -> bool:
-    """
-    공식 가이드에 맞춰 URL이 명시되면 /fetch를 우선 사용합니다.
-    """
-    _ = query
-    _ = url
-    return True
+    """단일 페이지 읽기 요청만 /fetch로 보내고 비교·검증은 /search로 보냅니다."""
+    if not url:
+        return False
+    query_lower = (query or "").lower()
+    cross_source_hints = (
+        "비교",
+        "경쟁",
+        "다른",
+        "여러",
+        "사실 확인",
+        "팩트체크",
+        "검증",
+        "최신",
+        "현재",
+        "compare",
+        "versus",
+        " vs ",
+        "verify",
+    )
+    if any(token in query_lower for token in cross_source_hints):
+        return False
+    return any(token in query_lower for token in _FETCH_HINTS)
 
 
 def _clip(text: str, limit: int) -> str:
@@ -314,9 +338,10 @@ def _build_search_payload(user_query: str, depth: str) -> dict[str, Any]:
         "q": _build_search_prompt(user_query, depth),
         "depth": depth,
         "outputType": output_type,
-        "includeInlineCitations": True,
         "maxResults": max_results_default.get(depth, 8),
     }
+    if output_type == "sourcedAnswer":
+        payload["includeInlineCitations"] = True
 
     if _contains_realtime_hint(user_query):
         lookback_days = _bounded_int(
@@ -346,7 +371,7 @@ def _normalize_sources(data: dict[str, Any]) -> list[dict[str, str]]:
                     "snippet": str(item.get("snippet") or item.get("content") or "").strip(),
                 }
             )
-        return [src for src in normalized if src.get("url")]
+        return _dedupe_valid_sources(normalized)
 
     results = data.get("results")
     if isinstance(results, list):
@@ -361,8 +386,37 @@ def _normalize_sources(data: dict[str, Any]) -> list[dict[str, str]]:
                     "snippet": str(item.get("snippet") or item.get("content") or "").strip(),
                 }
             )
-        return [src for src in normalized if src.get("url")]
+        return _dedupe_valid_sources(normalized)
     return []
+
+
+def _dedupe_valid_sources(sources: list[dict[str, str]]) -> list[dict[str, str]]:
+    """HTTP(S) 출처만 정규화하고 동일 URL 중복을 제거합니다."""
+    seen: set[str] = set()
+    normalized: list[dict[str, str]] = []
+    for source in sources:
+        raw_url = str(source.get("url") or "").strip()
+        try:
+            parsed = urlsplit(raw_url)
+        except ValueError:
+            continue
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            continue
+        clean_url = urlunsplit(
+            (parsed.scheme.lower(), parsed.netloc.lower(), parsed.path, parsed.query, "")
+        )
+        key = clean_url.rstrip("/")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        normalized.append(
+            {
+                "name": str(source.get("name") or "").strip(),
+                "url": clean_url,
+                "snippet": str(source.get("snippet") or "").strip(),
+            }
+        )
+    return normalized
 
 
 def _collect_source_urls(sources: list[dict[str, str]]) -> list[str]:
@@ -609,9 +663,10 @@ async def _execute_billed_linkup_call(
 
 
 async def _run_fetch_pipeline(url: str, db_conn=None) -> dict[str, Any]:
+    render_js = bool(getattr(config, "LINKUP_FETCH_RENDER_JS", False))
     payload = {
         "url": url,
-        "renderJs": bool(getattr(config, "LINKUP_FETCH_RENDER_JS", True)),
+        "renderJs": render_js,
         "includeRawHtml": False,
         "extractImages": False,
     }
@@ -622,6 +677,20 @@ async def _run_fetch_pipeline(url: str, db_conn=None) -> dict[str, Any]:
         render_js=bool(payload.get("renderJs")),
     )
     markdown = str(data.get("markdown") or "").strip()
+    if (
+        not markdown
+        and not render_js
+        and bool(getattr(config, "LINKUP_FETCH_JS_RETRY_ENABLED", True))
+    ):
+        retry_payload = dict(payload)
+        retry_payload["renderJs"] = True
+        data = await _execute_billed_linkup_call(
+            endpoint="fetch",
+            payload=retry_payload,
+            db_conn=db_conn,
+            render_js=True,
+        )
+        markdown = str(data.get("markdown") or "").strip()
     if not markdown:
         return _error_result(
             "Linkup /fetch 응답에 markdown이 없습니다.",
@@ -640,6 +709,7 @@ async def _run_fetch_pipeline(url: str, db_conn=None) -> dict[str, Any]:
         "status": "success",
         "context": context,
         "source_urls": [url],
+        "sources": [{"name": "직접 링크", "url": url, "snippet": ""}],
         "search_kind": "DIRECT_URL",
         "provider": "linkup",
     }
@@ -699,6 +769,7 @@ async def _run_search_pipeline(user_query: str, depth: str, db_conn=None) -> dic
         "status": "success",
         "context": context,
         "source_urls": source_urls,
+        "sources": sources,
         "search_kind": depth.upper(),
         "provider": "linkup",
         "quality": {
@@ -710,7 +781,7 @@ async def _run_search_pipeline(user_query: str, depth: str, db_conn=None) -> dic
     }
 
 
-async def run_linkup_search_pipeline(user_query: str, db_conn=None) -> dict[str, Any]:
+async def _run_uncached_pipeline(user_query: str, db_conn=None) -> dict[str, Any]:
     """
     Linkup 기반 범용 웹 검색 파이프라인 진입점.
     반환 형식은 tools_cog.web_search_rag() 계약을 따릅니다.
@@ -729,7 +800,7 @@ async def run_linkup_search_pipeline(user_query: str, db_conn=None) -> dict[str,
             failure_kind="configuration",
         )
 
-    query = (user_query or "").strip()
+    query = re.sub(r"\s+", " ", (user_query or "").strip())
     if not query:
         return _error_result(
             "검색어가 비어 있습니다.",
@@ -797,3 +868,51 @@ async def run_linkup_search_pipeline(user_query: str, db_conn=None) -> dict[str,
             fallback_safe=False,
             failure_kind="unexpected_error",
         )
+
+
+async def _run_singleflight(
+    query: str,
+    key: str,
+    db_conn=None,
+) -> dict[str, Any]:
+    """동일 검색어의 provider 호출을 합치고 작업 종료 시 슬롯을 회수합니다."""
+    try:
+        return await _run_uncached_pipeline(query, db_conn=db_conn)
+    finally:
+        current = asyncio.current_task()
+        async with _pipeline_cache_lock:
+            if _pipeline_inflight.get(key) is current:
+                _pipeline_inflight.pop(key, None)
+
+
+async def run_linkup_search_pipeline(user_query: str, db_conn=None) -> dict[str, Any]:
+    """Linkup 검색 진입점. 캐시 미스인 동일 동시 질의는 한 번만 과금합니다."""
+    query = re.sub(r"\s+", " ", (user_query or "").strip())
+    if not query:
+        return _error_result(
+            "검색어가 비어 있습니다.",
+            fallback_safe=True,
+            failure_kind="invalid_input",
+        )
+
+    cached = await _load_cache(query)
+    if cached:
+        cached["cached"] = True
+        return cached
+
+    key = _cache_key(query)
+    async with _pipeline_cache_lock:
+        task = _pipeline_inflight.get(key)
+        shared = task is not None
+        if task is None:
+            task = asyncio.create_task(
+                _run_singleflight(query, key, db_conn=db_conn),
+                name=f"linkup:{key[:10]}",
+            )
+            _pipeline_inflight[key] = task
+
+    result = await asyncio.shield(task)
+    if shared:
+        result = dict(result)
+        result["shared_inflight"] = True
+    return result
