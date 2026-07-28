@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from array import array
 from collections import Counter
+from decimal import Decimal
 import hashlib
 import json
 import math
@@ -45,6 +46,17 @@ _PROVENANCE_COLUMNS = frozenset(
         "indexed_at",
     }
 )
+
+
+def _json_default(value: Any) -> int | float:
+    """PyMySQL이 집계값에 사용하는 Decimal을 JSON 숫자로 보존합니다."""
+    if isinstance(value, Decimal):
+        if value == value.to_integral_value():
+            return int(value)
+        return float(value)
+    raise TypeError(
+        f"Object of type {value.__class__.__name__} is not JSON serializable"
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -270,7 +282,14 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return exc.exit_code
-    print(json.dumps({"ok": True, **report}, ensure_ascii=False, sort_keys=True))
+    print(
+        json.dumps(
+            {"ok": True, **report},
+            ensure_ascii=False,
+            sort_keys=True,
+            default=_json_default,
+        )
+    )
     return 0
 
 
