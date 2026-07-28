@@ -78,6 +78,11 @@ primary/fallback attempts. A single AI turn can plan at most three tool calls.
 Fortune generation and school collection also use explicit finite attempt and
 runtime limits; neither scheduler retries indefinitely.
 
+Rate-limit checks query only their indexed one-minute/day windows and do not
+prune historical `api_call_log` rows. Operational history therefore remains
+available unless an explicitly documented user deletion command targets its own
+feature-derived records.
+
 Conversation context labels every speaker and marks the current requester.
 Follow-up search expansion uses only that requester's earlier turns, so one
 member's subject cannot silently become another member's query. Retrieved web

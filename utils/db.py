@@ -22,9 +22,6 @@ from typing import Any
 
 KST = pytz.timezone('Asia/Seoul')
 
-# api_call_log 정리 주기 제한 (1시간마다)
-_last_api_log_cleanup: datetime | None = None
-_API_LOG_CLEANUP_INTERVAL = timedelta(hours=1)
 _ALLOWED_GUILD_SETTING_COLUMNS = frozenset(
     {"ai_enabled", "ai_allowed_channels", "persona_text", "language"}
 )
@@ -133,19 +130,12 @@ async def check_api_rate_limit(db: aiosqlite.Connection, api_type: str, rpm_limi
     API 호출에 대한 RPM(분당) 및 RPD(일일) 제한을 확인합니다.
     제한에 도달하면 True를, 그렇지 않으면 호출을 기록하고 False를 반환합니다.
     """
-    global _last_api_log_cleanup
     try:
         now_utc = datetime.now(timezone.utc)
         one_minute_ago = (now_utc - timedelta(minutes=1)).isoformat()
         one_day_ago = (now_utc - timedelta(days=1)).isoformat()
 
-        # 1. 오래된 로그 정리 (1시간마다만 실행 - 성능 최적화)
-        if _last_api_log_cleanup is None or (now_utc - _last_api_log_cleanup) >= _API_LOG_CLEANUP_INTERVAL:
-            await db.execute("DELETE FROM api_call_log WHERE called_at < ?", (one_day_ago,))
-            await db.commit()
-            _last_api_log_cleanup = now_utc
-
-        # 2. 일/분 사용량을 한 쿼리로 계산해 원격 DB 왕복을 줄인다.
+        # 보존된 계측 행은 삭제하지 않고 복합 인덱스로 최근 24시간만 집계한다.
         async with db.execute(
             """
             SELECT
