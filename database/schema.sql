@@ -150,3 +150,61 @@ CREATE TABLE IF NOT EXISTS dm_usage_logs (
     window_start_at TEXT, -- 윈도우 시작 시각
     reset_at TEXT -- 제한 해제 예정 시각 (window_start + 3H)
 );
+
+-- ============================================================
+-- 학교 공지 추적
+-- 수집 부산물(공지 snapshot/분석 캐시)은 batch가 소유한 별도 SQLite에 있고,
+-- 여기에는 Discord 사용자와 결합된 데이터만 둔다.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS school_notice_profiles (
+    user_id INTEGER PRIMARY KEY, -- Discord user id
+    user_key TEXT NOT NULL UNIQUE, -- "discord-<user_id>"
+    school_id TEXT NOT NULL,
+    profile_json TEXT NOT NULL, -- 코어 프로필 스키마 전체
+    profile_version INTEGER NOT NULL DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc')),
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS school_notice_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_key TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    feedback_type TEXT NOT NULL, -- useful | saved | applied | not_interested | already_knew | completed | dismiss_once | not_eligible | mute_topic
+    topic TEXT, -- mute_topic 전용
+    interaction_id TEXT NOT NULL UNIQUE, -- 버튼 중복 클릭 차단
+    created_at TEXT NOT NULL,
+    consumed_at TEXT -- batch가 코어로 반영한 시각
+);
+
+CREATE INDEX IF NOT EXISTS idx_school_notice_feedback_user
+    ON school_notice_feedback (user_key, created_at);
+
+CREATE TABLE IF NOT EXISTS school_notice_deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_key TEXT NOT NULL,
+    digest_date TEXT NOT NULL,
+    notice_id INTEGER NOT NULL,
+    status TEXT NOT NULL, -- sent | failed | skipped
+    failure_reason TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 1,
+    delivered_at TEXT NOT NULL,
+    UNIQUE (user_key, digest_date, notice_id)
+);
+
+CREATE TABLE IF NOT EXISTS school_notice_batch_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_key TEXT NOT NULL,
+    run_date TEXT NOT NULL,
+    status TEXT NOT NULL, -- succeeded | partial | failed
+    collection_status TEXT, -- healthy | degraded | failed
+    may_include_stale INTEGER NOT NULL DEFAULT 0,
+    item_count INTEGER NOT NULL DEFAULT 0,
+    http_requests INTEGER,
+    llm_calls INTEGER,
+    finished_at TEXT NOT NULL,
+    UNIQUE (user_key, run_date)
+);

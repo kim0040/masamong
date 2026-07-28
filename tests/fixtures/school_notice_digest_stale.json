@@ -1,0 +1,542 @@
+{
+  "schema_version": 1,
+  "user_key": "discord-100000000000000001",
+  "date": "2026-07-27",
+  "summary": {
+    "action": 2,
+    "opportunity": 2,
+    "reference": 0
+  },
+  "collection_health": {
+    "status": "failed",
+    "healthy": 1,
+    "degraded": 0,
+    "failed": 1,
+    "may_include_stale_notices": true,
+    "sources": {
+      "jbnu_software": {
+        "status": "healthy",
+        "list_candidates": 10,
+        "details_succeeded": 4,
+        "details_failed": 0,
+        "errors": []
+      },
+      "jbnu_campus": {
+        "status": "failed",
+        "list_candidates": 0,
+        "details_succeeded": 0,
+        "details_failed": 0,
+        "errors": [
+          "list_request_failed: timeout"
+        ]
+      }
+    }
+  },
+  "items": [
+    {
+      "notice_id": 16,
+      "dedup_key": "368b4d339aca1d77a82c13dd",
+      "revision_count": 1,
+      "change": "unchanged",
+      "notice": {
+        "candidate": {
+          "source_id": "jbnu_software",
+          "external_id": "394145",
+          "title": "2026학년도 2학기 휴학 및 복학 신청 안내",
+          "url": "https://software.jbnu.ac.kr/bbs/software/527/394145/artclView.do",
+          "published_text": "2026.06.18",
+          "author": "소프트웨어공학과",
+          "category": null,
+          "pinned": true
+        },
+        "title": "[학부] 2026학년도 2학기 휴학 및 복학 신청 안내",
+        "body_text": "2026\n학년도\n2\n학기 휴학 및 복학 신청기간 등을 다음과 같이 알려드립니다.\n1.\n휴학\n·\n복학 신청 가능 기간\n구분\n등록여부\n신청 가능 기간\n비고\n휴학\n미등록자\n7.21.(\n화\n)\n~ 9.29.(\n화\n)\n[\n수업일수\n1/4\n선\n]\n임시공휴일 지정 등\n수업일수\n1/4, 3/4\n선\n은 변경될 수 있음\n등록자\n(\n등록금 납부 및 수강신청 완료\n)\n7.21.(\n화\n)\n~ 11.25.(\n수\n)\n[\n수업일수\n3/4\n선\n]\n복학\n미등록자\n,\n등록자\n7.21.(\n화\n)\n~ 9.29.(\n화\n)\n[\n수업일수\n1/4\n선\n]\n※\n창업휴학 대상자는 개강\n6\n주 전에 창업확인서 발급\n(\n창업교육센터\n)\n후 휴학할 수 있으며\n,\n개강일 이후 복학하는 경우 복학처리 완료전까지는 결석 처리됨에 유의\n2.\n휴학\n·\n복학 허가일\n:\n2",
+        "body_characters": 400,
+        "published_text": "2026.06.18",
+        "author": "소프트웨어공학과",
+        "attachments": [
+          {
+            "kind": "attachment",
+            "url": "https://software.jbnu.ac.kr/bbs/software/527/353100/download.do",
+            "name": "자주하는 문의사항(휴학 및 복학)v5.hwp"
+          }
+        ],
+        "inline_images": [],
+        "attachment_extractions": [],
+        "signals": {
+          "dates": [
+            "2026-09-01",
+            "07-21",
+            "09-29",
+            "01-04",
+            "03-04",
+            "11-25"
+          ],
+          "actions": [
+            "신청",
+            "등록",
+            "수강신청",
+            "납부"
+          ],
+          "audiences": [
+            "학부생"
+          ],
+          "topics": [
+            "등록금",
+            "수강",
+            "학적"
+          ]
+        },
+        "base_content_hash": "8f2b9a0a01b4a96e1eb79949ff3939e66cf1f68a76ea8a4ff72188b34ff17029",
+        "content_hash": "33d45ae6c86fd6600ac1bc83954b24a7a5bedd973b9d0ca0f47767c178b011a8",
+        "warnings": [
+          "list_detail_title_difference"
+        ]
+      },
+      "analysis": {
+        "schema_version": 1,
+        "summary": "학기 휴학 및 복학 신청기간 등을 다음과 같이 알려드립니다.",
+        "audiences": [
+          "학부생"
+        ],
+        "topics": [
+          "등록금",
+          "수강",
+          "학적"
+        ],
+        "actions": [
+          "신청",
+          "등록",
+          "수강신청",
+          "납부"
+        ],
+        "required": true,
+        "urgency": "high",
+        "dates": [
+          {
+            "date": "2026-09-01",
+            "kind": "deadline",
+            "evidence": "( 창업교육센터 ) 후 휴학할 수 있으며 , 개강일 이후 복학하는 경우 복학처리 완료전까지는 결석 처리됨에 유의 2. 휴학 · 복학 허가일 : 2026. 9. 1.( 화 ) [ 개강일 ] 부터 ※ 복학 신청자는 복학"
+          },
+          {
+            "date": "2026-07-21",
+            "kind": "deadline",
+            "evidence": "휴학 및 복학 신청기간 등을 다음과 같이 알려드립니다. 1. 휴학 · 복학 신청 가능 기간 구분 등록여부 신청 가능 기간 비고 휴학 미등록자 7.21.( 화 ) ~ 9.29.( 화 ) [ 수업일수 1/4 선 ] 임시",
+            "inferred_year": true
+          },
+          {
+            "date": "2026-09-29",
+            "kind": "deadline",
+            "evidence": "등을 다음과 같이 알려드립니다. 1. 휴학 · 복학 신청 가능 기간 구분 등록여부 신청 가능 기간 비고 휴학 미등록자 7.21.( 화 ) ~ 9.29.( 화 ) [ 수업일수 1/4 선 ] 임시공휴일 지정 등 수업일수",
+            "inferred_year": true
+          }
+        ],
+        "eligibility_rules": [],
+        "evidence": [
+          "학기 휴학 및 복학 신청기간 등을 다음과 같이 알려드립니다.",
+          "복학 신청 가능 기간"
+        ],
+        "confidence": 0.58,
+        "analysis_source": "rules",
+        "warnings": [
+          "list_detail_title_difference"
+        ]
+      },
+      "score": {
+        "score": 100.0,
+        "band": "action",
+        "eligibility": "LIKELY_ELIGIBLE",
+        "reasons": [
+          "학부생 대상",
+          "소프트웨어공학과 직접 공지",
+          "신청·제출 등 행동 항목 존재",
+          "필수 또는 불이익 가능 문구",
+          "긴급도 high",
+          "마감 2026-09-01"
+        ],
+        "topics": [
+          "등록금",
+          "수강",
+          "학적"
+        ],
+        "deadline": "2026-09-01",
+        "next_event": "2026-09-29",
+        "profile_version": 1,
+        "mandatory_protected": true
+      },
+      "duplicate_sources": []
+    },
+    {
+      "notice_id": 15,
+      "dedup_key": "9cf7b907868ce1e91cc946df",
+      "revision_count": 1,
+      "change": "unchanged",
+      "notice": {
+        "candidate": {
+          "source_id": "jbnu_software",
+          "external_id": "394267",
+          "title": "수강신청시스템 관련 메뉴얼 안내",
+          "url": "https://software.jbnu.ac.kr/bbs/software/527/394267/artclView.do",
+          "published_text": "2026.06.19",
+          "author": "소프트웨어공학과",
+          "category": null,
+          "pinned": true
+        },
+        "title": "[학부] 수강신청시스템 관련 메뉴얼 안내",
+        "body_text": "학사시스템 개편으로 인한 수강신청 시스템 관련 메뉴얼을 올려드립니다.\n자세한 내용은 첨부된 파일을 참고 바랍니다.",
+        "body_characters": 63,
+        "published_text": "2026.06.19",
+        "author": "소프트웨어공학과",
+        "attachments": [
+          {
+            "kind": "attachment",
+            "url": "https://software.jbnu.ac.kr/bbs/software/527/353333/download.do",
+            "name": "(최종본)사용자지침서_수강신청(학부).pdf"
+          }
+        ],
+        "inline_images": [],
+        "attachment_extractions": [],
+        "signals": {
+          "dates": [],
+          "actions": [
+            "신청",
+            "수강신청"
+          ],
+          "audiences": [
+            "학부생"
+          ],
+          "topics": [
+            "수강"
+          ]
+        },
+        "base_content_hash": "4c3245f9e9543d9cc03af3ba6c6b26587d2e2d71b30b678c488aa788c31cba2c",
+        "content_hash": "9aa585ac1b3591ccc7ae19da186a1ed4aba5882892d0f695a5003e001a8072be",
+        "warnings": [
+          "list_detail_title_difference"
+        ]
+      },
+      "analysis": {
+        "schema_version": 1,
+        "summary": "학사시스템 개편으로 인한 수강신청 시스템 관련 메뉴얼을 올려드립니다.",
+        "audiences": [
+          "학부생"
+        ],
+        "topics": [
+          "수강"
+        ],
+        "actions": [
+          "신청",
+          "수강신청"
+        ],
+        "required": true,
+        "urgency": "high",
+        "dates": [],
+        "eligibility_rules": [
+          {
+            "field": "grade",
+            "operator": "in",
+            "value": [
+              3
+            ],
+            "evidence": "명시 학년: 3학년"
+          }
+        ],
+        "evidence": [],
+        "confidence": 0.58,
+        "analysis_source": "rules",
+        "warnings": [
+          "list_detail_title_difference"
+        ]
+      },
+      "score": {
+        "score": 100.0,
+        "band": "action",
+        "eligibility": "ELIGIBLE",
+        "reasons": [
+          "학부생 대상",
+          "3학년 조건 일치",
+          "소프트웨어공학과 직접 공지",
+          "신청·제출 등 행동 항목 존재",
+          "필수 또는 불이익 가능 문구",
+          "긴급도 high"
+        ],
+        "topics": [
+          "수강"
+        ],
+        "deadline": null,
+        "next_event": null,
+        "profile_version": 1,
+        "mandatory_protected": true
+      },
+      "duplicate_sources": []
+    },
+    {
+      "notice_id": 6,
+      "dedup_key": "de8d551ad2b6989042bd4230",
+      "revision_count": 1,
+      "change": "unchanged",
+      "notice": {
+        "candidate": {
+          "source_id": "jbnu_campus",
+          "external_id": "214846",
+          "title": "2026학년도 2학기 수강신청 일정 안내",
+          "url": "https://www.jbnu.ac.kr/web/Board/214846/detailView.do",
+          "published_text": "2026-07-06",
+          "author": "교무처 학사지원과",
+          "category": "학사",
+          "pinned": true
+        },
+        "title": "2026학년도 2학기 수강신청 일정 안내",
+        "body_text": "﻿\n▶\n장바구니수강 신청 때는기초교양및진로 및 일부 학과지정 분반은\n비공개를 원칙으로 합니다\n.\n정식 수강신청\n2~4\n학년\n기간에는 기초교양및진로\n및\n1\n학년 전공과목은 비공개합니다\n※ 예비수강신청 기간에 최대 20과목까지 관심과목 등록 가능하며, 관심과목 등록을 통해 빠른 수강신청 가능\n▶ 일반선택 과목, 교양과목은 장바구니 수강신청 한 경우 수강정원에 미달하여도\n정식수강 처리되지 않고 장바구니에만 등록됨\n(정식수강 때 별도로 수강신청을 필수로 해야함)\n▶ 학과에서 일괄적으로 수강 신청한 과목(기초교양및진로 등)은\n수강 취소 및 변경 불가합니다.\n▶ 수강신청은 수강신청 시스템에서 실시함.\n※ 수강신청 전 전북대 포털 가입 필수\n※ 개설강좌 목록\n(2026.7. 15.(수)부터 조회가능)\n▶\nhttps://",
+        "body_characters": 400,
+        "published_text": "2026-07-06",
+        "author": "교무처 학사지원과",
+        "attachments": [
+          {
+            "kind": "attachment",
+            "url": "https://www.jbnu.ac.kr/async/MultiFile/download.do?file=KN9z2JkN2BSPoCqRasYwWw%3D%3D",
+            "name": "(최종본)사용자지침서_수강신청(학부)-복사.pdf\n(7.6MB)"
+          },
+          {
+            "kind": "attachment",
+            "url": "https://www.jbnu.ac.kr/async/MultiFile/download.do?file=6O2fqdKkLmYxGiaZOsQjWg%3D%3D",
+            "name": "2026학년도 제2학기 수강신청 안내문.hwp\n(82.5KB)"
+          }
+        ],
+        "inline_images": [
+          {
+            "kind": "inline_image",
+            "url": "https://www.jbnu.ac.kr/common/file.do?file=a9cMYKBnGEtxxuKOU/Ez+SwTWePRMfoFhCgNYwV0bDfTHpTt2p04thSf+qBI+YbfwAjiftpowlcaUxTU30MB1w==",
+            "name": "file.do"
+          }
+        ],
+        "attachment_extractions": [],
+        "signals": {
+          "dates": [
+            "2026-07-15"
+          ],
+          "actions": [
+            "신청",
+            "등록",
+            "수강신청"
+          ],
+          "audiences": [],
+          "topics": [
+            "수강",
+            "취업"
+          ]
+        },
+        "base_content_hash": "8beaa044d485da224236f15029e56dbb592b789c403e1d35c545cf2ac0033a49",
+        "content_hash": "8a01ff7f6b4267261cf35ef8d39c7736812b4278f6d3bab45e0241dec33c4343",
+        "warnings": []
+      },
+      "analysis": {
+        "schema_version": 1,
+        "summary": "장바구니수강 신청 때는기초교양및진로 및 일부 학과지정 분반은",
+        "audiences": [],
+        "topics": [
+          "수강",
+          "취업"
+        ],
+        "actions": [
+          "신청",
+          "등록",
+          "수강신청"
+        ],
+        "required": true,
+        "urgency": "high",
+        "dates": [
+          {
+            "date": "2026-07-15",
+            "kind": "event_date",
+            "evidence": "등)은 수강 취소 및 변경 불가합니다. ▶ 수강신청은 수강신청 시스템에서 실시함. ※ 수강신청 전 전북대 포털 가입 필수 ※ 개설강좌 목록 (2026.7. 15.(수)부터 조회가능) ▶ https://sugang.j"
+          },
+          {
+            "date": "2026-07-06",
+            "kind": "event_date",
+            "evidence": "15.(수)부터 조회가능) ▶ https://sugang.jbnu.ac.kr/ 첨부파일((최종본)사용자지침서_수강신청(학부)-복사.pdf (7.6MB)): 1 차세대대학정보화구축(1단계) 사업 JUMP (차세대통합정",
+            "inferred_year": true
+          }
+        ],
+        "eligibility_rules": [
+          {
+            "field": "grade",
+            "operator": "in",
+            "value": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "evidence": "명시 학년: 1, 2, 3, 4학년"
+          }
+        ],
+        "evidence": [
+          "※ 예비수강신청 기간에 최대 20과목까지 관심과목 등록 가능하며, 관심과목 등록을 통해 빠른 수강신청 가능",
+          "(정식수강 때 별도로 수강신청을 필수로 해야함)"
+        ],
+        "confidence": 0.58,
+        "analysis_source": "rules",
+        "warnings": []
+      },
+      "score": {
+        "score": 75.0,
+        "band": "opportunity",
+        "eligibility": "ELIGIBLE",
+        "reasons": [
+          "3학년 조건 일치",
+          "신청·제출 등 행동 항목 존재",
+          "필수 또는 불이익 가능 문구",
+          "긴급도 high"
+        ],
+        "topics": [
+          "수강",
+          "취업"
+        ],
+        "deadline": null,
+        "next_event": null,
+        "profile_version": 1,
+        "mandatory_protected": true
+      },
+      "duplicate_sources": []
+    },
+    {
+      "notice_id": 11,
+      "dedup_key": "cb7e5d4867ba60c789e01a93",
+      "revision_count": 1,
+      "change": "unchanged",
+      "notice": {
+        "candidate": {
+          "source_id": "jbnu_software",
+          "external_id": "396518",
+          "title": "2026학년도 2학기 실용영어 면제 대상자 신청 안내(~2024학번 까지)",
+          "url": "https://software.jbnu.ac.kr/bbs/software/527/396518/artclView.do",
+          "published_text": "2026.07.20",
+          "author": "소프트웨어공학과",
+          "category": null,
+          "pinned": true
+        },
+        "title": "[학부] 2026학년도 2학기 실용영어 면제 대상자 신청 안내(~2024학번 까지)",
+        "body_text": "1.\n관련\n:\n「\n전북대학교 교양교육과정 편성 및 운영 지침에 따른 시행세칙\n」\n제\n11\n조\n(\n인정범위 및 성적기준\n)\n2. 2026\n학년도\n2\n학기 실용영어 교과목 이수 면제 처리를 위해 대상자를 파악하고자 하오니 해당 학생이\n있을 경우 아래와 같이 제출하여 주시기 바랍니다\n.\n가\n.\n제출\n(\n신청\n)\n대상\n※\n2024\n학번 이전 학번만 신청 가능\n(2024\n학번 포함\n, 2025\n학번 이후 신청 불가\n)\n구분\n대상\n인정범위 및 성적기준\n제출서류\n비고\n재학생\n실용영어\n이수 이력 없는 학생\n(\n재이수자 해당없음\n)\nTOEIC\nTOEFL\nTEPS\nNew TEPS\nIELTS\nG-TELP\n(LEVEL2)\nCBT\nIBT\n800\n이상\n233\n이상\n91\n이상\n637\n이상\n348\n이상\n6.5\n이상\n76\n이상\n공인영어\n",
+        "body_characters": 400,
+        "published_text": "2026.07.20",
+        "author": "소프트웨어공학과",
+        "attachments": [
+          {
+            "kind": "attachment",
+            "url": "https://software.jbnu.ac.kr/bbs/software/527/355507/download.do",
+            "name": "(붙임1) 관련 지침 및 시행세칙(발췌)20260122.hwp"
+          },
+          {
+            "kind": "attachment",
+            "url": "https://software.jbnu.ac.kr/bbs/software/527/355508/download.do",
+            "name": "(붙임2) 실용영어 이수면제 처리절차 시스템 신청 안내202607.hwp"
+          }
+        ],
+        "inline_images": [],
+        "attachment_extractions": [],
+        "signals": {
+          "dates": [
+            "2026-08-19",
+            "02-20",
+            "06-05"
+          ],
+          "actions": [
+            "신청",
+            "제출",
+            "등록"
+          ],
+          "audiences": [
+            "학부생",
+            "재학생"
+          ],
+          "topics": [
+            "졸업"
+          ]
+        },
+        "base_content_hash": "462e7d85f116613e93e7267423e057a11f6fc663985a73bfe8656976e3f415ff",
+        "content_hash": "2c42bd4304a8ae4b9a383d6581ebfe5d751f49f723757019c77a344b71f740ae",
+        "warnings": [
+          "list_detail_title_difference"
+        ]
+      },
+      "analysis": {
+        "schema_version": 1,
+        "summary": "있을 경우 아래와 같이 제출하여 주시기 바랍니다",
+        "audiences": [
+          "학부생",
+          "재학생"
+        ],
+        "topics": [
+          "졸업"
+        ],
+        "actions": [
+          "신청",
+          "제출",
+          "등록"
+        ],
+        "required": true,
+        "urgency": "high",
+        "dates": [
+          {
+            "date": "2026-08-19",
+            "kind": "deadline",
+            "evidence": "면제 신청 전 공인외국어성적표를 학생지원 - 학생통합경력관리 - 공인외국어성적관리에서 먼저 등록 필수 다 . 학과 제출 ( 신청 ) 기한 : 2026. 8. 19.( 수 ) 까지 ※ 기한 내 미제출 시 해당사항 없음"
+          }
+        ],
+        "eligibility_rules": [
+          {
+            "field": "student_number_year",
+            "operator": "lte",
+            "value": 2024,
+            "evidence": "2024학번 까지"
+          },
+          {
+            "field": "student_number_year",
+            "operator": "lte",
+            "value": 2024,
+            "evidence": "2024 학번 이전"
+          },
+          {
+            "field": "student_number_year",
+            "operator": "lt",
+            "value": 2025,
+            "evidence": "2025 학번 이후 신청 불가"
+          }
+        ],
+        "evidence": [
+          "학기 실용영어 교과목 이수 면제 처리를 위해 대상자를 파악하고자 하오니 해당 학생이",
+          "있을 경우 아래와 같이 제출하여 주시기 바랍니다"
+        ],
+        "confidence": 0.58,
+        "analysis_source": "rules",
+        "warnings": [
+          "list_detail_title_difference"
+        ]
+      },
+      "score": {
+        "score": 69,
+        "band": "opportunity",
+        "eligibility": "UNKNOWN",
+        "reasons": [
+          "학부생 대상",
+          "재학생 대상",
+          "학번 연도 조건은 있으나 프로필 값이 없음",
+          "소프트웨어공학과 직접 공지",
+          "신청·제출 등 행동 항목 존재",
+          "필수 또는 불이익 가능 문구",
+          "긴급도 high",
+          "마감 2026-08-19"
+        ],
+        "topics": [
+          "졸업"
+        ],
+        "deadline": "2026-08-19",
+        "next_event": null,
+        "profile_version": 1,
+        "mandatory_protected": true
+      },
+      "duplicate_sources": []
+    }
+  ]
+}

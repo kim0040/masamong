@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "user_key": "discord-100000000000000001",
+  "date": "2026-07-27",
+  "summary": {
+    "action": 0,
+    "opportunity": 0,
+    "reference": 0
+  },
+  "collection_health": {
+    "status": "healthy",
+    "healthy": 2,
+    "degraded": 0,
+    "failed": 0,
+    "may_include_stale_notices": false,
+    "sources": {
+      "jbnu_software": {
+        "status": "healthy",
+        "list_candidates": 10,
+        "details_succeeded": 4,
+        "details_failed": 0,
+        "errors": []
+      },
+      "jbnu_campus": {
+        "status": "healthy",
+        "list_candidates": 10,
+        "details_succeeded": 4,
+        "details_failed": 0,
+        "errors": []
+      }
+    }
+  },
+  "items": []
+}

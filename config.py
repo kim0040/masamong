@@ -1690,6 +1690,49 @@ if REQUIRE_EXPLICIT_PROFILE:
             + ", ".join(_credential_errors)
         )
 
+# ========== 학교 공지 추적 ==========
+# 수집·분석은 별도 batch 프로세스가 수행하고 봇은 결과 digest만 읽어 전달한다.
+# 봇 프로세스 안에서 크롤링하지 않으므로 저사양 서버의 상주 예산이 그대로 유지된다.
+SCHOOL_NOTICE_ENABLED = as_bool(load_config_value("SCHOOL_NOTICE_ENABLED", "false"))
+SCHOOL_NOTICE_DIGEST_DIR = as_str(load_config_value("SCHOOL_NOTICE_DIGEST_DIR", ""), "")
+SCHOOL_NOTICE_CORE_DB = as_str(load_config_value("SCHOOL_NOTICE_CORE_DB", ""), "")
+SCHOOL_NOTICE_DELIVERY_TIME = {
+    "hour": max(0, min(23, as_int(load_config_value("SCHOOL_NOTICE_DELIVERY_HOUR", 8), 8))),
+    "minute": max(
+        0,
+        min(59, as_int(load_config_value("SCHOOL_NOTICE_DELIVERY_MINUTE", 10), 10)),
+    ),
+}
+SCHOOL_NOTICE_MAX_ITEMS_PER_DM = max(
+    1,
+    min(20, as_int(load_config_value("SCHOOL_NOTICE_MAX_ITEMS_PER_DM", 10), 10)),
+)
+SCHOOL_NOTICE_SCHEMA_VERSION = max(
+    1,
+    as_int(load_config_value("SCHOOL_NOTICE_SCHEMA_VERSION", 1), 1),
+)
+SCHOOL_NOTICE_STALE_WARNING_ENABLED = as_bool(
+    load_config_value("SCHOOL_NOTICE_STALE_WARNING_ENABLED", "true"),
+    True,
+)
+if SCHOOL_NOTICE_ENABLED:
+    # 기능을 켜 두고 경로가 없으면 매일 조용히 아무것도 전달하지 않는 상태가 된다.
+    # 기존 명시적 프로필 규칙과 동일하게 기동 시점에 막는다.
+    _school_notice_errors: list[str] = []
+    for _path_key, _path_value in (
+        ("SCHOOL_NOTICE_DIGEST_DIR", SCHOOL_NOTICE_DIGEST_DIR),
+        ("SCHOOL_NOTICE_CORE_DB", SCHOOL_NOTICE_CORE_DB),
+    ):
+        if not str(_path_value).strip():
+            _school_notice_errors.append(f"{_path_key} 미지정")
+        elif not Path(str(_path_value)).expanduser().is_absolute():
+            _school_notice_errors.append(f"{_path_key}는 절대 경로여야 함")
+    if _school_notice_errors:
+        raise RuntimeError(
+            "SCHOOL_NOTICE_ENABLED=true인데 필수 경로 설정이 올바르지 않습니다: "
+            + ", ".join(_school_notice_errors)
+        )
+
 DEFAULT_TSUNDERE_PERSONA = _extract_prompt_value("default_persona", FALLBACK_PERSONA)
 DEFAULT_TSUNDERE_RULES = _extract_prompt_value("default_rules", FALLBACK_RULES)
 
