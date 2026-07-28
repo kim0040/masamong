@@ -33,6 +33,7 @@ _RAIN_EVENT_DEDUPE_MAX = max(
     int(getattr(config, "RAIN_NOTIFICATION_DEDUPE_MAX", 256)),
 )
 _EARTHQUAKE_WATERMARK_KEY = "earthquake_alert_last_occurred_epoch_v1"
+_EARTHQUAKE_MESSAGE_COUNTER_PREFIX = "earthquake_alert_message_v2"
 
 class WeatherCog(commands.Cog):
     """날씨 조회와 알림 전송을 전담하는 Cog입니다.
@@ -50,6 +51,7 @@ class WeatherCog(commands.Cog):
         self.last_earthquake_time = datetime.now(KST) - timedelta(hours=1)
         self._earthquake_watermark_loaded = False
         self._earthquake_watermark_exists = False
+        self._earthquake_message_ids: dict[tuple[int, int], int] = {}
         logger.info("WeatherCog가 성공적으로 초기화되었습니다.")
 
     def setup_and_start_loops(self):
@@ -634,6 +636,181 @@ class WeatherCog(commands.Cog):
                 exc_info=True,
             )
 
+    @staticmethod
+    def _earthquake_message_counter_name(
+        incident_epoch: int,
+        channel_id: int,
+    ) -> str:
+        return (
+            f"{_EARTHQUAKE_MESSAGE_COUNTER_PREFIX}:"
+            f"{int(incident_epoch)}:{int(channel_id)}"
+        )
+
+    async def _load_earthquake_message_id(
+        self,
+        *,
+        incident_epoch: int,
+        channel_id: int,
+    ) -> int | None:
+        """현재 지진군의 채널별 원본 Discord 메시지 ID를 복원합니다."""
+        cache_key = (int(incident_epoch), int(channel_id))
+        cached = self._earthquake_message_ids.get(cache_key)
+        if cached:
+            return cached
+        try:
+            counter_name = self._earthquake_message_counter_name(
+                incident_epoch,
+                channel_id,
+            )
+            async with self.bot.db.execute(
+                """
+                SELECT counter_value
+                FROM system_counters
+                WHERE counter_name = ?
+                """,
+                (counter_name,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if not row:
+                return None
+            message_id = int(row[0])
+            if message_id <= 0:
+                return None
+            self._earthquake_message_ids[cache_key] = message_id
+            return message_id
+        except Exception as exc:
+            logger.warning(
+                "지진 현황 메시지 ID 복원 실패: incident=%s channel=%s error=%s",
+                incident_epoch,
+                channel_id,
+                exc,
+            )
+            return None
+
+    async def _persist_earthquake_message_id(
+        self,
+        *,
+        incident_epoch: int,
+        channel_id: int,
+        message_id: int,
+    ) -> None:
+        """새로 보낸 지진군 메시지 ID를 재기동 가능한 counter로 저장합니다."""
+        cache_key = (int(incident_epoch), int(channel_id))
+        self._earthquake_message_ids[cache_key] = int(message_id)
+        try:
+            await self.bot.db.execute(
+                """
+                INSERT OR REPLACE INTO system_counters
+                    (counter_name, counter_value, last_reset_at)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    self._earthquake_message_counter_name(
+                        incident_epoch,
+                        channel_id,
+                    ),
+                    int(message_id),
+                    discord.utils.utcnow().isoformat(),
+                ),
+            )
+            await self.bot.db.commit()
+        except Exception as exc:
+            logger.error(
+                "지진 현황 메시지 ID 저장 실패(인메모리 편집은 계속): "
+                "incident=%s channel=%s error=%s",
+                incident_epoch,
+                channel_id,
+                exc,
+                exc_info=True,
+            )
+
+    async def _send_or_edit_earthquake_incident(
+        self,
+        channel_ids: set[int],
+        *,
+        incident_epoch: int,
+        payload: str,
+    ) -> tuple[int, int, int]:
+        """같은 지진군은 원본 메시지를 수정하고 새 지진군만 새로 보냅니다."""
+        sent_count = 0
+        edited_count = 0
+        failed_count = 0
+        for channel_id in sorted(channel_ids):
+            alert_channel = self.bot.get_channel(channel_id)
+            if not alert_channel:
+                failed_count += 1
+                logger.warning(
+                    "지진 알림 채널을 찾을 수 없어 건너뜁니다. channel_id=%s",
+                    channel_id,
+                )
+                continue
+
+            message_id = await self._load_earthquake_message_id(
+                incident_epoch=incident_epoch,
+                channel_id=channel_id,
+            )
+            if message_id:
+                try:
+                    if hasattr(alert_channel, "fetch_message"):
+                        message = await alert_channel.fetch_message(message_id)
+                    else:
+                        message = alert_channel.get_partial_message(message_id)
+                    await message.edit(
+                        content=payload,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                    edited_count += 1
+                    continue
+                except discord.NotFound:
+                    # 사용자가 원본을 삭제한 경우에만 대체 현황을 새로 보낸다.
+                    self._earthquake_message_ids.pop(
+                        (int(incident_epoch), int(channel_id)),
+                        None,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    # timeout/권한 오류에서 새 메시지를 보내면 중복될 수 있으므로
+                    # 해당 tick은 실패로 끝내고 다음 신규 통보 때 다시 편집한다.
+                    failed_count += 1
+                    logger.error(
+                        "지진 현황 메시지 수정 실패(중복 방지를 위해 신규 전송 안 함): "
+                        "incident=%s channel=%s message=%s error=%s",
+                        incident_epoch,
+                        channel_id,
+                        message_id,
+                        exc,
+                        exc_info=True,
+                    )
+                    continue
+
+            try:
+                sent_message = await alert_channel.send(
+                    payload,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                sent_count += 1
+                new_message_id = int(getattr(sent_message, "id", 0) or 0)
+                if new_message_id > 0:
+                    await self._persist_earthquake_message_id(
+                        incident_epoch=incident_epoch,
+                        channel_id=channel_id,
+                        message_id=new_message_id,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                failed_count += 1
+                logger.error(
+                    "지진 현황 메시지 신규 전송 실패: incident=%s "
+                    "channel=%s error=%s",
+                    incident_epoch,
+                    channel_id,
+                    exc,
+                    exc_info=True,
+                )
+        return sent_count, edited_count, failed_count
+
     @tasks.loop(minutes=config.WEATHER_CHECK_INTERVAL_MINUTES)
     async def rain_notification_loop(self):
         """정해진 주기로 강수 예보를 조회하고 필요 시 서버에 알립니다.
@@ -788,11 +965,19 @@ class WeatherCog(commands.Cog):
                 )
             return
         
-        # Sort by time ascending
-        try:
-           earthquakes.sort(key=lambda x: str(x.get('tmEqk')))
-        except Exception as e:
-            logger.debug(f"지진 데이터 정렬 실패: {e}")
+        clusters = weather_utils.cluster_earthquake_events(
+            earthquakes,
+            sequence_window_hours=getattr(
+                config,
+                "EARTHQUAKE_SEQUENCE_WINDOW_HOURS",
+                72,
+            ),
+            sequence_radius_km=getattr(
+                config,
+                "EARTHQUAKE_SEQUENCE_RADIUS_KM",
+                150,
+            ),
+        )
 
         if not self._earthquake_watermark_exists:
             # 이 중복 방지 키가 처음 도입되었거나 DB 조회가 실패한 기동에서는,
@@ -800,14 +985,8 @@ class WeatherCog(commands.Cog):
             # 직후 과거 지진/여진을 다시 방송하지 않고 다음 신규 사건부터 알린다.
             latest_existing: datetime | None = None
             for eqk in earthquakes:
-                try:
-                    tm_str = str(eqk.get("tmEqk") or "")
-                    parsed = datetime.strptime(
-                        tm_str,
-                        "%Y%m%d%H%M%S" if len(tm_str) == 14 else "%Y%m%d%H%M",
-                    )
-                    parsed = parsed.replace(tzinfo=KST)
-                except (TypeError, ValueError):
+                parsed = weather_utils.earthquake_event_datetime(eqk)
+                if parsed is None:
                     continue
                 if latest_existing is None or parsed > latest_existing:
                     latest_existing = parsed
@@ -821,33 +1000,66 @@ class WeatherCog(commands.Cog):
                 )
             return
 
-        for eqk in earthquakes:
+        affected_clusters: list[tuple[datetime, list[dict]]] = []
+        newest_event = self.last_earthquake_time
+        for cluster in clusters:
+            event_times = [
+                occurred
+                for event in cluster
+                if (occurred := weather_utils.earthquake_event_datetime(event))
+                is not None
+            ]
+            new_times = [
+                occurred
+                for occurred in event_times
+                if occurred > self.last_earthquake_time
+            ]
+            if not new_times or not event_times:
+                continue
+            affected_clusters.append((min(event_times), cluster))
+            newest_event = max(newest_event, *new_times)
+
+        if not affected_clusters:
+            return
+
+        # Discord 전송·수정 전에 watermark를 전진시켜 재기동이나 일부 채널
+        # 실패가 과거 지진 메시지의 반복 전송으로 이어지지 않게 한다.
+        self.last_earthquake_time = newest_event
+        await self._persist_earthquake_watermark(newest_event)
+
+        for incident_start, cluster in affected_clusters:
             try:
-                tm_str = str(eqk.get('tmEqk'))
-                eqk_dt = datetime.strptime(tm_str, "%Y%m%d%H%M%S") if len(tm_str) == 14 else datetime.strptime(tm_str, "%Y%m%d%H%M")
-                eqk_dt = eqk_dt.replace(tzinfo=KST) if eqk_dt.tzinfo is None else eqk_dt.astimezone(KST)
-                
-                # If newer than last checked time
-                if eqk_dt > self.last_earthquake_time:
-                    # LLM은 사용하지 않는다. 재난 정보가 서버별 캐릭터 말투로
-                    # 바뀌거나 모델 호출만큼 늦어지지 않도록 기상청 자료를 고정
-                    # 형식으로 즉시 보낸다.
-                    self.last_earthquake_time = eqk_dt
-                    await self._persist_earthquake_watermark(eqk_dt)
-                    formatted_msg = weather_utils.format_earthquake_alert(eqk)
-                    sent_count, failed_count = await self._send_alert_to_channels(
+                formatted_msg = weather_utils.format_earthquake_incident_alert(
+                    cluster,
+                    max_followups=getattr(
+                        config,
+                        "EARTHQUAKE_SEQUENCE_MAX_DISPLAY_EVENTS",
+                        6,
+                    ),
+                )
+                sent_count, edited_count, failed_count = (
+                    await self._send_or_edit_earthquake_incident(
                         channel_ids,
-                        formatted_msg,
-                        alert_type="지진 발생 알림",
+                        incident_epoch=int(incident_start.timestamp()),
+                        payload=formatted_msg,
                     )
-                    logger.info(
-                        "지진 알림 이벤트 처리 완료: occurred_at=%s sent=%d failed=%d",
-                        eqk_dt.isoformat(),
-                        sent_count,
-                        failed_count,
-                    )
-            except Exception as e:
-                logger.error(f"지진 정보 처리 오류: {e}", exc_info=True)
+                )
+                logger.info(
+                    "지진군 현황 처리 완료: incident=%s events=%d "
+                    "sent=%d edited=%d failed=%d",
+                    incident_start.isoformat(),
+                    len(cluster),
+                    sent_count,
+                    edited_count,
+                    failed_count,
+                )
+            except Exception as exc:
+                logger.error(
+                    "지진군 현황 처리 오류: incident=%s error=%s",
+                    incident_start.isoformat(),
+                    exc,
+                    exc_info=True,
+                )
 
 async def setup(bot: commands.Bot):
     """Cog를 봇에 등록하는 함수입니다."""

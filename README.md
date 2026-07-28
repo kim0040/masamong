@@ -69,7 +69,14 @@ The earthquake monitor checks every 30 seconds, but it cannot precede KMA's
 publication time. It shows both occurrence and KMA publication time. Its
 persistent watermark is advanced before delivery, and the first deployment
 records the newest already-published event without broadcasting it, so a restart
-does not replay an earlier earthquake or aftershock.
+does not replay an earlier earthquake or aftershock. Events within the configured
+time window and epicentral radius are displayed as one probable sequence:
+the first alert creates a Discord message, and later events edit that same
+message with the total count, maximum magnitude, and latest follow-ups. A distant
+or later independent earthquake starts a new message. This grouping is clearly
+labelled as an automatic display aid, not an official aftershock determination.
+Message IDs are persisted in `system_counters`, so editing continues after a bot
+restart.
 
 ## Privacy boundary
 

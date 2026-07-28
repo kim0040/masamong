@@ -264,6 +264,9 @@ systemctl status <masamo-service> --no-pager
 - A/B 테스트 guild의 일반·창의형 응답이 각자 `guild_id` 페르소나만 사용하고,
   다른 서버 말투·대화·RAG 조각을 포함하지 않는지
 - 재기동 뒤 이전 지진·여진이 다시 전송되지 않고, 지진 경로의 LLM 시도가 0인지
+- 같은 시간창·진앙 반경의 후속 지진은 최초 메시지 ID를
+  `system_counters`에서 복원해 새 글이 아니라 Discord edit로 갱신하고, 먼 독립
+  지진은 별도 메시지를 만드는지
 - DM 차단이나 공급자 timeout 뒤 scheduler가 반복 폭주하지 않는지
 
 재시작 뒤 read-only fingerprint를 다시 실행해 기존 대화·운세·사용량·기억 table의 row 수와

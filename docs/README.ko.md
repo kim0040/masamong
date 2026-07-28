@@ -314,10 +314,20 @@ HTTPS 연결을 재사용한다. 일상적인 현재 날씨는 실황·초단기
 발표된 최신 지진·여진을 기준점으로만 저장해 재전송하지 않으며, 이후 더 최신 발생시각의
 통보만 전송한다.
 
+기본 72시간·진앙 150km 안의 후속 지진은 한 지진군으로 자동 분류한다. 첫 통보는 새
+Discord 메시지를 만들고, 같은 지진군의 후속 통보는 그 메시지를 `edit`하여 총 발생 건수,
+현재 지진군 내 최대 규모와 최신 후속 지진 목록을 이어 표시한다. 메시지 ID는
+`system_counters`에 저장하므로 봇이 재기동해도 같은 메시지를 계속 수정한다. 진앙이 멀거나
+시간창 밖의 독립 지진은 새 메시지로 시작한다. 이 묶음은 표시 편의를 위한
+`후속 지진(여진 가능)` 자동 분류이지 기상청의 공식 여진 판정이라고 단정하지 않는다.
+Discord 2,000자 제한 안에서 최신 6건을 우선 표시하고 전체 건수는 유지한다.
+
 필드와 생산주기는 기상청 API허브의
 [단기·초단기·실황 계약](https://apihub.kma.go.kr/apiList.do?apiMov=4.+%EB%8F%99%EB%84%A4%EC%98%88%EB%B3%B4%28%EC%B4%88%EB%8B%A8%EA%B8%B0%EC%8B%A4%ED%99%A9%C2%B7%EC%B4%88%EB%8B%A8%EA%B8%B0%EC%98%88%EB%B3%B4%C2%B7%EB%8B%A8%EA%B8%B0%EC%98%88%EB%B3%B4%29+%EC%A1%B0%ED%9A%8C&seqApi=10&seqApiSub=286),
 [중기예보 계약](https://apihub.kma.go.kr/apiList.do?apiMov=%EC%A4%91%EA%B8%B0%EC%98%88%EB%B3%B4%EC%9E%90%EB%A3%8C%282001%EB%85%84+2%EC%9B%94+%EC%9D%B4%ED%9B%84%29+%EC%A1%B0%ED%9A%8C&seqApi=10&seqApiSub=287),
 [현재 특보 계약](https://apihub.kma.go.kr/apiList.do?apiMov=%ED%8A%B9.%EC%A0%95%EB%B3%B4+%EC%9E%90%EB%A3%8C+%EC%A1%B0%ED%9A%8C&seqApi=10&seqApiSub=288)을 기준으로 한다.
+지진 통보의 발생·발표시각, 위·경도, 규모, 진도, 깊이 필드는
+[기상청 지진 API 계약](https://apihub.kma.go.kr/apiList.do?seqApi=7)을 따른다.
 
 ## Discord 출력 계약
 
