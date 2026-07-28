@@ -59,12 +59,28 @@ v1을 덮어쓰는 것보다 v2 shadow index로 비교하는 편이 안전하다
 이번 release는 vector schema나 기존 BLOB을 바꾸지 않는다. 대신 한 사용자 검색 안에서
 질의 변형마다 같은 `discord_memory_entries` 행을 반복 SELECT하던 경로를 하나의 제한된
 후보 집합으로 공유한다. 운영 권장 상한은 `STRUCTURED_MEMORY_QUERY_LIMIT=384`,
-fallback은 `STRUCTURED_MEMORY_FALLBACK_QUERY_LIMIT=1024`다. 이는 DB read와 Python
+fallback은 `STRUCTURED_MEMORY_FALLBACK_QUERY_LIMIT=768`이다. TiDB Starter 무료 플랜
+모드에서는 더 큰 env 값도 이 상한을 넘지 못한다. 이는 DB read와 Python
 점수화 비용을 줄이는 설정이며, 누적 기존 행을 삭제하거나 다시 임베딩하지 않는다.
 
 `channel_summary_state`는 `!요약`의 서버·채널별 마지막 메시지 기준점과 제한된 요약문을
 보존하는 별도 additive table이다. 임베딩 index가 아니며 v1/v2 기억 migration 대상에도
 섞지 않는다.
+
+새로 생성되는 구조화 기억의 E5 passage는 검색에 필요한 독립 요약과 화자 포함 원문
+근거만 이어 붙인다. `memory_type`, `speaker_names`, `timestamp`, `keyword_json`은 기존
+metadata 열에 그대로 저장하되 벡터 본문에는 필드 라벨을 반복하지 않는다. 실제 운영
+모델과 합성 기억 4개·질의 5개를 사용한 오프라인 비교에서 두 형식 모두 top-1 5/5였고,
+평균 정답-차순위 cosine margin은 기존 `요약 + "원문 맥락" 라벨 + 원문` 0.2912,
+라벨 없는 `요약 + 원문` 0.3091이었다.
+
+```bash
+<venv>/bin/python scripts/evaluate_memory_retrieval_offline.py
+```
+
+이 변경은 신규 기억의 입력 형식에만 적용한다. 기존 22,968개 구조화 기억을 배포 중
+UPDATE하거나 재색인하지 않는다. 기존 행은 현재 검색 경로에서 계속 읽으며, 대량 변환은
+아래 v2 shadow migration 합격 기준을 통과한 별도 작업으로만 수행한다.
 
 ## 목표 v2 계약
 

@@ -85,6 +85,7 @@ class AIHandler(commands.Cog):
     # 메인 user prompt의 선택 컨텍스트는 아래 순서대로 예산을 받는다.
     # 현재 질문과 도구 결과는 이 예산과 무관하게 먼저 자리를 예약한다.
     _RECENT_HISTORY_PROMPT_MAX_CHARS = 4_000
+    _CONTEXT_DIGEST_PROMPT_MAX_CHARS = 1_200
     _FORTUNE_PROMPT_MAX_CHARS = 1_200
     _RAG_PROMPT_MAX_CHARS = 5_000
     _PROMPT_OMISSION_MARKER = "\n…(문자 예산에 맞춰 일부 생략)…\n"
@@ -262,12 +263,14 @@ class AIHandler(commands.Cog):
                 log_extra: dict,
                 *,
                 trace_key: str = "cometapi_fast",
+                max_tokens: int | None = None,
             ) -> str | None:
                 return await self.handler._cometapi_fast_generate_text(
                     prompt,
                     model,
                     log_extra,
                     trace_key=trace_key,
+                    max_tokens=max_tokens,
                 )
 
         analyzer = IntentAnalyzer(
@@ -316,9 +319,21 @@ class AIHandler(commands.Cog):
             log_extra=log_extra, max_tokens=max_tokens,
         )
 
-    async def _call_routing_lane_target(self, target, *, prompt, log_extra):
+    async def _call_routing_lane_target(
+        self,
+        target,
+        *,
+        prompt,
+        log_extra,
+        max_tokens: int | None = None,
+    ):
         """단일 라우팅 레인 LLM 타겟을 호출하여 프롬프트 응답을 반환합니다."""
-        return await self.llm_client.call_routing_lane_target(target, prompt=prompt, log_extra=log_extra)
+        return await self.llm_client.call_routing_lane_target(
+            target,
+            prompt=prompt,
+            log_extra=log_extra,
+            max_tokens=max_tokens,
+        )
 
     def _debug(self, message: str, log_extra: dict[str, Any] | None = None) -> None:
         """디버그 설정이 켜진 경우에만 메시지를 기록합니다."""
@@ -587,15 +602,27 @@ class AIHandler(commands.Cog):
         log_extra: dict,
         *,
         trace_key: str = "cometapi_fast",
+        max_tokens: int | None = None,
     ) -> str | None:
         """라우팅 레인 Fast 모델을 통해 텍스트를 생성합니다."""
         llm_client = getattr(self, "llm_client", None)
         if llm_client is not None:
-            return await llm_client.fast_generate_text(prompt, model, log_extra, trace_key=trace_key)
+            return await llm_client.fast_generate_text(
+                prompt,
+                model,
+                log_extra,
+                trace_key=trace_key,
+                max_tokens=max_tokens,
+            )
 
         targets = self._get_lane_targets("routing", model_override=model)
         for target in targets:
-            response_text = await self._call_routing_lane_target(target, prompt=prompt, log_extra=log_extra)
+            response_text = await self._call_routing_lane_target(
+                target,
+                prompt=prompt,
+                log_extra=log_extra,
+                max_tokens=max_tokens,
+            )
             if response_text:
                 return str(response_text).strip()
         return None
@@ -994,22 +1021,6 @@ Generate the optimized English image prompt:"""
         """질문에 도구 호출이 필요한 명시적 신호가 있는지 판별합니다."""
         return self._ensure_intent_analyzer()._has_tool_keyword_signal(query)
 
-    def _select_tool_plan_without_intent_llm(
-        self,
-        query: str,
-        *,
-        rag_top_score: float,
-        log_extra: dict | None = None,
-    ) -> list[dict[str, Any]] | None:
-        """
-        의도 분석 LLM 호출 없이 처리 가능한 도구 계획을 우선 선택합니다.
-        - 명확한 키워드 도구(날씨/웹검색/금융)는 즉시 라우팅
-        - 강한 RAG + 도구 신호 없음이면 intent LLM 호출 자체를 생략
-        """
-        return self._ensure_intent_analyzer()._select_tool_plan_without_intent_llm(
-            query, rag_top_score=rag_top_score, log_extra=log_extra,
-        )
-
     @staticmethod
     def _auto_web_search_scope_key(message: discord.Message) -> int:
         """자동 웹검색 쿨다운 범위 키를 산출합니다.
@@ -1050,6 +1061,14 @@ Generate the optimized English image prompt:"""
     async def _detect_tools_by_llm(self, query: str, log_extra: dict, history: list = None) -> list[dict]:
         """사용자의 의도와 대화 맥락을 분석하여 가장 적합한 도구와 최적화된 검색 파라미터를 결정합니다."""
         return await self._ensure_intent_analyzer()._detect_tools_by_llm(query, log_extra, history)
+
+    async def _route_tools(self, query: str, log_extra: dict, history: list = None):
+        """키워드가 아닌 의미 기반 라우팅 결과와 장기기억 필요 여부를 반환합니다."""
+        return await self._ensure_intent_analyzer().route_tools(
+            query,
+            log_extra,
+            history,
+        )
 
     def _detect_tools_by_keyword(self, query: str) -> list[dict]:
         """키워드 기반 도구 감지 (LLM 실패 시 fallback)."""
@@ -1237,6 +1256,39 @@ Generate the optimized English image prompt:"""
         if previous_bot:
             collected.append(previous_bot)
         return collected
+
+    @staticmethod
+    def _recent_search_messages_from_history(
+        history: list[dict] | None,
+    ) -> list[str]:
+        """이미 읽은 최근 대화에서 RAG 검색 확장용 발화를 재사용한다."""
+        previous_user: str | None = None
+        previous_bot: str | None = None
+        for item in reversed(history or []):
+            if not isinstance(item, dict):
+                continue
+            parts = item.get("parts") or []
+            content = parts[0] if isinstance(parts, list) and parts else ""
+            content = str(content or "").strip()
+            if not content:
+                continue
+            role = item.get("role")
+            if (
+                previous_user is None
+                and role == "user"
+                and item.get("is_current_user")
+            ):
+                previous_user = content
+            elif previous_bot is None and role == "model":
+                previous_bot = content
+            if previous_user and previous_bot:
+                break
+        result: list[str] = []
+        if previous_user:
+            result.append(previous_user)
+        if previous_bot:
+            result.append(previous_bot)
+        return result
 
     @staticmethod
     def _extract_json_block(text: str) -> str:
@@ -1510,6 +1562,7 @@ Generate the optimized English image prompt:"""
         tool_results_block: str | None,
         fortune_context: str | None = None,
         recent_history: list[dict] | None = None, # [NEW] 최근 대화 기록
+        context_digest: str | None = None,
     ) -> str:
         """메인 모델의 user role 컨텍스트를 고정 문자 예산으로 구성한다.
 
@@ -1658,11 +1711,18 @@ Generate the optimized English image prompt:"""
         optional_candidates = [
             (0, "[현재 상황]", metadata, 350, "head"),
             (
-                2,
+                3,
                 "[최근 대화 흐름 (선택 참고)]",
                 recent_context_str,
                 self._RECENT_HISTORY_PROMPT_MAX_CHARS,
                 "tail",
+            ),
+            (
+                2,
+                "[이전 대화 압축본 (선택 참고)]",
+                context_digest or "",
+                self._CONTEXT_DIGEST_PROMPT_MAX_CHARS,
+                "both",
             ),
             (
                 1,
@@ -1672,7 +1732,7 @@ Generate the optimized English image prompt:"""
                 "both",
             ),
             (
-                3,
+                4,
                 "[과거 대화 기억 (선택 참고)]",
                 rag_content,
                 self._RAG_PROMPT_MAX_CHARS,
@@ -2122,11 +2182,14 @@ Generate the optimized English image prompt:"""
         self._spam_cache = spam_cache
         
         # 3. 사용자별/글로벌 일일 LLM 호출 제한 검사
-        # 주의: DB는 단일 커넥션을 공유하므로 gather로 묶어도 실제로는 직렬 실행되며,
-        # 오히려 트랜잭션 인터리빙 위험만 커진다. 순차 await로 처리한다.
+        # 원격 TiDB 왕복을 줄이기 위해 두 카운터를 단일 GROUP BY SELECT로 읽는다.
         user_daily_key = f"llm_user_{user_id}"
-        user_daily_count = await db_utils.get_daily_api_count(self.bot.db, user_daily_key)
-        global_daily_count = await db_utils.get_daily_api_count(self.bot.db, "llm_global")
+        daily_counts = await db_utils.get_daily_api_counts(
+            self.bot.db,
+            (user_daily_key, "llm_global"),
+        )
+        user_daily_count = daily_counts.get(user_daily_key, 0)
+        global_daily_count = daily_counts.get("llm_global", 0)
         if user_daily_count >= config.USER_DAILY_LLM_LIMIT:
             logger.warning(f"사용자 {user_id} 일일 LLM 제한 도달 ({user_daily_count}/{config.USER_DAILY_LLM_LIMIT})", extra=base_log_extra)
             await message.channel.send("오늘 너무 많이 물어봤어! 내일 다시 물어봐~ 😅")
@@ -2195,53 +2258,58 @@ Generate the optimized English image prompt:"""
             # [NEW] 지역명 캐시 로드 (필요 시)
             await self._load_location_cache()
 
-            recent_search_messages = await self._collect_recent_search_messages(message)
             guild_id_safe = message.guild.id if message.guild else 0
-            
-            # RAG 컨텍스트 가져오기
-            rag_prompt, rag_entries, rag_top_score, rag_blocks = await self._get_rag_context(
-                guild_id_safe,
-                message.channel.id,
-                message.author.id,
+
+            # Discord REST history를 한 번만 읽고 도구 라우팅·후속 검색·최종
+            # 프롬프트에 함께 사용한다. 이전에는 검색 확장과 답변 맥락이 각각
+            # history()를 호출해 같은 네트워크 왕복을 중복했다.
+            history = await self._get_recent_history(message, "")
+
+            # 정상 경로는 routing lane이 자연어 의미와 대화 흐름을 읽는다.
+            # 키워드 목록은 provider 장애 시의 제한된 비상 fallback에만 사용한다.
+            routing_decision = await self._route_tools(
                 user_query,
-                recent_messages=recent_search_messages,
+                log_extra,
+                history=history,
             )
-            # [Move Up] 히스토리를 도구 선택 이전에 가져옴
-            history = await self._get_recent_history(message, rag_prompt)
-            
-            # 명확한 날씨/검색/이미지 요청과 일반 대화는 결정론적으로 라우팅한다.
-            # 이 경로를 실제 파이프라인에 연결하지 않으면 단순 인사에도 의도 분석
-            # LLM을 호출해 비용·대기시간을 불필요하게 늘리게 된다. None만 "로컬
-            # 규칙으로 판단을 유보함"을 뜻하고, 빈 배열은 "도구 불필요"라는 확정
-            # 결과이므로 둘을 구분한다.
-            local_tool_plan = self._select_tool_plan_without_intent_llm(
-                user_query,
-                rag_top_score=rag_top_score,
-                log_extra=log_extra,
-            )
-            if local_tool_plan is not None:
-                raw_tool_plan = local_tool_plan
-                llm_decision_trusted = False
-            else:
-                llm_tool_plan = await self._detect_tools_by_llm(
-                    user_query,
-                    log_extra,
-                    history=history,
+
+            rag_prompt = ""
+            rag_entries: list[dict[str, Any]] = []
+            rag_top_score = 0.0
+            rag_blocks: list[str] = []
+            if routing_decision.needs_memory:
+                recent_search_messages = self._recent_search_messages_from_history(
+                    history
                 )
-                if llm_tool_plan:
-                    raw_tool_plan = llm_tool_plan
-                    llm_decision_trusted = True
-                else:
-                    # LLM이 도구 불필요라고 판단했거나 실패 → 휴리스틱으로 보완
-                    fallback_plan = self._detect_tools_by_keyword(user_query)
-                    raw_tool_plan = fallback_plan
-                    llm_decision_trusted = False
-                    if fallback_plan:
-                        logger.info(
-                            "[도구계획] LLM 실패/무응답 → 키워드 fallback (%d개)",
-                            len(fallback_plan),
-                            extra=log_extra,
-                        )
+                (
+                    rag_prompt,
+                    rag_entries,
+                    rag_top_score,
+                    rag_blocks,
+                ) = await self._get_rag_context(
+                    guild_id_safe,
+                    message.channel.id,
+                    message.author.id,
+                    user_query,
+                    recent_messages=recent_search_messages,
+                )
+
+            if routing_decision.context_digest:
+                recent_history_limit = max(
+                    1,
+                    int(getattr(config, "AI_CONTEXT_RECENT_TURNS", 8)),
+                )
+            elif rag_prompt:
+                recent_history_limit = max(1, config.HISTORY_LIMIT_WITH_RAG)
+            else:
+                recent_history_limit = max(
+                    1,
+                    config.HISTORY_LIMIT_WITHOUT_RAG,
+                )
+            history = history[-recent_history_limit:]
+
+            raw_tool_plan = routing_decision.plan
+            llm_decision_trusted = routing_decision.source == "llm"
             tool_plan = self._sanitize_tool_plan(
                 user_query,
                 raw_tool_plan,
@@ -2307,8 +2375,18 @@ Generate the optimized English image prompt:"""
                     })
                     executed_plan.append(tool_call)
 
-            # 도구 계획이 없을 때만 웹 검색 자동 판단 (중복 탐색/과호출 방지)
-            if not tool_plan and await self._should_use_web_search(user_query, rag_top_score, history=history):
+            # 의미 라우터가 정상적으로 "도구 없음"을 결정했다면 키워드 규칙으로
+            # 뒤집지 않는다. provider 장애 fallback에서만 기존 자동 검색을
+            # 최후 수단으로 사용한다.
+            if (
+                not tool_plan
+                and not llm_decision_trusted
+                and await self._should_use_web_search(
+                    user_query,
+                    rag_top_score,
+                    history=history,
+                )
+            ):
                 if self._can_run_auto_web_search(message, user_query, log_extra):
                     await progress.update(
                         "🌐 웹에서 최신 정보를 검색하고 요약 중이에요..."
@@ -2385,6 +2463,7 @@ Generate the optimized English image prompt:"""
                 tool_results_block=tool_results_str if tool_results_str else None,
                 fortune_context=fortune_context,
                 recent_history=history,
+                context_digest=routing_decision.context_digest,
             )
 
             # 답변 생성
@@ -2520,7 +2599,20 @@ Generate the optimized English image prompt:"""
             self._debug(f"--- 에이전트 세션 종료 trace_id={trace_id}", log_extra)
     async def _get_recent_history(self, message: discord.Message, rag_prompt: str) -> list:
         """모델에 전달할 최근 대화 기록을 채널에서 가져옵니다."""
-        history_limit = config.HISTORY_LIMIT_WITH_RAG if rag_prompt else config.HISTORY_LIMIT_WITHOUT_RAG
+        history_limit = (
+            config.HISTORY_LIMIT_WITH_RAG
+            if rag_prompt
+            else max(
+                config.HISTORY_LIMIT_WITHOUT_RAG,
+                int(
+                    getattr(
+                        config,
+                        "AI_CONTEXT_SOURCE_HISTORY_LIMIT",
+                        24,
+                    )
+                ),
+            )
+        )
         history = []
         
         async for msg in message.channel.history(limit=history_limit + 1):

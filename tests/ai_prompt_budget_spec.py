@@ -75,6 +75,34 @@ def test_persona_exists_only_in_system_role(monkeypatch):
     assert len(user_prompt) <= config.COMETAPI_USER_PROMPT_MAX_CHARS
 
 
+def test_main_prompt_keeps_digest_separate_from_recent_verbatim(monkeypatch):
+    monkeypatch.setattr(config, "COMETAPI_USER_PROMPT_MAX_CHARS", 4_000)
+
+    handler = _handler()
+    prompt = handler._compose_main_prompt(
+        _message(),
+        user_query="그 계획에서 아직 안 정한 게 뭐야?",
+        rag_blocks=[],
+        tool_results_block=None,
+        context_digest=(
+            "민수는 부산 이동에 자가용을 쓰지 않기로 했고 KTX 예약은 미정이다."
+        ),
+        recent_history=[
+            {
+                "role": "user",
+                "speaker": "민수",
+                "is_current_user": True,
+                "parts": ["회의는 8월 3일 오후 2시 부산역이야."],
+            }
+        ],
+    )
+
+    assert "[이전 대화 압축본 (선택 참고)]" in prompt
+    assert "자가용을 쓰지 않기로" in prompt
+    assert "[최근 대화 흐름 (선택 참고)]" in prompt
+    assert "8월 3일 오후 2시 부산역" in prompt
+
+
 @pytest.mark.asyncio
 async def test_llm_client_final_guard_keeps_latest_question_without_external_call(
     monkeypatch,

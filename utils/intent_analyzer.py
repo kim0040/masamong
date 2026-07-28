@@ -2,8 +2,9 @@
 """
 마사몽 봇의 의도 분석 및 도구 탐지를 담당하는 모듈입니다.
 
-LLM 분석 + 키워드 기반 휴리스틱으로 사용자 의도를 파악하고,
-적절한 도구(tool)를 선택하는 로직을 제공합니다.
+의미 기반 LLM 분석으로 사용자 의도를 파악하고 적절한 도구(tool)를
+선택합니다. 키워드 휴리스틱은 라우팅 provider 장애 시의 비상 경로에만
+사용합니다.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 import json as _json
 import re
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -18,12 +20,23 @@ import config
 from logger_config import logger
 
 
+@dataclass(frozen=True)
+class ToolRoutingDecision:
+    """의미 기반 라우터가 반환하는 실행 계획과 메모리 필요 여부."""
+
+    plan: list[dict[str, Any]]
+    source: str
+    needs_memory: bool
+    intent: str = ""
+    context_digest: str = ""
+
+
 class IntentAnalyzer:
     """사용자 의도 분석 및 도구 탐지를 수행합니다.
 
-    키워드 기반 휴리스틱과 LLM 기반 분석을 조합해
-    날씨·금융·웹검색·장소·이미지 생성 등 다양한 도구 사용 의도를
-    감지하고 적절한 도구 실행 계획(tool plan)을 생성합니다.
+    정상 경로에서는 routing LLM이 최근 대화와 도구 계약을 의미적으로
+    해석합니다. 고정 키워드 목록은 provider가 비활성/실패한 경우에만
+    최소 기능을 유지하는 보수적 fallback으로 사용합니다.
     """
 
     # ── Keyword / pattern sets ──────────────────────────────────────────
@@ -273,112 +286,6 @@ class IntentAnalyzer:
             or any(kw in query_lower for kw in self._IMAGE_GEN_KEYWORDS)
         )
 
-    # ── Tool‑plan selection ─────────────────────────────────────────────
-
-    def _select_tool_plan_without_intent_llm(
-        self,
-        query: str,
-        *,
-        rag_top_score: float,
-        log_extra: dict | None = None,
-    ) -> list[dict[str, Any]] | None:
-        """
-        의도 분석 LLM 호출 없이 처리 가능한 도구 계획을 우선 선택합니다.
-        - 명확한 키워드 도구(날씨/금융/장소/이미지생성)는 즉시 라우팅
-        - 강한 RAG + 도구 신호 없음이면 intent LLM 호출 자체를 생략
-        """
-        if self._is_smalltalk_only_query(query):
-            return []
-
-        keyword_plan = self._detect_tools_by_keyword(query)
-        if keyword_plan:
-            tool_name = keyword_plan[0].get("tool_to_use") or keyword_plan[0].get("tool_name")
-            if tool_name and tool_name != "web_search":
-                logger.info(
-                    "[도구보정] 키워드 기반 라우팅으로 intent LLM 호출을 생략합니다. tool=%s",
-                    tool_name,
-                    extra=log_extra,
-                )
-                return keyword_plan
-            # web_search는 명시적 탐색/금융 질문일 때만 키워드 라우팅
-            if tool_name == "web_search":
-                query_lower = (query or "").lower()
-                finance_query = self._looks_like_finance_query(query)
-                explicit_web = self._has_explicit_web_search_intent(query)
-                place_query = any(kw in query_lower for kw in self._PLACE_KEYWORDS)
-                if finance_query or explicit_web or place_query:
-                    if self._is_realtime_web_query(query):
-                        params = keyword_plan[0].setdefault("parameters", {})
-                        source_query = str(params.get("query") or query).strip()
-                        if source_query:
-                            params["query"] = self._normalize_realtime_web_query(source_query)
-                    logger.info(
-                        "[도구보정] 키워드 기반 web_search 라우팅으로 intent LLM 호출을 생략합니다.",
-                        extra=log_extra,
-                    )
-                    return keyword_plan
-
-        # 명시적 외부 탐색 요청은 intent LLM을 거치지 않고 web_search로 직접 라우팅한다.
-        if self._has_explicit_web_search_intent(query):
-            normalized_query = query
-            if self._is_realtime_web_query(query):
-                normalized_query = self._normalize_realtime_web_query(query)
-            logger.info(
-                "[도구보정] 명시적 web_search 의도로 intent LLM 호출을 생략합니다.",
-                extra=log_extra,
-            )
-            return [
-                {
-                    "tool_to_use": "web_search",
-                    "tool_name": "web_search",
-                    "parameters": {"query": normalized_query},
-                }
-            ]
-
-        # 기본 대화(명시적 도구 신호 없음)는 intent LLM을 생략하고 로컬 기억 기반 응답으로 처리한다.
-        if not self._has_tool_keyword_signal(query):
-            if (
-                self._looks_like_external_fact_query(query)
-                and (
-                    rag_top_score < config.RAG_SIMILARITY_THRESHOLD
-                    or self._is_realtime_web_query(query)
-                )
-            ):
-                logger.info(
-                    "[도구보정] 사실형 질의로 판단해 intent LLM 없이 web_search로 직접 라우팅합니다.",
-                    extra=log_extra,
-                )
-                normalized_query = query
-                if self._is_realtime_web_query(query):
-                    normalized_query = self._normalize_realtime_web_query(query)
-                return [
-                    {
-                        "tool_to_use": "web_search",
-                        "tool_name": "web_search",
-                        "parameters": {"query": normalized_query},
-                    }
-                ]
-            logger.info(
-                "[도구보정] 도구 신호가 없어 intent LLM 호출을 생략합니다.",
-                extra=log_extra,
-            )
-            return []
-
-        if (
-            getattr(config, "INTENT_LLM_RAG_STRONG_BYPASS", True)
-            and rag_top_score >= config.RAG_STRONG_SIMILARITY_THRESHOLD
-            and not self._has_tool_keyword_signal(query)
-            and not self._has_explicit_web_search_intent(query)
-        ):
-            logger.info(
-                "[도구보정] 강한 RAG 질의로 intent LLM 호출을 생략합니다. (score=%.3f)",
-                rag_top_score,
-                extra=log_extra,
-            )
-            return []
-
-        return None
-
     @staticmethod
     def _auto_web_search_scope_key(message: Any) -> int:
         """자동 웹검색 쿨다운을 적용할 스코프 키를 계산합니다."""
@@ -489,111 +396,301 @@ class IntentAnalyzer:
         # 도구 필요 없음 - 일반 대화 또는 RAG로 처리
         return tools
 
-    async def _detect_tools_by_llm(self, query: str, log_extra: dict, history: list = None) -> list[dict]:
-        """사용자의 의도와 대화 맥락을 분석하여 가장 적합한 도구와 최적화된 검색 파라미터를 결정합니다."""
+    def _emergency_routing_decision(
+        self,
+        query: str,
+        *,
+        source: str,
+    ) -> ToolRoutingDecision:
+        """라우팅 모델 장애 때만 사용하는 보수적 호환 경로.
+
+        자연어 도구 선택의 주 경로로 사용하지 않는다. 외부 라우터가 완전히
+        unavailable일 때 기존 명시 표현을 살려 기능 전체가 멈추는 것을 피한다.
+        """
+        plan = self._detect_tools_by_keyword(query)
+        return ToolRoutingDecision(
+            plan=plan,
+            source=source,
+            # 도구를 특정하지 못한 경우에는 기존 대화 품질을 보존하도록 RAG를
+            # 허용한다. 명시 도구 fallback은 과거 기억을 불필요하게 조회하지 않는다.
+            needs_memory=not bool(plan),
+            intent="fallback",
+        )
+
+    @staticmethod
+    def _parse_routing_json(raw: Any) -> dict[str, Any]:
+        """JSON 본문 또는 모델의 짧은 부가 텍스트 뒤 JSON 객체를 파싱한다.
+
+        일부 OpenAI 호환 모델은 JSON-only 지시에도 reasoning 태그나 한 줄
+        설명을 앞에 붙인다. 첫 ``{``부터 무작정 마지막 ``}``까지 자르면 내부
+        예시 중괄호에 취약하므로 JSONDecoder로 각 객체 시작점을 검증하고,
+        라우팅 계약 필드가 있는 첫 객체만 채택한다.
+        """
+        cleaned = str(raw or "").strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(
+                r"^```(?:json)?\s*",
+                "",
+                cleaned,
+                flags=re.IGNORECASE,
+            )
+            cleaned = re.sub(r"\s*```$", "", cleaned)
+
+        decoder = _json.JSONDecoder()
+        candidates = [0]
+        candidates.extend(
+            index
+            for index, char in enumerate(cleaned)
+            if char == "{" and index != 0
+        )
+        for start in candidates:
+            try:
+                parsed, _end = decoder.raw_decode(cleaned[start:])
+            except _json.JSONDecodeError:
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            if "tools" in parsed and (
+                "needs_memory" in parsed or "intent" in parsed
+            ):
+                return parsed
+        raise ValueError("라우팅 응답에서 계약에 맞는 JSON 객체를 찾지 못했습니다.")
+
+    async def route_tools(
+        self,
+        query: str,
+        log_extra: dict,
+        history: list | None = None,
+    ) -> ToolRoutingDecision:
+        """현재 발화의 의미와 대화 흐름으로 도구 및 장기기억 필요성을 결정한다.
+
+        키워드 표는 정상 경로의 선택 근거로 쓰지 않는다. routing lane이 도구
+        계약을 읽고 의미적으로 판단하며, 키워드 감지는 provider 장애 시의
+        제한된 비상 fallback에만 남겨 둔다.
+        """
         if not getattr(config, "INTENT_LLM_ENABLED", True):
-            return self._detect_tools_by_keyword(query)
+            return self._emergency_routing_decision(
+                query,
+                source="disabled_fallback",
+            )
+        if not self.llm_client.use_cometapi:
+            return self._emergency_routing_decision(
+                query,
+                source="provider_fallback",
+            )
 
-        # 운영 모드(INTENT_LLM_ALWAYS_RUN=false)에서는 잡담 질의를 LLM 호출 없이 단축 처리합니다.
-        if self._is_smalltalk_only_query(query) and not getattr(config, "INTENT_LLM_ALWAYS_RUN", True):
-            logger.info("[LLM의도분석] 잡담/인사성 질문 감지: 도구 호출 생략", extra=log_extra)
-            return []
+        materialized_history = [
+            item for item in (history or []) if isinstance(item, dict)
+        ]
 
-        # 히스토리 텍스트 변환
-        history_text = ""
-        if history:
-            history_lines = []
-            for h in history[-config.INTENT_HISTORY_LIMIT:]:  # 설정된 개수만큼만
-                role = "User" if h['role'] == 'user' else "Masamong"
-                content = h['parts'][0] if isinstance(h['parts'], list) else str(h['parts'])
-                history_lines.append(f"{role}: {content}")
-            history_text = "\n".join(history_lines)
+        def _format_history_item(
+            item: dict[str, Any],
+            *,
+            content_limit: int,
+        ) -> str:
+            role = str(item.get("role") or "")
+            parts = item.get("parts") or []
+            content = parts[0] if isinstance(parts, list) and parts else ""
+            if not content:
+                return ""
+            if role == "user":
+                speaker = str(item.get("speaker") or "사용자")[:80]
+                current_mark = " (현재 질문자)" if item.get("is_current_user") else ""
+                label = f"사용자 {speaker}{current_mark}"
+            else:
+                label = "마사몽"
+            normalized_content = re.sub(r"\s+", " ", str(content)).strip()
+            return f"{label}: {normalized_content[:content_limit]}"
 
-        system_prompt = (
-            "당신은 마사몽의 도구 플래너입니다. "
-            "사용자의 현재 메시지와 이전 대화 맥락을 분석하여 가장 적절한 도구를 선택하세요.\n\n"
-            "규칙:\n"
-            "- 대화 맥락 고려: '그거', '그때' 등 지시어는 이전 대화에서 대상을 찾으세요.\n"
-            "- 독립적 쿼리: 파라미터는 이전 맥락 없이도 정확한 검색이 가능하도록 완성하세요.\n"
-            "- web_search: 최신/뉴스/후기/정보 검색이 필요할 때 사용 (주식/환율/맛집 포함).\n"
-            "- get_weather_forecast: 날씨 요청에 사용 (web_search 대신).\n"
-            "- generate_image: '그려줘', '이미지 생성' 등 그림 생성 요청에 사용.\n"
-            "- 인사/잡담(안녕, 뭐해 등)은 도구 없이 빈 tools 배열을 반환하세요.\n"
-            "- 과거 연월(예: 2024년 5월)을 임의로 query에 넣지 마세요.\n\n"
-            '출력: {"intent": "의도", "reasoning": "근거", "tools": [{"tool": "이름", "params": {"키": "값"}}]}\n'
-            "tool은 get_weather_forecast / web_search / generate_image 중 하나"
+        history_lines: list[str] = []
+        for item in materialized_history[-config.INTENT_HISTORY_LIMIT:]:
+            rendered = _format_history_item(item, content_limit=1_000)
+            if rendered:
+                history_lines.append(rendered)
+        history_text = "\n".join(history_lines) or "(최근 대화 없음)"
+
+        context_recent_turns = max(
+            1,
+            int(getattr(config, "AI_CONTEXT_RECENT_TURNS", 8)),
+        )
+        total_history_chars = sum(
+            len(str((item.get("parts") or [""])[0] or ""))
+            for item in materialized_history
+            if isinstance(item.get("parts"), list) and item.get("parts")
+        )
+        compaction_requested = (
+            len(materialized_history) > context_recent_turns
+            and total_history_chars
+            >= int(
+                getattr(
+                    config,
+                    "AI_CONTEXT_COMPACTION_TRIGGER_CHARS",
+                    3_500,
+                )
+            )
+        )
+        compaction_lines: list[str] = []
+        if compaction_requested:
+            source_budget = int(
+                getattr(
+                    config,
+                    "AI_CONTEXT_COMPACTION_SOURCE_MAX_CHARS",
+                    5_000,
+                )
+            )
+            used_chars = 0
+            # 최신 원문 바로 앞 구간부터 예산을 채운 뒤 시간순으로 되돌린다.
+            for item in reversed(materialized_history[:-context_recent_turns]):
+                rendered = _format_history_item(item, content_limit=800)
+                if not rendered:
+                    continue
+                next_chars = len(rendered) + (1 if compaction_lines else 0)
+                if used_chars + next_chars > source_budget:
+                    continue
+                compaction_lines.append(rendered)
+                used_chars += next_chars
+            compaction_lines.reverse()
+
+        compaction_text = "\n".join(compaction_lines)
+        digest_limit = int(
+            getattr(config, "AI_CONTEXT_DIGEST_MAX_CHARS", 600)
+        )
+
+        now_kst = datetime.now(timezone(timedelta(hours=9))).isoformat(
+            timespec="minutes"
+        )
+        digest_instruction = (
+            f"context_digest에는 아래 오래된 대화에서 현재 흐름에 필요한 사실, 결정, "
+            f"변경, 부정, 미정 사항을 독립적인 문장으로 최대 {digest_limit}자까지 "
+            "압축한다. 잡담과 말투는 버리고 원문에 없는 사실은 만들지 않는다."
+            if compaction_text
+            else "context_digest는 빈 문자열로 둔다."
+        )
+        compaction_section = (
+            f"\n압축할 오래된 대화:\n{compaction_text}\n"
+            if compaction_text
+            else ""
+        )
+        prompt = (
+            "당신은 Discord 봇의 의미 기반 라우터다. 단어 포함 여부가 아니라 현재 "
+            "요청의 목적과 최근 대화 흐름으로 판단한다. 답변은 쓰지 말고 JSON 객체 "
+            "하나만 반환한다. 근거 없는 웹 검색이나 파라미터를 만들지 않는다.\n"
+            "도구:\n"
+            "- web_search(query): 공개 웹의 최신 사실·공식 자료·가격·일정·뉴스·후기·비교\n"
+            "- get_weather_forecast(location, day_offset): 지역 날씨, 오늘 0~10일 뒤\n"
+            "- generate_image(prompt): 사용자가 새 이미지 생성을 요청한 경우만\n"
+            "도구가 불필요하면 tools=[]이며 최대 2개다. needs_memory는 제공된 최근 "
+            "대화보다 오래된 Discord/Kakao 기억이 있어야 정확히 답할 때만 true다. "
+            "특히 사용자가 이전에 합의·결정·말했던 내용을 다시 요구하는데 최근 "
+            "대화에 그 내용이 없으면 needs_memory=true다. 일반 의견·인사·새 질문은 "
+            "오래된 기억이 없어도 답할 수 있으므로 false다.\n"
+            f"{digest_instruction}\n"
+            "출력 형식: "
+            '{"intent":"짧은 의도","needs_memory":false,'
+            '"context_digest":"","tools":[{"tool":"도구명","params":{}}]}\n'
+            f"현재 시각(KST): {now_kst}\n"
+            f"{compaction_section}"
+            f"최근 대화:\n{history_text}\n"
+            f"현재 요청:\n{query}\n"
         )
         try:
-            if not self.llm_client.use_cometapi:
-                return self._detect_tools_by_keyword(query)
-
-            prompt = (
-                f"System:\n{system_prompt}\n\n"
-                "Examples:\n"
-                'U: "오늘 서울 날씨?" → {"intent": "날씨", "reasoning": "서울 날씨 요청", "tools": [{"tool": "get_weather_forecast", "params": {"location": "서울", "day_offset": 0}}]}\n\n'
-                'U: "미국 이란 전쟁 군비는?" → {"intent": "정보 검색", "reasoning": "최신 뉴스/통계 필요", "tools": [{"tool": "web_search", "params": {"query": "미국 이란 전쟁 군비 지출"}}]}\n\n'
-                'U: "강아지 그려줘" → {"intent": "이미지 생성", "reasoning": "그림 생성 요청", "tools": [{"tool": "generate_image", "params": {"prompt": "강아지"}}]}\n\n'
-                'U: "안녕" → {"intent": "인사", "reasoning": "도구 불필요", "tools": []}\n\n'
-                f"--- Context ---\n{history_text}\n"
-                f"User: {query}\n"
-                "Response:"
-            )
             raw = await self.llm_client.fast_generate_text(
                 prompt,
                 None,
                 log_extra,
                 trace_key="cometapi_fast_intent",
+                max_tokens=int(
+                    getattr(config, "SEMANTIC_ROUTER_MAX_TOKENS", 384)
+                ),
             )
             if not raw:
-                return self._detect_tools_by_keyword(query)
-            if "```" in raw:
-                raw = re.sub(r"```(?:json)?", "", raw).replace("```", "").strip()
+                raise ValueError("라우팅 모델 응답이 비어 있습니다.")
+            parsed = self._parse_routing_json(raw)
 
-            parsed = _json.loads(raw)
-            logger.info(f"[LLM의도분석] Intent: {parsed.get('intent')}, Reason: {parsed.get('reasoning')}", extra=log_extra)
+            raw_tools = parsed.get("tools")
+            if raw_tools is None:
+                raw_tools = []
+            if not isinstance(raw_tools, list):
+                raise ValueError("tools가 배열이 아닙니다.")
 
-            tool_list = parsed.get("tools", [])
-            result = []
-            for t in tool_list:
-                name = t.get("tool", "")
+            plan: list[dict[str, Any]] = []
+            for item in raw_tools[:2]:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("tool") or "").strip()
                 if not name or name == "none":
                     continue
-                params = t.get("params", {})
+                params = item.get("params")
                 if not isinstance(params, dict):
                     params = {}
 
-                # 금융 도구는 실수 빈도가 높아 웹 검색 도구로 일괄 대체
                 if name in self._DEPRECATED_FINANCE_TOOLS:
-                    finance_query = (
-                        params.get("query")
-                        or params.get("user_query")
-                        or params.get("symbol")
-                        or params.get("stock_name")
-                        or query
-                    )
-                    result.append(
-                        {
-                            "tool_to_use": "web_search",
-                            "tool_name": "web_search",
-                            "parameters": {"query": self._build_finance_news_query(finance_query)},
-                        }
-                    )
-                    continue
-
+                    name = "web_search"
+                    params = {"query": str(params.get("query") or query)}
                 if name not in self._ALLOWED_RUNTIME_TOOLS:
-                    logger.info("[LLM의도분석] 비허용 도구 계획 제거: %s", name, extra=log_extra)
+                    logger.info(
+                        "[의미라우터] 비허용 도구 계획 제거: %s",
+                        name,
+                        extra=log_extra,
+                    )
                     continue
+                plan.append(
+                    {
+                        "tool_to_use": name,
+                        "tool_name": name,
+                        "parameters": params,
+                    }
+                )
 
-                result.append({"tool_to_use": name, "tool_name": name, "parameters": params})
+            needs_memory_raw = parsed.get("needs_memory")
+            needs_memory = (
+                needs_memory_raw
+                if isinstance(needs_memory_raw, bool)
+                else not bool(plan)
+            )
+            intent = str(parsed.get("intent") or "")[:120]
+            context_digest = ""
+            if compaction_requested:
+                context_digest = re.sub(
+                    r"\s+",
+                    " ",
+                    str(parsed.get("context_digest") or ""),
+                ).strip()[:digest_limit]
+            logger.info(
+                "[의미라우터] intent=%s tools=%s needs_memory=%s digest_chars=%d",
+                intent or "-",
+                [item["tool_to_use"] for item in plan],
+                needs_memory,
+                len(context_digest),
+                extra=log_extra,
+            )
+            return ToolRoutingDecision(
+                plan=plan,
+                source="llm",
+                needs_memory=needs_memory,
+                intent=intent,
+                context_digest=context_digest,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[의미라우터] 실패해 제한된 비상 fallback 사용: %s",
+                exc,
+                extra=log_extra,
+            )
+            return self._emergency_routing_decision(
+                query,
+                source="error_fallback",
+            )
 
-            # LLM이 잡담에 대해 과탐지한 경우 방어적으로 무효화
-            if result and self._is_smalltalk_only_query(query):
-                logger.info("[LLM의도분석] 잡담 질의에 대한 도구 계획 무효화", extra=log_extra)
-                return []
-            return result
-        except Exception as e:
-            logger.warning(f"[LLM도구선택] 실패 → 키워드 fallback: {e}", extra=log_extra)
-            return self._detect_tools_by_keyword(query)
+    async def _detect_tools_by_llm(
+        self,
+        query: str,
+        log_extra: dict,
+        history: list = None,
+    ) -> list[dict]:
+        """기존 호출자를 위한 의미 기반 라우터 호환 wrapper."""
+        decision = await self.route_tools(query, log_extra, history)
+        return decision.plan
 
     # ── Sanitize / policy ───────────────────────────────────────────────
 
@@ -708,6 +805,56 @@ class IntentAnalyzer:
             # 실행 가능한 도구만 허용
             if name not in self._ALLOWED_RUNTIME_TOOLS:
                 logger.info("[도구보정] 허용되지 않은 도구 제거: %s", name, extra=log_extra)
+                continue
+
+            # 의미 라우터의 정상 응답은 키워드 표로 다시 뒤집지 않는다. 여기서는
+            # 실행 안전성에 필요한 타입·길이·범위만 검증한다.
+            if trust_llm:
+                if name == "web_search":
+                    search_query = str(params.get("query") or query).strip()
+                    if not search_query:
+                        logger.info(
+                            "[도구보정] 빈 web_search query 제거",
+                            extra=log_extra,
+                        )
+                        continue
+                    params = {"query": search_query[:800]}
+                elif name == "get_weather_forecast":
+                    location = str(params.get("location") or "").strip()
+                    if not location:
+                        location = (
+                            self._extract_location_from_query(query)
+                            or config.DEFAULT_LOCATION_NAME
+                        )
+                    try:
+                        day_offset = int(params.get("day_offset", 0))
+                    except (TypeError, ValueError, OverflowError):
+                        day_offset = 0
+                    params = {
+                        "location": location[:80],
+                        "day_offset": min(10, max(0, day_offset)),
+                    }
+                elif name == "generate_image":
+                    prompt_text = str(
+                        params.get("prompt")
+                        or params.get("user_query")
+                        or query
+                    ).strip()
+                    if not prompt_text:
+                        logger.info(
+                            "[도구보정] 빈 generate_image prompt 제거",
+                            extra=log_extra,
+                        )
+                        continue
+                    params = {"prompt": prompt_text[:4000]}
+
+                append_candidate(
+                    {
+                        "tool_to_use": name,
+                        "tool_name": name,
+                        "parameters": params,
+                    }
+                )
                 continue
 
             # 잡담 질문은 도구 자체를 차단

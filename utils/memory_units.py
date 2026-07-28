@@ -52,7 +52,6 @@ _STOPWORDS = {
     "ㅎㅎ",
 }
 
-
 @dataclass(frozen=True)
 class StructuredMemoryUnit:
     memory_id: str
@@ -159,15 +158,31 @@ def truncate_text(text: str, limit: int) -> str:
     return cleaned[: max(0, limit - 1)].rstrip() + "…"
 
 
-def compose_memory_text(summary_text: str, raw_context: str, *, limit: int) -> str:
-    """검색용 임베딩에는 요약과 원문 맥락을 함께 담는다."""
+def compose_memory_text(
+    summary_text: str,
+    raw_context: str,
+    *,
+    limit: int,
+    keywords: Iterable[str] = (),
+    speaker_names: Iterable[str] = (),
+    memory_type: str = "conversation",
+    timestamp_iso: str = "",
+) -> str:
+    """E5 passage 임베딩용 독립 문서를 간결하게 구성한다.
+
+    합성 질의 실측에서 유형·참여자·날짜·키워드 라벨을 본문에 반복하면
+    E5의 관련 문서 분리 여유가 낮아졌다. 이 값들은 이미 별도 DB 열에
+    보존하므로 벡터 입력에는 독립 요약과 화자 포함 원문만 넣는다. 라벨도
+    제거해 의미 신호를 희석하지 않되, 요약 누락에 대비해 원문 근거는 남긴다.
+    """
+    # 호출 계약과 metadata 저장 코드를 단순하게 유지하기 위한 인자다.
+    # 임베딩 본문에는 넣지 않고 StructuredMemoryUnit의 별도 열에 보존한다.
+    _ = keywords, speaker_names, memory_type, timestamp_iso
     summary = normalize_message_content(summary_text)
     context = normalize_message_content(raw_context)
-    if not context:
-        return truncate_text(summary, limit)
-    if not summary:
-        return truncate_text(context, limit)
-    return truncate_text(f"{summary}\n원문 맥락:\n{context}", limit)
+    if summary and context:
+        return truncate_text(f"{summary}\n{context}", limit)
+    return truncate_text(summary or context, limit)
 
 
 def merge_payload_to_turns(payload: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -248,16 +263,24 @@ def build_structured_memory_units(
     speaker_name_tokens = {name.strip().lower() for name in speaker_names if name.strip()}
     keywords = [token for token in extract_keywords(full_text) if token.lower() not in speaker_name_tokens]
     participants = ", ".join(speaker_names[:4])
-    keyword_text = ", ".join(keywords[:6]) if keywords else "없음"
-    shared_body = " / ".join(context_lines[:4])
+    shared_body = " / ".join(context_lines)
     shared_summary = (
-        f"참여자: {participants}. 핵심 키워드: {keyword_text}. "
-        f"대화 요지: {truncate_text(shared_body, max_summary_chars)}"
+        f"{participants}의 대화: "
+        f"{truncate_text(shared_body, max_summary_chars)}"
+    )
+    shared_memory_type = classify_memory_type(
+        full_text,
+        speaker_count=len(speaker_names),
+        owner_specific=False,
     )
     shared_memory_text = compose_memory_text(
         shared_summary,
         raw_context,
         limit=max(max_context_chars, max_summary_chars),
+        keywords=keywords,
+        speaker_names=speaker_names,
+        memory_type=shared_memory_type,
+        timestamp_iso=timestamp_iso,
     )
 
     units: list[StructuredMemoryUnit] = [
@@ -267,7 +290,7 @@ def build_structured_memory_units(
             owner_user_id=None,
             owner_user_name="Shared Memory",
             memory_scope="channel",
-            memory_type=classify_memory_type(full_text, speaker_count=len(speaker_names), owner_specific=False),
+            memory_type=shared_memory_type,
             summary_text=truncate_text(shared_summary, max_summary_chars),
             memory_text=shared_memory_text,
             raw_context=raw_context,
@@ -305,12 +328,16 @@ def build_structured_memory_units(
             for token in extract_keywords(merged)
             if token.lower() != str(grouped["user_name"]).strip().lower()
         ]
-        owner_keyword_text = ", ".join(owner_keywords[:6]) if owner_keywords else "없음"
         owner_summary = (
-            f"{grouped['user_name']}가 언급한 내용. 핵심 키워드: {owner_keyword_text}. "
-            f"요약: {truncate_text(merged, max_summary_chars)}"
+            f"{grouped['user_name']}: "
+            f"{truncate_text(merged, max_summary_chars)}"
         )
         owner_raw_context = truncate_text(f"{grouped['user_name']}: {merged}", max_context_chars)
+        owner_memory_type = classify_memory_type(
+            merged,
+            speaker_count=1,
+            owner_specific=True,
+        )
         units.append(
             StructuredMemoryUnit(
                 memory_id=(
@@ -320,12 +347,16 @@ def build_structured_memory_units(
                 owner_user_id=grouped["user_id"],
                 owner_user_name=grouped["user_name"],
                 memory_scope="user",
-                memory_type=classify_memory_type(merged, speaker_count=1, owner_specific=True),
+                memory_type=owner_memory_type,
                 summary_text=truncate_text(owner_summary, max_summary_chars),
                 memory_text=compose_memory_text(
                     owner_summary,
                     owner_raw_context,
                     limit=max(max_context_chars, max_summary_chars),
+                    keywords=owner_keywords,
+                    speaker_names=[grouped["user_name"]],
+                    memory_type=owner_memory_type,
+                    timestamp_iso=str(grouped["end_at"] or ""),
                 ),
                 raw_context=owner_raw_context,
                 source_message_ids=list(grouped["message_ids"]),

@@ -23,7 +23,11 @@ from utils.embeddings import (
     get_embedding_token_limit,
     trim_text_to_embedding_token_limit,
 )
-from utils.memory_units import build_storage_text, build_structured_memory_units
+from utils.memory_units import (
+    build_storage_text,
+    build_structured_memory_units,
+    compose_memory_text,
+)
 
 
 class RAGManager:
@@ -190,7 +194,7 @@ class RAGManager:
             logger.error(f"대화 기록 저장 중 DB 오류: {e}", exc_info=True, extra={'guild_id': guild_id})
 
     async def _summarize_content(self, text: str) -> str:
-        """긴 텍스트를 임베딩용으로 요약합니다. DeepSeek 모델을 사용하여 검색 품질을 최적화합니다."""
+        """긴 텍스트를 검색 단서를 보존한 독립 기억 문장으로 압축합니다."""
         # [Optimization] 텍스트가 짧으면(400자 미만) 요약하지 않고 원본 그대로 사용
         # (E5 모델의 512 토큰 제한을 고려하여 안전한 길이로 설정)
         if len(text) < 400:
@@ -204,15 +208,28 @@ class RAGManager:
         safe_text = text[:4000]
 
         try:
-            # [Optimization] 검색(RAG) 품질을 위한 상세 요약 프롬프트
-            # E5 임베딩 한계(512토큰) 내에 중요 정보가 다 들어가도록 500자 제한 둠
+            summary_limit = min(
+                500,
+                max(
+                    120,
+                    int(
+                        getattr(
+                            config,
+                            "STRUCTURED_MEMORY_MAX_SUMMARY_CHARS",
+                            320,
+                        )
+                    ),
+                ),
+            )
             system_prompt = (
-                "너는 대화 내용을 나중에 검색하기 좋게 정리하는 '기억 관리자'야.\n"
-                "주어진 대화 내용을 바탕으로 다음 형식에 맞춰 요약해.\n\n"
-                "1. **상황 설명**: 어떤 주제로 누가 무슨 말을 했는지 자연스럽게 서술 (분량 제한 없음, 자세할수록 좋음)\n"
-                "2. **분위기**: 대화가 즐거웠는지, 진지했는지, 화가 났는지 등 감정 상태 기록\n"
-                "3. **핵심 키워드**: 날짜, 시간, 장소, URL, 주식 종목, 사람 이름 등 검색에 걸려야 할 단어들을 빠짐없이 나열\n\n"
-                "※ **주의사항**: 전체 요약 길이는 반드시 **500자 이내**가 되도록 내용을 핵심 위주로 압축해. (임베딩 용량 제한)"
+                "너는 의미 검색용 대화 기억을 만드는 관리자다. 원문만 근거로, "
+                "나중에 질문 하나만 보더라도 이해되는 독립 문장으로 압축한다.\n"
+                "- 사람·대상·장소·날짜·시간·URL·제품명·수치와 고유명사를 보존한다.\n"
+                "- 결정, 계획, 선호, 변경사항, 부정 표현과 아직 미정인 항목을 보존한다.\n"
+                "- 대명사는 원문에서 대상이 확실할 때만 실제 대상으로 바꾼다.\n"
+                "- 분위기·감탄·반복·말투 설명은 검색에 필요한 경우가 아니면 버린다.\n"
+                "- 마크다운 제목이나 작성 과정 없이 요약문만 출력한다.\n"
+                f"- 최대 {summary_limit}자이며 원문에 없는 사실을 만들지 않는다."
             )
             user_prompt = f"--- 대화 내용 ---\n{safe_text}"
 
@@ -269,7 +286,22 @@ class RAGManager:
                 summarized = await self._summarize_content(summary_source)
                 if summarized:
                     summary_text_for_storage = summarized
-                    memory_text_for_embedding = summarized
+                    memory_text_for_embedding = compose_memory_text(
+                        summarized,
+                        "",
+                        limit=max(
+                            getattr(
+                                config,
+                                "STRUCTURED_MEMORY_MAX_SUMMARY_CHARS",
+                                320,
+                            ),
+                            480,
+                        ),
+                        keywords=unit.keywords,
+                        speaker_names=unit.speaker_names,
+                        memory_type=unit.memory_type,
+                        timestamp_iso=unit.timestamp_iso,
+                    )
                     token_count = await count_embedding_tokens(f"passage: {memory_text_for_embedding}")
 
                 if token_count > token_limit:

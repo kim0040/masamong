@@ -926,6 +926,29 @@ TIDB_CONN_MAX_LIFETIME_SECONDS = max(
     60,
     as_int(load_config_value("MASAMONG_DB_CONN_MAX_LIFETIME_SECONDS", 600), 600),
 )
+# TiDB Cloud Starter 무료 플랜 보호 모드. 월 사용량의 최종 기준은 Cloud
+# 콘솔이지만, 애플리케이션에서 큰 BLOB 후보 집합을 읽는 경로에는 보수적 상한을
+# 적용한다. 유료 플랜으로 전환한 운영자만 명시적으로 false로 해제한다.
+TIDB_STARTER_FREE_PLAN_MODE = as_bool(
+    load_config_value(
+        "TIDB_STARTER_FREE_PLAN_MODE",
+        "true" if DB_BACKEND == "tidb" else "false",
+    ),
+    DB_BACKEND == "tidb",
+)
+TIDB_STARTER_FREE_ROW_STORAGE_BYTES = 5 * 1024**3
+TIDB_STARTER_FREE_COLUMNAR_STORAGE_BYTES = 5 * 1024**3
+TIDB_STARTER_FREE_MONTHLY_RU = 50_000_000
+TIDB_STARTER_USAGE_WARNING_RATIO = min(
+    0.95,
+    max(
+        0.5,
+        as_float(
+            load_config_value("TIDB_STARTER_USAGE_WARNING_RATIO", 0.8),
+            0.8,
+        ),
+    ),
+)
 REMOTE_DB_STRICT_MODE = as_bool(load_config_value('MASAMONG_DB_STRICT_REMOTE_ONLY', 'false'))
 # 기존 strict 운영 환경에 별도 REQUIRE_TLS 키가 없어도 strict 모드 자체가
 # TLS 필수를 의미하도록 한다. 명시적으로 false를 적어도 strict를 우회할 수 없다.
@@ -1125,8 +1148,59 @@ HISTORY_LIMIT_WITHOUT_RAG = as_int(load_config_value('HISTORY_LIMIT_WITHOUT_RAG'
 # 도구 의도 분석 시 참고할 이전 대화 개수
 INTENT_HISTORY_LIMIT = as_int(load_config_value('INTENT_HISTORY_LIMIT', 5), 5)
 INTENT_LLM_ENABLED = as_bool(load_config_value('INTENT_LLM_ENABLED', 'true'))
-INTENT_LLM_ALWAYS_RUN = as_bool(load_config_value('INTENT_LLM_ALWAYS_RUN', 'true'))
-INTENT_LLM_RAG_STRONG_BYPASS = as_bool(load_config_value('INTENT_LLM_RAG_STRONG_BYPASS', 'true'))
+# 한 번 읽은 Discord 대화에서 최신 원문과 그보다 오래된 구간을 분리한다.
+# 오래된 구간은 별도 LLM 호출 없이 의미 라우터의 JSON 응답에 짧은 digest로
+# 함께 받아 활성 컨텍스트를 작게 유지한다. 장기 사실은 기존 RAG가 담당한다.
+AI_CONTEXT_SOURCE_HISTORY_LIMIT = min(
+    50,
+    max(
+        6,
+        as_int(load_config_value('AI_CONTEXT_SOURCE_HISTORY_LIMIT', 24), 24),
+    ),
+)
+AI_CONTEXT_RECENT_TURNS = min(
+    16,
+    max(
+        4,
+        as_int(load_config_value('AI_CONTEXT_RECENT_TURNS', 8), 8),
+    ),
+)
+AI_CONTEXT_COMPACTION_TRIGGER_CHARS = min(
+    20_000,
+    max(
+        1_000,
+        as_int(
+            load_config_value(
+                'AI_CONTEXT_COMPACTION_TRIGGER_CHARS',
+                3_500,
+            ),
+            3_500,
+        ),
+    ),
+)
+AI_CONTEXT_COMPACTION_SOURCE_MAX_CHARS = min(
+    12_000,
+    max(
+        1_000,
+        as_int(
+            load_config_value(
+                'AI_CONTEXT_COMPACTION_SOURCE_MAX_CHARS',
+                5_000,
+            ),
+            5_000,
+        ),
+    ),
+)
+AI_CONTEXT_DIGEST_MAX_CHARS = min(
+    1_200,
+    max(
+        200,
+        as_int(
+            load_config_value('AI_CONTEXT_DIGEST_MAX_CHARS', 600),
+            600,
+        ),
+    ),
+)
 # 한 메시지의 LLM 도구 계획이 외부 API 호출을 증폭하지 않도록 하드 상한을 둔다.
 # 운영자가 더 큰 값을 넣어도 안전 상한(3)을 넘길 수 없다.
 AGENT_MAX_TOOL_CALLS = min(
@@ -1206,6 +1280,18 @@ LLM_ROUTING_FALLBACK_REASONING_EFFORT = as_str(
     '',
 )
 ROUTING_LLM_MAX_TOKENS = max(64, as_int(load_config_value('ROUTING_LLM_MAX_TOKENS', 1024), 1024))
+# 의미 라우터 JSON은 기사 요약 등 routing lane의 다른 작업보다 훨씬 짧다.
+# 별도 상한을 두어 모델 조합과 관계없이 라우팅 지연·비용을 제한한다.
+SEMANTIC_ROUTER_MAX_TOKENS = min(
+    ROUTING_LLM_MAX_TOKENS,
+    max(
+        128,
+        as_int(
+            load_config_value('SEMANTIC_ROUTER_MAX_TOKENS', 384),
+            384,
+        ),
+    ),
+)
 
 # 레인2: 최종 답변/요약/명령어 생성
 LLM_MAIN_PRIMARY_PROVIDER = normalize_llm_provider(
@@ -1545,12 +1631,26 @@ STRUCTURED_MEMORY_QUERY_LIMIT = as_int(
     ),
     max(800, int(LOCAL_EMBEDDING_QUERY_LIMIT) * 4),
 )
+STRUCTURED_MEMORY_QUERY_LIMIT = max(
+    32,
+    min(
+        STRUCTURED_MEMORY_QUERY_LIMIT,
+        384 if TIDB_STARTER_FREE_PLAN_MODE else 1_000,
+    ),
+)
 STRUCTURED_MEMORY_FALLBACK_QUERY_LIMIT = as_int(
     load_config_value(
         'STRUCTURED_MEMORY_FALLBACK_QUERY_LIMIT',
         EMBED_CONFIG.get("structured_memory_fallback_query_limit", max(2000, int(LOCAL_EMBEDDING_QUERY_LIMIT) * 10)),
     ),
     max(2000, int(LOCAL_EMBEDDING_QUERY_LIMIT) * 10),
+)
+STRUCTURED_MEMORY_FALLBACK_QUERY_LIMIT = max(
+    STRUCTURED_MEMORY_QUERY_LIMIT,
+    min(
+        STRUCTURED_MEMORY_FALLBACK_QUERY_LIMIT,
+        768 if TIDB_STARTER_FREE_PLAN_MODE else 2_500,
+    ),
 )
 STRUCTURED_MEMORY_SIMILARITY_THRESHOLD = as_float(
     load_config_value(
