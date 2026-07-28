@@ -1,0 +1,412 @@
+# 마사몽 운영·배포 가이드
+
+이 문서는 누적 데이터가 있는 Masamo를 보존하면서 공통 코드의 새 release를 반영하고,
+General을 별도 인스턴스로 준비하는 절차다. 단순 `git pull && python main.py` 절차가 아니다.
+
+핵심 원칙:
+
+- 기존 Masamo Discord 앱/토큰, TiDB `masamong`, DB 계정, 프롬프트, Kakao mapping과
+  누적 데이터를 그대로 보존한다.
+- General은 별도 앱/토큰, 새 `masamong_general`, 별도 계정·설정·로그·service로 시작한다.
+- 같은 Discord 토큰의 구·신 프로세스를 겹쳐 실행하지 않는다.
+- 운영 DB 변경은 snapshot·읽기 전용 fingerprint·typed confirmation 뒤에만 한다.
+- Masamo는 항상 `MASAMONG_AUTO_MIGRATE=false`,
+  `SCHOOL_NOTICE_ENABLED=false`로 기동한다.
+- 학교 공지는 외부 core가 준비된 General에서만 별도 one-shot/timer로 운영한다.
+
+명령의 `<release-dir>`, `<venv>`, `<service>`, 사용자·그룹은 실제 서버 값으로 바꾼다.
+저장소의 school systemd 템플릿은 `/srv/masamong/current`, `/srv/school-notice`,
+`masamong` 사용자를 예로 든다. 실제 서버에서 다른 경로를 선택했다면 env와 unit의 모든
+절대 경로를 그 배포 레이아웃 하나로 통일한다.
+
+## 1. 로컬 release 검증
+
+배포할 정확한 commit에서 실행한다.
+
+```bash
+<venv>/bin/python -m pytest -q
+<venv>/bin/python -m compileall -q .
+<venv>/bin/python -m pip check
+git diff --check
+git status --short
+git rev-parse HEAD
+```
+
+테스트가 실패하거나 의도하지 않은 파일이 섞여 있으면 commit/push/deploy를 진행하지 않는다.
+학교 외부 core는 이 저장소 테스트와 별도로 그 core 자체의 전체 테스트를 통과해야 한다.
+
+## 2. 운영 인벤토리와 복원 수단
+
+서비스를 내리기 전에 다음을 접근 제한된 운영 기록에 남긴다. secret 값은 출력하거나
+일반 로그에 복사하지 않는다.
+
+- 실행 중인 PID, 사용자, working directory, Python 버전, commit SHA
+- systemd unit 원문과 재시작 정책
+- `CPUQuota`, `CPUAffinity`, `MemoryMax`, thread/concurrency 설정
+- 실제 env/config/prompt/embedding 파일의 권한, key 목록과 checksum
+- DB backend/host/database 이름, grant, schema, 핵심 table row count와 최신 timestamp
+- 현재 오류율, RSS/thread 수, LLM 호출 집계
+
+예시:
+
+```bash
+systemctl show <service> \
+  -p ActiveState -p SubState -p MainPID -p User -p Group \
+  -p WorkingDirectory -p ExecStart -p Restart \
+  -p CPUQuotaPerSecUSec -p MemoryMax
+systemctl cat <service>
+git -C <release-dir> rev-parse HEAD
+git -C <release-dir> status --short
+```
+
+### DB와 설정 백업
+
+- TiDB는 공급자 snapshot/PITR 또는 일관된 논리 백업을 만들고, 별도 staging DB에 실제
+  restore되는지 확인한다.
+- 로컬 `database/remasamong.db` 파일은 원격 TiDB 원본의 백업이 아니다.
+- SQLite 운영이라면 writer를 멈추거나 SQLite backup API를 사용한다. 실행 중 파일을
+  단순 복사하면 WAL 데이터가 빠질 수 있다.
+- 현재 release SHA, env, unit, config, prompts, embedding 설정과 remote 전용 수정 파일을
+  접근 제한된 timestamp 디렉터리에 복사하고 checksum을 기록한다.
+- secret backup은 mode `0600`, 디렉터리는 service 계정만 접근 가능하게 한다.
+
+복원이 시험되지 않은 “백업 생성 성공” 메시지만으로 다음 단계로 넘어가지 않는다.
+
+## 3. 프로필 파일 준비
+
+Masamo는 `profiles/masamo.env.example`로 기존 env를 교체하지 않는다. 현재 실제 env의 모든
+값을 먼저 `/etc/masamong/masamo.env`에 보존한 뒤 경계 키를 추가한다. systemd
+`Environment=`나 shell export에만 있던 값도 이 파일로 옮긴다.
+
+반드시 보존·명시할 항목:
+
+- 현재 token과 `MASAMONG_EXPECTED_DISCORD_BOT_USER_ID`
+- 현재 TiDB host/port/user/password와 DB `masamong`
+- `MASAMONG_EXPECTED_DB_NAME=masamong`, strict TLS/CA/hostname 검증
+- 현재 prompt, embedding, Kakao mapping과 실제 저장소 경로
+- 현재 API key, 모델, 기능 flag, guild 설정 모드
+- 현재 CPU/RAG/AI 제한
+- 별도 일반/오류 로그
+- `MASAMONG_AUTO_MIGRATE=false`
+- `SCHOOL_NOTICE_ENABLED=false`
+
+General은 `profiles/general.env.example`과 전용 JSON 예제를 새 경로로 복사하고 placeholder를
+바꾼다. Masamo prompt, Kakao mapping, DB row, 로컬 embedding data를 복사하지 않는다.
+
+실제 두 env와 관련 JSON/CA가 준비된 서버에서 오프라인 경계 검사를 실행한다.
+
+```bash
+<venv>/bin/python scripts/validate_profile_separation.py \
+  /etc/masamong/masamo.env \
+  /etc/masamong/general.env
+```
+
+`OK`가 아니면 어느 서비스도 전환하지 않는다. 경고도 의도와 대조한다.
+
+## 4. 읽기 전용 운영 preflight
+
+`scripts/inspect_runtime_readonly.py`는 운영 데이터 원문, 사용자 ID, token, 비밀번호,
+API key를 출력하지 않는다. 고정된 SELECT로 table/column, 집계 row 수, 최신 timestamp,
+운세 구독 수만 JSON으로 기록한다. SQLite는 `mode=ro`, TiDB는 read-only transaction을
+사용한다.
+
+Masamo:
+
+```bash
+MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
+  <venv>/bin/python scripts/inspect_runtime_readonly.py \
+  --expected-profile masamo \
+  --expected-db masamong
+```
+
+General:
+
+```bash
+MASAMONG_ENV_FILE=/etc/masamong/general.env \
+  <venv>/bin/python scripts/inspect_runtime_readonly.py \
+  --expected-profile general \
+  --expected-db masamong_general
+```
+
+초기 Masamo 검사에서 privacy table 누락을 보고하는 것은 아래 additive migration 전이라면
+예상 가능한 상태다. 그 밖의 DB/profile mismatch, 기존 핵심 table/column 누락, 연결 실패를
+무시하지 않는다. 출력은 배포 전·migration 후·재시작 후 세 번 저장해 비교한다.
+
+## 5. 개인정보 동의 table one-shot
+
+누적 Masamo DB에는 범용 `database/init_db.py`나 런타임 자동 migration을 실행하지 않는다.
+`scripts/apply_privacy_consent_schema.py`는 정확히 다음 두 table만
+`CREATE TABLE IF NOT EXISTS`로 추가한다.
+
+- `privacy_consents`: 목적별 현재 상태
+- `privacy_consent_events`: append-only 동의·철회 이력
+
+기존 row를 update/delete/backfill/seed하지 않는다.
+
+### Dry-run
+
+다음 명령은 DB에 연결하지 않고 대상과 허용 SQL, typed confirmation 문구만 출력한다.
+
+```bash
+MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
+  <venv>/bin/python scripts/apply_privacy_consent_schema.py \
+  --expected-profile masamo \
+  --expected-db masamong
+```
+
+### 적용
+
+snapshot과 dry-run을 검토한 뒤 출력 문구를 그대로 넣는다.
+
+```bash
+MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
+  <venv>/bin/python scripts/apply_privacy_consent_schema.py \
+  --expected-profile masamo \
+  --expected-db masamong \
+  --apply \
+  --confirm 'APPLY PRIVACY CONSENT SCHEMA TO profile=masamo backend=tidb database=masamong'
+```
+
+스크립트는 strict explicit profile, `AUTO_MIGRATE=false`, TLS/CA/hostname, 예상 DB,
+연결 뒤 `DATABASE()`를 재확인하고 두 table의 필수 column을 read-back한다. 완료 직후
+read-only preflight를 다시 실행해 기존 table 집계가 보존됐는지 확인한다.
+
+기존 운세 프로필과 구독은 삭제되지 않는다. 다만 현재 정책에 대한 동의가 없는 사용자의
+프로필 이용과 자동 운세 발송은 fail-closed로 중단되며, 사용자가 명시적으로 재동의하면
+보존된 설정으로 재개된다.
+
+### 전체 데이터 이관 도구는 이 배포에 사용하지 않는다
+
+`scripts/migrate_latest_data_to_tidb.py`는 기존 Masamo의 profile 전환이나 개인정보 table
+추가 도구가 아니다. 원본 전체를 별도 TiDB에 적재하는 특수 운영 도구이므로 이번 배포에는
+실행하지 않는다. 기본 실행과 `--dry-run`은 원격 DB에 연결하지 않으며, 쓰기에는
+`--apply`, 현재 profile과 DB의 정확한 재입력이 필요하다. 특히 `--truncate`는 실제 생성
+후 복원까지 검증한 backup 식별자를 두 번 입력하고, 출력된
+`DROP ALL TABLES ON ... USING VERIFIED BACKUP ...` 문구 전체를 정확히 재입력해야만
+허용된다. 연결 뒤 `DATABASE()` 불일치 시에는 어떤 DDL도 실행하지 않는다.
+
+## 6. 코드 반영
+
+운영 working tree가 깨끗한지 먼저 확인한다. 원격 전용 수정이 있으면 diff와 파일을 백업하고
+release 코드에 의도적으로 반영했는지 확인한 뒤에만 stash 또는 별도 branch로 보관한다.
+사용자 변경을 `reset --hard`로 없애지 않는다.
+
+```bash
+git -C <release-dir> fetch origin
+git -C <release-dir> merge --ff-only origin/main
+git -C <release-dir> rev-parse HEAD
+```
+
+가능하면 현재 디렉터리를 직접 덮어쓰기보다 검증된 SHA의 immutable release 디렉터리를 만들고
+`current` symlink를 원자적으로 전환한다. 어떤 방식이든 systemd가 실행할 SHA와 로컬에서
+테스트한 SHA가 정확히 같아야 한다.
+
+서버에서는 새 가상환경 또는 기존 가상환경의 호환성을 확인한다.
+
+```bash
+<venv>/bin/python -m pip install -r requirements.txt
+<venv>/bin/python -m pip check
+<venv>/bin/python -m compileall -q <release-dir>
+```
+
+RAG가 활성인 프로필에만 `requirements-cpu.txt`를 설치한다. 저사양 운영 서버에서 오프라인
+embedding 생성·대규모 재색인·모델 다운로드를 배포와 함께 실행하지 않는다.
+
+## 7. Masamo controlled restart
+
+동일 token 프로세스의 overlap은 Discord 중복 응답과 중복 scheduler를 만든다. 짧은
+controlled restart를 사용한다.
+
+1. 새 코드와 env의 offline 검사를 끝낸다.
+2. 현재 서비스를 정상 stop한다.
+3. 기존 PID가 종료되고 같은 token 프로세스가 하나도 없는지 확인한다.
+4. unit이 `MASAMONG_ENV_FILE=/etc/masamong/masamo.env`와 정확한 release를 가리키는지
+   확인한다.
+5. `daemon-reload` 후 Masamo service 하나만 start한다.
+
+```bash
+sudo systemctl stop <masamo-service>
+systemctl is-active <masamo-service>
+sudo systemctl daemon-reload
+sudo systemctl start <masamo-service>
+systemctl status <masamo-service> --no-pager
+```
+
+시작 로그에서 다음을 확인한다. secret 값은 출력하지 않는다.
+
+- profile/instance가 `masamo`
+- 실제 Discord bot user ID가 예상 ID와 일치
+- DB backend/이름이 기존 `masamong`
+- `AUTO_MIGRATE=false`로 DDL 없이 schema 검증 완료
+- 학교 공지 비활성
+- 모든 필수 Cog 로드
+- thread/executor/AI/LLM/RAG/message-cache 상한
+- 프로세스 하나, 예상 RSS/thread/CPU
+
+## 8. 기능별 검증
+
+운영 채널에 불필요한 알림을 만들지 않도록 관리자 테스트 guild 또는 DM에서 확인한다.
+
+- 일반 멘션 대화와 DM 대화, 중복 응답 없음
+- 명백한 도구 요청이 의도 LLM을 불필요하게 호출하지 않는지
+- 날씨, 금융/환율, 웹 검색, 이미지 quota
+- `!랭킹`, `!요약`, `!투표`, 설정/페르소나
+- `!개인정보` 상태, 운세/학교공지의 동의·거부·철회 흐름
+- 운세 미동의 차단, 선택 항목 `NULL`, 개인 LLM 운세 합산 일 3회, 구독 설정
+- 기존 Discord/Kakao RAG 조회와 기존 prompt 채널
+- DM 차단이나 공급자 timeout 뒤 scheduler가 반복 폭주하지 않는지
+
+재시작 뒤 read-only fingerprint를 다시 실행해 기존 대화·운세·사용량·기억 table의 row 수와
+최신 timestamp를 전후와 대조한다.
+
+최소 몇 분간 로그, CPU/RSS/thread와 LLM 시도 집계를 관찰한다. 유휴 상태인데
+`llm_attempt`이 지속 증가하거나 1분 scheduler가 같은 사용자를 계속 생성한다면 즉시
+rollback한다. 정상 모닝 브리핑은 생성/발송 각각 기본 최대 3회이며 발송 재시도는 저장된
+문장을 재사용한다.
+
+## 9. General 첫 배포
+
+General은 Masamo 전환과 별개로 준비한다.
+
+1. 새 Discord 앱/토큰과 bot user ID를 만든다.
+2. 새 빈 `masamong_general`과 그 DB만 접근하는 전용 계정을 만든다.
+3. RAG와 모든 반복 scheduler, 학교 공지를 끈다.
+4. 빈 DB bootstrap 한 번만 `MASAMONG_AUTO_MIGRATE=true`로 실행한다.
+5. schema와 seed를 확인한 뒤 즉시 `MASAMONG_AUTO_MIGRATE=false`로 바꾼다.
+6. 다시 기동해 read-only schema 검증만으로 통과하는지 확인한다.
+7. 테스트 guild에서 General DB에만 write가 생기고 Masamo fingerprint가 변하지 않는지
+   확인한다.
+8. 두 프로세스 합산 CPU/RSS 여유가 있을 때 기능을 하나씩 활성화한다.
+
+초기 저사양 권장값:
+
+```dotenv
+MASAMONG_CPU_THREADS=1
+MASAMONG_EXECUTOR_WORKERS=1
+AI_MAX_CONCURRENT_PROCESSING=1
+AI_QUEUE_WAIT_TIMEOUT_SECONDS=5
+LLM_MAX_CONCURRENT_CALLS=1
+LLM_ACQUIRE_TIMEOUT_SECONDS=10
+LLM_CALL_TIMEOUT_SECONDS=120
+EMBEDDING_MAX_CONCURRENCY=1
+RAG_MAX_BACKGROUND_TASKS=2
+RAG_MAX_TRACKED_WINDOWS=64
+MASAMONG_DISCORD_MAX_MESSAGES=100
+TOKENIZERS_PARALLELISM=false
+AI_MEMORY_ENABLED=false
+EMBEDDING_ENABLED=false
+RERANK_ENABLED=false
+RAG_ARCHIVING_ENABLED=false
+BM25_AUTO_REBUILD_ENABLED=false
+FORTUNE_MORNING_BRIEFING_ENABLED=false
+SCHOOL_NOTICE_ENABLED=false
+```
+
+Masamo와 General의 service, env, DB account, prompt/embedding, writable state와 logs는 모두
+서로 달라야 한다.
+
+## 10. General 학교 공지 활성화
+
+학교 공지에는 이 저장소 밖의 `school_notice` Python package/CLI가 필요하다. 다음을 별도
+설치·검증한다.
+
+- 외부 core repository와 전용 venv
+- `python -m school_notice daily`와 `feedback` 명령
+- General 전용 core SQLite DB와 digest 디렉터리
+- 버전 관리된 마사몽 학교 카탈로그
+- core의 실제 `sources.json`
+- 학교 관련 DB table
+- `deploy/systemd/masamong-school-notice-batch.service`와 `.timer`
+
+env와 unit 경로를 하나의 레이아웃으로 맞춘 뒤 General의
+`SCHOOL_NOTICE_ENABLED=true`를 설정한다. bot을 시작하기 전에 batch dry-run으로 대상 학교
+집계만 확인한다.
+
+```bash
+MASAMONG_ENV_FILE=/etc/masamong/general.env \
+  <venv>/bin/python scripts/run_school_notice_batch.py \
+  --core-python /srv/school-notice/venv/bin/python \
+  --core-cwd /srv/school-notice \
+  --source-config /srv/school-notice/school_notice/sources.json \
+  --dry-run
+```
+
+dry-run은 SQLite일 때 `mode=ro`를 쓰고 profile/temp/digest 파일이나 DB update를 만들지
+않는다. 실제 제한된 수동 batch에서는 기본 `--no-llm --low-resource`가 적용된다. LLM 공지
+분석은 운영자가 명시적으로 `--use-llm`을 준 경우에만 켜진다.
+
+검증할 항목:
+
+- 현재 동의가 있고 활성인 등록 프로필만 대상
+- 카탈로그와 core 설정이 공통으로 가진 해당 학교 source만 `--source`로 전달
+- KST 날짜가 core에 명시
+- 사용자·날짜가 일치하는 검증된 digest와 최소 run report만 mode `0600`으로 원자적 공개
+- 관련 공지 0건이면 다음 날 자동 DM 없음
+- 재시작·장애 복구 때 최근 3일 안의 가장 최신 유효 성공·부분 성공 batch만 전달 대상으로
+  선택하고, 더 최신 성공 batch가 있으면 오래된 결과로 되돌아가지 않음
+- 한 DM 상한을 넘는 공지는 페이지로 나누고 성공한 revision을 즉시 기록한 뒤, 남은
+  페이지를 다음 1분 tick에서 이어 보내며 성공 페이지는 실패 attempt를 소비하지 않음
+- batch 오류, timeout, profile 상한, lock 충돌이 성공처럼 기록되지 않음
+- 23:00 KST timer와 사용자별 기본 09:00/설정 시각 전달
+
+기존 `school_notice_batch_runs` 테이블을 재사용하는 배포라면 bot이나 timer를 켜기 전에
+additive 컬럼 `profile_version`(정수, 기본값 0)과 `profile_hash`(64자 문자열, 기본값 빈
+문자열)를 staging restore에서 먼저 검증한 뒤 운영 DB에 추가한다. 기존 행은 삭제하거나
+backfill하지 않는다. 기본값이 남은 과거 run은 fail-closed되며, 새 코드로 해당 사용자의
+batch가 한 번 성공한 뒤에만 전달된다. 신규 DB는 `database/schema.sql` 또는
+`database/schema_tidb.sql`에 이미 이 컬럼이 포함되어 있다.
+
+systemd 템플릿을 실제 경로와 사용자로 수정해 설치한 뒤:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now masamong-school-notice-batch.timer
+systemctl list-timers masamong-school-notice-batch.timer --all
+```
+
+timer는 `OnCalendar=*-*-* 23:00:00 Asia/Seoul`, `Persistent=true`다. Masamo에는 이 timer를
+활성화하지 않는다. 현재 wrapper는 사용자 프로필별로 외부 core `daily`를 순차 실행하므로
+같은 학교 사용자가 여러 명이면 같은 학교가 여러 번 수집될 수 있다. 모든 학교를 수집하지는
+않지만 학교당 한 번 수집을 보장하지도 않는다.
+
+## 11. Rollback
+
+### DB 쓰기 전 또는 additive privacy table만 추가한 경우
+
+1. 새 service/timer를 중지한다.
+2. 이전 release SHA, env, config, prompt/embedding과 unit을 복원한다.
+3. `daemon-reload` 후 이전 Masamo service 하나만 시작한다.
+4. identity/DB target와 read-only fingerprint를 다시 확인한다.
+
+privacy table 두 개는 additive이므로 이전 코드가 사용하지 않으면 그대로 둘 수 있다.
+서둘러 drop하지 않는다.
+
+### 새 코드가 DB에 쓰기 시작한 경우
+
+- 먼저 모든 writer와 school timer를 중지한다.
+- 배포 후 생성된 row와 backward compatibility를 확인한다.
+- 코드/env rollback만으로 안전한지 판단한다.
+- DB snapshot restore가 필요하면 이후 정상 write를 잃을 범위를 승인받고 검증된 복원 절차를
+  사용한다.
+- 운영 DB에 `DROP`, `TRUNCATE`, 광범위 `DELETE`, `git reset --hard`를 즉흥적으로 실행하지
+  않는다.
+
+롤백 후에도 기존 Masamo DB 이름·계정·토큰을 바꾸지 않는다. 실패한 school digest는
+보존해 원인을 확인하되 전달 timer는 끈다.
+
+## 12. 배포 완료 기준
+
+- local/server 테스트, compile, dependency check 통과
+- 배포 SHA가 push된 검증 SHA와 일치
+- 두 profile 경계 검사 통과
+- snapshot/restore 증거와 배포 전·후 fingerprint 확보
+- 기존 Masamo 핵심 table의 count/latest timestamp와 Kakao mapping 보존
+- Masamo 단일 PID, 올바른 bot ID와 기존 `masamong`
+- General은 별도 bot ID·`masamong_general`, Masamo 데이터 조회 없음
+- 목적별 동의 없이 운세/학교 개인정보를 읽거나 자동 발송하지 않음
+- 철회는 처리 중단, 삭제는 해당 프로필만 삭제, 일반 대화는 유지
+- LLM/운세 scheduler의 유한 retry와 유휴 호출 증가 없음
+- Masamo 학교 flag false
+- General 학교 기능을 켠 경우 등록 프로필 source만 23:00 KST에 수집하고, 관련 공지
+  없을 때 무알림, 사용자별 기본 09:00 전달
+- 두 프로세스 합산 CPU/RSS가 기존 Masamo 안정성을 해치지 않음

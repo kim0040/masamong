@@ -136,12 +136,42 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     is_lunar BOOLEAN DEFAULT 0, -- 0: 양력, 1: 음력
     subscription_active BOOLEAN DEFAULT 0, -- 모닝 브리핑 구독 여부 (0: 비활성, 1: 활성)
     subscription_time TEXT DEFAULT '07:30', -- 모닝 브리핑 발송 시간
-    pending_payload TEXT, -- [NEW] 미리 생성된 브리핑 내용
+    pending_payload TEXT, -- 날짜/단계/시도수/backoff/생성물을 담는 모닝 브리핑 JSON 상태
     last_fortune_sent TEXT, -- YYYY-MM-DD (중복 발송 방지)
     last_fortune_content TEXT, -- [NEW] 마지막으로 조회한 운세 내용 (컨텍스트용)
     birth_place TEXT, -- 출생지
     created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc'))
 );
+
+-- 사용자가 직접 제공하는 개인정보의 목적별 현재 동의 상태.
+-- 기존 기능 데이터와 분리하여, 동의 철회가 누적 프로필/구독을 자동 삭제하지 않게 한다.
+CREATE TABLE IF NOT EXISTS privacy_consents (
+    user_id INTEGER NOT NULL,
+    scope TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    notice_hash TEXT NOT NULL,
+    status TEXT NOT NULL, -- granted | withdrawn
+    granted_at TEXT,
+    withdrawn_at TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, scope)
+);
+
+-- 동의/철회 이력은 감사 목적으로 append-only로 보관한다.
+CREATE TABLE IF NOT EXISTS privacy_consent_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    scope TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    notice_hash TEXT NOT NULL,
+    status TEXT NOT NULL,
+    granted_at TEXT,
+    withdrawn_at TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_privacy_consent_events_user_scope
+    ON privacy_consent_events (user_id, scope, created_at);
 
 -- [NEW] DM 사용량 제한을 위한 로그 테이블
 CREATE TABLE IF NOT EXISTS dm_usage_logs (
@@ -164,6 +194,7 @@ CREATE TABLE IF NOT EXISTS school_notice_profiles (
     profile_json TEXT NOT NULL, -- 코어 프로필 스키마 전체
     profile_version INTEGER NOT NULL DEFAULT 1,
     enabled INTEGER NOT NULL DEFAULT 1,
+    delivery_time TEXT NOT NULL DEFAULT '09:00', -- Asia/Seoul HH:MM
     created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc')),
     updated_at TEXT
 );
@@ -188,17 +219,21 @@ CREATE TABLE IF NOT EXISTS school_notice_deliveries (
     user_key TEXT NOT NULL,
     digest_date TEXT NOT NULL,
     notice_id INTEGER NOT NULL,
+    revision_count INTEGER NOT NULL DEFAULT 1,
     status TEXT NOT NULL, -- sent | failed | skipped
     failure_reason TEXT,
     attempt_count INTEGER NOT NULL DEFAULT 1,
     delivered_at TEXT NOT NULL,
-    UNIQUE (user_key, digest_date, notice_id)
+    -- 같은 공지는 날짜가 바뀌어도 반복하지 않고, 내용 revision이 바뀌면 다시 보낸다.
+    UNIQUE (user_key, notice_id, revision_count)
 );
 
 CREATE TABLE IF NOT EXISTS school_notice_batch_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_key TEXT NOT NULL,
     run_date TEXT NOT NULL,
+    profile_version INTEGER NOT NULL DEFAULT 0,
+    profile_hash TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL, -- succeeded | partial | failed
     collection_status TEXT, -- healthy | degraded | failed
     may_include_stale INTEGER NOT NULL DEFAULT 0,
@@ -207,4 +242,18 @@ CREATE TABLE IF NOT EXISTS school_notice_batch_runs (
     llm_calls INTEGER,
     finished_at TEXT NOT NULL,
     UNIQUE (user_key, run_date)
+);
+
+-- 전날 digest를 사용자별 시각에 전달했는지 날짜 단위로 내구 기록한다.
+-- healthy empty digest도 completed 상태로 남겨 매분 다시 읽지 않는다.
+CREATE TABLE IF NOT EXISTS school_notice_delivery_runs (
+    user_key TEXT NOT NULL,
+    digest_date TEXT NOT NULL,
+    status TEXT NOT NULL, -- processing | retry | completed | failed
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
+    last_error TEXT,
+    finished_at TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_key, digest_date)
 );

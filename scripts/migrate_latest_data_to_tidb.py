@@ -7,10 +7,16 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+from dataclasses import dataclass, field
 from pathlib import Path
+import sys
 
 import numpy as np
 import pymysql
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import config
 from database.compat_db import TiDBSettings, split_sql_script
@@ -63,6 +69,41 @@ DISCORD_MEMORY_COLUMNS = {
     "timestamp",
     "embedding",
 }
+_TARGET_CONFIRMATION_CAPABILITY = object()
+_CONNECTED_TARGET_CAPABILITY = object()
+_INVALID_BACKUP_REFERENCES = frozenset(
+    {
+        "backup",
+        "latest",
+        "n/a",
+        "none",
+        "snapshot",
+        "test",
+        "todo",
+        "unknown",
+    }
+)
+
+
+@dataclass(frozen=True)
+class TargetIdentityConfirmation:
+    """CLI/config에서 독립적으로 확인한 원격 쓰기 대상이다."""
+
+    profile: str
+    host: str
+    port: int
+    database: str
+    destructive: bool
+    backup_reference: str | None = field(default=None, repr=False)
+    _capability: object | None = field(default=None, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class ConnectedTargetAuthorization:
+    """연결 후 DATABASE()까지 대조한 파괴 작업 capability다."""
+
+    target: TargetIdentityConfirmation
+    _capability: object = field(repr=False, compare=False)
 
 
 def parse_args() -> argparse.Namespace:
@@ -72,6 +113,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-main", action="store_true")
     parser.add_argument("--skip-discord", action="store_true")
     parser.add_argument("--skip-kakao", action="store_true")
+    execution_mode = parser.add_mutually_exclusive_group()
+    execution_mode.add_argument(
+        "--apply",
+        action="store_true",
+        help="사전검사 후 실제 원격 DB 쓰기를 실행 (기본값은 dry-run)",
+    )
+    execution_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="원격 DB에 연결하거나 쓰지 않고 사전검사만 실행 (기본 동작)",
+    )
     parser.add_argument("--truncate", action="store_true", help="적재 전 대상 테이블 비우기")
     parser.add_argument(
         "--confirm-database",
@@ -87,18 +139,25 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--backup-reference",
-        help="--truncate 직전 복원 검증한 snapshot/backup 식별자",
+        help="--truncate 직전 실제 생성 및 복원 검증한 snapshot/backup 식별자",
+    )
+    parser.add_argument(
+        "--confirm-backup-reference",
+        help="--backup-reference 식별자를 공백까지 정확히 다시 입력",
     )
     return parser.parse_args()
 
 
 def connect_tidb(settings: TiDBSettings) -> pymysql.connections.Connection:
-    """환경 변수로 TiDB에 연결하고 auto_random_explicit_insert를 활성화합니다."""
-    conn = pymysql.connect(**settings.to_connect_kwargs())
+    """검증된 환경 변수로 TiDB에 연결한다. 이 함수 자체는 SQL을 실행하지 않는다."""
+    return pymysql.connect(**settings.to_connect_kwargs())
+
+
+def configure_tidb_session(conn: pymysql.connections.Connection) -> None:
+    """연결된 DB identity를 확인한 뒤 필요한 session 옵션만 활성화한다."""
     with conn.cursor() as cursor:
         cursor.execute("SET @@allow_auto_random_explicit_insert = true")
     conn.commit()
-    return conn
 
 
 def apply_schema(conn: pymysql.connections.Connection) -> None:
@@ -111,8 +170,25 @@ def apply_schema(conn: pymysql.connections.Connection) -> None:
     conn.commit()
 
 
-def recreate_tables(conn: pymysql.connections.Connection) -> None:
+def recreate_tables(
+    conn: pymysql.connections.Connection,
+    *,
+    authorization: ConnectedTargetAuthorization,
+) -> None:
     """의존성 순서대로 모든 테이블을 DROP 후 재생성합니다."""
+    if (
+        not isinstance(authorization, ConnectedTargetAuthorization)
+        or authorization._capability is not _CONNECTED_TARGET_CAPABILITY
+        or (
+            authorization.target._capability
+            is not _TARGET_CONFIRMATION_CAPABILITY
+        )
+        or not authorization.target.destructive
+        or not authorization.target.backup_reference
+    ):
+        raise RuntimeError(
+            "연결 대상과 backup을 모두 검증한 파괴 작업 authorization이 필요합니다."
+        )
     ordered = [
         "kakao_chunks",
         "discord_memory_entries",
@@ -409,15 +485,24 @@ def _settings_from_config() -> TiDBSettings:
 def validate_target_identity(
     args: argparse.Namespace,
     settings: TiDBSettings,
-) -> None:
+    *,
+    require_write_confirmation: bool = True,
+) -> TargetIdentityConfirmation:
     """모든 원격 쓰기 전에 프로필과 DB 대상을 독립적으로 재확인한다."""
     if config.ENV_FILE_PATH is None:
         raise SystemExit(
             "TiDB 적재는 MASAMONG_ENV_FILE로 명시한 환경 파일에서만 실행할 수 있습니다."
         )
-    if not config.REQUIRE_EXPLICIT_PROFILE or config.PROFILE == "legacy":
+    profile_databases = {
+        "masamo": "masamong",
+        "general": "masamong_general",
+    }
+    if (
+        not config.REQUIRE_EXPLICIT_PROFILE
+        or config.PROFILE not in profile_databases
+    ):
         raise SystemExit(
-            "TiDB 적재는 명시적 non-legacy 프로필과 "
+            "TiDB 적재는 명시적 masamo/general 프로필과 "
             "MASAMONG_REQUIRE_EXPLICIT_PROFILE=true가 필요합니다."
         )
     if config.DB_BACKEND != "tidb" or not config.REMOTE_DB_STRICT_MODE:
@@ -432,40 +517,129 @@ def validate_target_identity(
         raise SystemExit(
             "TiDB 적재는 CA와 hostname 검증을 포함한 strict TLS가 필요합니다."
         )
-    if not config.EXPECTED_DB_NAME or config.EXPECTED_DB_NAME != settings.database:
+    if (
+        not settings.host
+        or not settings.user
+        or not settings.password
+        or not 1 <= settings.port <= 65535
+    ):
         raise SystemExit(
-            "MASAMONG_EXPECTED_DB_NAME이 실제 대상 DB와 일치해야 합니다."
+            "TiDB 적재 대상의 host/port 및 접속 credential 설정이 완전해야 합니다."
         )
-    if args.confirm_database != settings.database:
+    if (
+        not config.EXPECTED_DB_NAME
+        or config.EXPECTED_DB_NAME != settings.database
+        or config.TIDB_NAME != settings.database
+        or profile_databases[config.PROFILE] != settings.database
+    ):
+        raise SystemExit(
+            "프로필 고정 DB, MASAMONG_DB_NAME, MASAMONG_EXPECTED_DB_NAME과 "
+            "실제 대상 DB가 모두 일치해야 합니다."
+        )
+
+    destructive = bool(getattr(args, "truncate", False))
+    if not require_write_confirmation:
+        return TargetIdentityConfirmation(
+            profile=config.PROFILE,
+            host=settings.host,
+            port=settings.port,
+            database=settings.database,
+            destructive=destructive,
+            _capability=_TARGET_CONFIRMATION_CAPABILITY,
+        )
+
+    if getattr(args, "confirm_database", None) != settings.database:
         raise SystemExit(
             "--confirm-database에 실제 대상 DB 이름을 정확히 입력해야 합니다."
         )
-    if args.confirm_profile != config.PROFILE:
+    if getattr(args, "confirm_profile", None) != config.PROFILE:
         raise SystemExit(
             "--confirm-profile에 현재 MASAMONG_PROFILE을 정확히 입력해야 합니다."
         )
 
-    if not args.truncate:
-        return
+    if not destructive:
+        return TargetIdentityConfirmation(
+            profile=config.PROFILE,
+            host=settings.host,
+            port=settings.port,
+            database=settings.database,
+            destructive=False,
+            _capability=_TARGET_CONFIRMATION_CAPABILITY,
+        )
 
+    backup_reference = str(getattr(args, "backup_reference", "") or "")
+    normalized_reference = backup_reference.casefold()
+    if (
+        backup_reference != backup_reference.strip()
+        or not 8 <= len(backup_reference) <= 160
+        or any(
+            character.isspace() or not character.isprintable()
+            for character in backup_reference
+        )
+        or normalized_reference in _INVALID_BACKUP_REFERENCES
+    ):
+        raise SystemExit(
+            "--truncate는 실제 생성 및 복원 검증한 snapshot/backup의 "
+            "고유 --backup-reference(8~160자, 공백/제어문자 없음)가 필요합니다."
+        )
+    if (
+        getattr(args, "confirm_backup_reference", None)
+        != backup_reference
+    ):
+        raise SystemExit(
+            "--confirm-backup-reference에 --backup-reference를 정확히 다시 입력해야 합니다."
+        )
     expected_phrase = (
         f"DROP ALL TABLES ON {settings.host}:{settings.port}/"
-        f"{settings.database} FOR {config.PROFILE}"
+        f"{settings.database} FOR {config.PROFILE} "
+        f"USING VERIFIED BACKUP {backup_reference}"
     )
-    if args.confirm_destructive != expected_phrase:
+    if getattr(args, "confirm_destructive", None) != expected_phrase:
         raise SystemExit(
             "--truncate는 --confirm-destructive에 다음 문구를 정확히 입력해야 합니다: "
             + expected_phrase
         )
-    backup_reference = str(args.backup_reference or "").strip()
-    if len(backup_reference) < 8:
+    return TargetIdentityConfirmation(
+        profile=config.PROFILE,
+        host=settings.host,
+        port=settings.port,
+        database=settings.database,
+        destructive=True,
+        backup_reference=backup_reference,
+        _capability=_TARGET_CONFIRMATION_CAPABILITY,
+    )
+
+
+def verify_connected_target(
+    conn: pymysql.connections.Connection,
+    confirmation: TargetIdentityConfirmation,
+) -> ConnectedTargetAuthorization:
+    """서버가 실제 선택한 DB를 read-back한 뒤에만 파괴 capability를 발급한다."""
+    if (
+        not isinstance(confirmation, TargetIdentityConfirmation)
+        or confirmation._capability is not _TARGET_CONFIRMATION_CAPABILITY
+    ):
         raise SystemExit(
-            "--truncate는 복원 검증한 snapshot/backup의 --backup-reference가 필요합니다."
+            "정확한 CLI/config 확인을 통과한 target confirmation이 필요합니다."
         )
-    print(
-        "[destructive-confirmed] "
-        f"profile={config.PROFILE} database={settings.database} "
-        f"backup_reference={backup_reference}"
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT DATABASE() AS current_database")
+        row = cursor.fetchone()
+    if isinstance(row, dict):
+        actual_database = row.get("current_database")
+    elif isinstance(row, (tuple, list)) and len(row) == 1:
+        actual_database = row[0]
+    else:
+        actual_database = None
+    if isinstance(actual_database, bytes):
+        actual_database = actual_database.decode("utf-8", errors="strict")
+    if actual_database != confirmation.database:
+        raise SystemExit(
+            "연결 후 DATABASE()가 확인한 대상 DB와 일치하지 않아 쓰기를 중단합니다."
+        )
+    return ConnectedTargetAuthorization(
+        target=confirmation,
+        _capability=_CONNECTED_TARGET_CAPABILITY,
     )
 
 
@@ -702,12 +876,28 @@ def main() -> None:
     )
 
     settings = _settings_from_config()
-    validate_target_identity(args, settings)
+    apply_changes = bool(getattr(args, "apply", False))
+    confirmation = validate_target_identity(
+        args,
+        settings,
+        require_write_confirmation=apply_changes,
+    )
+
+    if not apply_changes:
+        print(
+            "[dry-run] 원격 DB 연결/쓰기 없음: "
+            f"profile={confirmation.profile} "
+            f"database={confirmation.database} "
+            f"truncate={str(confirmation.destructive).lower()}"
+        )
+        return
 
     conn = connect_tidb(settings)
     try:
+        authorization = verify_connected_target(conn, confirmation)
+        configure_tidb_session(conn)
         if args.truncate:
-            recreate_tables(conn)
+            recreate_tables(conn, authorization=authorization)
         apply_schema(conn)
         if not args.skip_main:
             migrate_sqlite_tables(main_db, conn)

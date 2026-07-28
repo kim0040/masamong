@@ -1,23 +1,31 @@
 # -*- coding: utf-8 -*-
 """학교 공지 digest를 사용자에게 전달하고 피드백을 수집하는 Cog입니다.
 
-이 Cog는 크롤링도 LLM 분석도 하지 않습니다. 별도 batch 프로세스가 만든 digest
-JSON을 읽어 Discord로 표현하고, 버튼 피드백을 DB에 기록할 뿐입니다. 수집을 봇
-프로세스 밖에 두는 것이 저사양 서버에서 봇 응답성을 지키는 핵심입니다.
+이 Cog는 공지를 크롤링하거나 LLM으로 분석하지 않습니다. 별도 batch 프로세스가
+만든 digest를 전달하고, 동의된 자연어 등록에서 로컬 파서로 확정하지 못한 경우에만
+제한된 LLM 구조화 호출을 사용합니다. 수집을 봇 밖에 두어 저사양 응답성을 지킵니다.
 """
 
 from __future__ import annotations
 
+import asyncio
+import fcntl
 import json
-from datetime import date, datetime, time as dt_time
+import os
+import shutil
+import sqlite3
+import time
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, Mapping
+from zoneinfo import ZoneInfo
 
 import discord
-import pytz
 from discord.ext import commands, tasks
 
 import config
 from logger_config import logger
+from utils import db as db_utils
 from utils.school_notice_contract import (
     FEEDBACK_TYPES,
     Digest,
@@ -26,9 +34,49 @@ from utils.school_notice_contract import (
     digest_path_for,
     load_digest,
 )
-from utils.school_notice_render import chunk_embeds, render_digest
+from utils.school_notice_profile import (
+    EXTRACTION_FIELDS,
+    SchoolCatalog,
+    SchoolProfileError,
+    build_confirmation_summary,
+    build_profile_correction_prompt,
+    build_profile_extraction_prompt,
+    canonicalize_profile,
+    load_school_catalog,
+    merge_profile_correction,
+    missing_profile_fields,
+    normalize_delivery_time,
+    parse_llm_profile_json,
+    parse_llm_profile_patch,
+    parse_profile_correction_locally,
+    parse_profile_locally,
+    profile_snapshot_hash,
+)
+from utils.school_notice_render import (
+    build_header_embed,
+    build_item_embed,
+    chunk_embeds,
+    render_digest,
+)
+from utils.privacy_consent import (
+    CONSENT_GRANTED,
+    ConsentRequiredError,
+    SCHOOL_NOTICE_SCOPE,
+    consent_command_name,
+    get_policy,
+    has_current_consent,
+    withdraw_consent,
+)
 
-KST = pytz.timezone("Asia/Seoul")
+KST = ZoneInfo("Asia/Seoul")
+SCHOOL_NOTICE_CONSENT_POLICY = get_policy(SCHOOL_NOTICE_SCOPE)
+
+_CONFIRM_WORDS = frozenset({"맞아", "맞아요", "네", "예", "확인", "저장"})
+_CANCEL_WORDS = frozenset({"취소", "그만", "중단"})
+# 하루 이상 재시작이 늦어져도 최근 결과를 놓치지 않되, 한 tick의 전체 사용자
+# 상한은 별도로 지킨다. 더 오래된 결과는 이미 시의성이 낮아 자동 DM하지 않는다.
+_DELIVERY_BACKLOG_DAYS = 3
+_PROFILE_SESSION_COOLDOWN_SECONDS = 60
 
 # 버튼에 노출할 피드백. 코어의 전체 타입 중 일상적으로 쓰는 것만 둔다.
 # `not_interested`는 영구 차단이 아니라 90일 반감기로 감쇠하는 완만한 신호다.
@@ -49,16 +97,105 @@ def _now_text() -> str:
     return datetime.now(KST).isoformat(timespec="seconds")
 
 
+def _as_kst(value: datetime | None = None) -> datetime:
+    """테스트에서 주입한 시각도 비교 가능한 KST aware datetime으로 만든다."""
+    if value is None:
+        return datetime.now(KST)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=KST)
+    return value.astimezone(KST)
+
+
+def _safe_error_code(value: Any) -> str:
+    """DB에는 사용자 입력이나 provider 오류문 대신 제한된 상태 코드만 남긴다."""
+    rendered = str(value or "internal_error").strip().lower()
+    allowed = {
+        "batch_not_ready",
+        "contract_error",
+        "dm_blocked",
+        "send_failed",
+        "timeout",
+        "internal_error",
+    }
+    return rendered if rendered in allowed else "internal_error"
+
+
+def _try_acquire_batch_lock(digest_dir: Path) -> int | None:
+    """batch와 삭제가 같은 profile/core 파일을 동시에 건드리지 않게 한다."""
+    lock_path = digest_dir / ".school-notice-batch.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(descriptor)
+        return None
+    return descriptor
+
+
+def _release_batch_lock(descriptor: int) -> None:
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
+def _delete_local_school_notice_data(
+    *,
+    digest_dir: Path,
+    core_db_path: str,
+    user_key: str,
+) -> list[str]:
+    """명시 삭제 시 사용자별 파생 파일과 sidecar 개인화 행을 정리한다."""
+    if not user_key.startswith("discord-") or not user_key.removeprefix("discord-").isdigit():
+        raise ValueError("안전하지 않은 학교 공지 사용자 키입니다.")
+
+    errors: list[str] = []
+    profile_file = digest_dir / ".profiles" / f"{user_key}.json"
+    user_digest_dir = digest_dir / user_key
+    for path in (profile_file, user_digest_dir):
+        try:
+            if path.is_symlink() or path.is_file():
+                path.unlink()
+            elif path.is_dir():
+                shutil.rmtree(path)
+        except OSError as exc:
+            errors.append(f"{path.name}: {type(exc).__name__}")
+
+    core_path = Path(str(core_db_path or "")).expanduser()
+    if str(core_db_path or "").strip() and core_path.is_file():
+        connection = None
+        try:
+            connection = sqlite3.connect(core_path, timeout=5)
+            connection.execute("PRAGMA foreign_keys = ON")
+            table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'school_profiles'"
+            ).fetchone()
+            if table:
+                connection.execute(
+                    "DELETE FROM school_profiles WHERE user_key = ?",
+                    (user_key,),
+                )
+                connection.commit()
+        except sqlite3.Error as exc:
+            if connection is not None:
+                connection.rollback()
+            errors.append(f"core.db: {type(exc).__name__}")
+        finally:
+            if connection is not None:
+                connection.close()
+    return errors
+
+
 class FeedbackView(discord.ui.View):
     """공지 한 건에 대한 피드백 버튼.
 
-    timeout=None이라 봇 재시작 후에는 동작하지 않습니다. 영속 View로 만들려면
-    custom_id 기반 재등록이 필요하지만, digest는 매일 새로 전달되므로 당일
-    상호작용만 지원해도 충분합니다.
+    하루 뒤에는 버튼을 닫아 View가 프로세스 메모리에 무기한 남지 않게 한다.
+    봇 재시작 뒤의 영속 버튼은 지원하지 않으며 digest 당일 상호작용만 받는다.
     """
 
     def __init__(self, cog: "SchoolNoticeCog", item: DigestItem) -> None:
-        super().__init__(timeout=None)
+        super().__init__(timeout=24 * 60 * 60)
         self._cog = cog
         self._source_id, self._external_id = item.feedback_key()
         for feedback_type, label, style in _FEEDBACK_BUTTONS:
@@ -69,13 +206,27 @@ class FeedbackView(discord.ui.View):
         interaction: discord.Interaction,
         feedback_type: str,
     ) -> None:
-        stored = await self._cog.record_feedback(
-            user_id=interaction.user.id,
-            source_id=self._source_id,
-            external_id=self._external_id,
-            feedback_type=feedback_type,
-            interaction_id=str(interaction.id),
-        )
+        if not await self._cog._has_school_notice_consent(interaction.user.id):
+            await interaction.response.send_message(
+                "학교 공지 개인정보 동의가 철회되었거나 현재 정책에 대한 재동의가 "
+                "필요합니다. DM에서 `!개인정보 동의 학교공지`를 실행해주세요.",
+                ephemeral=True,
+            )
+            return
+        try:
+            stored = await self._cog.record_feedback(
+                user_id=interaction.user.id,
+                source_id=self._source_id,
+                external_id=self._external_id,
+                feedback_type=feedback_type,
+                interaction_id=str(interaction.id),
+            )
+        except ConsentRequiredError:
+            await interaction.response.send_message(
+                "동의 상태가 변경되어 피드백을 저장하지 않았습니다.",
+                ephemeral=True,
+            )
+            return
         if stored:
             message = "기록했습니다. 내일 digest부터 반영됩니다."
             if feedback_type == "not_interested":
@@ -111,19 +262,17 @@ class SchoolNoticeCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.digest_dir = Path(config.SCHOOL_NOTICE_DIGEST_DIR).expanduser()
+        self._profile_sessions: set[int] = set()
+        self._profile_session_started_at: dict[int, float] = {}
+        self._profile_llm_calls: dict[int, int] = {}
+        self._profile_llm_lock = asyncio.Lock()
+        self._delivery_tick_lock = asyncio.Lock()
+        self._catalog: SchoolCatalog | None = None
         if config.SCHOOL_NOTICE_ENABLED:
-            self.delivery_task.change_interval(
-                time=dt_time(
-                    hour=config.SCHOOL_NOTICE_DELIVERY_TIME["hour"],
-                    minute=config.SCHOOL_NOTICE_DELIVERY_TIME["minute"],
-                    tzinfo=KST,
-                )
-            )
             self.delivery_task.start()
             logger.info(
-                "학교 공지 전달 스케줄러 시작: %02d:%02d KST",
-                config.SCHOOL_NOTICE_DELIVERY_TIME["hour"],
-                config.SCHOOL_NOTICE_DELIVERY_TIME["minute"],
+                "학교 공지 전달 스케줄러 시작: 1분 catch-up, 신규 기본 알림 %s KST",
+                config.SCHOOL_NOTICE_DEFAULT_DELIVERY_TIME,
             )
         else:
             logger.info("학교 공지 기능이 비활성화되어 스케줄러를 시작하지 않습니다.")
@@ -131,6 +280,59 @@ class SchoolNoticeCog(commands.Cog):
     def cog_unload(self) -> None:
         if self.delivery_task.is_running():
             self.delivery_task.cancel()
+        locked_users = getattr(self.bot, "locked_users", None)
+        if isinstance(locked_users, set):
+            locked_users.difference_update(self._profile_sessions)
+        self._profile_sessions.clear()
+
+    def _school_catalog(self) -> SchoolCatalog:
+        if self._catalog is None:
+            configured = str(getattr(config, "SCHOOL_NOTICE_CATALOG_PATH", "") or "").strip()
+            # 비활성 Cog를 단위 테스트로 직접 만들 때는 버전 관리된 기본
+            # 카탈로그를 사용한다. 활성 운영 프로필의 경로는 config가 기동 전에
+            # 존재 여부를 검증한다.
+            path = configured if configured and Path(configured).expanduser().is_file() else None
+            self._catalog = load_school_catalog(path)
+        return self._catalog
+
+    async def _has_school_notice_consent(self, user_id: int) -> bool:
+        """동의 저장소 장애도 개인정보 이용 허용으로 해석하지 않는다."""
+        try:
+            return await has_current_consent(
+                self.bot.db,
+                int(user_id),
+                SCHOOL_NOTICE_SCOPE,
+            )
+        except Exception:
+            logger.error(
+                "학교 공지 개인정보 동의 상태 확인 실패: user_id=%s",
+                user_id,
+                exc_info=True,
+            )
+            return False
+
+    async def _send_school_notice_consent_prompt(
+        self,
+        ctx: commands.Context,
+    ) -> None:
+        message = (
+            "🔐 학교 공지 프로필을 수집하거나 기존 개인화 결과를 이용하려면 "
+            "현재 개인정보 정책에 대한 명시적 동의가 필요합니다."
+        )
+        get_cog = getattr(self.bot, "get_cog", None)
+        privacy_cog = get_cog("PrivacyCog") if callable(get_cog) else None
+        if privacy_cog is not None:
+            await privacy_cog.send_consent_prompt(
+                ctx,
+                user_id=ctx.author.id,
+                scope=SCHOOL_NOTICE_SCOPE,
+                prefix=message,
+            )
+            return
+        await ctx.send(
+            f"{message}\n`!개인정보 동의 "
+            f"{consent_command_name(SCHOOL_NOTICE_SCOPE)}`를 실행한 뒤 다시 시도해주세요."
+        )
 
     # ------------------------------------------------------------------
     # 저장소 접근
@@ -139,10 +341,80 @@ class SchoolNoticeCog(commands.Cog):
     async def active_profiles(self) -> list[tuple[int, str]]:
         """전달 대상 사용자 목록을 반환합니다."""
         async with self.bot.db.execute(
-            "SELECT user_id, user_key FROM school_notice_profiles WHERE enabled = 1"
+            """
+            SELECT snp.user_id, snp.user_key
+            FROM school_notice_profiles AS snp
+            JOIN privacy_consents AS pc
+              ON pc.user_id = snp.user_id
+             AND pc.scope = ?
+             AND pc.policy_version = ?
+             AND pc.notice_hash = ?
+             AND pc.status = ?
+             AND pc.granted_at IS NOT NULL
+             AND pc.withdrawn_at IS NULL
+            WHERE snp.enabled = 1
+            """,
+            (
+                SCHOOL_NOTICE_CONSENT_POLICY.scope,
+                SCHOOL_NOTICE_CONSENT_POLICY.version,
+                SCHOOL_NOTICE_CONSENT_POLICY.notice_hash,
+                CONSENT_GRANTED,
+            ),
         ) as cursor:
             rows = await cursor.fetchall()
         return [(int(row[0]), str(row[1])) for row in rows]
+
+    async def _profile_row(self, user_id: int) -> dict[str, Any] | None:
+        async with self.bot.db.execute(
+            """
+            SELECT user_key, school_id, profile_json, profile_version, enabled,
+                   delivery_time
+            FROM school_notice_profiles
+            WHERE user_id = ?
+            """,
+            (int(user_id),),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        try:
+            profile = json.loads(str(row[2]))
+        except (TypeError, json.JSONDecodeError):
+            profile = {}
+        if not isinstance(profile, dict):
+            profile = {}
+        delivery_time = str(row[5] or "").strip()
+        if delivery_time:
+            profile["delivery_time"] = delivery_time
+        profile["user_key"] = str(row[0])
+        return {
+            "user_key": str(row[0]),
+            "school_id": str(row[1]),
+            "profile": profile,
+            "profile_version": int(row[3]),
+            "enabled": bool(row[4]),
+            "delivery_time": delivery_time
+            or config.SCHOOL_NOTICE_DEFAULT_DELIVERY_TIME,
+        }
+
+    async def _require_profile(
+        self,
+        ctx: commands.Context,
+        *,
+        require_consent: bool = True,
+    ) -> dict[str, Any] | None:
+        if require_consent and not await self._has_school_notice_consent(ctx.author.id):
+            await self._send_school_notice_consent_prompt(ctx)
+            return None
+        row = await self._profile_row(ctx.author.id)
+        if row is None:
+            await ctx.reply(
+                "등록된 학교 공지 정보가 없습니다. DM에서 "
+                "`!공지 등록 전북대 소프트웨어공학과 3학년, 오전 9시 알림`처럼 "
+                "자연스럽게 말씀해주세요."
+            )
+            return None
+        return row
 
     async def record_feedback(
         self,
@@ -157,16 +429,12 @@ class SchoolNoticeCog(commands.Cog):
         """피드백을 기록합니다. 이미 처리한 interaction이면 False를 반환합니다."""
         if feedback_type not in FEEDBACK_TYPES:
             raise ValueError(f"지원하지 않는 피드백 종류입니다: {feedback_type}")
-        async with self.bot.db.execute(
-            "SELECT 1 FROM school_notice_feedback WHERE interaction_id = ?",
-            (str(interaction_id),),
-        ) as cursor:
-            if await cursor.fetchone():
-                # 버튼 연타로 같은 신호가 여러 번 쌓이면 점수가 왜곡된다.
-                return False
-        await self.bot.db.execute(
-            """
-            INSERT INTO school_notice_feedback
+        if not await self._has_school_notice_consent(user_id):
+            raise ConsentRequiredError(SCHOOL_NOTICE_SCOPE)
+        insert_prefix = "INSERT IGNORE" if config.DB_BACKEND == "tidb" else "INSERT OR IGNORE"
+        cursor = await self.bot.db.execute(
+            f"""
+            {insert_prefix} INTO school_notice_feedback
                 (user_key, source_id, external_id, feedback_type, topic,
                  interaction_id, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -182,7 +450,9 @@ class SchoolNoticeCog(commands.Cog):
             ),
         )
         await self.bot.db.commit()
-        return True
+        # interaction_id unique 제약과 한 문장 insert로 버튼 연타 경쟁도
+        # 원자적으로 한 건만 반영한다.
+        return int(getattr(cursor, "rowcount", 0) or 0) == 1
 
     async def already_delivered(
         self,
@@ -190,15 +460,31 @@ class SchoolNoticeCog(commands.Cog):
         user_key: str,
         digest_date: date,
         notice_id: int,
+        revision_count: int = 0,
     ) -> bool:
+        """날짜와 무관하게 같은 공지의 같은 revision을 이미 보냈는지 확인한다."""
         async with self.bot.db.execute(
             """
             SELECT 1 FROM school_notice_deliveries
-            WHERE user_key = ? AND digest_date = ? AND notice_id = ?
+            WHERE user_key = ? AND notice_id = ? AND revision_count = ?
+              AND status = 'sent'
             """,
-            (user_key, digest_date.isoformat(), int(notice_id)),
+            (user_key, int(notice_id), int(revision_count)),
         ) as cursor:
             return await cursor.fetchone() is not None
+
+    async def _delivered_keys(self, user_key: str) -> set[tuple[int, int]]:
+        """원격 DB 왕복을 공지별 N회가 아닌 사용자당 한 번으로 제한한다."""
+        async with self.bot.db.execute(
+            """
+            SELECT notice_id, revision_count
+            FROM school_notice_deliveries
+            WHERE user_key = ? AND status = 'sent'
+            """,
+            (user_key,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {(int(row[0]), int(row[1])) for row in rows}
 
     async def mark_delivered(
         self,
@@ -206,19 +492,39 @@ class SchoolNoticeCog(commands.Cog):
         user_key: str,
         digest_date: date,
         notice_id: int,
+        revision_count: int = 0,
         status: str,
         failure_reason: str | None = None,
     ) -> None:
-        await self.bot.db.execute(
+        if config.DB_BACKEND == "tidb":
+            query = """
+                INSERT INTO school_notice_deliveries
+                    (user_key, digest_date, notice_id, revision_count, status,
+                     failure_reason, delivered_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    status = VALUES(status),
+                    failure_reason = VALUES(failure_reason),
+                    delivered_at = VALUES(delivered_at)
             """
-            INSERT INTO school_notice_deliveries
-                (user_key, digest_date, notice_id, status, failure_reason, delivered_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
+        else:
+            query = """
+                INSERT INTO school_notice_deliveries
+                    (user_key, digest_date, notice_id, revision_count, status,
+                     failure_reason, delivered_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_key, notice_id, revision_count) DO UPDATE SET
+                    status = excluded.status,
+                    failure_reason = excluded.failure_reason,
+                    delivered_at = excluded.delivered_at
+            """
+        await self.bot.db.execute(
+            query,
             (
                 user_key,
                 digest_date.isoformat(),
                 int(notice_id),
+                int(revision_count),
                 status,
                 failure_reason,
                 _now_text(),
@@ -240,6 +546,8 @@ class SchoolNoticeCog(commands.Cog):
         return load_digest(
             path,
             expected_schema_version=config.SCHOOL_NOTICE_SCHEMA_VERSION,
+            expected_user_key=user_key,
+            expected_digest_date=digest_date,
         )
 
     async def deliver_to_user(
@@ -247,46 +555,113 @@ class SchoolNoticeCog(commands.Cog):
         user_id: int,
         user_key: str,
         digest_date: date,
+        *,
+        verify_batch_snapshot: bool = False,
     ) -> str:
         """한 사용자에게 digest를 전달하고 결과 상태를 반환합니다."""
+        if not await self._has_school_notice_consent(user_id):
+            return "consent_required"
         try:
-            digest = self.load_user_digest(user_key, digest_date)
+            # 최대 수 MB JSON read/parse가 Discord event loop를 막지 않게 한다.
+            digest = await asyncio.to_thread(
+                self.load_user_digest,
+                user_key,
+                digest_date,
+            )
         except DigestContractError as exc:
             # 계약이 깨진 digest를 부분 렌더링하면 잘못된 마감·자격을 보여줄 수 있다.
             logger.warning("학교 공지 digest를 사용할 수 없습니다 (%s): %s", user_key, exc)
             return "contract_error"
 
         visible = digest.visible_items()
+        delivered_keys = await self._delivered_keys(user_key)
+        delivered_revision: dict[int, int] = {}
+        for delivered_notice_id, delivered_revision_count in delivered_keys:
+            if delivered_notice_id > 0:
+                delivered_revision[delivered_notice_id] = max(
+                    delivered_revision_count,
+                    delivered_revision.get(delivered_notice_id, -1),
+                )
         pending = [
             item
             for item in visible
-            if not await self.already_delivered(
-                user_key=user_key, digest_date=digest_date, notice_id=item.notice_id
-            )
+            if item.revision_count
+            > delivered_revision.get(item.notice_id, -1)
         ]
         health = digest.collection_health
+        stale_key = (-digest_date.toordinal(), 0)
         stale = bool(
             config.SCHOOL_NOTICE_STALE_WARNING_ENABLED
             and health is not None
             and health.has_problem
+            and stale_key not in delivered_keys
         )
         if not pending and not stale:
             # 이미 다 보냈고 알릴 이상도 없다.
             return "nothing_to_send"
 
-        user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
-        embeds = render_digest(
-            _digest_with_items(digest, pending),
-            max_items=config.SCHOOL_NOTICE_MAX_ITEMS_PER_DM,
-            today=digest_date,
-        )
+        # digest를 읽는 동안 철회된 경우 외부 DM 발송 직전에 다시 중단한다.
+        if not await self._has_school_notice_consent(user_id):
+            return "consent_required"
+
+        shown = pending[: config.SCHOOL_NOTICE_MAX_ITEMS_PER_DM]
+        display_digest = _digest_with_items(digest, shown)
         try:
-            for group in chunk_embeds(embeds):
-                await user.send(embeds=group)
-            for item in pending[: config.SCHOOL_NOTICE_MAX_ITEMS_PER_DM]:
+            user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
+            # fetch_user가 네트워크에서 대기하는 동안 철회될 수 있으므로 첫
+            # 개인화 메시지인 header 직전에 최신 동의를 다시 확인한다.
+            if not await self._has_school_notice_consent(user_id):
+                return "consent_required"
+            if verify_batch_snapshot:
+                readiness = await self._batch_ready_for_profile(
+                    user_id,
+                    user_key,
+                    digest_date,
+                )
+                if readiness != "ready":
+                    # fetch_user 네트워크 대기 중 설정이 바뀐 경우에도 옛
+                    # 개인화 header를 보내지 않는다.
+                    return readiness
+            header = build_header_embed(
+                display_digest,
+                shown=len(shown),
+                total=len(pending),
+            )
+            await user.send(embeds=[header])
+            if stale:
+                # 실제 공지 ID는 양수만 허용되므로 음수 ordinal을 날짜별
+                # 수집상태 경고의 내부 전용 키로 안전하게 사용할 수 있다.
+                await self.mark_delivered(
+                    user_key=user_key,
+                    digest_date=digest_date,
+                    notice_id=stale_key[0],
+                    revision_count=0,
+                    status="sent",
+                )
+            for item in shown:
+                if not await self._has_school_notice_consent(user_id):
+                    return "consent_required"
+                if verify_batch_snapshot:
+                    readiness = await self._batch_ready_for_profile(
+                        user_id,
+                        user_key,
+                        digest_date,
+                    )
+                    if readiness != "ready":
+                        return readiness
+                # 공지와 피드백 버튼을 한 메시지로 보내고 성공 직후 영속화한다.
+                # 뒤 항목이 실패해도 이미 성공한 공지는 다음 재시도에서 빠진다.
                 await user.send(
-                    content=f"위 공지 피드백: {item.title[:80]}",
+                    content=f"이 공지가 나와 얼마나 관련 있었나요? · {item.title[:80]}",
+                    embeds=[build_item_embed(item, today=_as_kst().date())],
                     view=FeedbackView(self, item),
+                )
+                await self.mark_delivered(
+                    user_key=user_key,
+                    digest_date=digest_date,
+                    notice_id=item.notice_id,
+                    revision_count=item.revision_count,
+                    status="sent",
                 )
         except discord.Forbidden:
             logger.info("학교 공지 DM이 차단되어 있습니다: user_id=%s", user_id)
@@ -295,34 +670,398 @@ class SchoolNoticeCog(commands.Cog):
             logger.warning("학교 공지 DM 전송 실패 user_id=%s: %s", user_id, exc)
             return "send_failed"
 
-        for item in pending[: config.SCHOOL_NOTICE_MAX_ITEMS_PER_DM]:
-            await self.mark_delivered(
-                user_key=user_key,
-                digest_date=digest_date,
-                notice_id=item.notice_id,
-                status="sent",
-            )
+        if len(pending) > len(shown):
+            # 다음 tick에서 이미 보낸 revision을 bulk dedupe한 뒤 다음 페이지를
+            # 이어 보낸다. 한 번에 Discord 메시지를 폭주시키지 않는다.
+            return "more_pending"
         return "sent"
 
-    @tasks.loop(time=dt_time(hour=8, minute=10, tzinfo=KST))
+    async def _due_profiles(
+        self,
+        *,
+        digest_date: date,
+        now: datetime,
+        limit: int,
+        catch_up: bool = False,
+    ) -> list[tuple[int, str]]:
+        """현재 시각까지 도달했고 아직 끝나지 않은 사용자만 DB에서 제한 조회."""
+        now_hhmm = now.strftime("%H:%M")
+        now_text = now.isoformat(timespec="seconds")
+        default_time = config.SCHOOL_NOTICE_DEFAULT_DELIVERY_TIME
+        async with self.bot.db.execute(
+            """
+            SELECT snp.user_id, snp.user_key
+            FROM school_notice_profiles AS snp
+            JOIN privacy_consents AS pc
+              ON pc.user_id = snp.user_id
+             AND pc.scope = ?
+             AND pc.policy_version = ?
+             AND pc.notice_hash = ?
+             AND pc.status = ?
+             AND pc.granted_at IS NOT NULL
+             AND pc.withdrawn_at IS NULL
+            LEFT JOIN school_notice_delivery_runs AS dr
+              ON dr.user_key = snp.user_key
+             AND dr.digest_date = ?
+            WHERE snp.enabled = 1
+              AND COALESCE(snp.delivery_time, ?) <= ?
+              AND (
+                    ? = 0
+                    OR EXISTS (
+                        SELECT 1
+                        FROM school_notice_batch_runs AS current_batch
+                        WHERE current_batch.user_key = snp.user_key
+                          AND current_batch.run_date = ?
+                          AND current_batch.status IN ('succeeded', 'partial')
+                    )
+              )
+              AND (
+                    ? = 0
+                    OR NOT EXISTS (
+                        SELECT 1
+                        FROM school_notice_batch_runs AS newer_batch
+                        WHERE newer_batch.user_key = snp.user_key
+                          AND newer_batch.run_date > ?
+                          AND newer_batch.status IN ('succeeded', 'partial')
+                    )
+              )
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM school_notice_delivery_runs AS newer
+                    WHERE newer.user_key = snp.user_key
+                      AND newer.digest_date > ?
+                      AND newer.status IN ('pending', 'retry', 'processing')
+              )
+              AND (
+                    dr.user_key IS NULL
+                    OR (
+                        dr.status IN ('pending', 'retry', 'processing')
+                        AND dr.attempt_count < ?
+                        AND (dr.next_attempt_at IS NULL OR dr.next_attempt_at <= ?)
+                    )
+              )
+            ORDER BY COALESCE(snp.delivery_time, ?), snp.user_id
+            LIMIT ?
+            """,
+            (
+                SCHOOL_NOTICE_CONSENT_POLICY.scope,
+                SCHOOL_NOTICE_CONSENT_POLICY.version,
+                SCHOOL_NOTICE_CONSENT_POLICY.notice_hash,
+                CONSENT_GRANTED,
+                digest_date.isoformat(),
+                default_time,
+                now_hhmm,
+                1 if catch_up else 0,
+                digest_date.isoformat(),
+                1 if catch_up else 0,
+                digest_date.isoformat(),
+                digest_date.isoformat(),
+                config.SCHOOL_NOTICE_DELIVERY_MAX_ATTEMPTS,
+                now_text,
+                default_time,
+                max(1, int(limit)),
+            ),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [(int(row[0]), str(row[1])) for row in rows]
+
+    async def _ensure_delivery_run(self, user_key: str, digest_date: date) -> None:
+        if config.DB_BACKEND == "tidb":
+            query = """
+                INSERT IGNORE INTO school_notice_delivery_runs
+                    (user_key, digest_date, status, attempt_count, updated_at)
+                VALUES (?, ?, 'pending', 0, ?)
+            """
+        else:
+            query = """
+                INSERT OR IGNORE INTO school_notice_delivery_runs
+                    (user_key, digest_date, status, attempt_count, updated_at)
+                VALUES (?, ?, 'pending', 0, ?)
+            """
+        await self.bot.db.execute(
+            query,
+            (user_key, digest_date.isoformat(), _now_text()),
+        )
+        await self.bot.db.commit()
+
+    async def _claim_delivery_run(
+        self,
+        user_key: str,
+        digest_date: date,
+        *,
+        now: datetime,
+    ) -> int | None:
+        """시도 횟수를 provider/Discord 호출 전에 올려 crash도 유한하게 만든다."""
+        lease_until = now + timedelta(
+            seconds=config.SCHOOL_NOTICE_DELIVERY_USER_TIMEOUT_SECONDS + 10
+        )
+        cursor = await self.bot.db.execute(
+            """
+            UPDATE school_notice_delivery_runs
+            SET status = 'processing',
+                attempt_count = attempt_count + 1,
+                next_attempt_at = ?,
+                last_error = NULL,
+                updated_at = ?
+            WHERE user_key = ? AND digest_date = ?
+              AND status IN ('pending', 'retry', 'processing')
+              AND attempt_count < ?
+              AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+            """,
+            (
+                lease_until.isoformat(timespec="seconds"),
+                now.isoformat(timespec="seconds"),
+                user_key,
+                digest_date.isoformat(),
+                config.SCHOOL_NOTICE_DELIVERY_MAX_ATTEMPTS,
+                now.isoformat(timespec="seconds"),
+            ),
+        )
+        await self.bot.db.commit()
+        if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+            return None
+        async with self.bot.db.execute(
+            """
+            SELECT attempt_count
+            FROM school_notice_delivery_runs
+            WHERE user_key = ? AND digest_date = ?
+            """,
+            (user_key, digest_date.isoformat()),
+        ) as read_cursor:
+            row = await read_cursor.fetchone()
+        return int(row[0]) if row else None
+
+    async def _finish_delivery_run(
+        self,
+        user_key: str,
+        digest_date: date,
+        *,
+        status: str,
+        attempt_count: int,
+        now: datetime,
+    ) -> None:
+        reset_attempt_count: int | None = None
+        if status in {"sent", "nothing_to_send"}:
+            run_status = "completed"
+            next_attempt_at = None
+            last_error = None
+            finished_at = now.isoformat(timespec="seconds")
+        elif status == "more_pending":
+            # 한 페이지를 실제로 전송·mark했으므로 실패 횟수를 초기화하고 다음
+            # 페이지를 1분 뒤 이어 간다. digest 최대 항목 수로 전체 횟수도 유한하다.
+            run_status = "pending"
+            reset_attempt_count = 0
+            next_attempt_at = (now + timedelta(minutes=1)).isoformat(
+                timespec="seconds"
+            )
+            last_error = None
+            finished_at = None
+        elif status in {"consent_required", "profile_stale"}:
+            run_status = "cancelled"
+            next_attempt_at = None
+            last_error = None
+            finished_at = now.isoformat(timespec="seconds")
+        else:
+            last_error = _safe_error_code(status)
+            if attempt_count >= config.SCHOOL_NOTICE_DELIVERY_MAX_ATTEMPTS:
+                run_status = "failed"
+                next_attempt_at = None
+                finished_at = now.isoformat(timespec="seconds")
+            else:
+                run_status = "retry"
+                delay = config.SCHOOL_NOTICE_DELIVERY_RETRY_MINUTES * (
+                    2 ** max(0, attempt_count - 1)
+                )
+                next_attempt_at = (
+                    now + timedelta(minutes=min(delay, 24 * 60))
+                ).isoformat(timespec="seconds")
+                finished_at = None
+        await self.bot.db.execute(
+            """
+            UPDATE school_notice_delivery_runs
+            SET status = ?, next_attempt_at = ?, last_error = ?,
+                finished_at = ?,
+                attempt_count = COALESCE(?, attempt_count),
+                updated_at = ?
+            WHERE user_key = ? AND digest_date = ?
+            """,
+            (
+                run_status,
+                next_attempt_at,
+                last_error,
+                finished_at,
+                reset_attempt_count,
+                now.isoformat(timespec="seconds"),
+                user_key,
+                digest_date.isoformat(),
+            ),
+        )
+        await self.bot.db.commit()
+
+    @staticmethod
+    def _parse_stored_datetime(value: Any) -> datetime | None:
+        try:
+            parsed = datetime.fromisoformat(str(value))
+        except (TypeError, ValueError):
+            return None
+        return _as_kst(parsed)
+
+    async def _batch_ready_for_profile(
+        self,
+        user_id: int,
+        user_key: str,
+        digest_date: date,
+    ) -> str:
+        """성공/부분 성공 batch가 현재 프로필의 정확한 snapshot인지 검증."""
+        async with self.bot.db.execute(
+            """
+            SELECT br.status, br.profile_version, br.profile_hash,
+                   br.finished_at, snp.profile_version, snp.profile_json,
+                   snp.updated_at
+            FROM school_notice_batch_runs AS br
+            JOIN school_notice_profiles AS snp
+              ON snp.user_key = br.user_key
+             AND snp.user_id = ?
+            WHERE br.user_key = ? AND br.run_date = ?
+            """,
+            (int(user_id), user_key, digest_date.isoformat()),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None or str(row[0]) not in {"succeeded", "partial"}:
+            return "batch_not_ready"
+        try:
+            batch_version = int(row[1])
+            batch_hash = str(row[2])
+            current_version = int(row[4])
+            current_hash = profile_snapshot_hash(str(row[5]))
+        except (TypeError, ValueError, SchoolProfileError):
+            return "profile_stale"
+        if (
+            batch_version <= 0
+            or batch_version != current_version
+            or batch_hash != current_hash
+        ):
+            # 기존 default(0/빈 hash) 행과 설정 변경 뒤의 옛 digest는 모두
+            # fail-closed한다. 초 단위 updated_at이 같아도 version/hash가 잡는다.
+            return "profile_stale"
+        finished_at = self._parse_stored_datetime(row[3])
+        profile_updated_at = self._parse_stored_datetime(row[6])
+        if finished_at is None or profile_updated_at is None:
+            # 정확한 snapshot 선후관계를 증명하지 못하면 옛 학교/조건 결과를
+            # 현재 프로필에 결합하지 않는다.
+            return "profile_stale"
+        if (
+            profile_updated_at > finished_at
+        ):
+            # 23시 수집 뒤 학교/조건을 바꾼 사용자에게 옛 프로필 digest를
+            # 새 프로필 결과인 것처럼 보내지 않는다.
+            return "profile_stale"
+        return "ready"
+
+    async def _run_due_profile(
+        self,
+        user_id: int,
+        user_key: str,
+        digest_date: date,
+        *,
+        now: datetime,
+    ) -> str:
+        await self._ensure_delivery_run(user_key, digest_date)
+        attempt_count = await self._claim_delivery_run(
+            user_key,
+            digest_date,
+            now=now,
+        )
+        if attempt_count is None:
+            return "not_claimed"
+        try:
+            batch_status = await self._batch_ready_for_profile(
+                user_id,
+                user_key,
+                digest_date,
+            )
+            if batch_status == "ready":
+                result = await asyncio.wait_for(
+                    self.deliver_to_user(
+                        user_id,
+                        user_key,
+                        digest_date,
+                        verify_batch_snapshot=True,
+                    ),
+                    timeout=config.SCHOOL_NOTICE_DELIVERY_USER_TIMEOUT_SECONDS,
+                )
+            else:
+                result = batch_status
+        except asyncio.TimeoutError:
+            result = "timeout"
+        except Exception:
+            # 예외 본문에는 provider/경로/외부 payload가 섞일 수 있어 DB에는
+            # 저장하지 않고 운영 로그에 stack만 남긴다.
+            logger.error(
+                "학교 공지 사용자 전달 중 내부 오류: user_key=%s",
+                user_key,
+                exc_info=True,
+            )
+            result = "internal_error"
+        await self._finish_delivery_run(
+            user_key,
+            digest_date,
+            status=result,
+            attempt_count=attempt_count,
+            now=now,
+        )
+        return result
+
+    async def process_due_deliveries(self, *, now: datetime | None = None) -> int:
+        """전날과 제한된 backlog 중 due 작업을 전체 batch 상한 안에서 처리."""
+        current = _as_kst(now)
+        async with self._delivery_tick_lock:
+            attempted = 0
+            remaining = config.SCHOOL_NOTICE_DELIVERY_BATCH_SIZE
+            seen_users: set[int] = set()
+            # 최신 digest부터 처리한다. 동일 notice의 더 높은 revision이 먼저
+            # 기록되므로 이후 오래된 digest의 낮은 revision은 자동으로 빠진다.
+            for days_ago in range(1, _DELIVERY_BACKLOG_DAYS + 1):
+                if remaining <= 0:
+                    break
+                digest_date = current.date() - timedelta(days=days_ago)
+                profiles = await self._due_profiles(
+                    digest_date=digest_date,
+                    now=current,
+                    limit=remaining,
+                    catch_up=days_ago > 1,
+                )
+                for user_id, user_key in profiles:
+                    if user_id in seen_users:
+                        continue
+                    result = await self._run_due_profile(
+                        user_id,
+                        user_key,
+                        digest_date,
+                        now=current,
+                    )
+                    if result != "not_claimed":
+                        seen_users.add(user_id)
+                        attempted += 1
+                        remaining -= 1
+                        logger.info(
+                            "학교 공지 전달 결과 user_key=%s digest_date=%s status=%s",
+                            user_key,
+                            digest_date.isoformat(),
+                            result,
+                        )
+            return attempted
+
+    @tasks.loop(minutes=1.0)
     async def delivery_task(self) -> None:
-        """하루 한 번 활성 사용자에게 digest를 전달합니다."""
+        """사용자별 시각을 1분 단위 catch-up하며 한 tick 작업량은 제한한다."""
         if not config.SCHOOL_NOTICE_ENABLED:
             return
-        today = datetime.now(KST).date()
         try:
-            profiles = await self.active_profiles()
-        except Exception as exc:  # noqa: BLE001 - 스케줄러가 죽으면 안 된다
-            logger.error("학교 공지 프로필 조회 실패: %s", exc, exc_info=True)
-            return
-        for user_id, user_key in profiles:
-            try:
-                status = await self.deliver_to_user(user_id, user_key, today)
-                logger.info("학교 공지 전달 결과 user_key=%s status=%s", user_key, status)
-            except Exception as exc:  # noqa: BLE001 - 한 사용자 실패가 전체를 막지 않게
-                logger.error(
-                    "학교 공지 전달 중 오류 user_key=%s: %s", user_key, exc, exc_info=True
-                )
+            await self.process_due_deliveries()
+        except Exception:
+            # tasks.loop 자체가 멈추지 않게 하되 다음 tick도 같은 유한 batch다.
+            logger.error("학교 공지 전달 scheduler tick 실패", exc_info=True)
 
     @delivery_task.before_loop
     async def _before_delivery(self) -> None:
@@ -333,80 +1072,626 @@ class SchoolNoticeCog(commands.Cog):
     # ------------------------------------------------------------------
 
     @commands.group(name="공지", invoke_without_command=True)
-    async def school_notice(self, ctx: commands.Context) -> None:
-        """오늘 digest를 다시 보여줍니다."""
+    async def school_notice(self, ctx: commands.Context, page: int = 1) -> None:
+        """가장 최근 성공/부분 성공 digest의 요청 페이지를 보여줍니다."""
         if not config.SCHOOL_NOTICE_ENABLED:
             await ctx.reply("ℹ️ 이 마사몽 인스턴스에서는 학교 공지 기능을 운영하지 않습니다.")
             return
-        user_key = user_key_for(ctx.author.id)
-        today = datetime.now(KST).date()
+        if ctx.guild:
+            await ctx.reply("⚠️ 개인화 학교 공지는 DM에서만 확인할 수 있습니다.")
+            return
+        profile_row = await self._require_profile(ctx)
+        if profile_row is None:
+            return
+        user_key = str(profile_row["user_key"])
+        async with self.bot.db.execute(
+            """
+            SELECT run_date
+            FROM school_notice_batch_runs
+            WHERE user_key = ? AND status IN ('succeeded', 'partial')
+            ORDER BY run_date DESC
+            LIMIT 1
+            """,
+            (user_key,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            await ctx.reply(
+                "아직 완료된 학교 공지 수집 결과가 없습니다. "
+                "등록 학교만 한국 시간 23시에 수집합니다."
+            )
+            return
         try:
-            digest = self.load_user_digest(user_key, today)
-        except DigestContractError as exc:
-            await ctx.reply(f"⚠️ 오늘 digest를 읽을 수 없습니다: {exc}")
+            digest_date = date.fromisoformat(str(row[0]))
+            readiness = await self._batch_ready_for_profile(
+                int(ctx.author.id),
+                user_key,
+                digest_date,
+            )
+            if readiness == "profile_stale":
+                await ctx.reply(
+                    "학교 공지 정보를 바꾼 뒤 아직 새로 수집하지 않았습니다. "
+                    "오늘 23시 수집 이후 최신 조건으로 확인해주세요."
+                )
+                return
+            if readiness != "ready":
+                await ctx.reply("⚠️ 최근 학교 공지 수집 상태를 확인할 수 없습니다.")
+                return
+            digest = await asyncio.to_thread(
+                self.load_user_digest,
+                user_key,
+                digest_date,
+            )
+        except (ValueError, DigestContractError):
+            await ctx.reply("⚠️ 최근 학교 공지 결과를 안전하게 읽을 수 없습니다.")
             return
         if digest.is_empty and not (
             digest.collection_health and digest.collection_health.has_problem
         ):
-            await ctx.reply("오늘 조건에 맞는 새 공지가 없습니다.")
+            await ctx.reply("최근 수집 결과에는 내 조건에 맞는 공지가 없습니다.")
             return
-        embeds = render_digest(
-            digest,
-            max_items=config.SCHOOL_NOTICE_MAX_ITEMS_PER_DM,
-            today=today,
-        )
-        for group in chunk_embeds(embeds):
-            await ctx.reply(embeds=group) if group is embeds[:1] else await ctx.send(
-                embeds=group
+        if page < 1:
+            await ctx.reply("페이지는 1 이상의 숫자로 입력해주세요. 예: `!공지 2`")
+            return
+        visible = digest.visible_items()
+        page_size = config.SCHOOL_NOTICE_MAX_ITEMS_PER_DM
+        page_count = max(1, (len(visible) + page_size - 1) // page_size)
+        if page > page_count:
+            await ctx.reply(
+                f"해당 페이지가 없습니다. 최근 결과는 총 {page_count}페이지입니다."
             )
+            return
+        start = (page - 1) * page_size
+        page_digest = _digest_with_items(
+            digest,
+            visible[start : start + page_size],
+        )
+        embeds = render_digest(
+            page_digest,
+            max_items=page_size,
+            today=_as_kst().date(),
+        )
+        for index, group in enumerate(chunk_embeds(embeds)):
+            # 파일 read/parse나 앞 그룹 전송 중 철회된 경우 이후 개인화
+            # 내용을 보내지 않는다.
+            if not await self._has_school_notice_consent(ctx.author.id):
+                await self._send_school_notice_consent_prompt(ctx)
+                return
+            readiness = await self._batch_ready_for_profile(
+                int(ctx.author.id),
+                user_key,
+                digest_date,
+            )
+            if readiness != "ready":
+                await ctx.reply(
+                    "학교 공지 정보가 바뀌어 이전 조건의 나머지 결과는 "
+                    "보내지 않았습니다. 오늘 23시 수집 이후 다시 확인해주세요."
+                )
+                return
+            if index == 0:
+                await ctx.reply(
+                    content=(
+                        f"최근 학교 공지 · {page}/{page_count}페이지"
+                        + (f"\n다음: `!공지 {page + 1}`" if page < page_count else "")
+                    ),
+                    embeds=group,
+                )
+            else:
+                await ctx.send(embeds=group)
 
     @school_notice.command(name="등록")
-    async def register(self, ctx: commands.Context, *, profile_json: str) -> None:
-        """프로필 JSON을 등록합니다. DM에서만 허용합니다."""
+    async def register(
+        self,
+        ctx: commands.Context,
+        *,
+        profile_text: str = "",
+    ) -> None:
+        """학교·과정·관심사·알림 시각을 자연어로 확인 후 등록합니다."""
         if not config.SCHOOL_NOTICE_ENABLED:
             await ctx.reply("ℹ️ 이 인스턴스에서는 학교 공지 기능을 운영하지 않습니다.")
             return
         if ctx.guild:
             await ctx.reply("⚠️ 프로필 등록은 DM에서만 가능합니다.")
             return
-        try:
-            payload = json.loads(profile_json)
-        except json.JSONDecodeError as exc:
-            await ctx.reply(f"❌ JSON 형식이 아닙니다: {exc}")
+        if not await self._has_school_notice_consent(ctx.author.id):
+            await self._send_school_notice_consent_prompt(ctx)
             return
-        try:
-            validated = validate_profile_payload(payload, user_id=ctx.author.id)
-        except ValueError as exc:
-            await ctx.reply(f"❌ 프로필이 올바르지 않습니다: {exc}")
-            return
-        await self.upsert_profile(ctx.author.id, validated)
-        await ctx.reply(
-            f"✅ `{validated['school_id']}` 프로필을 등록했습니다. "
-            "내일 아침부터 digest를 보내드립니다."
+        await self._run_profile_session(
+            ctx,
+            initial_text=profile_text,
+            current_profile=None,
         )
 
+    @school_notice.command(name="수정")
+    async def modify_profile(
+        self,
+        ctx: commands.Context,
+        *,
+        correction_text: str = "",
+    ) -> None:
+        """현재 학교 공지 정보를 자연어로 고치고 확인 후 저장합니다."""
+        if not config.SCHOOL_NOTICE_ENABLED:
+            await ctx.reply("ℹ️ 이 인스턴스에서는 학교 공지 기능을 운영하지 않습니다.")
+            return
+        if ctx.guild:
+            await ctx.reply("⚠️ 프로필 수정은 DM에서만 가능합니다.")
+            return
+        profile_row = await self._require_profile(ctx)
+        if profile_row is None:
+            return
+        await self._run_profile_session(
+            ctx,
+            initial_text=correction_text,
+            current_profile=profile_row["profile"],
+        )
+
+    async def _call_profile_llm(self, prompt: str, *, user_id: int) -> str | None:
+        """동의 직후 라우팅 primary 한 곳만 한 번 호출한다."""
+        if not config.SCHOOL_NOTICE_PROFILE_LLM_ENABLED:
+            return None
+        if not await self._has_school_notice_consent(user_id):
+            raise ConsentRequiredError(SCHOOL_NOTICE_SCOPE)
+        get_cog = getattr(self.bot, "get_cog", None)
+        ai_handler = get_cog("AIHandler") if callable(get_cog) else None
+        llm_client = getattr(ai_handler, "llm_client", None)
+        if llm_client is None:
+            return None
+        get_targets = getattr(llm_client, "get_lane_targets", None)
+        call_target = getattr(llm_client, "call_routing_lane_target", None)
+        if not callable(get_targets) or not callable(call_target):
+            return None
+        targets = list(get_targets("routing") or [])
+        if not targets:
+            return None
+        async with self._profile_llm_lock:
+            # 학교 등록 세션끼리는 quota 확인→예약→provider 호출 전체를
+            # 직렬화한다. 예약 기록이 실패하면 과금 호출도 fail-closed한다.
+            if not await self._has_school_notice_consent(user_id):
+                raise ConsentRequiredError(SCHOOL_NOTICE_SCOPE)
+            calls = self._profile_llm_calls.get(int(user_id), 0)
+            if calls >= min(3, int(config.SCHOOL_NOTICE_PROFILE_MAX_REVISIONS)):
+                logger.info("학교 공지 프로필 세션 LLM 호출 상한 도달, 로컬 파서 사용")
+                return None
+            try:
+                limited = bool(
+                    self.bot.db
+                    and await db_utils.check_api_rate_limit(
+                        self.bot.db,
+                        "cometapi",
+                        config.COMETAPI_RPM_LIMIT,
+                        config.COMETAPI_RPD_LIMIT,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "학교 공지 프로필 LLM quota 확인 실패, provider 호출 생략",
+                    exc_info=True,
+                )
+                return None
+            if limited:
+                logger.info("학교 공지 프로필 LLM 공용 사용량 상한 도달, 로컬 파서 사용")
+                return None
+            if self.bot.db:
+                try:
+                    reserved_at = datetime.now(timezone.utc).isoformat()
+                    await self.bot.db.executemany(
+                        """
+                        INSERT INTO api_call_log (api_type, called_at)
+                        VALUES (?, ?)
+                        """,
+                        (
+                            ("cometapi", reserved_at),
+                            ("school_notice_profile", reserved_at),
+                        ),
+                    )
+                    await self.bot.db.commit()
+                except Exception:
+                    try:
+                        await self.bot.db.rollback()
+                    except Exception:
+                        pass
+                    logger.warning(
+                        "학교 공지 프로필 LLM quota 예약 실패, provider 호출 생략",
+                        exc_info=True,
+                    )
+                    return None
+            self._profile_llm_calls[int(user_id)] = calls + 1
+            try:
+                return await asyncio.wait_for(
+                    call_target(
+                        targets[0],
+                        prompt=prompt,
+                        log_extra={"feature": "school_notice_profile"},
+                    ),
+                    timeout=config.SCHOOL_NOTICE_PROFILE_LLM_TIMEOUT_SECONDS,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # 프롬프트/응답/사용자 문장은 로그에 남기지 않는다.
+                logger.info(
+                    "학교 공지 프로필 LLM 1회 호출 실패, 로컬 파서 사용: %s",
+                    type(exc).__name__,
+                )
+                return None
+
+    async def _initial_profile_draft(
+        self,
+        text: str,
+        *,
+        user_id: int,
+    ) -> dict[str, Any]:
+        catalog = self._school_catalog()
+        local_draft: dict[str, Any] | None = None
+        local_error: SchoolProfileError | None = None
+        try:
+            local_draft = parse_profile_locally(
+                text,
+                catalog=catalog,
+                require_complete=False,
+            )
+            if not missing_profile_fields(local_draft):
+                return local_draft
+        except SchoolProfileError as exc:
+            local_error = exc
+
+        # 결정론적 파서로 확정하지 못한 경우에만 동의된 원문을 외부에 한 번
+        # 보낸다. 명확한 입력은 비용과 개인정보 외부 전달이 모두 0회다.
+        response = await self._call_profile_llm(
+            build_profile_extraction_prompt(text, catalog=catalog),
+            user_id=user_id,
+        )
+        if response:
+            try:
+                return parse_llm_profile_json(
+                    response,
+                    catalog=catalog,
+                    require_complete=False,
+                    user_text=text,
+                )
+            except SchoolProfileError as exc:
+                logger.info(
+                    "학교 공지 프로필 LLM 응답 계약 거부, 로컬 파서 사용: %s",
+                    type(exc).__name__,
+                )
+        if local_draft is not None:
+            return local_draft
+        if local_error is not None:
+            raise local_error
+        raise SchoolProfileError("학교 공지 프로필을 이해하지 못했습니다.")
+
+    async def _correct_profile_draft(
+        self,
+        text: str,
+        current_profile: Mapping[str, Any],
+        *,
+        user_id: int,
+    ) -> dict[str, Any]:
+        catalog = self._school_catalog()
+        local_error: SchoolProfileError | None = None
+        try:
+            return parse_profile_correction_locally(
+                text,
+                current_profile,
+                catalog=catalog,
+                require_complete=False,
+            )
+        except SchoolProfileError as exc:
+            local_error = exc
+
+        response = await self._call_profile_llm(
+            build_profile_correction_prompt(
+                text,
+                current_profile,
+                catalog=catalog,
+            ),
+            user_id=user_id,
+        )
+        if response:
+            try:
+                patch = parse_llm_profile_patch(
+                    response,
+                    current_profile,
+                    catalog=catalog,
+                    user_text=text,
+                )
+                return merge_profile_correction(
+                    current_profile,
+                    patch,
+                    catalog=catalog,
+                    require_complete=False,
+                )
+            except SchoolProfileError as exc:
+                logger.info(
+                    "학교 공지 프로필 보정 LLM 응답 계약 거부, 로컬 파서 사용: %s",
+                    type(exc).__name__,
+                )
+        if local_error is not None:
+            raise local_error
+        raise SchoolProfileError("학교 공지 수정 내용을 이해하지 못했습니다.")
+
+    async def _wait_profile_message(self, ctx: commands.Context) -> str | None:
+        author_id = int(ctx.author.id)
+        channel_id = getattr(ctx.channel, "id", None)
+
+        def check(message: discord.Message) -> bool:
+            if int(getattr(message.author, "id", -1)) != author_id:
+                return False
+            incoming_id = getattr(getattr(message, "channel", None), "id", None)
+            return incoming_id == channel_id
+
+        try:
+            message = await self.bot.wait_for(
+                "message",
+                check=check,
+                timeout=config.SCHOOL_NOTICE_PROFILE_INPUT_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            await ctx.reply(
+                "⌛ 입력 시간이 지나 등록을 종료했습니다. 저장된 내용은 없습니다."
+            )
+            return None
+        return str(getattr(message, "content", "") or "").strip()
+
+    def _canonical_existing_profile(
+        self,
+        profile: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        extracted = {
+            key: value
+            for key, value in dict(profile).items()
+            if key in EXTRACTION_FIELDS
+        }
+        if "delivery_time" not in extracted:
+            extracted["delivery_time"] = config.SCHOOL_NOTICE_DEFAULT_DELIVERY_TIME
+        return canonicalize_profile(
+            extracted,
+            catalog=self._school_catalog(),
+            require_complete=False,
+        )
+
+    async def _run_profile_session(
+        self,
+        ctx: commands.Context,
+        *,
+        initial_text: str,
+        current_profile: Mapping[str, Any] | None,
+    ) -> None:
+        """한 사용자당 한 세션, 유한 보정, 확인 뒤에만 canonical 값을 저장."""
+        user_id = int(ctx.author.id)
+        if user_id in self._profile_sessions:
+            await ctx.reply("⚠️ 이미 학교 공지 등록/수정을 진행 중입니다.")
+            return
+        now_monotonic = time.monotonic()
+        self._profile_session_started_at = {
+            tracked_user: started_at
+            for tracked_user, started_at in self._profile_session_started_at.items()
+            if now_monotonic - started_at < _PROFILE_SESSION_COOLDOWN_SECONDS
+        }
+        last_started = self._profile_session_started_at.get(user_id)
+        if (
+            last_started is not None
+            and now_monotonic - last_started < _PROFILE_SESSION_COOLDOWN_SECONDS
+        ):
+            remaining = int(
+                _PROFILE_SESSION_COOLDOWN_SECONDS
+                - (now_monotonic - last_started)
+            )
+            await ctx.reply(
+                f"⚠️ 방금 등록/수정을 진행했습니다. 약 {max(1, remaining)}초 뒤 "
+                "다시 시도해주세요."
+            )
+            return
+
+        locked_users = getattr(self.bot, "locked_users", None)
+        if not isinstance(locked_users, set):
+            locked_users = set()
+            setattr(self.bot, "locked_users", locked_users)
+        self._profile_sessions.add(user_id)
+        self._profile_session_started_at[user_id] = now_monotonic
+        self._profile_llm_calls[user_id] = 0
+        locked_users.add(user_id)
+
+        max_revisions = min(
+            3,
+            max(1, int(config.SCHOOL_NOTICE_PROFILE_MAX_REVISIONS)),
+        )
+        revisions = 0
+        try:
+            if not await self._has_school_notice_consent(user_id):
+                await self._send_school_notice_consent_prompt(ctx)
+                return
+
+            if current_profile is None:
+                draft: dict[str, Any] | None = None
+                pending_text = initial_text.strip()
+                if not pending_text:
+                    await ctx.reply(
+                        "학교, 캠퍼스/학과, 과정·학년, 관심 공지와 원하는 알림 시각을 "
+                        "한 문장으로 말씀해주세요.\n"
+                        "예: `전북대 소프트웨어공학과 3학년이고 장학·인턴 공지를 "
+                        "오전 9시에 받고 싶어`"
+                    )
+                while draft is None:
+                    if not pending_text:
+                        pending_text = await self._wait_profile_message(ctx)
+                        if pending_text is None:
+                            return
+                    if pending_text.casefold() in _CANCEL_WORDS:
+                        await ctx.reply("학교 공지 등록을 취소했습니다. 저장된 내용은 없습니다.")
+                        return
+                    try:
+                        draft = await self._initial_profile_draft(
+                            pending_text,
+                            user_id=user_id,
+                        )
+                    except ConsentRequiredError:
+                        await self._send_school_notice_consent_prompt(ctx)
+                        return
+                    except SchoolProfileError as exc:
+                        revisions += 1
+                        if revisions >= max_revisions:
+                            await ctx.reply(
+                                "정보를 확정하지 못해 등록을 종료했습니다. "
+                                "저장된 내용은 없습니다."
+                            )
+                            return
+                        await ctx.reply(
+                            f"아직 정보를 이해하지 못했습니다: {exc}\n"
+                            "학교 이름과 과정·학년을 포함해 다시 말씀해주세요. "
+                            "`취소`라고 해도 됩니다."
+                        )
+                        pending_text = ""
+            else:
+                try:
+                    draft = self._canonical_existing_profile(current_profile)
+                except SchoolProfileError:
+                    await ctx.reply(
+                        "기존 프로필 형식을 안전하게 읽지 못했습니다. "
+                        "`!공지 삭제` 후 다시 등록해주세요."
+                    )
+                    return
+                if initial_text.strip():
+                    try:
+                        draft = await self._correct_profile_draft(
+                            initial_text.strip(),
+                            draft,
+                            user_id=user_id,
+                        )
+                    except ConsentRequiredError:
+                        await self._send_school_notice_consent_prompt(ctx)
+                        return
+                    except SchoolProfileError as exc:
+                        revisions += 1
+                        await ctx.reply(f"수정 내용을 이해하지 못했습니다: {exc}")
+
+            while True:
+                await ctx.reply(build_confirmation_summary(draft))
+                answer = await self._wait_profile_message(ctx)
+                if answer is None:
+                    return
+                normalized = answer.casefold().strip()
+                if normalized in _CANCEL_WORDS:
+                    await ctx.reply("학교 공지 등록/수정을 취소했습니다. 저장된 내용은 없습니다.")
+                    return
+                if normalized in _CONFIRM_WORDS:
+                    missing = missing_profile_fields(draft)
+                    if missing:
+                        revisions += 1
+                        if revisions >= max_revisions:
+                            await ctx.reply(
+                                "필수 정보를 확정하지 못해 종료했습니다. "
+                                "저장된 내용은 없습니다."
+                            )
+                            return
+                        await ctx.reply(
+                            "아직 " + ", ".join(missing)
+                            + " 정보가 필요합니다. 자연스럽게 덧붙여주세요."
+                        )
+                        continue
+                    # 세션 도중 철회된 경우 provider 호출뿐 아니라 저장도 막는다.
+                    if not await self._has_school_notice_consent(user_id):
+                        await self._send_school_notice_consent_prompt(ctx)
+                        return
+                    final_profile = canonicalize_profile(
+                        {
+                            key: value
+                            for key, value in draft.items()
+                            if key in EXTRACTION_FIELDS
+                        },
+                        catalog=self._school_catalog(),
+                        require_complete=True,
+                    )
+                    await self.upsert_profile(user_id, final_profile)
+                    await ctx.reply(
+                        "✅ 확인한 학교 공지 정보를 저장했습니다.\n"
+                        "등록한 학교의 공지만 전날 한국 시간 23시에 수집하고, "
+                        f"다음 날 {final_profile['delivery_time']}에 관련 공지가 있을 때만 "
+                        "알려드립니다."
+                    )
+                    return
+
+                if revisions >= max_revisions:
+                    await ctx.reply(
+                        "수정 횟수 제한에 도달해 종료했습니다. 저장된 내용은 없습니다."
+                    )
+                    return
+                if not await self._has_school_notice_consent(user_id):
+                    await self._send_school_notice_consent_prompt(ctx)
+                    return
+                try:
+                    draft = await self._correct_profile_draft(
+                        answer,
+                        draft,
+                        user_id=user_id,
+                    )
+                except ConsentRequiredError:
+                    await self._send_school_notice_consent_prompt(ctx)
+                    return
+                except SchoolProfileError as exc:
+                    await ctx.reply(
+                        f"수정 내용을 이해하지 못했습니다: {exc}\n"
+                        "학교·과정·학년·관심사·알림 시각 중 바꿀 내용을 다시 말씀해주세요."
+                    )
+                finally:
+                    revisions += 1
+        finally:
+            locked_users.discard(user_id)
+            self._profile_sessions.discard(user_id)
+            self._profile_llm_calls.pop(user_id, None)
+
     async def upsert_profile(self, user_id: int, profile: dict) -> None:
+        if not await self._has_school_notice_consent(user_id):
+            raise ConsentRequiredError(SCHOOL_NOTICE_SCOPE)
         user_key = user_key_for(user_id)
-        payload = json.dumps(profile, ensure_ascii=False)
+        extracted = {
+            key: value
+            for key, value in dict(profile).items()
+            if key in EXTRACTION_FIELDS
+        }
+        extracted.setdefault(
+            "delivery_time",
+            config.SCHOOL_NOTICE_DEFAULT_DELIVERY_TIME,
+        )
+        canonical = canonicalize_profile(
+            extracted,
+            catalog=self._school_catalog(),
+            require_complete=True,
+        )
+        delivery_time = normalize_delivery_time(canonical["delivery_time"])
+        stored_profile = dict(canonical)
+        stored_profile["user_key"] = user_key
+        payload = json.dumps(
+            stored_profile,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
         if config.DB_BACKEND == "tidb":
             query = """
                 INSERT INTO school_notice_profiles
-                    (user_id, user_key, school_id, profile_json, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                    (user_id, user_key, school_id, profile_json, delivery_time,
+                     enabled, updated_at)
+                VALUES (?, ?, ?, ?, ?, 1, ?)
                 ON DUPLICATE KEY UPDATE
                     school_id = VALUES(school_id),
                     profile_json = VALUES(profile_json),
+                    delivery_time = VALUES(delivery_time),
+                    enabled = 1,
                     profile_version = profile_version + 1,
                     updated_at = VALUES(updated_at)
             """
         else:
             query = """
                 INSERT INTO school_notice_profiles
-                    (user_id, user_key, school_id, profile_json, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                    (user_id, user_key, school_id, profile_json, delivery_time,
+                     enabled, updated_at)
+                VALUES (?, ?, ?, ?, ?, 1, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     school_id = excluded.school_id,
                     profile_json = excluded.profile_json,
+                    delivery_time = excluded.delivery_time,
+                    enabled = 1,
                     profile_version = school_notice_profiles.profile_version + 1,
                     updated_at = excluded.updated_at
             """
@@ -415,16 +1700,119 @@ class SchoolNoticeCog(commands.Cog):
             (
                 int(user_id),
                 user_key,
-                str(profile["school_id"]),
+                str(canonical["school_id"]),
                 payload,
+                delivery_time,
                 _now_text(),
             ),
         )
         await self.bot.db.commit()
 
+    @school_notice.command(name="정보")
+    @commands.dm_only()
+    async def profile_info(self, ctx: commands.Context) -> None:
+        """저장된 최소 프로필과 전달 상태를 보여줍니다."""
+        row = await self._require_profile(ctx)
+        if row is None:
+            return
+        try:
+            profile = self._canonical_existing_profile(row["profile"])
+            lines = build_confirmation_summary(profile).splitlines()
+            lines[0] = "현재 저장된 학교 공지 정보입니다."
+            if lines and lines[-1].startswith("맞으면"):
+                lines.pop()
+        except SchoolProfileError:
+            lines = [
+                "현재 학교 공지 정보의 일부를 읽을 수 없습니다.",
+                f"- 학교 ID: {row['school_id']}",
+                f"- 알림 시각: {row['delivery_time']} (한국 시간)",
+            ]
+        lines.append("- 전달 상태: " + ("사용 중" if row["enabled"] else "중지됨"))
+        lines.append(
+            "- 수집/전달: 등록 학교만 전날 23:00 수집 → 다음 날 선택 시각 전달"
+        )
+        if not await self._has_school_notice_consent(ctx.author.id):
+            await self._send_school_notice_consent_prompt(ctx)
+            return
+        await ctx.reply("\n".join(lines))
+
+    @school_notice.command(name="시간")
+    @commands.dm_only()
+    async def set_delivery_time(
+        self,
+        ctx: commands.Context,
+        value: str = "",
+    ) -> None:
+        """사용자별 KST 알림 시각을 HH:MM으로 변경합니다."""
+        row = await self._require_profile(ctx)
+        if row is None:
+            return
+        if not value.strip():
+            if not await self._has_school_notice_consent(ctx.author.id):
+                await self._send_school_notice_consent_prompt(ctx)
+                return
+            await ctx.reply(
+                f"현재 알림 시각은 `{row['delivery_time']}`입니다. "
+                "`!공지 시간 09:00`처럼 입력해주세요."
+            )
+            return
+        try:
+            delivery_time = normalize_delivery_time(value)
+            profile = self._canonical_existing_profile(row["profile"])
+            profile["delivery_time"] = delivery_time
+            profile = canonicalize_profile(
+                {
+                    key: item
+                    for key, item in profile.items()
+                    if key in EXTRACTION_FIELDS
+                },
+                catalog=self._school_catalog(),
+                require_complete=True,
+            )
+        except SchoolProfileError as exc:
+            await ctx.reply(f"❌ 알림 시각이 올바르지 않습니다: {exc}")
+            return
+        if not await self._has_school_notice_consent(ctx.author.id):
+            await self._send_school_notice_consent_prompt(ctx)
+            return
+        stored = dict(profile)
+        stored["user_key"] = row["user_key"]
+        await self.bot.db.execute(
+            """
+            UPDATE school_notice_profiles
+            SET profile_json = ?, delivery_time = ?
+            WHERE user_id = ?
+            """,
+            (
+                json.dumps(
+                    stored,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                delivery_time,
+                int(ctx.author.id),
+            ),
+        )
+        await self.bot.db.commit()
+        await ctx.reply(
+            f"✅ 학교 공지 알림을 매일 `{delivery_time}`(한국 시간)로 설정했습니다. "
+            "관련 공지가 없으면 DM을 보내지 않습니다."
+        )
+
     @school_notice.command(name="중지")
+    @commands.dm_only()
     async def disable(self, ctx: commands.Context) -> None:
         """digest 전달을 중지합니다."""
+        row = await self._require_profile(ctx)
+        if row is None:
+            return
+        if not row["enabled"]:
+            await ctx.reply("학교 공지 전달은 이미 중지되어 있습니다.")
+            return
+        if not await self._has_school_notice_consent(ctx.author.id):
+            await self._send_school_notice_consent_prompt(ctx)
+            return
         await self.bot.db.execute(
             "UPDATE school_notice_profiles SET enabled = 0 WHERE user_id = ?",
             (int(ctx.author.id),),
@@ -433,8 +1821,18 @@ class SchoolNoticeCog(commands.Cog):
         await ctx.reply("✅ 학교 공지 전달을 중지했습니다. `!공지 재개`로 다시 켤 수 있습니다.")
 
     @school_notice.command(name="재개")
+    @commands.dm_only()
     async def enable(self, ctx: commands.Context) -> None:
         """digest 전달을 다시 켭니다."""
+        row = await self._require_profile(ctx)
+        if row is None:
+            return
+        if row["enabled"]:
+            await ctx.reply("학교 공지 전달은 이미 사용 중입니다.")
+            return
+        if not await self._has_school_notice_consent(ctx.author.id):
+            await self._send_school_notice_consent_prompt(ctx)
+            return
         await self.bot.db.execute(
             "UPDATE school_notice_profiles SET enabled = 1 WHERE user_id = ?",
             (int(ctx.author.id),),
@@ -442,10 +1840,97 @@ class SchoolNoticeCog(commands.Cog):
         await self.bot.db.commit()
         await ctx.reply("✅ 학교 공지 전달을 다시 시작합니다.")
 
+    @school_notice.command(name="삭제")
+    @commands.dm_only()
+    async def delete_profile(self, ctx: commands.Context) -> None:
+        """학교 공지 프로필과 연결된 개인화 데이터를 명시적으로 삭제합니다."""
+        user_id = int(ctx.author.id)
+        user_key = user_key_for(user_id)
+        lock_descriptor = await asyncio.to_thread(
+            _try_acquire_batch_lock,
+            self.digest_dir,
+        )
+        if lock_descriptor is None:
+            await ctx.reply(
+                "⚠️ 지금 학교 공지를 수집 중이라 안전하게 삭제할 수 없습니다. "
+                "수집이 끝난 뒤 다시 시도해주세요."
+            )
+            return
+        try:
+            try:
+                # 데이터 삭제가 끝난 뒤 granted 상태만 남는 경우를 방지한다.
+                await withdraw_consent(
+                    self.bot.db,
+                    user_id,
+                    SCHOOL_NOTICE_SCOPE,
+                )
+                for table_name in (
+                    "school_notice_feedback",
+                    "school_notice_deliveries",
+                    "school_notice_delivery_runs",
+                    "school_notice_batch_runs",
+                ):
+                    await self.bot.db.execute(
+                        f"DELETE FROM {table_name} WHERE user_key = ?",
+                        (user_key,),
+                    )
+                await self.bot.db.execute(
+                    "DELETE FROM school_notice_profiles WHERE user_id = ?",
+                    (user_id,),
+                )
+                await self.bot.db.commit()
+            except Exception:
+                try:
+                    await self.bot.db.rollback()
+                except Exception:
+                    pass
+                logger.error(
+                    "학교 공지 개인정보 삭제 실패: user_id=%s",
+                    user_id,
+                    exc_info=True,
+                )
+                await ctx.reply(
+                    "❌ 학교 공지 개인정보를 삭제하지 못했습니다. "
+                    "동의는 철회 상태로 유지되며, 잠시 후 삭제를 다시 시도해주세요."
+                )
+                return
+
+            cleanup_errors = await asyncio.to_thread(
+                _delete_local_school_notice_data,
+                digest_dir=self.digest_dir,
+                core_db_path=config.SCHOOL_NOTICE_CORE_DB,
+                user_key=user_key,
+            )
+            if cleanup_errors:
+                logger.error(
+                    "학교 공지 로컬 파생 데이터 일부 삭제 실패: user_id=%s targets=%s",
+                    user_id,
+                    ",".join(cleanup_errors),
+                )
+                await ctx.reply(
+                    "⚠️ 운영 DB의 학교 공지 프로필·피드백·전달 기록은 삭제했고 동의도 "
+                    "철회했습니다. 다만 로컬 파생 파일 일부를 정리하지 못해 운영자 확인이 "
+                    "필요합니다. 동의·철회 감사 이력은 보존됩니다."
+                )
+                return
+
+            await ctx.reply(
+                "🗑️ 학교 공지 프로필·피드백·전달/실행 기록과 사용자별 파생 파일을 "
+                "삭제하고 개인정보 동의를 철회했습니다.\n"
+                "동의·철회 감사 이력은 보존되며, 일반 Discord 대화와 서버 기록은 "
+                "변경하지 않았습니다."
+            )
+        finally:
+            await asyncio.to_thread(_release_batch_lock, lock_descriptor)
+
     @school_notice.command(name="음소거")
+    @commands.dm_only()
     async def mute_topic(self, ctx: commands.Context, *, topic: str = "") -> None:
         """주제를 숨기거나, 인자 없이 부르면 현재 음소거 목록을 보여줍니다."""
-        user_key = user_key_for(ctx.author.id)
+        profile_row = await self._require_profile(ctx)
+        if profile_row is None:
+            return
+        user_key = str(profile_row["user_key"])
         topic = topic.strip()
         if not topic:
             async with self.bot.db.execute(
@@ -456,6 +1941,9 @@ class SchoolNoticeCog(commands.Cog):
                 (user_key,),
             ) as cursor:
                 rows = await cursor.fetchall()
+            if not await self._has_school_notice_consent(ctx.author.id):
+                await self._send_school_notice_consent_prompt(ctx)
+                return
             muted = sorted({str(row[0]) for row in rows})
             if not muted:
                 await ctx.reply("현재 음소거한 주제가 없습니다. `!공지 음소거 <주제>`로 숨길 수 있습니다.")
@@ -464,6 +1952,9 @@ class SchoolNoticeCog(commands.Cog):
                 "음소거한 주제: " + ", ".join(muted)
                 + "\n`!공지 음소거해제 <주제>`로 되돌릴 수 있습니다."
             )
+            return
+        if len(topic) > 80 or any(ord(character) < 32 for character in topic):
+            await ctx.reply("❌ 음소거 주제는 80자 이내의 한 줄로 입력해주세요.")
             return
         await self.record_feedback(
             user_id=ctx.author.id,
@@ -479,21 +1970,31 @@ class SchoolNoticeCog(commands.Cog):
         )
 
     @school_notice.command(name="음소거해제")
+    @commands.dm_only()
     async def unmute_topic(self, ctx: commands.Context, *, topic: str) -> None:
         """음소거한 주제를 되돌립니다."""
+        profile_row = await self._require_profile(ctx)
+        if profile_row is None:
+            return
         topic = topic.strip()
         if not topic:
             await ctx.reply("❌ 해제할 주제를 입력해주세요.")
             return
-        await self.bot.db.execute(
+        if not await self._has_school_notice_consent(ctx.author.id):
+            await self._send_school_notice_consent_prompt(ctx)
+            return
+        cursor = await self.bot.db.execute(
             """
             DELETE FROM school_notice_feedback
             WHERE user_key = ? AND feedback_type = 'mute_topic' AND topic = ?
             """,
-            (user_key_for(ctx.author.id), topic),
+            (str(profile_row["user_key"]), topic),
         )
         await self.bot.db.commit()
-        await ctx.reply(f"✅ `{topic}` 음소거를 해제했습니다.")
+        if int(getattr(cursor, "rowcount", 0) or 0) > 0:
+            await ctx.reply(f"✅ `{topic}` 음소거를 해제했습니다.")
+        else:
+            await ctx.reply(f"`{topic}`은 현재 음소거 목록에 없습니다.")
 
 
 def _digest_with_items(digest: Digest, items) -> Digest:
@@ -505,6 +2006,7 @@ def _digest_with_items(digest: Digest, items) -> Digest:
         summary=digest.summary,
         items=tuple(items),
         collection_health=digest.collection_health,
+        warnings=digest.warnings,
     )
 
 

@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import discord
@@ -58,6 +59,7 @@ SCHOOL_NOTICE_TABLES = (
     "school_notice_feedback",
     "school_notice_deliveries",
     "school_notice_batch_runs",
+    "school_notice_delivery_runs",
 )
 
 
@@ -210,6 +212,8 @@ class ReMasamongBot(commands.Bot):
             "conversation_history",
             "guild_settings",
             "locations",
+            "privacy_consents",
+            "privacy_consent_events",
             "user_profiles",
             "user_activity_log",
             "linkup_usage_log",
@@ -292,6 +296,115 @@ class ReMasamongBot(commands.Bot):
                     + ", ".join(missing_user_profile_columns)
                 )
 
+            required_privacy_columns = {
+                "privacy_consents": {
+                    "user_id",
+                    "scope",
+                    "policy_version",
+                    "notice_hash",
+                    "status",
+                    "granted_at",
+                    "withdrawn_at",
+                    "updated_at",
+                },
+                "privacy_consent_events": {
+                    "id",
+                    "user_id",
+                    "scope",
+                    "policy_version",
+                    "notice_hash",
+                    "status",
+                    "granted_at",
+                    "withdrawn_at",
+                    "created_at",
+                },
+            }
+            for table_name, expected_columns in required_privacy_columns.items():
+                actual_columns = set(
+                    await get_table_columns(self.db, table_name)
+                )
+                missing_privacy_columns = sorted(
+                    expected_columns - actual_columns
+                )
+                if missing_privacy_columns:
+                    raise RuntimeError(
+                        f"{table_name} 필수 컬럼이 없습니다: "
+                        + ", ".join(missing_privacy_columns)
+                    )
+
+        if config.SCHOOL_NOTICE_ENABLED:
+            required_school_notice_columns = {
+                "school_notice_profiles": {
+                    "user_id",
+                    "user_key",
+                    "school_id",
+                    "profile_json",
+                    "profile_version",
+                    "enabled",
+                    "delivery_time",
+                    "created_at",
+                    "updated_at",
+                },
+                "school_notice_feedback": {
+                    "id",
+                    "user_key",
+                    "source_id",
+                    "external_id",
+                    "feedback_type",
+                    "topic",
+                    "interaction_id",
+                    "created_at",
+                    "consumed_at",
+                },
+                "school_notice_deliveries": {
+                    "id",
+                    "user_key",
+                    "digest_date",
+                    "notice_id",
+                    "revision_count",
+                    "status",
+                    "failure_reason",
+                    "attempt_count",
+                    "delivered_at",
+                },
+                "school_notice_batch_runs": {
+                    "id",
+                    "user_key",
+                    "run_date",
+                    "profile_version",
+                    "profile_hash",
+                    "status",
+                    "collection_status",
+                    "may_include_stale",
+                    "item_count",
+                    "http_requests",
+                    "llm_calls",
+                    "finished_at",
+                },
+                "school_notice_delivery_runs": {
+                    "user_key",
+                    "digest_date",
+                    "status",
+                    "attempt_count",
+                    "next_attempt_at",
+                    "last_error",
+                    "finished_at",
+                    "updated_at",
+                },
+            }
+            for table_name, expected_columns in required_school_notice_columns.items():
+                actual_columns = set(
+                    await get_table_columns(self.db, table_name)
+                )
+                missing_school_notice_columns = sorted(
+                    expected_columns - actual_columns
+                )
+                if missing_school_notice_columns:
+                    raise RuntimeError(
+                        f"{table_name} 필수 컬럼이 없습니다: "
+                        + ", ".join(missing_school_notice_columns)
+                    )
+
         if config.REQUIRE_EXPLICIT_PROFILE and config.DB_BACKEND == "tidb":
             required_embedding_columns = {
                 "discord_chat_embeddings": {
@@ -369,6 +482,8 @@ class ReMasamongBot(commands.Bot):
                         "conversation_history",
                         "guild_settings",
                         "locations",
+                        "privacy_consents",
+                        "privacy_consent_events",
                         "user_profiles",
                         "user_activity",
                         "user_activity_log",
@@ -396,6 +511,8 @@ class ReMasamongBot(commands.Bot):
                         "conversation_history",
                         "guild_settings",
                         "locations",
+                        "privacy_consents",
+                        "privacy_consent_events",
                         "user_profiles",
                         "user_activity",
                         "user_activity_log",
@@ -643,7 +760,7 @@ class ReMasamongBot(commands.Bot):
         # Cog(기능 모듈) 로드
         # 의존성 순서를 고려하여 리스트 순서 결정 (예: tools_cog -> 다른 cogs)
         cog_list = [
-            'weather_cog', 'tools_cog', 'events', 'commands', 'ai_handler',
+            'weather_cog', 'tools_cog', 'events', 'commands', 'privacy_cog', 'ai_handler',
             'fun_cog', 'activity_cog', 'poll_cog', 'settings_cog',
             'maintenance_cog', 'proactive_assistant', 'fortune_cog', 'help_cog'
         ]
@@ -786,9 +903,27 @@ class ReMasamongBot(commands.Bot):
             # DM은 멘션 체크 패스
 
         try:
-            # [저사양 보호] 전역 세마포어로 동시 AI 처리 수를 제한한다.
-            async with ai_handler.ai_processing_semaphore:
-                await ai_handler.process_agent_message(message)
+            # [저사양 보호] 실행 중 작업뿐 아니라 semaphore 대기 시간도 제한한다.
+            # burst가 오면 오래 기다리는 task를 계속 쌓는 대신 빠르게 종료한다.
+            await asyncio.wait_for(
+                ai_handler.ai_processing_semaphore.acquire(),
+                timeout=config.AI_QUEUE_WAIT_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "AI 처리 대기열 포화로 요청을 건너뜁니다.",
+                extra={'guild_id': guild_id, 'channel_id': channel_id},
+            )
+            try:
+                await message.channel.send(
+                    "지금 요청이 몰려 있어 잠시 쉬고 있어. 몇 초 뒤 다시 불러줘!"
+                )
+            except discord.HTTPException:
+                pass
+            return
+
+        try:
+            await ai_handler.process_agent_message(message)
         except Exception as exc:  # pragma: no cover
             logger.error(
                 "AI 메시지 처리 중 오류: %s",
@@ -796,6 +931,8 @@ class ReMasamongBot(commands.Bot):
                 exc_info=True,
                 extra={'guild_id': guild_id, 'channel_id': channel_id}
             )
+        finally:
+            ai_handler.ai_processing_semaphore.release()
 
     async def close(self):
         """
@@ -829,10 +966,21 @@ async def main():
 
     이 함수는 `asyncio.run` 진입점에서 호출되며, 봇 토큰 검증과 Discord 세션 수명 관리를 담당합니다.
     """
+    # asyncio.to_thread()를 사용하는 RAG/파일/SDK 호환 경로도 프로필의 CPU
+    # 예산 안에서 실행되게 기본 executor를 먼저 제한한다.
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(
+        ThreadPoolExecutor(
+            max_workers=config.EXECUTOR_WORKERS,
+            thread_name_prefix=f"masamong-{config.PROFILE}",
+        )
+    )
+
     # 커스텀 봇 클래스 인스턴스 생성
     bot = ReMasamongBot(
         command_prefix=config.COMMAND_PREFIX,
         intents=config.intents,
+        max_messages=config.DISCORD_MAX_MESSAGES,
         member_cache_flags=(
             discord.MemberCacheFlags.all()
             if config.MEMBER_CACHE_ENABLED

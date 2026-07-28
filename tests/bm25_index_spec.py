@@ -37,6 +37,10 @@ async def test_bm25_triggers_follow_insert_update_and_delete(tmp_path):
             (1, 10, 20, 30, "tester", "alpha phrase", "2026-01-01T00:00:00+00:00"),
         )
         await db.commit()
+        async with db.execute(
+            "SELECT rowid, message_id, content FROM conversation_bm25"
+        ) as cursor:
+            assert await cursor.fetchall() == [(1, 1, "alpha phrase")]
 
     assert len(await manager.search("alpha", guild_id=10, channel_id=20)) == 1
 
@@ -46,6 +50,10 @@ async def test_bm25_triggers_follow_insert_update_and_delete(tmp_path):
             ("beta phrase", 1),
         )
         await db.commit()
+        async with db.execute(
+            "SELECT rowid, message_id, content FROM conversation_bm25"
+        ) as cursor:
+            assert await cursor.fetchall() == [(1, 1, "beta phrase")]
 
     assert await manager.search("alpha", guild_id=10, channel_id=20) == []
     assert len(await manager.search("beta", guild_id=10, channel_id=20)) == 1
@@ -53,6 +61,8 @@ async def test_bm25_triggers_follow_insert_update_and_delete(tmp_path):
     async with aiosqlite.connect(db_path) as db:
         await db.execute("DELETE FROM conversation_history WHERE message_id = ?", (1,))
         await db.commit()
+        async with db.execute("SELECT COUNT(*) FROM conversation_bm25") as cursor:
+            assert (await cursor.fetchone())[0] == 0
 
     assert await manager.search("beta", guild_id=10, channel_id=20) == []
 

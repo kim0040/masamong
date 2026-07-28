@@ -150,6 +150,9 @@ class _KakaoTableMeta:
 
 async def _load_model() -> Any:
     """SentenceTransformer 모델을 비동기적으로 로드합니다."""
+    if not getattr(config, "EMBEDDING_ENABLED", True):
+        raise RuntimeError("로컬 임베딩 기능이 비활성화되어 있습니다.")
+
     if _get_numpy() is None:
         raise RuntimeError(
             "numpy 패키지가 설치되어 있지 않습니다. AI 메모리 기능을 사용하려면 `pip install numpy`로 설치하세요."
@@ -337,7 +340,7 @@ async def get_embedding(text: str, prefix: str = "") -> np.ndarray | None:
         text: 임베딩할 텍스트
         prefix: 모델에 따른 접두사 (예: "query: ", "passage: ")
     """
-    if not text:
+    if not text or not getattr(config, "EMBEDDING_ENABLED", True):
         return None
     if _get_numpy() is None:
         logger.warning("numpy가 설치되지 않아 임베딩을 생성할 수 없습니다. `AI_MEMORY_ENABLED` 값을 확인하세요.")

@@ -44,12 +44,13 @@ def _profile_env(tmp_path: Path, *, memory_sources: str = "discord") -> Path:
                 "MASAMONG_REQUIRED_COGS=tools_cog,events,ai_handler",
                 "MASAMONG_AUTO_MIGRATE=false",
                 "MASAMONG_DB_BACKEND=sqlite",
-                "MASAMONG_DATABASE_FILE=:memory:",
+                f"MASAMONG_DATABASE_FILE={tmp_path / 'general' / 'main.db'}",
                 f"MASAMONG_MEMORY_SOURCES={memory_sources}",
                 "DISCORD_EMBEDDING_BACKEND=sqlite",
                 "KAKAO_STORE_BACKEND=local",
                 "AI_MEMORY_ENABLED=false",
                 "EMBEDDING_ENABLED=false",
+                "RERANK_ENABLED=false",
                 "DISCORD_BOT_TOKEN=general-token",
                 "MASAMONG_EXPECTED_DISCORD_BOT_USER_ID=replace-with-current-masamo-bot-user-id",
                 # 명시적 프로필은 켜 둔 기능의 자격증명을 기동 시점에 요구한다.
@@ -72,14 +73,25 @@ def _masamo_profile_env(tmp_path: Path) -> Path:
     ).replace(
         "MASAMONG_INSTANCE_NAME=general",
         "MASAMONG_INSTANCE_NAME=masamo",
+    ).replace(
+        str(tmp_path / "general" / "main.db"),
+        str(tmp_path / "masamo" / "main.db"),
     )
     profile_text += "\n" + "\n".join(
         [
             "MASAMONG_CPU_THREADS=1",
+            "MASAMONG_EXECUTOR_WORKERS=1",
             "AI_MAX_CONCURRENT_PROCESSING=1",
+            "AI_QUEUE_WAIT_TIMEOUT_SECONDS=5",
+            "LLM_MAX_CONCURRENT_CALLS=1",
+            "LLM_ACQUIRE_TIMEOUT_SECONDS=10",
+            "LLM_CALL_TIMEOUT_SECONDS=120",
             "EMBEDDING_MAX_CONCURRENCY=1",
             "RAG_MAX_BACKGROUND_TASKS=2",
             "RAG_MAX_TRACKED_WINDOWS=64",
+            "KAKAO_API_MAX_CONCURRENCY=1",
+            "MASAMONG_DISCORD_MAX_MESSAGES=200",
+            "SCHOOL_NOTICE_ENABLED=false",
             "TOKENIZERS_PARALLELISM=false",
         ]
     )
@@ -184,6 +196,31 @@ def test_general_profile_rejects_kakao_memory(tmp_path):
 
     assert result.returncode != 0
     assert "정확히 discord" in result.stderr
+
+
+def test_masamo_runtime_rejects_school_notice_enablement(tmp_path):
+    profile_path = _masamo_profile_env(tmp_path)
+    profile_path.write_text(
+        profile_path.read_text(encoding="utf-8").replace(
+            "SCHOOL_NOTICE_ENABLED=false",
+            "SCHOOL_NOTICE_ENABLED=true",
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["MASAMONG_ENV_FILE"] = str(profile_path)
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import config"],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=15,
+    )
+
+    assert result.returncode != 0
+    assert "general 인스턴스가 소유" in result.stderr
 
 
 def test_explicit_profile_rejects_non_object_config_json(tmp_path):
@@ -291,6 +328,167 @@ def test_explicit_profile_interpolates_only_values_from_selected_file(tmp_path):
     }
 
 
+def test_explicit_profile_rejects_unresolved_file_local_reference_without_leak(
+    tmp_path,
+):
+    profile_path = _profile_env(tmp_path)
+    secret_value = "must-not-appear-in-error-output"
+    profile_path.write_text(
+        profile_path.read_text(encoding="utf-8")
+        + "\nOPTIONAL_PROVIDER_KEY=${INHERITED_PROVIDER_SECRET}\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "MASAMONG_ENV_FILE": str(profile_path),
+            "INHERITED_PROVIDER_SECRET": secret_value,
+        }
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import config"],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=15,
+    )
+
+    assert result.returncode != 0
+    assert "INHERITED_PROVIDER_SECRET" in result.stderr
+    assert secret_value not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "feature_key",
+    [
+        "AI_MEMORY_ENABLED",
+        "EMBEDDING_ENABLED",
+        "RERANK_ENABLED",
+    ],
+)
+def test_explicit_general_missing_memory_feature_flag_fails_safe_to_false(
+    tmp_path,
+    feature_key,
+):
+    profile_path = _profile_env(tmp_path)
+    profile_path.write_text(
+        "\n".join(
+            line
+            for line in profile_path.read_text(encoding="utf-8").splitlines()
+            if not line.startswith(f"{feature_key}=")
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["MASAMONG_ENV_FILE"] = str(profile_path)
+    config_attribute = {
+        "AI_MEMORY_ENABLED": "AI_MEMORY_ENABLED",
+        "EMBEDDING_ENABLED": "EMBEDDING_ENABLED",
+        "RERANK_ENABLED": "RERANK_ENABLED",
+    }[feature_key]
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            f"import config; print(config.{config_attribute})",
+        ],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=15,
+    )
+
+    assert result.stdout.strip().splitlines()[-1] == "False"
+
+
+@pytest.mark.parametrize(
+    "feature_key",
+    [
+        "AI_MEMORY_ENABLED",
+        "EMBEDDING_ENABLED",
+        "RERANK_ENABLED",
+    ],
+)
+def test_explicit_general_rejects_enabled_low_spec_memory_feature(
+    tmp_path,
+    feature_key,
+):
+    profile_path = _profile_env(tmp_path)
+    profile_path.write_text(
+        "\n".join(
+            (
+                f"{feature_key}=true"
+                if line.startswith(f"{feature_key}=")
+                else line
+            )
+            for line in profile_path.read_text(encoding="utf-8").splitlines()
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["MASAMONG_ENV_FILE"] = str(profile_path)
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import config"],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=15,
+    )
+
+    assert result.returncode != 0
+    assert feature_key in result.stderr
+    assert "steady-state" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "feature_key",
+    [
+        "AI_MEMORY_ENABLED",
+        "EMBEDDING_ENABLED",
+        "RERANK_ENABLED",
+    ],
+)
+def test_explicit_general_config_json_cannot_reenable_low_spec_memory_feature(
+    tmp_path,
+    feature_key,
+):
+    profile_path = _profile_env(tmp_path)
+    profile_path.write_text(
+        "\n".join(
+            line
+            for line in profile_path.read_text(encoding="utf-8").splitlines()
+            if not line.startswith(f"{feature_key}=")
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "config.json").write_text(
+        json.dumps({feature_key: True}),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["MASAMONG_ENV_FILE"] = str(profile_path)
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import config"],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=15,
+    )
+
+    assert result.returncode != 0
+    assert feature_key in result.stderr
+    assert "steady-state" in result.stderr
+
+
 def test_explicit_profile_rejects_declared_env_path_mismatch(tmp_path):
     profile_path = _profile_env(tmp_path)
     profile_path.write_text(
@@ -387,6 +585,43 @@ def test_explicit_general_tidb_accepts_canonical_strict_tls_profile(tmp_path):
     )
 
     assert result.stdout.strip().splitlines()[-1] == "masamong_general"
+
+
+def test_explicit_masamo_tidb_keeps_canonical_strict_profile_compatible(
+    tmp_path,
+):
+    profile_path = _masamo_profile_env(tmp_path)
+    _convert_profile_to_tidb(
+        profile_path,
+        database_name="masamong",
+    )
+    env = os.environ.copy()
+    env["MASAMONG_ENV_FILE"] = str(profile_path)
+    code = (
+        "import json, config; print(json.dumps({"
+        "'profile': config.PROFILE, "
+        "'database': config.TIDB_NAME, "
+        "'strict': config.REMOTE_DB_STRICT_MODE, "
+        "'tls': config.REQUIRE_DB_TLS"
+        "}))"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=15,
+    )
+
+    assert json.loads(result.stdout.strip().splitlines()[-1]) == {
+        "profile": "masamo",
+        "database": "masamong",
+        "strict": True,
+        "tls": True,
+    }
 
 
 @pytest.mark.parametrize(
@@ -507,10 +742,17 @@ def test_member_cache_cannot_enable_without_members_intent(tmp_path):
     "missing_key",
     [
         "MASAMONG_CPU_THREADS",
+        "MASAMONG_EXECUTOR_WORKERS",
         "AI_MAX_CONCURRENT_PROCESSING",
+        "AI_QUEUE_WAIT_TIMEOUT_SECONDS",
+        "LLM_MAX_CONCURRENT_CALLS",
+        "LLM_ACQUIRE_TIMEOUT_SECONDS",
+        "LLM_CALL_TIMEOUT_SECONDS",
         "EMBEDDING_MAX_CONCURRENCY",
         "RAG_MAX_BACKGROUND_TASKS",
         "RAG_MAX_TRACKED_WINDOWS",
+        "KAKAO_API_MAX_CONCURRENCY",
+        "MASAMONG_DISCORD_MAX_MESSAGES",
         "TOKENIZERS_PARALLELISM",
     ],
 )
@@ -550,6 +792,18 @@ def test_explicit_masamo_requires_each_low_spec_limit_in_profile_file(
         ("MASAMONG_CPU_THREADS", "0"),
         ("AI_MAX_CONCURRENT_PROCESSING", "not-a-number"),
         ("TOKENIZERS_PARALLELISM", "true"),
+        ("MASAMONG_CPU_THREADS", "99999"),
+        ("MASAMONG_EXECUTOR_WORKERS", "99999"),
+        ("AI_MAX_CONCURRENT_PROCESSING", "99999"),
+        ("AI_QUEUE_WAIT_TIMEOUT_SECONDS", "99999"),
+        ("LLM_MAX_CONCURRENT_CALLS", "99999"),
+        ("LLM_ACQUIRE_TIMEOUT_SECONDS", "99999"),
+        ("LLM_CALL_TIMEOUT_SECONDS", "99999"),
+        ("EMBEDDING_MAX_CONCURRENCY", "99999"),
+        ("RAG_MAX_BACKGROUND_TASKS", "99999"),
+        ("RAG_MAX_TRACKED_WINDOWS", "99999"),
+        ("KAKAO_API_MAX_CONCURRENCY", "99999"),
+        ("MASAMONG_DISCORD_MAX_MESSAGES", "99999"),
     ],
 )
 def test_explicit_masamo_rejects_unsafe_low_spec_limit(
@@ -676,6 +930,7 @@ def test_named_operational_profile_cannot_bypass_strict_mode(
     [
         ("database/shared.db", "절대 경로"),
         ("/var/lib/masamong/shared.db", "인스턴스 이름"),
+        (":memory:", "재시작 시 사라지는"),
     ],
 )
 def test_explicit_sqlite_profile_rejects_shared_database_path(
@@ -684,9 +939,10 @@ def test_explicit_sqlite_profile_rejects_shared_database_path(
     expected_error,
 ):
     profile_path = _profile_env(tmp_path)
+    current_database_file = tmp_path / "general" / "main.db"
     profile_path.write_text(
         profile_path.read_text(encoding="utf-8").replace(
-            "MASAMONG_DATABASE_FILE=:memory:",
+            f"MASAMONG_DATABASE_FILE={current_database_file}",
             f"MASAMONG_DATABASE_FILE={database_file}",
         ),
         encoding="utf-8",
@@ -710,13 +966,6 @@ def test_explicit_sqlite_profile_rejects_shared_database_path(
 def test_explicit_sqlite_profile_accepts_profile_owned_database_path(tmp_path):
     profile_path = _profile_env(tmp_path)
     database_file = tmp_path / "general" / "main.db"
-    profile_path.write_text(
-        profile_path.read_text(encoding="utf-8").replace(
-            "MASAMONG_DATABASE_FILE=:memory:",
-            f"MASAMONG_DATABASE_FILE={database_file}",
-        ),
-        encoding="utf-8",
-    )
     env = os.environ.copy()
     env["MASAMONG_ENV_FILE"] = str(profile_path)
 

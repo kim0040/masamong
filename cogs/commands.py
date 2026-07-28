@@ -9,6 +9,8 @@ from discord.ext import commands
 import os
 import io
 import asyncio
+import time
+from collections import OrderedDict
 
 import config
 from logger_config import logger
@@ -19,6 +21,25 @@ class UserCommands(commands.Cog):
     def __init__(self, bot: commands.Bot):
         """UserCommands Cog를 초기화합니다."""
         self.bot = bot
+        self._update_cache: OrderedDict[str, tuple[float, str | None]] = OrderedDict()
+        self._update_cache_lock = asyncio.Lock()
+        self._update_user_cooldowns: OrderedDict[int, float] = OrderedDict()
+        self._update_cache_ttl_seconds = max(
+            0,
+            int(getattr(config, "UPDATE_INFO_CACHE_TTL_SECONDS", 300)),
+        )
+        self._update_cache_max_entries = max(
+            1,
+            int(getattr(config, "UPDATE_INFO_CACHE_MAX_ENTRIES", 8)),
+        )
+        self._update_user_cooldown_seconds = max(
+            0,
+            int(getattr(config, "UPDATE_INFO_USER_COOLDOWN_SECONDS", 30)),
+        )
+        self._update_user_cooldown_max_entries = max(
+            32,
+            int(getattr(config, "UPDATE_INFO_COOLDOWN_MAX_ENTRIES", 2048)),
+        )
         logger.info("UserCommands Cog가 성공적으로 초기화되었습니다.")
 
     @commands.command(name='delete_log', aliases=['로그삭제'])
@@ -68,6 +89,11 @@ class UserCommands(commands.Cog):
     
     @commands.command(name='이미지', aliases=['image', 'img', '그림', '생성'])
     @commands.guild_only()
+    @commands.cooldown(
+        1,
+        config.IMAGE_COMMAND_COOLDOWN_SECONDS,
+        commands.BucketType.user,
+    )
     async def generate_image_command(self, ctx: commands.Context, *, prompt: str = None):
         """
         AI로 이미지를 생성합니다. (서버 전용)
@@ -99,8 +125,15 @@ class UserCommands(commands.Cog):
         if not ai_handler or not ai_handler.tools_cog:
             await ctx.send("❌ AI 시스템이 아직 준비되지 않았어요. 잠시 후 다시 시도해주세요!")
             return
+
+        # 제한을 이미 넘은 사용자는 프롬프트 최적화 LLM을 호출하지 않는다.
+        quota = await ai_handler.tools_cog.check_image_quota(ctx.author.id)
+        if not quota.get("allowed"):
+            await ctx.send(f"❌ {quota.get('error') or '이미지 생성 제한에 도달했어요.'}")
+            return
         
         async with ctx.typing():
+            status_msg = None
             try:
                 # 생성 중 메시지 전송
                 status_msg = await ctx.send(f"🎨 **'{prompt}'**\n위 설명으로 그림을 그리고 있어요... (최대 1분 30초 정도 걸릴 수 있으니 잠시만 기다려줘...)")
@@ -157,7 +190,10 @@ class UserCommands(commands.Cog):
             except Exception as e:
                 logger.error(f"이미지 생성 명령어 오류: {e}", exc_info=True, extra=log_extra)
                 try:
-                    await status_msg.edit(content="❌ 처리 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요!")
+                    if status_msg is not None:
+                        await status_msg.edit(content="❌ 처리 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요!")
+                    else:
+                        await ctx.send("❌ 처리 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요!")
                 except:
                     await ctx.send("❌ 처리 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요!")
     
@@ -166,8 +202,164 @@ class UserCommands(commands.Cog):
         """`이미지` 명령어의 오류를 처리합니다."""
         if isinstance(error, commands.NoPrivateMessage):
             await ctx.send("❌ 이 명령어는 서버 채널에서만 사용할 수 있어요!")
+        elif isinstance(error, commands.CommandOnCooldown):
+            await ctx.send(
+                f"⏳ 이미지 요청은 잠깐 쉬어가야 해요. "
+                f"{max(1, int(error.retry_after + 0.999))}초 뒤에 다시 시도해줘!"
+            )
         elif isinstance(error, commands.MissingRequiredArgument):
             await ctx.send("❌ 그림에 대한 설명이 빠졌어요!\n**사용법**: `!이미지 <설명>` (예: `!이미지 귀여운 고양이`)")
+
+    def _consume_update_cooldown(
+        self,
+        user_id: int,
+        *,
+        now: float | None = None,
+    ) -> tuple[bool, int]:
+        """사용자별 업데이트 명령 쿨다운을 소비합니다."""
+        cooldown = self._update_user_cooldown_seconds
+        if cooldown <= 0:
+            return True, 0
+
+        now = time.monotonic() if now is None else float(now)
+        user_id = int(user_id)
+        previous = self._update_user_cooldowns.get(user_id)
+        if previous is not None:
+            remaining = cooldown - (now - previous)
+            if remaining > 0:
+                self._update_user_cooldowns.move_to_end(user_id)
+                return False, max(1, int(remaining + 0.999))
+
+        self._update_user_cooldowns[user_id] = now
+        self._update_user_cooldowns.move_to_end(user_id)
+        while len(self._update_user_cooldowns) > self._update_user_cooldown_max_entries:
+            self._update_user_cooldowns.popitem(last=False)
+        return True, 0
+
+    def _get_cached_update_summary(
+        self,
+        head_sha: str,
+        *,
+        now: float | None = None,
+    ) -> tuple[bool, str | None]:
+        """HEAD별 TTL/LRU 캐시를 조회합니다(None 결과도 캐시 가능)."""
+        if self._update_cache_ttl_seconds <= 0:
+            return False, None
+        entry = self._update_cache.get(head_sha)
+        if entry is None:
+            return False, None
+
+        now = time.monotonic() if now is None else float(now)
+        cached_at, summary = entry
+        if now - cached_at >= self._update_cache_ttl_seconds:
+            self._update_cache.pop(head_sha, None)
+            return False, None
+
+        self._update_cache.move_to_end(head_sha)
+        return True, summary
+
+    def _store_update_summary(
+        self,
+        head_sha: str,
+        summary: str | None,
+        *,
+        now: float | None = None,
+    ) -> None:
+        """HEAD별 요약 결과를 bounded LRU에 저장합니다."""
+        if self._update_cache_ttl_seconds <= 0:
+            return
+        now = time.monotonic() if now is None else float(now)
+        self._update_cache[head_sha] = (now, summary)
+        self._update_cache.move_to_end(head_sha)
+        while len(self._update_cache) > self._update_cache_max_entries:
+            self._update_cache.popitem(last=False)
+
+    @staticmethod
+    async def _run_git(*args: str, timeout_seconds: float = 5.0) -> str:
+        """로컬 git 명령을 짧은 상한 내에서 실행합니다."""
+        process = await asyncio.create_subprocess_exec(
+            "git",
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            await process.communicate()
+            raise RuntimeError(f"git {' '.join(args)} 실행 시간이 초과되었습니다.")
+
+        if process.returncode != 0:
+            error_text = stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(error_text or f"git {' '.join(args)} 실행 실패")
+        return stdout.decode("utf-8", errors="replace").strip()
+
+    async def _get_update_summary(self, ai_handler) -> str | None:
+        """현재 HEAD의 최근 커밋을 한 번만 AI 요약하고 TTL 동안 재사용합니다."""
+        try:
+            head_sha = await self._run_git("rev-parse", "HEAD")
+        except Exception as exc:
+            logger.warning("업데이트 HEAD 조회 실패: %s", exc)
+            head_sha = "__unknown_head__"
+
+        cache_hit, cached_summary = self._get_cached_update_summary(head_sha)
+        if cache_hit:
+            return cached_summary
+
+        # 동시 첫 요청이 같은 git log와 LLM 호출을 중복 실행하지 않게 한다.
+        async with self._update_cache_lock:
+            cache_hit, cached_summary = self._get_cached_update_summary(head_sha)
+            if cache_hit:
+                return cached_summary
+
+            try:
+                git_logs = await self._run_git(
+                    "log",
+                    "-n",
+                    "10",
+                    "--pretty=format:- %s",
+                )
+            except Exception as exc:
+                logger.warning("업데이트 git log 조회 실패: %s", exc)
+                git_logs = ""
+
+            summary = None
+            if git_logs and ai_handler:
+                prompt = (
+                    "다음은 최근 시스템의 깃 커밋 로그 문구들이야.\n"
+                    "이 내용을 바탕으로 사용자들에게 알려줄 친근하고 귀여운 "
+                    "'업데이트 소식'을 작성해줘.\n"
+                    "형식은 마크다운 불렛 포인트로 간결하게 작성하고, "
+                    "말투는 마사몽 답게(~어, ~해 등) 해줘.\n\n"
+                    f"커밋 로그:\n{git_logs}"
+                )
+                system_role = (
+                    "너는 친절하고 귀여운 챗봇 '마사몽'이야. "
+                    "시스템 변경 사항을 사용자에게 알기 쉽게 요약해서 전달해주는 역할을 해."
+                )
+                try:
+                    summary = await ai_handler.get_ai_completion(
+                        prompt,
+                        system_role=system_role,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning("업데이트 AI 요약 실패(폴백 캐시): %s", exc)
+                    summary = None
+                if summary:
+                    summary = str(summary).strip()[:4000]
+
+            # 실패(None)도 TTL 동안 캐시해 장애 시 반복 LLM 폭주를 막는다.
+            self._store_update_summary(head_sha, summary)
+            return summary
 
     @commands.command(name='업데이트', aliases=['update', '패치노트'])
     async def update_info(self, ctx: commands.Context):
@@ -175,52 +367,29 @@ class UserCommands(commands.Cog):
         최근 추가된 기능과 변경 사항을 알려줍니다. (Git 로그 자동 요약)
         """
         log_extra = {'guild_id': ctx.guild.id if ctx.guild else 0, 'author_id': ctx.author.id}
+        allowed, remaining_seconds = self._consume_update_cooldown(ctx.author.id)
+        if not allowed:
+            await ctx.send(
+                f"⏳ 업데이트 소식은 방금 확인했어! "
+                f"{remaining_seconds}초 뒤에 다시 불러줘."
+            )
+            return
         
         async with ctx.typing():
             try:
-                # 1. Git 로그 가져오기 (최근 10개의 변경 사항을 가져와 유연하게 대응)
-                import subprocess
-                # [Fix] 특정 기간 대신 최근 커밋 10개를 가져오도록 변경 (-n 10)
-                cmd = ['git', 'log', '-n', '10', '--pretty=format:- %s']
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                stdout, stderr = await process.communicate()
-                
-                git_logs = stdout.decode('utf-8').strip()
-                if stderr:
-                    logger.warning(f"Git log 실행 중 경고/오류: {stderr.decode('utf-8')}", extra=log_extra)
-                
-                logger.info(f"Git 로그 수집 결과 ({len(git_logs)} bytes)", extra=log_extra)
-                
-                # 2. 로그가 있으면 AI 요약 시도
-                if git_logs:
-                    ai_handler = self.bot.get_cog('AIHandler')
-                    if ai_handler:
-                        # 깃 커밋 로그를 친근한 마사몽 스타일의 업데이트 내용으로 요약 부탁
-                        prompt = (
-                            "다음은 최근 시스템의 깃 커밋 로그 문구들이야.\n"
-                            "이 내용을 바탕으로 사용자들에게 알려줄 친근하고 귀여운 '업데이트 소식'을 작성해줘.\n"
-                            "형식은 마크다운 불렛 포인트로 간결하게 작성하고, 말투는 마사몽 답게(~어, ~해 등) 해줘.\n\n"
-                            f"커밋 로그:\n{git_logs}"
-                        )
-                        system_role = "너는 친절하고 귀여운 챗봇 '마사몽'이야. 시스템 변경 사항을 사용자에게 알기 쉽게 요약해서 전달해주는 역할을 해."
-                        
-                        summary = await ai_handler.get_ai_completion(prompt, system_role=system_role)
-                        
-                        if summary:
-                            embed = discord.Embed(
-                                title="🚀 마사몽 업데이트 소식 (자동 요약)",
-                                description=summary,
-                                color=0xff6b6b # Rose Color
-                            )
-                            embed.set_footer(text="최근 깃허브 변경 내역을 바탕으로 생성되었습니다.")
-                            await ctx.send(embed=embed)
-                            return
+                ai_handler = self.bot.get_cog('AIHandler')
+                summary = await self._get_update_summary(ai_handler)
+                if summary:
+                    embed = discord.Embed(
+                        title="🚀 마사몽 업데이트 소식 (자동 요약)",
+                        description=summary,
+                        color=0xff6b6b,
+                    )
+                    embed.set_footer(text="최근 깃허브 변경 내역을 바탕으로 생성되었습니다.")
+                    await ctx.send(embed=embed)
+                    return
 
-                # 3. 로그가 없거나 AI 요약 실패 시 기존 고정 메시지 출력 (폴백)
+                # git/AI가 실패하면 안전한 고정 메시지로 폴백한다.
                 embed = discord.Embed(
                     title="🚀 마사몽 업데이트 소식",
                     description="최근 추가된 따끈따끈한 기능들을 소개할게요!",

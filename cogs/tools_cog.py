@@ -22,8 +22,8 @@ from utils.api_handlers import exchange_rate, finnhub, kakao, krx
 from utils import db as db_utils
 from utils import coords as coords_utils
 from utils import weather as weather_utils
-from utils.api_handlers import yfinance_handler  # [NEW]
 from .weather_cog import WeatherCog
+
 
 def is_korean(text: str) -> bool:
     """텍스트에 한글이 포함되어 있는지 확인하는 유틸리티 함수입니다."""
@@ -41,6 +41,9 @@ class ToolsCog(commands.Cog):
         self._linkup_search_loader_lock = asyncio.Lock()
         self._news_search_pipeline = None
         self._news_search_loader_lock = asyncio.Lock()
+        self._yfinance_handler = None
+        self._yfinance_loader_lock = asyncio.Lock()
+        self._image_generation_lock = asyncio.Lock()
         self._cleanup_tasks: set[asyncio.Task] = set()
         logger.info("ToolsCog가 성공적으로 초기화되었습니다.")
 
@@ -75,15 +78,15 @@ class ToolsCog(commands.Cog):
             if coords: 
                 nx, ny = str(coords["nx"]), str(coords["ny"])
                 
-            short_term_data = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
+            short_term_data, mid_term_data = await asyncio.gather(
+                weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny),
+                self.weather_cog.get_mid_term_weather(day_offset, location_name),
+            )
             short_term_summary = ""
             if short_term_data and not short_term_data.get("error"):
                  tomorrow_summary = weather_utils.format_short_term_forecast(short_term_data, "내일", 1)
                  dayafter_summary = weather_utils.format_short_term_forecast(short_term_data, "모레", 2)
                  short_term_summary = f"{tomorrow_summary}\n{dayafter_summary}"
-            
-            # 2. Mid-term (+3 ~ +10 days)
-            mid_term_data = await self.weather_cog.get_mid_term_weather(day_offset, location_name)
             
             return f"--- [단기 예보 (내일/모레)] ---\n{short_term_summary}\n\n--- [중기 예보 (3일 후 ~ 10일 후)] ---\n{mid_term_data}"
 
@@ -95,11 +98,13 @@ class ToolsCog(commands.Cog):
         
         # [Refactor] Return Dict for AI Prompt Optimization
         # 1. Current Weather
-        current_data = await weather_utils.get_current_weather_from_kma(self.bot.db, nx, ny)
+        current_data, forecast_data = await asyncio.gather(
+            weather_utils.get_current_weather_from_kma(self.bot.db, nx, ny),
+            weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny),
+        )
         current_str = weather_utils.format_current_weather(current_data) if current_data else "정보 없음"
         
         # 2. Short-term Forecast
-        forecast_data = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
         items_list = []
         if forecast_data and 'item' in forecast_data:
             items_list = forecast_data['item']
@@ -112,6 +117,22 @@ class ToolsCog(commands.Cog):
             # Fallback string for legacy handlers (optional, but AI handler looks for dict)
             "summary": f"{location_name} 현재: {current_str}"
         }
+
+    async def _load_yfinance_handler(self):
+        """무거운 yfinance/pandas/numpy 계열을 실제 금융 요청 때 한 번만 로드합니다."""
+        if self._yfinance_handler is not None:
+            return self._yfinance_handler
+
+        async with self._yfinance_loader_lock:
+            if self._yfinance_handler is not None:
+                return self._yfinance_handler
+
+            self._yfinance_handler = await asyncio.to_thread(
+                importlib.import_module,
+                "utils.api_handlers.yfinance_handler",
+            )
+            logger.info("yfinance 핸들러 지연 로딩 완료")
+            return self._yfinance_handler
 
     async def get_stock_price(self, symbol: str = None, stock_name: str = None, user_query: str = None) -> str:
         """
@@ -157,6 +178,7 @@ class ToolsCog(commands.Cog):
             
             if ticker:
                 logger.info(f"yfinance 티커 확정: {ticker}")
+                yfinance_handler = await self._load_yfinance_handler()
                 data = await yfinance_handler.get_stock_info(ticker)
                 
                 if "error" in data:
@@ -322,19 +344,49 @@ class ToolsCog(commands.Cog):
         if prefer_linkup:
             try:
                 run_linkup_search_pipeline = await self._load_linkup_search_pipeline()
-                logger.info(
-                    "웹 검색 RAG(Linkup) 실행. query_chars=%d",
-                    len(query),
+            except Exception as e:
+                # import/로더 단계에서는 provider 호출이 시작되지 않았으므로
+                # 기존 레거시 경로로 안전하게 전환할 수 있다.
+                logger.warning(
+                    "Linkup 파이프라인 로딩 실패로 레거시 파이프라인에 폴백합니다: %s",
+                    e,
                 )
-                linkup_result = await run_linkup_search_pipeline(query, db_conn=self.bot.db)
+            else:
+                try:
+                    logger.info(
+                        "웹 검색 RAG(Linkup) 실행. query_chars=%d",
+                        len(query),
+                    )
+                    linkup_result = await run_linkup_search_pipeline(
+                        query,
+                        db_conn=self.bot.db,
+                    )
+                except Exception as e:
+                    # 실행 계약 밖으로 예외가 새면 provider 호출 여부를 알 수
+                    # 없으므로 같은 요청에서 다른 검색/LLM을 연쇄 호출하지 않는다.
+                    logger.exception(
+                        "Linkup 파이프라인 결과 불명 예외로 추가 외부 검색을 차단합니다."
+                    )
+                    return {
+                        "status": "error",
+                        "message": f"Linkup 검색 결과를 확인하지 못했습니다: {e}",
+                        "provider": "linkup",
+                        "fallback_safe": False,
+                        "failure_kind": "provider_outcome_unknown",
+                    }
+
                 if linkup_result.get("status") == "success":
                     return linkup_result
-                logger.warning(
+                if linkup_result.get("fallback_safe") is False:
+                    logger.warning(
+                        "Linkup 처리/과금 여부가 불명확해 추가 외부 검색을 차단합니다: %s",
+                        linkup_result.get("failure_kind"),
+                    )
+                    return linkup_result
+                logger.info(
                     "Linkup 검색 실패로 레거시 파이프라인 폴백: %s",
                     linkup_result.get("message"),
                 )
-            except Exception as e:
-                logger.warning("Linkup 파이프라인 실행 실패, 레거시 파이프라인으로 폴백합니다: %s", e)
 
         try:
             run_news_search_pipeline = await self._load_news_search_pipeline()
@@ -407,6 +459,11 @@ class ToolsCog(commands.Cog):
                     lines.extend([f"{idx}. {url}" for idx, url in enumerate(urls[:8], 1)])
                 if lines:
                     return "\n".join(lines)
+            elif rag_result.get("fallback_safe") is False:
+                return str(
+                    rag_result.get("message")
+                    or "외부 검색 처리 결과를 확인하지 못해 추가 검색을 중단했습니다."
+                )
 
             # 1. Google Custom Search API
             if getattr(config, 'GOOGLE_API_KEY', None) and getattr(config, 'GOOGLE_CX', None):
@@ -484,6 +541,79 @@ class ToolsCog(commands.Cog):
         return True, None
 
     async def generate_image(self, prompt: str, user_id: int, aspect_ratio: str = None) -> dict:
+        """이미지 생성 전체를 프로세스 단위로 직렬화합니다.
+
+        quota 확인과 실제 API 호출 전 사용량 예약 사이에 다른 요청이
+        끼어들지 않아 동시 요청이 사용자/전역 제한을 초과하지 않습니다.
+        """
+        try:
+            await asyncio.wait_for(
+                self._image_generation_lock.acquire(),
+                timeout=config.IMAGE_GENERATION_QUEUE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            return {
+                "error": (
+                    "지금 다른 이미지를 그리고 있어 대기열이 가득 찼어요. "
+                    "잠시 후 다시 시도해줘!"
+                )
+            }
+        try:
+            return await self._generate_image_exclusive(
+                prompt=prompt,
+                user_id=user_id,
+                aspect_ratio=aspect_ratio,
+            )
+        finally:
+            self._image_generation_lock.release()
+
+    async def check_image_quota(self, user_id: int) -> dict:
+        """이미지 생성 가능 여부를 읽기 전용으로 확인합니다.
+
+        명령 경로는 프롬프트 최적화 LLM 전에 이 메서드로 빠르게 차단하고,
+        실제 생성 경로는 전역 lock 안에서 다시 검사합니다.
+        """
+        user_limited, user_remaining = await db_utils.check_image_user_limit(
+            self.bot.db,
+            user_id,
+        )
+        if user_limited:
+            reset_hours = getattr(config, "IMAGE_USER_RESET_HOURS", 6)
+            return {
+                "allowed": False,
+                "remaining": 0,
+                "error": (
+                    f"이미지 생성 제한에 도달했어요. "
+                    f"{reset_hours}시간 후에 다시 시도해줘!"
+                ),
+            }
+
+        global_limited, global_remaining = await db_utils.check_image_global_limit(
+            self.bot.db
+        )
+        if global_limited:
+            return {
+                "allowed": False,
+                "remaining": 0,
+                "global_remaining": 0,
+                "error": (
+                    "오늘 마사몽이 생성할 수 있는 이미지가 다 끝났어... "
+                    "내일 다시 불러줘!"
+                ),
+            }
+
+        return {
+            "allowed": True,
+            "remaining": user_remaining,
+            "global_remaining": global_remaining,
+        }
+
+    async def _generate_image_exclusive(
+        self,
+        prompt: str,
+        user_id: int,
+        aspect_ratio: str = None,
+    ) -> dict:
         """이미지 생성 도구입니다. 
         설정된 Base URL에 따라 OpenAI 규격(NanoGPT 등) 혹은 Gemini 규격(CometAPI 등)으로 자동 분기합니다.
 
@@ -518,16 +648,22 @@ class ToolsCog(commands.Cog):
             )
             return {"error": "요청한 이미지를 생성할 수 없어요. 부적절한 내용이 포함되어 있는 것 같아요."}
 
-        # 4. 유저별 제한 확인
-        user_limited, user_remaining = await db_utils.check_image_user_limit(self.bot.db, user_id)
-        if user_limited:
-            reset_hours = getattr(config, 'IMAGE_USER_RESET_HOURS', 6)
-            return {"error": f"이미지 생성 제한에 도달했어요. {reset_hours}시간 후에 다시 시도해줘!"}
+        # 4~5. user/global quota를 lock 내부에서 최종 확인한다.
+        quota = await self.check_image_quota(user_id)
+        if not quota.get("allowed"):
+            return {"error": str(quota.get("error") or "이미지 생성 제한에 도달했어요.")}
+        user_remaining = int(quota.get("remaining") or 0)
 
-        # 5. 전역 일일 제한 확인
-        global_limited, global_remaining = await db_utils.check_image_global_limit(self.bot.db)
-        if global_limited:
-            return {"error": "오늘 마사몽이 생성할 수 있는 이미지가 다 끝났어... 내일 다시 불러줘!"}
+        # provider가 실패하거나 빈 응답을 반환해도 실제 비용 시도는 발생한다.
+        # API 직전에 먼저 예약하고, 기록 저장소 장애 시에는 호출하지 않는다.
+        if not await db_utils.log_image_generation(self.bot.db, user_id):
+            return {
+                "error": (
+                    "이미지 사용량을 안전하게 예약하지 못해 생성을 중단했어요. "
+                    "잠시 후 다시 시도해줘!"
+                )
+            }
+        remaining_after_attempt = max(0, user_remaining - 1)
 
         model_name = getattr(config, 'IMAGE_MODEL', 'gemini-3.1-flash-image')
         base_url = str(getattr(config, 'COMETAPI_IMAGE_BASE_URL', 'https://api.cometapi.com')).rstrip("/")
@@ -579,8 +715,11 @@ class ToolsCog(commands.Cog):
                     "x-goog-api-key": api_key
                 }
 
-            async with aiohttp.ClientSession() as session:
-                async with session.post(endpoint, json=payload, headers=headers, timeout=600) as resp:
+            timeout = aiohttp.ClientTimeout(
+                total=config.IMAGE_GENERATION_TIMEOUT_SECONDS
+            )
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(endpoint, json=payload, headers=headers) as resp:
                     if resp.status != 200:
                         error_text = await resp.text()
                         logger.error(
@@ -621,19 +760,26 @@ class ToolsCog(commands.Cog):
                             if image_binary: break
 
                     if image_binary:
-                        # 사용량 기록
-                        await db_utils.log_image_generation(self.bot.db, user_id)
                         logger.info(f"이미지 생성 완료: {len(image_binary):,} bytes (Model: {model_name})", extra=log_extra)
                         return {
                             "image_data": image_binary,
-                            "remaining": user_remaining - 1,
+                            "remaining": remaining_after_attempt,
                         }
                     
                     raise ValueError("응답에서 유효한 이미지 데이터를 찾을 수 없습니다.")
 
         except asyncio.TimeoutError:
-            logger.error("이미지 API 타임아웃 (600s)", extra=log_extra)
-            return {"error": "이미지 생성이 10분을 초과하여 중단되었습니다. API 서버가 혼잡할 수 있으니 잠시 후 다시 시도해 주세요."}
+            logger.error(
+                "이미지 API 타임아웃 (%ss)",
+                config.IMAGE_GENERATION_TIMEOUT_SECONDS,
+                extra=log_extra,
+            )
+            return {
+                "error": (
+                    f"이미지 생성이 {config.IMAGE_GENERATION_TIMEOUT_SECONDS}초를 "
+                    "초과해 중단되었습니다. 이번 시도는 사용량에 포함됩니다."
+                )
+            }
         except Exception as e:
             err_msg = str(e)
             logger.error(f"이미지 생성 중 예외: {err_msg}", exc_info=True, extra=log_extra)

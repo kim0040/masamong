@@ -13,6 +13,8 @@ import pytest
 
 from utils.school_notice_contract import (
     DigestContractError,
+    MAX_DIGEST_FILE_BYTES,
+    MAX_DIGEST_ITEMS,
     load_digest,
     parse_digest,
 )
@@ -167,3 +169,159 @@ def test_expected_schema_version_is_configurable():
     digest = parse_digest(payload, expected_schema_version=99)
 
     assert digest.schema_version == 99
+
+
+def test_file_larger_than_contract_limit_is_rejected_before_json_parse(tmp_path):
+    oversized = tmp_path / "oversized.json"
+    oversized.write_bytes(b" " * (MAX_DIGEST_FILE_BYTES + 1))
+
+    with pytest.raises(DigestContractError, match="너무 큽니다"):
+        load_digest(oversized)
+
+
+def test_too_many_items_are_rejected_before_item_parsing():
+    payload = _payload()
+    payload["items"] = [payload["items"][0]] * (MAX_DIGEST_ITEMS + 1)
+
+    with pytest.raises(DigestContractError, match="항목이 너무 많습니다"):
+        parse_digest(payload)
+
+
+@pytest.mark.parametrize(
+    "mutate, expected",
+    [
+        (lambda p: p["items"][0]["analysis"].update(required="false"), "boolean"),
+        (
+            lambda p: p["items"][0]["score"].update(mandatory_protected=1),
+            "boolean",
+        ),
+        (
+            lambda p: p["collection_health"].update(
+                may_include_stale_notices="false"
+            ),
+            "boolean",
+        ),
+        (
+            lambda p: p["items"][0]["analysis"]["dates"][0].update(
+                inferred_year="false"
+            ),
+            "boolean",
+        ),
+    ],
+)
+def test_boolean_fields_require_actual_json_booleans(mutate, expected):
+    payload = _payload()
+    mutate(payload)
+
+    with pytest.raises(DigestContractError, match=expected):
+        parse_digest(payload)
+
+
+@pytest.mark.parametrize(
+    "mutate, expected",
+    [
+        (lambda p: p["collection_health"].update(failed="0"), "정수"),
+        (lambda p: p["items"][0].update(revision_count="1"), "정수"),
+        (lambda p: p["summary"].update(action="2"), "정수"),
+        (lambda p: p["items"][0]["score"].update(score=float("nan")), "유한"),
+    ],
+)
+def test_invalid_numbers_always_raise_contract_error(mutate, expected):
+    payload = _payload()
+    mutate(payload)
+
+    with pytest.raises(DigestContractError, match=expected):
+        parse_digest(payload)
+
+
+def test_duplicate_notice_ids_are_rejected():
+    payload = _payload()
+    payload["items"][1]["notice_id"] = payload["items"][0]["notice_id"]
+
+    with pytest.raises(DigestContractError, match="중복 notice_id"):
+        parse_digest(payload)
+
+
+@pytest.mark.parametrize(
+    "mutate, expected",
+    [
+        (
+            lambda p: p["items"][0]["notice"]["candidate"].update(source_id=""),
+            "source_id",
+        ),
+        (
+            lambda p: p["items"][0]["notice"]["candidate"].update(external_id=" "),
+            "external_id",
+        ),
+        (lambda p: p["items"][0].update(dedup_key=""), "dedup_key"),
+        (lambda p: p["items"][0]["notice"].update(title=""), "title"),
+    ],
+)
+def test_empty_item_identifiers_are_rejected(mutate, expected):
+    payload = _payload()
+    mutate(payload)
+    if expected == "title":
+        payload["items"][0]["notice"]["candidate"]["title"] = ""
+
+    with pytest.raises(DigestContractError, match=expected):
+        parse_digest(payload)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda p: p["items"][0]["notice"]["candidate"].update(
+            url="javascript:alert(1)"
+        ),
+        lambda p: p["items"][0]["notice"]["attachments"][0].update(
+            url="file:///tmp/a"
+        ),
+        lambda p: p["items"][0].update(
+            duplicate_sources=[{"source_id": "other", "url": "/relative"}]
+        ),
+    ],
+)
+def test_urls_must_be_absolute_http_or_https(mutate):
+    payload = _payload()
+    mutate(payload)
+
+    with pytest.raises(DigestContractError, match="http/https"):
+        parse_digest(payload)
+
+
+def test_consumed_strings_have_explicit_length_limits():
+    payload = _payload()
+    payload["items"][0]["analysis"]["summary"] = "x" * 20_001
+
+    with pytest.raises(DigestContractError, match="문자열이 너무 깁니다"):
+        parse_digest(payload)
+
+
+def test_digest_can_be_bound_to_expected_owner_and_date():
+    payload = _payload()
+
+    digest = parse_digest(
+        payload,
+        expected_user_key=payload["user_key"],
+        expected_digest_date=date.fromisoformat(payload["date"]),
+    )
+
+    assert digest.user_key == payload["user_key"]
+
+
+@pytest.mark.parametrize(
+    "expected_user_key, expected_date, expected",
+    [
+        ("discord-other", date(2026, 7, 27), "user_key"),
+        ("discord-100000000000000001", date(2026, 7, 28), "date"),
+    ],
+)
+def test_digest_owner_or_date_mismatch_is_rejected(
+    expected_user_key, expected_date, expected
+):
+    with pytest.raises(DigestContractError, match=expected):
+        load_digest(
+            FIXTURES / "school_notice_digest.json",
+            expected_user_key=expected_user_key,
+            expected_digest_date=expected_date,
+        )

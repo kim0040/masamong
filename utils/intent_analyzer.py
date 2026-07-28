@@ -623,8 +623,66 @@ class IntentAnalyzer:
 
         normalized: list[dict[str, Any]] = []
         seen_keys: set[tuple[str, str]] = set()
+        tool_counts: dict[str, int] = {}
+        max_tool_calls = min(
+            3,
+            max(1, int(getattr(config, "AGENT_MAX_TOOL_CALLS", 3))),
+        )
+        # 웹 검색은 서로 다른 보완 쿼리 두 개까지 허용하되, 고비용 이미지와
+        # 단일 위치 기준 날씨는 메시지당 한 번만 실행한다.
+        per_tool_limits = {
+            "web_search": min(2, max_tool_calls),
+            "get_weather_forecast": 1,
+            "generate_image": 1,
+        }
+
+        def append_candidate(candidate: dict[str, Any]) -> bool:
+            """중복·전체·도구별 비용 상한을 통과한 계획만 추가합니다."""
+            name = str(candidate.get("tool_to_use") or "")
+            if len(normalized) >= max_tool_calls:
+                return False
+
+            per_tool_limit = per_tool_limits.get(name, 1)
+            if tool_counts.get(name, 0) >= per_tool_limit:
+                logger.info(
+                    "[도구보정] 메시지당 %s 호출 상한(%d)으로 제거",
+                    name,
+                    per_tool_limit,
+                    extra=log_extra,
+                )
+                return False
+
+            params = candidate.get("parameters")
+            key = (
+                name,
+                _json.dumps(
+                    params,
+                    sort_keys=True,
+                    ensure_ascii=False,
+                    default=str,
+                ),
+            )
+            if key in seen_keys:
+                return False
+
+            seen_keys.add(key)
+            tool_counts[name] = tool_counts.get(name, 0) + 1
+            normalized.append(candidate)
+            return True
 
         for raw in tool_plan:
+            if len(normalized) >= max_tool_calls:
+                logger.info(
+                    "[도구보정] 메시지당 도구 호출 상한(%d)에 도달해 나머지 계획을 제거",
+                    max_tool_calls,
+                    extra=log_extra,
+                )
+                break
+
+            if not isinstance(raw, dict):
+                logger.info("[도구보정] 객체가 아닌 도구 계획 항목 제거", extra=log_extra)
+                continue
+
             name = raw.get("tool_to_use") or raw.get("tool_name")
             params = raw.get("parameters")
             if not isinstance(params, dict):
@@ -704,10 +762,7 @@ class IntentAnalyzer:
                         "tool_name": "get_weather_forecast",
                         "parameters": {"location": location, "day_offset": day_offset},
                     }
-                    key = (candidate["tool_to_use"], _json.dumps(candidate["parameters"], sort_keys=True, ensure_ascii=False))
-                    if key not in seen_keys:
-                        seen_keys.add(key)
-                        normalized.append(candidate)
+                    append_candidate(candidate)
                     logger.info("[도구보정] web_search -> get_weather_forecast 전환", extra=log_extra)
                     continue
 
@@ -742,11 +797,7 @@ class IntentAnalyzer:
                 "tool_name": name,
                 "parameters": params,
             }
-            key = (name, _json.dumps(params, sort_keys=True, ensure_ascii=False))
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            normalized.append(candidate)
+            append_candidate(candidate)
 
         return normalized
 

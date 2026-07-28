@@ -10,12 +10,14 @@ from pathlib import Path
 import tempfile
 
 KOREAN_FONT_CANDIDATES = [
+    # 운영 Linux 서버에 설치된 Noto를 우선해 한글이 네모로 렌더링되는 것을
+    # 막고, macOS/Windows 후보는 그대로 fallback으로 유지한다.
+    "Noto Sans CJK KR",
     "Pretendard",
     "Apple SD Gothic Neo",
     "AppleGothic",
     "NanumGothic",
     "Nanum Gothic",
-    "Noto Sans CJK KR",
     "Noto Sans KR",
     "Malgun Gothic",
 ]
@@ -45,6 +47,13 @@ def _resolve_korean_font_name() -> str:
         return "sans-serif"
 
     available = {font.name for font in font_manager.fontManager.ttflist}
+    if not any(candidate in available for candidate in KOREAN_FONT_CANDIDATES):
+        # 서비스 설치 직후의 오래된 matplotlib font cache 때문에 새 폰트를
+        # 못 보는 경우 한 번만 실제 파일 목록을 다시 읽는다.
+        reload_font_manager = getattr(font_manager, "_load_fontmanager", None)
+        if callable(reload_font_manager):
+            font_manager.fontManager = reload_font_manager(try_read_cache=False)
+            available = {font.name for font in font_manager.fontManager.ttflist}
     for candidate in KOREAN_FONT_CANDIDATES:
         if candidate in available:
             return candidate
@@ -96,9 +105,17 @@ def build_activity_ranking_chart_bytes(
     font_name = _resolve_korean_font_name()
     sns.set_theme(
         style="whitegrid",
+        font=font_name,
         rc={
             "font.family": font_name,
-            "font.sans-serif": [font_name, "DejaVu Sans", "Arial"],
+            "font.sans-serif": [
+                font_name,
+                "Noto Sans CJK KR",
+                "NanumGothic",
+                "Noto Sans",
+                "DejaVu Sans",
+                "Arial",
+            ],
             "axes.unicode_minus": False,
         },
     )

@@ -205,7 +205,10 @@ SUPPORTED_LANGUAGES = {"ko", "en", "ja", "fr"}
 
 ### 6.1 로컬 개발 (SQLite)
 
-별도 설정 불필요. 기본값으로 `database/masamong.db` 파일을 사용합니다.
+프로필을 지정하지 않은 기존 로컬 개발 모드는 기본적으로
+`database/remasamong.db`를 사용합니다. General/Masamo처럼 명시적 프로필로 실행할 때는
+`MASAMONG_DATABASE_FILE`에 프로필 이름이 포함된 서로 다른 절대 경로를 반드시 지정합니다.
+두 프로필이 같은 SQLite 파일을 가리키거나 `:memory:`를 사용하면 시작 검증이 거부합니다.
 
 ### 6.2 프로덕션 (TiDB)
 

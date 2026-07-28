@@ -38,9 +38,10 @@ try:
 except ImportError:  # pragma: no cover
     google_genai = None  # type: ignore
 try:
-    from openai import OpenAI
+    from openai import APITimeoutError, OpenAI
 except ImportError:  # pragma: no cover
     OpenAI = None  # type: ignore
+    APITimeoutError = None  # type: ignore
 
 import config
 from database.compat_db import TiDBSettings, rewrite_sql_for_tidb
@@ -93,11 +94,30 @@ except ImportError:
 # ─────────────────────────────────────────────
 # Fast 모델 클라이언트 (의도 분석 / 키워드 / 기사 요약 전용)
 # ─────────────────────────────────────────────
-_fast_openai_clients: dict[tuple[str, str], Any] = {}
-_fast_gemini_clients: dict[tuple[str, str], Any] = {}
+_fast_openai_clients: dict[tuple[str, str, float], Any] = {}
+_fast_gemini_clients: dict[tuple[str, str, float], Any] = {}
 _fast_client_lock = threading.Lock()
+_fast_provider_semaphore = threading.BoundedSemaphore(
+    max(1, int(getattr(config, "LLM_MAX_CONCURRENT_CALLS", 1)))
+)
 _pipeline_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _pipeline_cache_lock = threading.Lock()
+
+
+class FastLLMAdmissionTimeoutError(TimeoutError):
+    """Fast provider 호출 슬롯을 제한 시간 안에 확보하지 못한 경우."""
+
+
+class FastLLMProviderTimeoutError(TimeoutError):
+    """Fast provider의 물리 요청이 transport 제한 시간을 넘긴 경우."""
+
+
+class _FastLLMBudgetExhausted(RuntimeError):
+    """공유 파이프라인의 물리 LLM 호출 예산이 소진된 경우."""
+
+
+class _FastLLMQuotaRejected(RuntimeError):
+    """중앙 API 호출 한도 때문에 물리 요청을 시작하지 않은 경우."""
 
 
 class FastLLMBudget:
@@ -120,6 +140,12 @@ class FastLLMBudget:
             self._used_calls += 1
             return True
 
+    def refund(self) -> None:
+        """Provider 요청 전에 중앙 quota가 거절한 예약을 되돌립니다."""
+        with self._lock:
+            if self._used_calls > 0:
+                self._used_calls -= 1
+
     @property
     def used_calls(self) -> int:
         with self._lock:
@@ -133,7 +159,8 @@ class FastLLMQuotaManager:
         """CometAPI 호출 한도 관리자를 초기화합니다.
 
         Args:
-            db_path: api_call_log를 기록할 SQLite DB 경로. None이면 한도 검사를 건너뜁니다.
+            db_path: api_call_log를 기록할 SQLite DB 경로. 계측 저장소가 없거나
+                사용할 수 없으면 비용 호출을 fail-closed로 차단합니다.
         """
         self.db_path = db_path
         self.rpm_limit = max(1, int(getattr(config, "COMETAPI_RPM_LIMIT", 40)))
@@ -155,7 +182,10 @@ class FastLLMQuotaManager:
 
     def try_consume(self) -> bool:
         if not self.db_path or self._db_unavailable:
-            return True
+            logger.warning(
+                "[web_search] Fast 모델 quota 계측 저장소를 사용할 수 없어 호출을 차단합니다."
+            )
+            return False
 
         now_utc = datetime.now(timezone.utc)
         one_minute_ago = (now_utc - timedelta(minutes=1)).isoformat()
@@ -198,11 +228,10 @@ class FastLLMQuotaManager:
                 finally:
                     conn.close()
         except Exception as e:
-            logger.warning(f"[web_search] Fast 모델 DB quota 계측 실패(우회): {e}")
-            err_msg = str(e).lower()
-            if "no such table" in err_msg or "unable to open database file" in err_msg:
-                self._db_unavailable = True
-            return True
+            logger.warning(f"[web_search] Fast 모델 DB quota 계측 실패(차단): {e}")
+            # 한 파이프라인 안에서 같은 고장 난 계측 저장소에 반복 접속하지 않는다.
+            self._db_unavailable = True
+            return False
 
     @staticmethod
     def _extract_count(row: Any) -> int:
@@ -250,6 +279,75 @@ class FastLLMQuotaManager:
 
 def _normalize_provider(provider: Any) -> str:
     return str(provider or "").strip().lower()
+
+
+def _fast_call_timeout_seconds() -> float:
+    return max(
+        0.001,
+        float(
+            getattr(
+                config,
+                "LLM_CALL_TIMEOUT_SECONDS",
+                getattr(config, "AI_REQUEST_TIMEOUT", 120),
+            )
+        ),
+    )
+
+
+def _fast_acquire_timeout_seconds() -> float:
+    return max(
+        0.001,
+        float(getattr(config, "LLM_ACQUIRE_TIMEOUT_SECONDS", 10)),
+    )
+
+
+def _is_fast_provider_timeout(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    if APITimeoutError is not None and isinstance(exc, APITimeoutError):
+        return True
+    return "timeout" in type(exc).__name__.lower()
+
+
+def _run_bounded_fast_provider_call(
+    call_factory,
+    *,
+    target_name: str,
+    budget: FastLLMBudget,
+    quota_manager: FastLLMQuotaManager | None,
+) -> Any:
+    """물리 Fast LLM 호출 하나에 admission·quota·timeout 경계를 적용합니다.
+
+    SDK transport timeout이 실제 소켓 요청을 중단하며, 이 경계는 동시에 실행되는
+    sync provider 요청 수와 슬롯 대기 시간을 제한합니다. 예산과 중앙 quota는
+    슬롯을 얻은 뒤 실제 SDK 메서드 호출 직전에 각각 한 번만 계측합니다.
+    """
+    acquired = _fast_provider_semaphore.acquire(
+        timeout=_fast_acquire_timeout_seconds()
+    )
+    if not acquired:
+        raise FastLLMAdmissionTimeoutError(
+            f"{target_name} Fast LLM 호출 슬롯을 "
+            f"{_fast_acquire_timeout_seconds():g}초 안에 확보하지 못했습니다."
+        )
+
+    try:
+        if not budget.consume():
+            raise _FastLLMBudgetExhausted
+        if quota_manager is not None and not quota_manager.try_consume():
+            budget.refund()
+            raise _FastLLMQuotaRejected
+        try:
+            return call_factory()
+        except Exception as exc:
+            if _is_fast_provider_timeout(exc):
+                raise FastLLMProviderTimeoutError(
+                    f"{target_name} Fast LLM provider 호출이 "
+                    f"{_fast_call_timeout_seconds():g}초 제한을 넘겼습니다."
+                ) from exc
+            raise
+    finally:
+        _fast_provider_semaphore.release()
 
 
 def _routing_targets() -> list[dict[str, str]]:
@@ -314,11 +412,17 @@ def _routing_targets() -> list[dict[str, str]]:
 def _get_fast_openai_client(base_url: str, api_key: str) -> Any | None:
     if not OpenAI:
         return None
-    key = (base_url.rstrip("/"), api_key)
+    timeout_seconds = _fast_call_timeout_seconds()
+    key = (base_url.rstrip("/"), api_key, timeout_seconds)
     with _fast_client_lock:
         client = _fast_openai_clients.get(key)
         if client is None:
-            client = OpenAI(base_url=key[0], api_key=key[1])
+            client = OpenAI(
+                base_url=key[0],
+                api_key=key[1],
+                max_retries=0,
+                timeout=timeout_seconds,
+            )
             _fast_openai_clients[key] = client
         return client
 
@@ -326,12 +430,20 @@ def _get_fast_openai_client(base_url: str, api_key: str) -> Any | None:
 def _get_fast_gemini_client(base_url: str, api_key: str) -> Any | None:
     if not google_genai:
         return None
-    key = (base_url.rstrip("/"), api_key)
+    timeout_seconds = _fast_call_timeout_seconds()
+    key = (base_url.rstrip("/"), api_key, timeout_seconds)
     with _fast_client_lock:
         client = _fast_gemini_clients.get(key)
         if client is None:
             client = google_genai.Client(
-                http_options={"api_version": "v1beta", "base_url": key[0]},
+                http_options={
+                    "api_version": "v1beta",
+                    "base_url": key[0],
+                    # google-genai timeout 단위는 밀리초다.
+                    "timeout": max(1, int(timeout_seconds * 1000)),
+                    # SDK 재시도와 애플리케이션 fallback의 중첩을 막는다.
+                    "retry_options": {"attempts": 1},
+                },
                 api_key=key[1],
             )
             _fast_gemini_clients[key] = client
@@ -355,12 +467,10 @@ def _call_fast_model(
         return ""
     max_prompt_chars = int(getattr(config, "WEB_RAG_FAST_PROMPT_MAX_CHARS", 5000))
     normalized_prompt = (prompt or "")[:max_prompt_chars]
-    if budget is not None and not budget.consume():
-        logger.info("[web_search] Fast 모델 호출 예산 소진으로 LLM 단계를 건너뜁니다.")
-        return ""
-    if quota_manager is not None and not quota_manager.try_consume():
-        logger.info("[web_search] CometAPI 중앙 호출 제한으로 Fast 모델 단계를 건너뜁니다.")
-        return ""
+    # 공유 budget이 없는 직접 호출도 구성된 물리 호출 상한을 넘지 않는다.
+    effective_budget = budget or FastLLMBudget(
+        getattr(config, "WEB_RAG_FAST_LLM_MAX_CALLS", 3)
+    )
 
     for target in targets:
         try:
@@ -373,13 +483,18 @@ def _call_fast_model(
                     "messages": [{"role": "user", "content": normalized_prompt}],
                     "max_tokens": int(getattr(config, "ROUTING_LLM_MAX_TOKENS", 1024)),
                     "temperature": 0.0,
-                    "timeout": config.AI_REQUEST_TIMEOUT,
+                    "timeout": _fast_call_timeout_seconds(),
                     "stream": False,
                 }
                 reasoning_effort = str(target.get("reasoning_effort") or "").strip()
                 if reasoning_effort:
                     request_kwargs["reasoning_effort"] = reasoning_effort
-                completion = client.chat.completions.create(**request_kwargs)
+                completion = _run_bounded_fast_provider_call(
+                    lambda: client.chat.completions.create(**request_kwargs),
+                    target_name=str(target.get("name") or "routing"),
+                    budget=effective_budget,
+                    quota_manager=quota_manager,
+                )
                 text = completion.choices[0].message.content
                 if text:
                     return text.strip()
@@ -389,14 +504,42 @@ def _call_fast_model(
                 client = _get_fast_gemini_client(target["base_url"], target["api_key"])
                 if client is None:
                     continue
-                response = client.models.generate_content(
-                    model=target["model"],
-                    contents=normalized_prompt,
+                response = _run_bounded_fast_provider_call(
+                    lambda: client.models.generate_content(
+                        model=target["model"],
+                        contents=normalized_prompt,
+                        config={
+                            "temperature": 0.0,
+                            "max_output_tokens": int(
+                                getattr(config, "ROUTING_LLM_MAX_TOKENS", 1024)
+                            ),
+                        },
+                    ),
+                    target_name=str(target.get("name") or "routing"),
+                    budget=effective_budget,
+                    quota_manager=quota_manager,
                 )
                 text = getattr(response, "text", "") or ""
                 if text:
                     return text.strip()
                 continue
+        except (_FastLLMBudgetExhausted, _FastLLMQuotaRejected) as exc:
+            reason = (
+                "Fast 모델 호출 예산 소진"
+                if isinstance(exc, _FastLLMBudgetExhausted)
+                else "CometAPI 중앙 호출 제한"
+            )
+            logger.info("[web_search] %s으로 LLM 단계를 중단합니다.", reason)
+            break
+        except (FastLLMAdmissionTimeoutError, FastLLMProviderTimeoutError) as exc:
+            # 포화된 큐에 fallback까지 추가하거나 완료 여부가 불명확한 timeout
+            # 요청 뒤 두 번째 provider 요청을 시작하지 않는다.
+            logger.warning(
+                "[web_search] Fast 모델 bounded 호출 중단 (%s): %s",
+                target.get("name"),
+                exc,
+            )
+            break
         except Exception as e:
             logger.warning(
                 "[web_search] Fast 모델 호출 실패 (%s): %s",

@@ -5,22 +5,241 @@
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 import discord
 from discord.ext import commands, tasks
 import asyncio
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+import json
+import math
 import pytz
 import re
+import time
+import weakref
 
 import config
 from database.compat_db import get_table_columns
 from logger_config import logger
 from utils import db as db_utils
+from utils.constants import FORTUNE_DAILY_LIMIT
 from utils.fortune import FortuneCalculator, get_sign_from_date
 from utils.discord_helpers import send_split_message, split_message_chunks
+from utils.privacy_consent import (
+    CONSENT_GRANTED,
+    FORTUNE_SCOPE,
+    consent_command_name,
+    get_policy,
+    has_current_consent,
+    withdraw_consent,
+)
 
 # 시간 유효성 검사 정규식 (HH:MM)
 TIME_PATTERN = re.compile(r'^([01]\d|2[0-3]):([0-5]\d)$')
+DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+FORTUNE_CONSENT_POLICY = get_policy(FORTUNE_SCOPE)
+REGISTRATION_MAX_ATTEMPTS = 3
+_CANCEL_INPUTS = {"취소", "중단", "그만", "cancel", "quit", "stop"}
+_UNKNOWN_INPUTS = {
+    "모름",
+    "몰라",
+    "unknown",
+    "응답안함",
+    "응답 안 함",
+    "미제공",
+    "비공개",
+    "skip",
+}
+
+_MORNING_JOB_VERSION = 1
+_MORNING_LOOP_SECONDS = 60
+_MORNING_TICK_TIMEOUT_SECONDS = 50
+_ZODIAC_ATTEMPT_API_TYPE = "fortune_zodiac_generation"
+_ZODIAC_COOLDOWN_MAX_USERS = 4096
+
+
+def _fortune_setting(name: str, default: int, minimum: int, maximum: int) -> int:
+    """운세 전용 런타임 값을 항상 유한한 안전 범위로 읽는다."""
+    try:
+        value = int(getattr(config, name, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def parse_birth_date_input(value: str, *, today: date | None = None) -> str:
+    """등록용 생년월일을 실제 달력·미래일·합리적 연령까지 검증한다."""
+    text = str(value or "").strip()
+    if not DATE_PATTERN.fullmatch(text):
+        raise ValueError("생년월일은 `YYYY-MM-DD` 형식이어야 합니다.")
+    try:
+        parsed = date.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError("실제 달력에 존재하는 날짜를 입력해주세요.") from exc
+    reference = today or datetime.now(pytz.timezone("Asia/Seoul")).date()
+    if parsed > reference:
+        raise ValueError("미래 날짜는 생년월일로 등록할 수 없습니다.")
+    minimum = date(reference.year - 120, 1, 1)
+    if parsed < minimum:
+        raise ValueError(
+            f"생년월일 연도는 {minimum.year}년 이후로 입력해주세요."
+        )
+    return parsed.isoformat()
+
+
+def parse_birth_time_input(value: str) -> str | None:
+    """출생 시간을 검증하되 미제공을 정오로 바꾸지 않는다."""
+    text = str(value or "").strip()
+    if text.lower() in _UNKNOWN_INPUTS:
+        return None
+    if not TIME_PATTERN.fullmatch(text):
+        raise ValueError("시간은 `HH:MM` 형식이거나 `모름`이어야 합니다.")
+    return text
+
+
+def parse_gender_input(value: str) -> str | None:
+    """성별 입력을 정규화하고 응답하지 않을 선택을 허용한다."""
+    text = str(value or "").strip()
+    lowered = text.lower()
+    if lowered in _UNKNOWN_INPUTS:
+        return None
+    if text in {"남", "남자", "남성"} or lowered in {"m", "male"}:
+        return "M"
+    if text in {"여", "여자", "여성"} or lowered in {"f", "female"}:
+        return "F"
+    raise ValueError("`남성`, `여성`, `응답 안 함` 중 하나를 입력해주세요.")
+
+
+def parse_birth_place_input(value: str) -> str | None:
+    """출생지는 선택 항목이며 짧고 비정상적인 값만 거부한다."""
+    text = str(value or "").strip()
+    if text.lower() in _UNKNOWN_INPUTS:
+        return None
+    if not 2 <= len(text) <= 100:
+        raise ValueError("출생지는 2~100자로 입력하거나 `모름`을 입력해주세요.")
+    return text
+
+
+def _gender_label(gender: str | None) -> str:
+    return {"M": "남성", "F": "여성"}.get(str(gender or ""), "미제공")
+
+
+def _morning_setting(name: str, default: int, minimum: int, maximum: int) -> int:
+    return _fortune_setting(name, default, minimum, maximum)
+
+
+def _morning_max_generation_attempts() -> int:
+    return _morning_setting(
+        "FORTUNE_MORNING_MAX_GENERATION_ATTEMPTS",
+        3,
+        1,
+        5,
+    )
+
+
+def _morning_max_send_attempts() -> int:
+    return _morning_setting("FORTUNE_MORNING_MAX_SEND_ATTEMPTS", 3, 1, 5)
+
+
+def _morning_retry_base_seconds() -> int:
+    return _morning_setting(
+        "FORTUNE_MORNING_RETRY_BASE_SECONDS",
+        60,
+        60,
+        3600,
+    )
+
+
+def _morning_retry_at(now: datetime, attempt: int) -> str:
+    delay = min(
+        3600,
+        _morning_retry_base_seconds() * (2 ** max(0, int(attempt) - 1)),
+    )
+    return (now + timedelta(seconds=delay)).isoformat(timespec="seconds")
+
+
+def _new_morning_job(target_date: date) -> dict:
+    return {
+        "version": _MORNING_JOB_VERSION,
+        "target_date": target_date.isoformat(),
+        "state": "generation_retry",
+        "content": None,
+        "generation_attempts": 0,
+        "send_attempts": 0,
+        "next_attempt_at": None,
+        "last_error": None,
+    }
+
+
+def _decode_morning_job(payload: str | None, target_date: date) -> dict:
+    """기존 raw payload나 다른 날짜의 상태를 오늘 작업으로 재사용하지 않는다."""
+    if not payload:
+        return _new_morning_job(target_date)
+    try:
+        parsed = json.loads(payload)
+    except (TypeError, json.JSONDecodeError):
+        # 과거 버전의 raw 운세에는 생성 대상 날짜가 없어 자정 이후 오발송할
+        # 수 있다. 누적 프로필은 보존하되 이 파생 캐시만 새 작업으로 교체한다.
+        return _new_morning_job(target_date)
+    if (
+        not isinstance(parsed, dict)
+        or parsed.get("version") != _MORNING_JOB_VERSION
+        or parsed.get("target_date") != target_date.isoformat()
+    ):
+        return _new_morning_job(target_date)
+    job = _new_morning_job(target_date)
+    job.update(
+        {
+            key: parsed.get(key)
+            for key in (
+                "state",
+                "content",
+                "generation_attempts",
+                "send_attempts",
+                "next_attempt_at",
+                "last_error",
+            )
+        }
+    )
+    try:
+        job["generation_attempts"] = max(
+            0,
+            int(job["generation_attempts"] or 0),
+        )
+        job["send_attempts"] = max(0, int(job["send_attempts"] or 0))
+    except (TypeError, ValueError):
+        return _new_morning_job(target_date)
+    if job["state"] not in {
+        "generation_retry",
+        "generated",
+        "send_retry",
+        "terminal_failed",
+    }:
+        return _new_morning_job(target_date)
+    if job["state"] in {"generated", "send_retry"} and not isinstance(
+        job["content"],
+        str,
+    ):
+        return _new_morning_job(target_date)
+    return job
+
+
+def _encode_morning_job(job: dict) -> str:
+    return json.dumps(job, ensure_ascii=False, separators=(",", ":"))
+
+
+def _morning_job_ready(job: dict, now: datetime) -> bool:
+    if job.get("state") == "terminal_failed":
+        return False
+    raw = job.get("next_attempt_at")
+    if not raw:
+        return True
+    try:
+        next_attempt = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return True
+    if next_attempt.tzinfo is None:
+        next_attempt = pytz.timezone("Asia/Seoul").localize(next_attempt)
+    return next_attempt <= now
 
 class FortuneCog(commands.Cog):
     """운세 관련 기능을 제공하는 Cog입니다."""
@@ -30,6 +249,22 @@ class FortuneCog(commands.Cog):
         self.bot = bot
         self.calculator = FortuneCalculator()
         self._ready = False
+        self._registration_users: set[int] = set()
+        self._fortune_user_locks: weakref.WeakValueDictionary[
+            int,
+            asyncio.Lock,
+        ] = weakref.WeakValueDictionary()
+        self._zodiac_cache: OrderedDict[
+            tuple[str, ...],
+            tuple[float, str | None],
+        ] = OrderedDict()
+        self._zodiac_key_locks: weakref.WeakValueDictionary[
+            tuple[str, ...],
+            asyncio.Lock,
+        ] = weakref.WeakValueDictionary()
+        self._zodiac_attempt_lock = asyncio.Lock()
+        self._zodiac_user_cooldowns: OrderedDict[int, float] = OrderedDict()
+        self._zodiac_users_inflight: set[int] = set()
         # 비동기 초기화 작업을 위해 별도 태스크로 실행
         self._schema_task = self.bot.loop.create_task(self._ensure_db_schema())
         if config.FORTUNE_MORNING_BRIEFING_ENABLED:
@@ -89,6 +324,110 @@ class FortuneCog(commands.Cog):
         if self.morning_briefing_task.is_running():
             self.morning_briefing_task.cancel()
 
+    async def _has_fortune_consent(self, user_id: int) -> bool:
+        """동의 저장소 오류도 허용으로 해석하지 않고 fail-closed 처리한다."""
+        try:
+            return await has_current_consent(
+                self.bot.db,
+                int(user_id),
+                FORTUNE_SCOPE,
+            )
+        except Exception:
+            logger.error(
+                "운세 개인정보 동의 상태 확인 실패: user_id=%s",
+                user_id,
+                exc_info=True,
+            )
+            return False
+
+    async def _send_fortune_consent_prompt(
+        self,
+        ctx: commands.Context,
+        *,
+        status_msg: discord.Message | None = None,
+    ) -> None:
+        """개인정보를 읽기 전에 중앙 동의 흐름으로 안내한다."""
+        message = (
+            "🔐 운세 프로필을 새로 수집하거나 기존 프로필에서 이용하려면 "
+            "현재 개인정보 정책에 대한 명시적 동의가 필요합니다."
+        )
+        if status_msg is not None:
+            await status_msg.edit(
+                content=(
+                    f"{message}\nDM에서 `!개인정보 동의 "
+                    f"{consent_command_name(FORTUNE_SCOPE)}`를 실행한 뒤 다시 시도해주세요."
+                )
+            )
+            return
+        if ctx.guild:
+            await ctx.reply(
+                f"{message}\n동의 처리는 공개 채널이 아닌 DM에서 "
+                f"`!개인정보 동의 {consent_command_name(FORTUNE_SCOPE)}`를 실행해주세요.",
+                mention_author=True,
+            )
+            return
+
+        privacy_cog = self.bot.get_cog("PrivacyCog")
+        if privacy_cog is not None:
+            await privacy_cog.send_consent_prompt(
+                ctx,
+                user_id=ctx.author.id,
+                scope=FORTUNE_SCOPE,
+                prefix=message,
+            )
+            return
+        await ctx.send(
+            f"{message}\n`!개인정보 동의 {consent_command_name(FORTUNE_SCOPE)}`를 "
+            "실행한 뒤 다시 시도해주세요."
+        )
+
+    async def _collect_registration_input(
+        self,
+        ctx: commands.Context,
+        *,
+        prompt: str,
+        parser,
+    ) -> tuple[bool, object | None]:
+        """등록 한 단계를 최대 3회만 묻고 취소/timeout을 유한하게 처리한다."""
+
+        def check(message):
+            return message.author == ctx.author and message.channel == ctx.channel
+
+        for attempt in range(1, REGISTRATION_MAX_ATTEMPTS + 1):
+            await ctx.send(
+                f"{prompt}\n"
+                f"`취소`를 입력하면 등록을 중단합니다. "
+                f"({attempt}/{REGISTRATION_MAX_ATTEMPTS})"
+            )
+            try:
+                message = await self.bot.wait_for(
+                    "message",
+                    check=check,
+                    timeout=60.0,
+                )
+            except asyncio.TimeoutError:
+                await ctx.send(
+                    "⏰ 입력 시간이 초과되어 등록을 종료했습니다. "
+                    "`!운세 등록`으로 다시 시작해주세요."
+                )
+                return False, None
+
+            raw_value = message.content.strip()
+            if raw_value.lower() in _CANCEL_INPUTS:
+                await ctx.send("등록을 취소했습니다. 입력한 내용은 저장하지 않았습니다.")
+                return False, None
+            try:
+                return True, parser(raw_value)
+            except ValueError as exc:
+                if attempt >= REGISTRATION_MAX_ATTEMPTS:
+                    await ctx.send(
+                        f"❌ {exc}\n입력 오류가 {REGISTRATION_MAX_ATTEMPTS}회 "
+                        "누적되어 등록을 종료했습니다. 저장된 내용은 없습니다."
+                    )
+                    return False, None
+                await ctx.send(f"❌ {exc}")
+        return False, None  # pragma: no cover - for 범위가 보장
+
     @commands.group(name='운세', invoke_without_command=True)
     async def fortune(self, ctx: commands.Context, *, option: str = None):
         """
@@ -101,6 +440,8 @@ class FortuneCog(commands.Cog):
         - `!운세 구독 HH:MM` : 매일 아침 운세 브리핑 (DM 전용)
         - `!운세 구독취소` : 구독 해제
         - `!운세 삭제` : 등록된 정보 삭제 (DM 전용)
+        - AI 개인 운세는 기본/상세/월/년을 합쳐 하루 3회이며,
+          외부 AI 호출이 시작된 실패 요청도 횟수에 포함됩니다.
 
         예시:
         - `!운세`
@@ -124,83 +465,72 @@ class FortuneCog(commands.Cog):
         예시:
         - `!운세 등록`
         """
+        if not await self._has_fortune_consent(ctx.author.id):
+            await self._send_fortune_consent_prompt(ctx)
+            return
+
+        registration_users = getattr(self, "_registration_users", None)
+        if registration_users is None:
+            registration_users = set()
+            self._registration_users = registration_users
+        if ctx.author.id in registration_users:
+            await ctx.send("⚠️ 이미 운세 등록을 진행 중입니다.")
+            return
+        registration_users.add(ctx.author.id)
+
         # [Safety Lock] 다른 명령어/AI 응답 방지
         self.bot.locked_users.add(ctx.author.id)
         
         try:
-            def check(m):
-                return m.author == ctx.author and m.channel == ctx.channel
-
-            # 1. 생년월일 입력
-            birth_date = None
-            while birth_date is None:
-                await ctx.send("📝 운세 서비스를 위해 생년월일을 입력해주세요.\n(예: `1990-01-01` - 연도-월-일 순서, 하이픈 필수!)")
-                try:
-                    msg = await self.bot.wait_for('message', check=check, timeout=60.0)
-                    input_date = msg.content.strip()
-                    # 날짜 형식 검증
-                    datetime.strptime(input_date, '%Y-%m-%d')
-                    birth_date = input_date
-                except ValueError:
-                    await ctx.send("❌ 날짜 형식이 올바르지 않아요!\n**올바른 예시**: `1999-12-25` (반드시 하이픈 `-`을 넣어주세요)\n다시 입력해주세요.")
-                except asyncio.TimeoutError:
-                    await ctx.send("⏰ 입력 시간이 초과되었어요. `!운세 등록`을 처음부터 다시 시도해주세요.")
-                    return
-
-            # 2. 태어난 시간 입력
-            birth_time = None
-            while birth_time is None:
-                await ctx.send("🕒 태어난 시간도 알려주세요. (예: `14:30` - 오후 2시 30분)\n정확히 모르면 `모름`이라고 입력해주세요.")
-                try:
-                    msg = await self.bot.wait_for('message', check=check, timeout=60.0)
-                    birth_time_input = msg.content.strip()
-                    if birth_time_input in ['모름', '몰라', 'unknown']:
-                        birth_time = "12:00"
-                    else:
-                        if not TIME_PATTERN.match(birth_time_input):
-                             await ctx.send("❌ 시간 형식이 올바르지 않아요!\n**올바른 예시**: `09:30` (오전 9시 반), `23:00` (밤 11시)\n혹은 `모름`이라고 입력해주세요.")
-                             continue
-                        birth_time = birth_time_input
-                except asyncio.TimeoutError:
-                     await ctx.send("⏰ 입력 시간이 초과되었어요. `!운세 등록`을 처음부터 다시 시도해주세요.")
-                     return
-
-
-
-            # 3. 성별 입력
-            gender = None
-            while gender is None:
-                await ctx.send("⚧ 성별을 알려주세요. (입력: `남성` 또는 `여성`)")
-                try:
-                    msg = await self.bot.wait_for('message', check=check, timeout=60.0)
-                    gender_input = msg.content.strip()
-                    if gender_input in ['남', '남자', '남성', 'M', 'Male']:
-                        gender = 'M'
-                    elif gender_input in ['여', '여자', '여성', 'F', 'Female']:
-                        gender = 'F'
-                    else:
-                        await ctx.send("❌ 성별을 정확히 입력해주세요. (`남성` 또는 `여성` 으로만 대답해주세요)")
-                        continue
-                except asyncio.TimeoutError:
-                     await ctx.send("⏰ 입력 시간이 초과되었어요. `!운세 등록`을 처음부터 다시 시도해주세요.")
-                     return
-
-            # 4. 태어난 지역 (New)
-            birth_place = None
-            while birth_place is None:
-                await ctx.send("🌍 태어난 지역도 알려주세요. (예: `서울`, `부산`, `뉴욕`, `도쿄`)\n동/읍/면 단위가 아닌 **시/군** 단위로 적어주시면 충분합니다!")
-                try:
-                    msg = await self.bot.wait_for('message', check=check, timeout=60.0)
-                    place_input = msg.content.strip()
-                    if len(place_input) < 2:
-                        await ctx.send("❌ 지역 이름이 너무 짧아요. 다시 입력해주세요.")
-                        continue
-                    birth_place = place_input
-                except asyncio.TimeoutError:
-                     await ctx.send("⏰ 입력 시간이 초과되었어요. `!운세 등록`을 처음부터 다시 시도해주세요.")
-                     return
+            completed, birth_date = await self._collect_registration_input(
+                ctx,
+                prompt=(
+                    "📝 생년월일을 입력해주세요. "
+                    "(예: `1990-01-01`, 필수 항목)"
+                ),
+                parser=parse_birth_date_input,
+            )
+            if not completed:
+                return
+            completed, birth_time = await self._collect_registration_input(
+                ctx,
+                prompt=(
+                    "🕒 태어난 시간을 입력해주세요. (예: `14:30`)\n"
+                    "모르거나 제공하지 않으려면 `모름` 또는 `응답 안 함`을 입력하세요. "
+                    "미제공 값을 `12:00`으로 바꾸지 않습니다."
+                ),
+                parser=parse_birth_time_input,
+            )
+            if not completed:
+                return
+            completed, gender = await self._collect_registration_input(
+                ctx,
+                prompt=(
+                    "⚧ 성별을 입력해주세요. (`남성` / `여성`)\n"
+                    "제공하지 않으려면 `응답 안 함`을 입력하세요. "
+                    "미제공 성별을 추측하지 않습니다."
+                ),
+                parser=parse_gender_input,
+            )
+            if not completed:
+                return
+            completed, birth_place = await self._collect_registration_input(
+                ctx,
+                prompt=(
+                    "🌍 출생지를 시/군 단위로 입력해주세요. (예: `서울`, `부산`)\n"
+                    "제공하지 않으려면 `모름` 또는 `응답 안 함`을 입력하세요."
+                ),
+                parser=parse_birth_place_input,
+            )
+            if not completed:
+                return
 
             # DB 저장 (기본적으로 구독은 비활성화 상태로 저장)
+            if not await self._has_fortune_consent(ctx.author.id):
+                await ctx.send(
+                    "개인정보 동의가 등록 도중 철회되어 입력 내용을 저장하지 않았습니다."
+                )
+                return
             await self._save_user_profile(ctx.author.id, birth_date, birth_time, gender, birth_place)
             await ctx.send(
                 f"✅ 정보 등록이 완료되었습니다!\n"
@@ -214,6 +544,7 @@ class FortuneCog(commands.Cog):
         finally:
             # [Safety Lock Release] 작업 종료 후 반드시 잠금 해제
             self.bot.locked_users.discard(ctx.author.id)
+            registration_users.discard(ctx.author.id)
 
     async def _save_user_profile(self, user_id, birth_date, birth_time, gender, birth_place):
         """사용자 운세 프로필(생년월일/시간/성별/출생지)을 DB에 저장하거나 갱신합니다."""
@@ -225,7 +556,9 @@ class FortuneCog(commands.Cog):
                     birth_date = VALUES(birth_date),
                     birth_time = VALUES(birth_time),
                     gender = VALUES(gender),
-                    birth_place = VALUES(birth_place)
+                    birth_place = VALUES(birth_place),
+                    pending_payload = NULL,
+                    last_fortune_content = NULL
             """
         else:
             query = """
@@ -235,7 +568,9 @@ class FortuneCog(commands.Cog):
                     birth_date = excluded.birth_date,
                     birth_time = excluded.birth_time,
                     gender = excluded.gender,
-                    birth_place = excluded.birth_place
+                    birth_place = excluded.birth_place,
+                    pending_payload = NULL,
+                    last_fortune_content = NULL
             """
         async with self.bot.db.execute(
             query,
@@ -246,6 +581,9 @@ class FortuneCog(commands.Cog):
     async def _update_last_fortune_context(self, user_id: int, content: str):
         """사용자가 마지막으로 받은 운세 내용을 DB에 저장하여 이후 대화 컨텍스트로 활용합니다."""
         try:
+             # LLM 처리 도중 철회될 수 있으므로 쓰기 시점에도 다시 확인한다.
+             if not await self._has_fortune_consent(user_id):
+                 return
              await self.bot.db.execute(
                 "UPDATE user_profiles SET last_fortune_content = ? WHERE user_id = ?",
                 (content, user_id)
@@ -271,9 +609,28 @@ class FortuneCog(commands.Cog):
             return
 
         try:
-             async with self.bot.db.execute("DELETE FROM user_profiles WHERE user_id = ?", (ctx.author.id,)):
-                 await self.bot.db.commit()
-             await ctx.send("🗑️ 운세 등록 정보와 운세 구독 설정이 삭제되었습니다.")
+             # 삭제 뒤 기존 granted 상태가 남아 향후 프로필을 묵시적으로 다시
+             # 사용하지 않도록 먼저 철회를 append-only 이력에 기록한다.
+             await withdraw_consent(
+                 self.bot.db,
+                 ctx.author.id,
+                 FORTUNE_SCOPE,
+             )
+             await self.bot.db.execute(
+                 "DELETE FROM user_profiles WHERE user_id = ?",
+                 (ctx.author.id,),
+             )
+             await self.bot.db.execute(
+                 "DELETE FROM api_call_log WHERE api_type = ?",
+                 (f"fortune_detail_{ctx.author.id}",),
+             )
+             await self.bot.db.commit()
+             await ctx.send(
+                 "🗑️ 운세 프로필·구독 설정·생성 대기 내용·운세 컨텍스트를 "
+                 "삭제하고 운세 개인정보 동의를 철회했습니다.\n"
+                 "일반 Discord 대화와 서버 기록은 변경하지 않았습니다. "
+                 "동의·철회 증빙용 감사 이력은 별도 보관됩니다."
+             )
         except Exception as e:
              logger.error(f"운세 정보 삭제 중 오류: {e}", exc_info=True)
              await ctx.send("❌ 삭제 중 오류가 발생했습니다.")
@@ -301,6 +658,10 @@ class FortuneCog(commands.Cog):
             await self.fortune_unsubscribe(ctx)
             return
 
+        if not await self._has_fortune_consent(ctx.author.id):
+            await self._send_fortune_consent_prompt(ctx)
+            return
+
         if not TIME_PATTERN.match(time_str):
             await ctx.send("❌ 올바른 시간 형식이 아닙니다. `HH:MM` (24시간제)로 입력해주세요.\n혹시 구독을 취소하시려면 `!구독 취소`라고 입력해주세요.")
             return
@@ -325,12 +686,74 @@ class FortuneCog(commands.Cog):
              if not await cursor.fetchone():
                  await ctx.send("⚠️ 먼저 `!운세 등록`으로 정보를 등록해주세요.")
                  return
-             
+
+             # 프로필 조회와 설정 저장 사이에 동의가 철회될 수 있으므로
+             # 개인정보 기반 자동 처리 활성화 직전에 최신 상태를 다시 확인한다.
+             if not await self._has_fortune_consent(ctx.author.id):
+                 await self._send_fortune_consent_prompt(ctx)
+                 return
+
              await self.bot.db.execute(
-                 "UPDATE user_profiles SET subscription_time = ?, subscription_active = 1 WHERE user_id = ?",
-                 (time_str, ctx.author.id)
+                 """
+                 UPDATE user_profiles
+                 SET subscription_time = ?, subscription_active = 1
+                 WHERE user_id = ?
+                   AND EXISTS (
+                       SELECT 1
+                       FROM privacy_consents AS pc
+                       WHERE pc.user_id = user_profiles.user_id
+                         AND pc.scope = ?
+                         AND pc.policy_version = ?
+                         AND pc.notice_hash = ?
+                         AND pc.status = ?
+                         AND pc.granted_at IS NOT NULL
+                         AND pc.withdrawn_at IS NULL
+                   )
+                 """,
+                 (
+                     time_str,
+                     ctx.author.id,
+                     FORTUNE_CONSENT_POLICY.scope,
+                     FORTUNE_CONSENT_POLICY.version,
+                     FORTUNE_CONSENT_POLICY.notice_hash,
+                     CONSENT_GRANTED,
+                 ),
              )
              await self.bot.db.commit()
+             # MySQL/TiDB rowcount는 동일 값 재설정 시 0일 수 있으므로 성공
+             # 판정에 사용하지 않는다. 저장값과 현재 동의를 JOIN으로 다시 읽어
+             # 유효한 활성 상태만 사용자에게 성공으로 알린다.
+             async with self.bot.db.execute(
+                 """
+                 SELECT 1
+                 FROM user_profiles AS up
+                 JOIN privacy_consents AS pc
+                   ON pc.user_id = up.user_id
+                  AND pc.scope = ?
+                  AND pc.policy_version = ?
+                  AND pc.notice_hash = ?
+                  AND pc.status = ?
+                  AND pc.granted_at IS NOT NULL
+                  AND pc.withdrawn_at IS NULL
+                 WHERE up.user_id = ?
+                   AND up.subscription_active = 1
+                   AND up.subscription_time = ?
+                 """,
+                 (
+                     FORTUNE_CONSENT_POLICY.scope,
+                     FORTUNE_CONSENT_POLICY.version,
+                     FORTUNE_CONSENT_POLICY.notice_hash,
+                     CONSENT_GRANTED,
+                     ctx.author.id,
+                     time_str,
+                 ),
+             ) as verify_cursor:
+                 activated = await verify_cursor.fetchone()
+             if not activated:
+                 # 실제 UPDATE 문도 현재 정책 동의를 조건으로 삼아 두 번째
+                 # 애플리케이션 검사 직후 발생한 철회 경합까지 fail-closed한다.
+                 await self._send_fortune_consent_prompt(ctx)
+                 return
              await ctx.send(f"✅ 구독이 활성화되었습니다! 매일 아침 `{time_str}`에 브리핑을 보내드릴게요.")
         except Exception as e:
              logger.error(f"구독 설정 중 오류: {e}", exc_info=True)
@@ -407,21 +830,362 @@ class FortuneCog(commands.Cog):
         status_msg = await ctx.send("🗓️ 올해 운세를 살펴보는 중이야...")
         await self._check_fortune_logic(ctx, mode='year', status_msg=status_msg)
 
-    async def _check_fortune_logic(self, ctx: commands.Context, option: str = None, mode: str = 'day', status_msg: discord.Message = None):
+    def _fortune_lock_for_user(self, user_id: int) -> asyncio.Lock:
+        """개인 운세 quota 임계구역을 직렬화하되 lock을 무한 보관하지 않는다."""
+        locks = getattr(self, "_fortune_user_locks", None)
+        if locks is None:
+            locks = weakref.WeakValueDictionary()
+            self._fortune_user_locks = locks
+        lock = locks.get(int(user_id))
+        if lock is None:
+            lock = asyncio.Lock()
+            locks[int(user_id)] = lock
+        return lock
+
+    async def _send_fortune_status(
+        self,
+        ctx: commands.Context,
+        status_msg: discord.Message | None,
+        message: str,
+    ) -> None:
+        if status_msg is not None:
+            await status_msg.edit(content=message)
+        else:
+            await ctx.send(message)
+
+    async def _reserve_personal_fortune_attempt(
+        self,
+        ctx: commands.Context,
+        *,
+        status_msg: discord.Message | None,
+    ) -> int | None:
+        """동의·3회 상한 확인과 실패 포함 물리 시도 예약을 한곳에서 수행한다.
+
+        호출자는 반드시 사용자별 운세 lock을 잡은 상태여야 한다. 이 헬퍼를
+        provider 호출 바로 앞에서 호출해 check→INSERT 사이의 동일 프로세스
+        경쟁과 동의 철회 TOCTOU 창을 최소화한다.
+        """
+        user_id = int(ctx.author.id)
+        if not await self._has_fortune_consent(user_id):
+            await self._send_fortune_consent_prompt(
+                ctx,
+                status_msg=status_msg,
+            )
+            return None
+
+        is_limited, remaining = await db_utils.check_fortune_daily_limit(
+            self.bot.db,
+            user_id,
+        )
+        if is_limited:
+            await self._send_fortune_status(
+                ctx,
+                status_msg,
+                (
+                    "⛔ **일일 운세 조회 한도 초과!**\n"
+                    f"AI 개인 운세(기본/상세/월/년)는 합쳐서 하루 "
+                    f"{FORTUNE_DAILY_LIMIT}회까지 "
+                    "이용할 수 있어요.\n내일 다시 찾아와주세요! 🌙"
+                ),
+            )
+            return None
+
+        # 외부 호출 전에 저장해 timeout·빈 응답·provider 오류도 실제 시도로
+        # 차감한다. 저장소 장애는 무제한 호출로 이어지지 않도록 fail-closed다.
+        if not await db_utils.log_fortune_usage(self.bot.db, user_id):
+            await self._send_fortune_status(
+                ctx,
+                status_msg,
+                (
+                    "운세 사용량을 안전하게 기록하지 못해 AI 호출을 시작하지 "
+                    "않았습니다. 잠시 후 다시 시도해주세요."
+                ),
+            )
+            return None
+        return max(0, int(remaining) - 1)
+
+    def _zodiac_cache_get(
+        self,
+        key: tuple[str, ...],
+        *,
+        now: float | None = None,
+    ) -> tuple[bool, str | None]:
+        cache = getattr(self, "_zodiac_cache", None)
+        if cache is None:
+            cache = OrderedDict()
+            self._zodiac_cache = cache
+        current = time.monotonic() if now is None else float(now)
+        entry = cache.get(key)
+        if entry is None:
+            return False, None
+        expires_at, value = entry
+        if expires_at <= current:
+            cache.pop(key, None)
+            return False, None
+        cache.move_to_end(key)
+        return True, value
+
+    def _zodiac_cache_put(
+        self,
+        key: tuple[str, ...],
+        value: str | None,
+        *,
+        negative: bool,
+        now: float | None = None,
+    ) -> None:
+        cache = getattr(self, "_zodiac_cache", None)
+        if cache is None:
+            cache = OrderedDict()
+            self._zodiac_cache = cache
+        current = time.monotonic() if now is None else float(now)
+        ttl = _fortune_setting(
+            (
+                "FORTUNE_ZODIAC_NEGATIVE_CACHE_TTL_SECONDS"
+                if negative
+                else "FORTUNE_ZODIAC_CACHE_TTL_SECONDS"
+            ),
+            30 if negative else 90000,
+            5 if negative else 300,
+            300 if negative else 172800,
+        )
+        cache[key] = (current + ttl, value)
+        cache.move_to_end(key)
+        maximum = _fortune_setting(
+            "FORTUNE_ZODIAC_CACHE_MAX_ENTRIES",
+            32,
+            1,
+            128,
+        )
+        while len(cache) > maximum:
+            cache.popitem(last=False)
+
+    def _zodiac_lock_for_key(self, key: tuple[str, ...]) -> asyncio.Lock:
+        locks = getattr(self, "_zodiac_key_locks", None)
+        if locks is None:
+            locks = weakref.WeakValueDictionary()
+            self._zodiac_key_locks = locks
+        lock = locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            locks[key] = lock
+        return lock
+
+    def _zodiac_cooldown_remaining(
+        self,
+        user_id: int,
+        *,
+        now: float | None = None,
+    ) -> int:
+        """요청 시각을 먼저 예약해 cache hit Discord 도배도 제한한다."""
+        cooldowns = getattr(self, "_zodiac_user_cooldowns", None)
+        if cooldowns is None:
+            cooldowns = OrderedDict()
+            self._zodiac_user_cooldowns = cooldowns
+        current = time.monotonic() if now is None else float(now)
+        user_id = int(user_id)
+        expires_at = float(cooldowns.get(user_id, 0.0))
+        if expires_at > current:
+            cooldowns.move_to_end(user_id)
+            return max(1, math.ceil(expires_at - current))
+
+        duration = _fortune_setting(
+            "FORTUNE_ZODIAC_USER_COOLDOWN_SECONDS",
+            5,
+            1,
+            60,
+        )
+        cooldowns[user_id] = current + duration
+        cooldowns.move_to_end(user_id)
+        while len(cooldowns) > _ZODIAC_COOLDOWN_MAX_USERS:
+            cooldowns.popitem(last=False)
+        return 0
+
+    async def _reserve_zodiac_physical_attempt(self) -> tuple[bool, str]:
+        """KST 날짜별 별자리 provider 시도를 전역 상한 안에서 먼저 기록한다."""
+        lock = getattr(self, "_zodiac_attempt_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._zodiac_attempt_lock = lock
+        async with lock:
+            kst = pytz.timezone("Asia/Seoul")
+            now_kst = datetime.now(kst)
+            today_start = now_kst.replace(
+                hour=0,
+                minute=0,
+                second=0,
+                microsecond=0,
+            ).astimezone(timezone.utc)
+            limit = _fortune_setting(
+                "FORTUNE_ZODIAC_DAILY_PHYSICAL_LIMIT",
+                30,
+                1,
+                120,
+            )
+            try:
+                async with self.bot.db.execute(
+                    """
+                    SELECT COUNT(*) FROM api_call_log
+                    WHERE api_type = ? AND called_at >= ?
+                    """,
+                    (_ZODIAC_ATTEMPT_API_TYPE, today_start.isoformat()),
+                ) as cursor:
+                    row = await cursor.fetchone()
+                if int(row[0] if row else 0) >= limit:
+                    return False, "limit"
+                await self.bot.db.execute(
+                    "INSERT INTO api_call_log (api_type, called_at) VALUES (?, ?)",
+                    (
+                        _ZODIAC_ATTEMPT_API_TYPE,
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+                await self.bot.db.commit()
+                return True, "reserved"
+            except Exception:
+                try:
+                    await self.bot.db.rollback()
+                except Exception:
+                    pass
+                logger.error("별자리 물리 호출 예약 실패", exc_info=True)
+                return False, "unavailable"
+
+    async def _bounded_zodiac_generation(
+        self,
+        **kwargs,
+    ) -> tuple[str | None, str]:
+        """한 사용자가 cooldown 뒤에도 여러 cache miss를 겹쳐 만들지 못하게 한다."""
+        ctx = kwargs["ctx"]
+        user_id = int(ctx.author.id)
+        inflight = getattr(self, "_zodiac_users_inflight", None)
+        if inflight is None:
+            inflight = set()
+            self._zodiac_users_inflight = inflight
+        if user_id in inflight:
+            return None, "user_busy"
+        inflight.add(user_id)
+        try:
+            return await self._cached_zodiac_generation(**kwargs)
+        finally:
+            inflight.discard(user_id)
+
+    async def _cached_zodiac_generation(
+        self,
+        *,
+        ctx: commands.Context,
+        key: tuple[str, ...],
+        system_prompt: str,
+        user_prompt: str,
+        log_extra: dict,
+        requires_consent: bool = False,
+    ) -> tuple[str | None, str]:
+        """bounded cache와 key singleflight 뒤 최대 한 번만 provider를 호출한다."""
+        found, cached = self._zodiac_cache_get(key)
+        if found:
+            return cached, "cached" if cached else "negative_cached"
+
+        lock = self._zodiac_lock_for_key(key)
+        wait_seconds = _fortune_setting(
+            "FORTUNE_ZODIAC_LLM_TIMEOUT_SECONDS",
+            35,
+            5,
+            45,
+        ) + 2
+        try:
+            await asyncio.wait_for(lock.acquire(), timeout=wait_seconds)
+        except asyncio.TimeoutError:
+            return None, "busy"
+        try:
+            found, cached = self._zodiac_cache_get(key)
+            if found:
+                return cached, "cached" if cached else "negative_cached"
+
+            if requires_consent and not await self._has_fortune_consent(
+                ctx.author.id
+            ):
+                return None, "consent_required"
+            ai_handler = self.bot.get_cog("AIHandler")
+            if ai_handler is None:
+                self._zodiac_cache_put(key, None, negative=True)
+                return None, "unavailable"
+            reserved, reservation_outcome = (
+                await self._reserve_zodiac_physical_attempt()
+            )
+            if not reserved:
+                return None, reservation_outcome
+
+            timeout_seconds = _fortune_setting(
+                "FORTUNE_ZODIAC_LLM_TIMEOUT_SECONDS",
+                35,
+                5,
+                45,
+            )
+            try:
+                response = await asyncio.wait_for(
+                    ai_handler._cometapi_generate_content(
+                        system_prompt,
+                        user_prompt,
+                        log_extra=log_extra,
+                    ),
+                    timeout=timeout_seconds,
+                )
+            except Exception:
+                logger.warning(
+                    "별자리 LLM 생성 실패: key=%s",
+                    key,
+                    exc_info=True,
+                )
+                response = None
+            normalized = (
+                response.strip()
+                if isinstance(response, str) and response.strip()
+                else None
+            )
+            self._zodiac_cache_put(
+                key,
+                normalized,
+                negative=normalized is None,
+            )
+            return normalized, "generated" if normalized else "failed"
+        finally:
+            lock.release()
+
+    async def _check_fortune_logic(
+        self,
+        ctx: commands.Context,
+        option: str = None,
+        mode: str = "day",
+        status_msg: discord.Message = None,
+    ):
+        """모든 즉시 개인 운세의 동의·quota·물리 호출을 사용자별 직렬화한다."""
+        async with self._fortune_lock_for_user(ctx.author.id):
+            return await self._check_fortune_logic_unlocked(
+                ctx,
+                option,
+                mode,
+                status_msg,
+            )
+
+    async def _check_fortune_logic_unlocked(
+        self,
+        ctx: commands.Context,
+        option: str = None,
+        mode: str = "day",
+        status_msg: discord.Message = None,
+    ):
         """운세 조회의 핵심 로직: 일일 한도 확인 → 프로필 조회 → 별자리/사주 데이터 → LLM 운세 생성."""
         user_id = ctx.author.id
         is_dm = isinstance(ctx.channel, discord.DMChannel)
-        
-        # 1. 운세 상세 / 월 / 년 조회 시 제한 체크
-        is_detail_request = (option and option.strip() in ['상세', 'detail'])
-        usage_check_needed = (mode in ['month', 'year']) or (is_dm and is_detail_request)
-        
-        if usage_check_needed:
-            is_limited, remaining = await db_utils.check_fortune_daily_limit(self.bot.db, user_id)
-            if is_limited:
-                if status_msg: await status_msg.edit(content=f"⛔ **일일 운세 조회 한도 초과!**\n상세 운세(월/년/상세)는 하루 3회까지만 가능해요.\n내일 다시 찾아와주세요! 🌙")
-                else: await ctx.send(f"⛔ **일일 운세 조회 한도 초과!**\n상세 운세(월/년/상세)는 하루 3회까지만 가능해요.\n내일 다시 찾아와주세요! 🌙")
-                return
+
+        if not await self._has_fortune_consent(user_id):
+            await self._send_fortune_consent_prompt(
+                ctx,
+                status_msg=status_msg,
+            )
+            return
+
+        is_detail_request = bool(
+            option and option.strip() in {"상세", "detail"}
+        )
 
         # 2. 프로필 조회
         cursor = await self.bot.db.execute("SELECT birth_date, birth_time, gender, birth_place FROM user_profiles WHERE user_id = ?", (user_id,))
@@ -438,15 +1202,15 @@ class FortuneCog(commands.Cog):
             return
 
         birth_date, birth_time, gender, birth_place = row
-        # gender/place fallback for old records
-        gender = gender or 'M' 
-        birth_place = birth_place or "대한민국" 
+        # 선택 항목 미제공을 남성/정오/대한민국으로 추측하지 않는다.
+        gender_text = _gender_label(gender)
+        birth_place_text = birth_place or "미제공"
         
         # Typing indicator (작성 중 표시)
         async with ctx.typing():
             # 운세 데이터 생성
             fortune_data = self.calculator.get_comprehensive_info(birth_date, birth_time)
-            fortune_data += f"\n[Birth Place]: {birth_place}"
+            fortune_data += f"\n[Birth Place]: {birth_place_text}"
             
             # 3. AI 핸들러 호출
             ai_handler = self.bot.get_cog('AIHandler')
@@ -465,7 +1229,7 @@ class FortuneCog(commands.Cog):
                  user_sign = get_sign_from_date(b_month, b_day)
                  now = datetime.now(pytz.timezone('Asia/Seoul'))
                  astro_chart = self.calculator._get_astrology_chart(now)
-                 fortune_data += f"\n[User Zodiac]: {user_sign}\n[Gender]: {gender}\n[Astro Chart]: {astro_chart}"
+                 fortune_data += f"\n[User Zodiac]: {user_sign}\n[Gender]: {gender_text}\n[Astro Chart]: {astro_chart}"
             except Exception as e:
                  logger.error(f"Zodiac integration error: {e}")
                  user_sign = "알 수 없음"
@@ -498,7 +1262,7 @@ class FortuneCog(commands.Cog):
                 )
                 user_prompt = (
                     f"{fortune_data}\n\n"
-                    f"사용자: {display_name} ({gender})\n"
+                    f"사용자: {display_name} (성별: {gender_text})\n"
                     f"이 사용자의 오늘의 운세를 **3줄 요약**해줘.\n"
                     f"마지막 줄에는 반드시 '✨ 더 자세한 운세는 저에게 DM으로 `!운세 상세`라고 보내주세요!' 라고 덧붙여줘."
                 )
@@ -512,7 +1276,7 @@ class FortuneCog(commands.Cog):
                 )
                 user_prompt = (
                     f"{fortune_data}\n\n"
-                    f"사용자: {display_name} ({gender})\n"
+                    f"사용자: {display_name} (성별: {gender_text})\n"
                     f"오늘의 운세 핵심만 브리핑해줘. (총평, 주의할 점, 행운 요소 위주)\n"
                     f"마지막 줄에 '✨ 아주 상세한 전체 분석을 보고 싶다면 `!운세 상세`를 입력해주세요!' 라고 안내해줘."
                 )
@@ -522,17 +1286,28 @@ class FortuneCog(commands.Cog):
                 system_prompt = (
                     "너는 전문 점성가이자 명리하자인 '마사몽'이야. "
                     "사용자의 운세와 별자리 정보를 깊이 있게 분석해서 상세한 답변을 제공해줘. "
-                    "동양(사주)과 서양(별자리) 관점을 종합하고, 성별을 고려하여 섬세하게 조언해줘. "
+                    "동양(사주)과 서양(별자리) 관점을 종합하고, 사용자가 성별을 제공한 경우에만 이를 고려해. "
+                    "미제공 항목을 추측하지 마. "
                     "출력 형식은 가독성 좋은 마크다운(Markdown)을 사용해."
                 )
                 user_prompt = (
                     f"{fortune_data}\n\n"
                     f"사용자 닉네임: {display_name}\n"
-                    f"성별: {gender}\n"
+                    f"성별: {gender_text}\n"
                     f"위 데이터를 바탕으로 {user_sign} 사용자({birth_date})의 {period_str} 운세를 아주 상세하게 분석해줘.\n"
                     f"{prompt_focus}\n"
                     f"항목: [총평], [재물운], [연애/인간관계], [건강운], [마사몽의 행운 팁]"
                 )
+
+            # 프로필을 읽고 prompt를 만든 뒤에도 최신 동의를 다시 확인한다.
+            # 모든 즉시 개인 운세는 같은 3회 check→실패 포함 예약을 사용한다.
+            remaining_after_attempt = await self._reserve_personal_fortune_attempt(
+                ctx,
+                status_msg=status_msg,
+            )
+            if remaining_after_attempt is None:
+                return
+            quota_reserved = True
 
             # 모델 라우팅
             try:
@@ -544,32 +1319,67 @@ class FortuneCog(commands.Cog):
                  )
                  
                  if response:
+                     if not await self._has_fortune_consent(user_id):
+                         message = (
+                             "개인정보 동의가 처리 도중 철회되어 운세 결과 전송과 "
+                             "컨텍스트 저장을 중단했습니다."
+                         )
+                         if status_msg:
+                             await status_msg.edit(content=message)
+                         else:
+                             await ctx.send(message)
+                         return
                      if status_msg:
                          # 자연 경계 분할 헬퍼로 통일(마크다운/단어 중간 절단 방지).
                          # 첫 청크는 기존 상태 메시지를 편집하고, 나머지는 이어서 전송한다.
                          chunks = split_message_chunks(response) or [response]
-                         await status_msg.edit(content=chunks[0])
-                         for extra_chunk in chunks[1:]:
-                             await ctx.send(extra_chunk)
-                             await asyncio.sleep(0.5)
+                         for index, chunk in enumerate(chunks):
+                             if not await self._has_fortune_consent(user_id):
+                                 return
+                             if index == 0:
+                                 await status_msg.edit(content=chunk)
+                             else:
+                                 await ctx.send(chunk)
+                                 await asyncio.sleep(0.5)
                      else:
-                         await self._send_split_message(ctx, response)
+                         chunks = split_message_chunks(response) or [response]
+                         for chunk in chunks:
+                             if not await self._has_fortune_consent(user_id):
+                                 return
+                             await ctx.send(chunk)
+                             await asyncio.sleep(0.5)
+                     # 저장/후속 전송 시점에도 최신 상태를 사용한다.
+                     if not await self._has_fortune_consent(user_id):
+                         return
                      # DM이고 상세 운세(오늘)인 경우 컨텍스트 저장
                      if is_dm and mode == 'day' and is_detail_request:
                          await self._update_last_fortune_context(user_id, response)
                      
-                     # 상세/월/년 운세 성공 시 카운트 증가
-                     if usage_check_needed:
-                         await db_utils.log_fortune_usage(self.bot.db, user_id)
-                         await ctx.send(f"💡 남은 일일 조회 횟수: {remaining - 1}회")
+                     # 사용량은 물리 호출 전에 이미 예약했다.
+                     await ctx.send(
+                         f"💡 남은 횟수: {remaining_after_attempt}회 "
+                         "(AI 개인 운세 기본/상세/월/년 합산)"
+                     )
                  else:
-                     if status_msg: await status_msg.edit(content="운세 분석에 실패했습니다. (AI 응답 없음)")
-                     else: await ctx.send("운세 분석에 실패했습니다. (AI 응답 없음)")
+                     failure_message = "운세 분석에 실패했습니다. (AI 응답 없음)"
+                     if quota_reserved:
+                         failure_message += (
+                             "\n이 요청은 외부 AI 호출이 시작되어 일일 한도에 "
+                             f"포함됩니다. 남은 횟수: {remaining_after_attempt}회"
+                         )
+                     if status_msg: await status_msg.edit(content=failure_message)
+                     else: await ctx.send(failure_message)
                      
             except Exception as e:
                  logger.error(f"운세 요청 처리 중 오류: {e}", exc_info=True)
-                 if status_msg: await status_msg.edit(content="운세 시스템에 문제가 발생했습니다.")
-                 else: await ctx.send("운세 시스템에 문제가 발생했습니다.")
+                 failure_message = "운세 시스템에 문제가 발생했습니다."
+                 if quota_reserved:
+                     failure_message += (
+                         "\n외부 AI 호출이 시작된 요청이므로 일일 한도에 "
+                         f"포함됩니다. 남은 횟수: {remaining_after_attempt}회"
+                     )
+                 if status_msg: await status_msg.edit(content=failure_message)
+                 else: await ctx.send(failure_message)
 
 
 
@@ -604,6 +1414,10 @@ class FortuneCog(commands.Cog):
 
             # 2. 인자가 없는 경우 -> DB 확인
             target_sign = None
+
+            if not await self._has_fortune_consent(ctx.author.id):
+                await self._send_fortune_consent_prompt(ctx)
+                return
             
             # DB에서 생년월일 조회
             cursor = await self.bot.db.execute("SELECT birth_date FROM user_profiles WHERE user_id = ?", (ctx.author.id,))
@@ -613,8 +1427,15 @@ class FortuneCog(commands.Cog):
                 try:
                     b_year, b_month, b_day = map(int, row[0].split('-'))
                     target_sign = get_sign_from_date(b_month, b_day)
+                    if not await self._has_fortune_consent(ctx.author.id):
+                        await self._send_fortune_consent_prompt(ctx)
+                        return
                     # 등록된 정보로 바로 운세 출력
-                    await self._show_zodiac_fortune(ctx, target_sign)
+                    await self._show_zodiac_fortune(
+                        ctx,
+                        target_sign,
+                        requires_consent=True,
+                    )
                     return
                 except Exception as e:
                     logger.error(f"별자리 자동 조회 실패: {e}")
@@ -636,10 +1457,16 @@ class FortuneCog(commands.Cog):
             await ctx.send(embed=embed)
 
     async def _show_zodiac_ranking(self, ctx: commands.Context):
-        """12별자리 운세 순위를 보여줍니다."""
+        """공용 12별자리 순위를 KST 날짜별 singleflight cache로 보여준다."""
+        cooldown = self._zodiac_cooldown_remaining(ctx.author.id)
+        if cooldown:
+            await ctx.send(
+                f"⏳ 별자리 운세는 {cooldown}초 뒤에 다시 요청해주세요."
+            )
+            return
+
         now = datetime.now(pytz.timezone('Asia/Seoul'))
         astro_chart = self.calculator._get_astrology_chart(now)
-        
         system_prompt = (
             "너는 점성술사 '마사몽'이야. 현재 천체 배치를 분석해서 12별자리의 오늘의 운세 순위를 매겨줘. "
             "1위부터 12위까지 순위를 매기고, 각 별자리에 대해 한 줄 코멘트를 달아줘. "
@@ -653,30 +1480,62 @@ class FortuneCog(commands.Cog):
         )
 
         async with ctx.typing():
-            ai_handler = self.bot.get_cog('AIHandler')
-            if ai_handler:
-                response = await ai_handler._cometapi_generate_content(
-                    system_prompt, user_prompt, 
-                    log_extra={'user_id': ctx.author.id, 'mode': 'zodiac_ranking'}
-                )
-                if response:
-                    embed = discord.Embed(
-                        title=f"🏆 오늘의 별자리 운세 랭킹 ({now.strftime('%m/%d')})",
-                        description=response,
-                        color=0xffd700
-                    )
-                    await ctx.send(embed=embed)
-                else:
-                    await ctx.send("별들의 순위를 매기는 중 오류가 발생했습니다.")
-            else:
-                await ctx.send("AI 모듈 오류")
+            response, outcome = await self._bounded_zodiac_generation(
+                ctx=ctx,
+                key=("ranking", now.date().isoformat()),
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                log_extra={
+                    "user_id": ctx.author.id,
+                    "mode": "zodiac_ranking",
+                },
+            )
+        if response:
+            embed = discord.Embed(
+                title=f"🏆 오늘의 별자리 운세 랭킹 ({now.strftime('%m/%d')})",
+                description=response,
+                color=0xffd700
+            )
+            await ctx.send(embed=embed)
+        elif outcome == "limit":
+            await ctx.send(
+                "🌙 오늘의 별자리 AI 생성 상한에 도달했습니다. "
+                "이미 생성된 별자리 결과는 계속 확인할 수 있어요."
+            )
+        elif outcome in {"busy", "user_busy"}:
+            await ctx.send(
+                "별자리 순위를 생성 중인 요청이 오래 걸리고 있어요. "
+                "잠시 후 다시 시도해주세요."
+            )
+        else:
+            await ctx.send(
+                "별들의 순위를 매기는 중 오류가 발생했습니다. "
+                "잠시 후 다시 시도해주세요."
+            )
 
-    async def _show_zodiac_fortune(self, ctx: commands.Context, sign_name: str):
-        """특정 별자리의 오늘의 운세를 풍부하게 출력합니다."""
+    async def _show_zodiac_fortune(
+        self,
+        ctx: commands.Context,
+        sign_name: str,
+        *,
+        requires_consent: bool = False,
+    ):
+        """특정 별자리의 공용 운세를 날짜·별자리별 cache로 출력한다."""
         # 1. 별자리 이름 정규화
         normalized_sign = self._normalize_zodiac_name(sign_name)
         if not normalized_sign:
             await ctx.send(f"🤔 '{sign_name}'은(는) 올바른 별자리 이름이 아니에요. (예: 물병자리, 사자자리)")
+            return
+        if requires_consent and not await self._has_fortune_consent(
+            ctx.author.id
+        ):
+            await self._send_fortune_consent_prompt(ctx)
+            return
+        cooldown = self._zodiac_cooldown_remaining(ctx.author.id)
+        if cooldown:
+            await ctx.send(
+                f"⏳ 별자리 운세는 {cooldown}초 뒤에 다시 요청해주세요."
+            )
             return
 
         is_dm = isinstance(ctx.channel, discord.DMChannel)
@@ -693,7 +1552,6 @@ class FortuneCog(commands.Cog):
             user_prompt = (
                 f"[현재 천체 배치]\n{astro_chart}\n\n"
                 f"[타겟 별자리]: {normalized_sign}\n"
-                f"[사용자 이름]: {ctx.author.display_name}\n\n"
                 f"오늘 {normalized_sign}의 운세를 3줄로 요약해줘.\n"
                 f"마지막에는 '✨ 더 자세한 별자리 분석은 DM으로 `!별자리 {normalized_sign}`을 입력해보세요!' 라고 덧붙여줘."
             )
@@ -708,9 +1566,7 @@ class FortuneCog(commands.Cog):
             user_prompt = (
                 f"[현재 천체 배치]\n{astro_chart}\n\n"
                 f"[타겟 별자리]: {normalized_sign}\n"
-                f"[사용자 이름]: {ctx.author.display_name}\n\n"
                 f"오늘 {normalized_sign} 사람들을 위한 상세한 운세를 작성해주세요. "
-                f"사용자 이름을 자연스럽게 불러주세요.\n"
                 f"가독성을 위해 마크다운(##, **, -)을 적극 활용하고, 다음 항목을 포함하세요:\n"
                 f"1. 🌟 오늘의 기운 (총평)\n"
                 f"2. 💘 사랑과 인간관계\n"
@@ -719,29 +1575,56 @@ class FortuneCog(commands.Cog):
             )
 
         async with ctx.typing():
-            ai_handler = self.bot.get_cog('AIHandler')
-            if ai_handler:
-                response = await ai_handler._cometapi_generate_content(
-                    system_prompt,
-                    user_prompt,
-                    log_extra={'user_id': ctx.author.id, 'mode': 'zodiac_fortune', 'sign': normalized_sign}
-                )
-            else:
-                response = None
+            response, outcome = await self._bounded_zodiac_generation(
+                ctx=ctx,
+                key=(
+                    "sign",
+                    now.date().isoformat(),
+                    normalized_sign,
+                    "dm" if is_dm else "public",
+                ),
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                log_extra={
+                    "user_id": ctx.author.id,
+                    "mode": "zodiac_fortune",
+                    "sign": normalized_sign,
+                },
+                requires_consent=requires_consent,
+            )
 
-            if response:
-                embed = discord.Embed(
-                    title=f"✨ {normalized_sign}의 오늘 운세 ({'요약' if not is_dm else '상세'})",
-                    description=response,
-                    color=0x9b59b6
-                )
-                embed.set_footer(text=f"기준 시각: {now.strftime('%Y-%m-%d %H:%M')}")
-                if len(response) > 4000: # 임베드 제한 초과 시 분할 텍스트로 보냄
-                     await self._send_split_message(ctx, response)
-                else:
-                     await ctx.send(embed=embed)
+        if outcome == "consent_required" or (
+            requires_consent
+            and not await self._has_fortune_consent(ctx.author.id)
+        ):
+            await self._send_fortune_consent_prompt(ctx)
+            return
+        if response:
+            embed = discord.Embed(
+                title=f"✨ {normalized_sign}의 오늘 운세 ({'요약' if not is_dm else '상세'})",
+                description=response,
+                color=0x9b59b6
+            )
+            embed.set_footer(text=f"기준 시각: {now.strftime('%Y-%m-%d %H:%M')}")
+            if len(response) > 4000: # 임베드 제한 초과 시 분할 텍스트로 보냄
+                 await self._send_split_message(ctx, response)
             else:
-                await ctx.send("별들의 목소리가 오늘따라 희미하네요... 잠시 후 다시 시도해주세요.")
+                 await ctx.send(embed=embed)
+        elif outcome == "limit":
+            await ctx.send(
+                "🌙 오늘의 별자리 AI 생성 상한에 도달했습니다. "
+                "이미 생성된 별자리 결과는 계속 확인할 수 있어요."
+            )
+        elif outcome in {"busy", "user_busy"}:
+            await ctx.send(
+                "같은 별자리 운세를 생성 중인 요청이 오래 걸리고 있어요. "
+                "잠시 후 다시 시도해주세요."
+            )
+        else:
+            await ctx.send(
+                "별들의 목소리가 오늘따라 희미하네요... "
+                "잠시 후 다시 시도해주세요."
+            )
 
     def _normalize_zodiac_name(self, name: str) -> str | None:
         """사용자 입력을 표준 별자리 이름으로 변환합니다."""
@@ -780,148 +1663,452 @@ class FortuneCog(commands.Cog):
         await send_split_message(destination, text)
 
 
-    @tasks.loop(minutes=1)
-    async def morning_briefing_task(self):
+    async def _persist_morning_job(self, user_id: int, job: dict) -> None:
+        await self.bot.db.execute(
+            "UPDATE user_profiles SET pending_payload = ? WHERE user_id = ?",
+            (_encode_morning_job(job), int(user_id)),
+        )
+        await self.bot.db.commit()
+
+    async def _morning_profiles(
+        self,
+        *,
+        target_date: date,
+        scheduled_time: str,
+        due: bool,
+    ) -> list[tuple]:
+        comparison = "<=" if due else "="
+        query = f"""
+            SELECT up.user_id, up.birth_date, up.birth_time, up.gender,
+                   up.birth_place, up.subscription_time, up.pending_payload
+            FROM user_profiles AS up
+            JOIN privacy_consents AS pc
+              ON pc.user_id = up.user_id
+             AND pc.scope = ?
+             AND pc.policy_version = ?
+             AND pc.notice_hash = ?
+             AND pc.status = ?
+             AND pc.granted_at IS NOT NULL
+             AND pc.withdrawn_at IS NULL
+            WHERE up.subscription_active = 1
+              AND up.subscription_time {comparison} ?
+              AND (up.last_fortune_sent IS NULL OR up.last_fortune_sent != ?)
+            ORDER BY up.subscription_time, up.user_id
         """
-        1. 3분 뒤 전송해야 할 브리핑을 미리 생성 (Pre-generation)
-        2. 전송 시간이 된 브리핑을 전송 (Delivery)
-        """
-        await self.bot.wait_until_ready()
-        # DB 컬럼 추가 등 초기화가 완료될 때까지 대기
-        while not self._ready:
-            await asyncio.sleep(1)
-            
-        now = datetime.now(pytz.timezone('Asia/Seoul'))
-        current_time_str = now.strftime('%H:%M')
-        # 3분 뒤 시간 계산
-        pre_gen_time_str = (now + timedelta(minutes=3)).strftime('%H:%M')
-        today_str = now.strftime('%Y-%m-%d')
-        
+        async with self.bot.db.execute(
+            query,
+            (
+                FORTUNE_CONSENT_POLICY.scope,
+                FORTUNE_CONSENT_POLICY.version,
+                FORTUNE_CONSENT_POLICY.notice_hash,
+                CONSENT_GRANTED,
+                scheduled_time,
+                target_date.isoformat(),
+            ),
+        ) as cursor:
+            return list(await cursor.fetchall())
+
+    async def _morning_display_name(self, user_id: int) -> str:
+        user = self.bot.get_user(user_id)
+        if user is None:
+            try:
+                user = await asyncio.wait_for(
+                    self.bot.fetch_user(user_id),
+                    timeout=5,
+                )
+            except Exception:
+                user = None
+        return str(getattr(user, "display_name", "사용자") or "사용자")
+
+    async def _record_morning_failure(
+        self,
+        *,
+        user_id: int,
+        job: dict,
+        stage: str,
+        error_name: str,
+        now: datetime,
+    ) -> str:
+        attempts_key = (
+            "generation_attempts" if stage == "generation" else "send_attempts"
+        )
+        maximum = (
+            _morning_max_generation_attempts()
+            if stage == "generation"
+            else _morning_max_send_attempts()
+        )
+        attempts = int(job.get(attempts_key) or 0)
+        terminal = attempts >= maximum or error_name == "discord_forbidden"
+        job["state"] = "terminal_failed" if terminal else f"{stage}_retry"
+        job["last_error"] = error_name
+        job["next_attempt_at"] = (
+            None if terminal else _morning_retry_at(now, attempts)
+        )
+        await self._persist_morning_job(user_id, job)
+        logger.warning(
+            "모닝 브리핑 %s 실패: user_id=%s target=%s attempt=%s/%s error=%s terminal=%s",
+            stage,
+            user_id,
+            job["target_date"],
+            attempts,
+            maximum,
+            error_name,
+            terminal,
+        )
+        return "terminal_failed" if terminal else f"{stage}_retry"
+
+    async def _generate_morning_job(
+        self,
+        row: tuple,
+        job: dict,
+        *,
+        target_date: date,
+        now: datetime,
+    ) -> str:
+        (
+            user_id,
+            birth_date,
+            birth_time,
+            gender,
+            birth_place,
+            _subscription_time,
+            _pending_payload,
+        ) = row
+        if not await self._has_fortune_consent(user_id):
+            return "consent_required"
+
+        attempts = int(job.get("generation_attempts") or 0)
+        maximum = _morning_max_generation_attempts()
+        if attempts >= maximum:
+            job["state"] = "terminal_failed"
+            job["last_error"] = "generation_attempt_limit"
+            job["next_attempt_at"] = None
+            await self._persist_morning_job(user_id, job)
+            return "terminal_failed"
+
+        # 외부 호출 전에 시도 횟수와 다음 가능 시각을 내구 저장한다. 호출 뒤
+        # 프로세스가 죽어도 같은 사용자를 매분 무제한 재호출하지 않는다.
+        job["generation_attempts"] = attempts + 1
+        job["state"] = "generation_retry"
+        job["last_error"] = "generation_in_progress"
+        job["next_attempt_at"] = _morning_retry_at(
+            now,
+            job["generation_attempts"],
+        )
+        await self._persist_morning_job(user_id, job)
+
+        ai_handler = self.bot.get_cog("AIHandler")
+        if ai_handler is None:
+            return await self._record_morning_failure(
+                user_id=user_id,
+                job=job,
+                stage="generation",
+                error_name="ai_handler_unavailable",
+                now=now,
+            )
+
+        display_name = await self._morning_display_name(user_id)
+        fortune_data = self.calculator.get_comprehensive_info(
+            birth_date,
+            birth_time,
+            target_date=target_date,
+        )
+        fortune_data += f"\n[Birth Place]: {birth_place or '미제공'}"
+        system_prompt = self._get_system_prompt("fortune_morning")
+        user_prompt = (
+            f"[대상 날짜: {target_date.isoformat()}]\n"
+            f"{fortune_data}\n\n"
+            f"사용자: {display_name} (성별: {_gender_label(gender)})\n\n"
+            f"{target_date.isoformat()} 모닝 브리핑을 작성해줘. "
+            f"첫머리에 '{display_name}님, 좋은 아침이에요!'와 같은 인사를 포함해줘. "
+            "사용자가 제공하지 않은 출생 시간·성별·출생지는 추측하지 말고, "
+            "제공된 데이터만으로 구체적이고 다정한 조언을 해줘."
+        )
+        llm_timeout = _morning_setting(
+            "FORTUNE_MORNING_LLM_TIMEOUT_SECONDS",
+            35,
+            5,
+            40,
+        )
+        # 프로필 조회·prompt 구성 중 철회될 수 있으므로 provider 호출과
+        # 맞닿은 지점에서 최신 동의를 다시 확인한다.
+        if not await self._has_fortune_consent(user_id):
+            return "consent_required"
         try:
-            # === [Task 1: Pre-generation] ===
-            # 구독 시간이 pre_gen_time_str이고, 오늘 아직 안 보냈고, pending 데이터가 없는 사람
-            cursor = await self.bot.db.execute(
+            briefing = await asyncio.wait_for(
+                ai_handler._cometapi_generate_content(
+                    system_prompt,
+                    user_prompt,
+                    log_extra={
+                        "user_id": user_id,
+                        "mode": "morning_briefing_generation",
+                        "target_date": target_date.isoformat(),
+                        "attempt": job["generation_attempts"],
+                    },
+                ),
+                timeout=llm_timeout,
+            )
+            if not isinstance(briefing, str) or not briefing.strip():
+                raise RuntimeError("empty_response")
+        except asyncio.TimeoutError:
+            return await self._record_morning_failure(
+                user_id=user_id,
+                job=job,
+                stage="generation",
+                error_name="llm_timeout",
+                now=now,
+            )
+        except Exception as exc:
+            error_name = (
+                "empty_response"
+                if str(exc) == "empty_response"
+                else type(exc).__name__
+            )
+            return await self._record_morning_failure(
+                user_id=user_id,
+                job=job,
+                stage="generation",
+                error_name=error_name,
+                now=now,
+            )
+
+        if not await self._has_fortune_consent(user_id):
+            return "consent_required"
+        job["state"] = "generated"
+        job["content"] = briefing.strip()
+        job["send_attempts"] = 0
+        job["next_attempt_at"] = now.isoformat(timespec="seconds")
+        job["last_error"] = None
+        await self._persist_morning_job(user_id, job)
+        logger.info(
+            "모닝 브리핑 생성 완료: user_id=%s target=%s attempt=%s",
+            user_id,
+            target_date.isoformat(),
+            job["generation_attempts"],
+        )
+        return "generated"
+
+    async def _deliver_morning_job(
+        self,
+        row: tuple,
+        job: dict,
+        *,
+        target_date: date,
+        now: datetime,
+    ) -> str:
+        user_id = int(row[0])
+        content = job.get("content")
+        if not isinstance(content, str) or not content:
+            return await self._generate_morning_job(
+                row,
+                job,
+                target_date=target_date,
+                now=now,
+            )
+        if not await self._has_fortune_consent(user_id):
+            return "consent_required"
+
+        attempts = int(job.get("send_attempts") or 0)
+        maximum = _morning_max_send_attempts()
+        if attempts >= maximum:
+            job["state"] = "terminal_failed"
+            job["last_error"] = "send_attempt_limit"
+            job["next_attempt_at"] = None
+            await self._persist_morning_job(user_id, job)
+            return "terminal_failed"
+
+        # 발송 시도도 전송 전에 저장한다. 이후 재시도는 job.content만 사용하며
+        # 이미 성공한 LLM 생성을 절대 다시 호출하지 않는다.
+        job["send_attempts"] = attempts + 1
+        job["state"] = "send_retry"
+        job["last_error"] = "send_in_progress"
+        job["next_attempt_at"] = _morning_retry_at(now, job["send_attempts"])
+        await self._persist_morning_job(user_id, job)
+
+        user = self.bot.get_user(user_id)
+        if user is None:
+            try:
+                user = await asyncio.wait_for(
+                    self.bot.fetch_user(user_id),
+                    timeout=5,
+                )
+            except Exception as exc:
+                return await self._record_morning_failure(
+                    user_id=user_id,
+                    job=job,
+                    stage="send",
+                    error_name=type(exc).__name__,
+                    now=now,
+                )
+        if not await self._has_fortune_consent(user_id):
+            return "consent_required"
+
+        full_message = (
+            "🌞 **좋은 아침이에요! 오늘의 모닝 브리핑**\n\n" + content
+        )
+        send_timeout = _morning_setting(
+            "FORTUNE_MORNING_SEND_TIMEOUT_SECONDS",
+            10,
+            3,
+            15,
+        )
+        # 사용자 fetch와 상태 저장 사이에도 철회될 수 있으므로 실제 Discord
+        # DM 전송 직전에 한 번 더 fail-closed로 확인한다.
+        if not await self._has_fortune_consent(user_id):
+            return "consent_required"
+        try:
+            await asyncio.wait_for(
+                self._send_split_message(user, full_message),
+                timeout=send_timeout,
+            )
+        except discord.Forbidden:
+            return await self._record_morning_failure(
+                user_id=user_id,
+                job=job,
+                stage="send",
+                error_name="discord_forbidden",
+                now=now,
+            )
+        except asyncio.TimeoutError:
+            return await self._record_morning_failure(
+                user_id=user_id,
+                job=job,
+                stage="send",
+                error_name="send_timeout",
+                now=now,
+            )
+        except Exception as exc:
+            return await self._record_morning_failure(
+                user_id=user_id,
+                job=job,
+                stage="send",
+                error_name=type(exc).__name__,
+                now=now,
+            )
+
+        # 실제 발송 사실과 파생 캐시 정리는 기록한다. 컨텍스트는 발송 중에도
+        # 현재 동의가 유지된 경우에만 새로 저장한다.
+        if await self._has_fortune_consent(user_id):
+            await self.bot.db.execute(
                 """
-                SELECT user_id, birth_date, birth_time, gender
-                FROM user_profiles 
-                WHERE subscription_active = 1 
-                  AND subscription_time = ? 
-                  AND (last_fortune_sent IS NULL OR last_fortune_sent != ?)
-                  AND (pending_payload IS NULL)
+                UPDATE user_profiles
+                SET last_fortune_sent = ?, pending_payload = NULL,
+                    last_fortune_content = ?
+                WHERE user_id = ?
                 """,
-                (pre_gen_time_str, today_str)
+                (target_date.isoformat(), content, user_id),
             )
-            pre_gen_users = await cursor.fetchall()
-            
-            ai_handler = self.bot.get_cog('AIHandler')
-
-            if pre_gen_users and ai_handler:
-                for user_id, birth_date, birth_time, gender in pre_gen_users:
-                    try:
-                        # 유저 정보 가져오기 (닉네임용)
-                        user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
-                        display_name = user.display_name if user else "사용자"
-                        gender = gender or 'M'
-
-                        # 운세 데이터 생성
-                        fortune_data = self.calculator.get_comprehensive_info(birth_date, birth_time)
-                        system_prompt = self._get_system_prompt("fortune_morning")
-                        user_prompt = (
-                            f"{fortune_data}\n\n"
-                            f"사용자: {display_name} ({gender})\n\n"
-                            f"오늘자 모닝 브리핑을 작성해줘. 첫머리에 '{display_name}님, 좋은 아침이에요!'와 같은 인사를 꼭 포함해줘. "
-                            f"데이터를 바탕으로 구체적이고 다정한 조언을 해줘. 마크다운 스타일을 적용해줘."
-                        )
-                        
-                        briefing = await ai_handler._cometapi_generate_content(
-                            system_prompt,
-                            user_prompt,
-                            log_extra={'user_id': user_id, 'mode': 'morning_briefing_pregen'}
-                        )
-
-                        if briefing:
-                            # DB에 미리 저장
-                            await self.bot.db.execute(
-                                "UPDATE user_profiles SET pending_payload = ? WHERE user_id = ?",
-                                (briefing, user_id)
-                            )
-                            await self.bot.db.commit()
-                            logger.info(f"브리핑 미리 생성 완료: user={user_id}, time={pre_gen_time_str}")
-
-                    except Exception as e:
-                        logger.error(f"브리핑 생성 실패(pre-gen): {user_id}, {e}")
-
-            # === [Task 2: Delivery] ===
-            # 구독 시간이 '이미 지났고(<=)' 오늘 아직 안 보낸 사람.
-            # 정확 일치(=)로 두면 사전생성이 60s를 넘겨 틱이 밀릴 때 해당 분(예: 07:30)이
-            # 관측되지 않아 그 시각 구독자가 그날 브리핑을 통째로 놓친다. <= 캐치업으로
-            # 밀린 경우에도 다음 틱에서 발송하며, 중복은 last_fortune_sent 가드가 막는다.
-            cursor = await self.bot.db.execute(
-                 """
-                SELECT user_id, birth_date, birth_time, gender, pending_payload
-                FROM user_profiles
-                WHERE subscription_active = 1
-                  AND subscription_time <= ?
-                  AND (last_fortune_sent IS NULL OR last_fortune_sent != ?)
+        else:
+            await self.bot.db.execute(
+                """
+                UPDATE user_profiles
+                SET last_fortune_sent = ?, pending_payload = NULL
+                WHERE user_id = ?
                 """,
-                (current_time_str, today_str)
+                (target_date.isoformat(), user_id),
             )
-            delivery_users = await cursor.fetchall()
+        await self.bot.db.commit()
+        logger.info(
+            "모닝 브리핑 발송 완료: user_id=%s target=%s send_attempt=%s",
+            user_id,
+            target_date.isoformat(),
+            job["send_attempts"],
+        )
+        return "sent"
 
-            if not delivery_users:
-                return
+    async def _process_one_morning_profile(
+        self,
+        rows: list[tuple],
+        *,
+        target_date: date,
+        now: datetime,
+    ) -> str | None:
+        for row in rows:
+            job = _decode_morning_job(row[6], target_date)
+            if not _morning_job_ready(job, now):
+                continue
+            if job["state"] in {"generated", "send_retry"} and job.get(
+                "content"
+            ):
+                return await self._deliver_morning_job(
+                    row,
+                    job,
+                    target_date=target_date,
+                    now=now,
+                )
+            return await self._generate_morning_job(
+                row,
+                job,
+                target_date=target_date,
+                now=now,
+            )
+        return None
 
-            for user_id, birth_date, birth_time, gender, pending_payload in delivery_users:
-                try:
-                    user = self.bot.get_user(user_id)
-                    if not user:
-                         # 캐시에 없으면 fetch 시도
-                        try:
-                            user = await self.bot.fetch_user(user_id)
-                        except:
-                            continue
-                    
-                    final_msg = pending_payload
+    async def _run_morning_briefing_tick(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> str:
+        """한 tick에 한 사용자·한 단계만 처리한다."""
+        kst = pytz.timezone("Asia/Seoul")
+        current = now.astimezone(kst) if now is not None else datetime.now(kst)
+        today = current.date()
 
-                    # 만약 미리 생성된 게 없다면(갑자기 시간을 바꿨거나 생성이 실패한 경우) 지금 생성
-                    if not final_msg and ai_handler:
-                        # ... (동일한 생성 로직 fallback)
-                        gender = gender or 'M'
-                        fortune_data = self.calculator.get_comprehensive_info(birth_date, birth_time)
-                        system_prompt = self._get_system_prompt("fortune_morning")
-                        user_prompt = (
-                            f"{fortune_data}\n\n"
-                            f"사용자: {user.display_name} ({gender})\n\n"
-                            f"오늘자 모닝 브리핑을 작성해줘. 첫머리에 '{user.display_name}님, 좋은 아침이에요!'와 같은 인사를 꼭 포함해줘. "
-                            f"데이터를 바탕으로 구체적이고 다정한 조언을 해줘. 마크다운 스타일을 적용해줘."
-                        )
-                        final_msg = await ai_handler._cometapi_generate_content(
-                            system_prompt,
-                            user_prompt,
-                            log_extra={'user_id': user_id, 'mode': 'morning_briefing_fallback'}
-                        )
+        due_rows = await self._morning_profiles(
+            target_date=today,
+            scheduled_time=current.strftime("%H:%M"),
+            due=True,
+        )
+        result = await self._process_one_morning_profile(
+            due_rows,
+            target_date=today,
+            now=current,
+        )
+        if result is not None:
+            return result
 
-                    if final_msg:
-                        message_header = f"🌞 **좋은 아침이에요! 오늘의 모닝 브리핑**\n\n"
-                        full_message = message_header + final_msg
-                        await self._send_split_message(user, full_message)
-                        
-                        # 전송 완료 처리 및 pending 초기화
-                        await self.bot.db.execute(
-                            "UPDATE user_profiles SET last_fortune_sent = ?, pending_payload = NULL WHERE user_id = ?",
-                            (today_str, user_id)
-                        )
-                        # 컨텍스트 업데이트 [NEW]
-                        await self._update_last_fortune_context(user_id, final_msg)
-                        
-                        await self.bot.db.commit()
-                        logger.info(f"모닝 브리핑 전송 완료: user={user_id}, time={current_time_str}")
+        pregen_at = current + timedelta(minutes=3)
+        pregen_target = pregen_at.date()
+        pregen_rows = await self._morning_profiles(
+            target_date=pregen_target,
+            scheduled_time=pregen_at.strftime("%H:%M"),
+            due=False,
+        )
+        result = await self._process_one_morning_profile(
+            pregen_rows,
+            target_date=pregen_target,
+            now=current,
+        )
+        return result or "idle"
 
-                except Exception as ue:
-                    logger.error(f"유저({user_id}) 브리핑 전송 실패: {ue}")
-
-        except Exception as e:
-            logger.error(f"모닝 브리핑 태스크 에러: {e}", exc_info=True)
+    @tasks.loop(seconds=_MORNING_LOOP_SECONDS)
+    async def morning_briefing_task(self):
+        """한 번에 한 단계만 실행하고 전체 tick 시간을 루프 주기보다 짧게 제한한다."""
+        for _ in range(30):
+            if self._ready:
+                break
+            await asyncio.sleep(1)
+        if not self._ready:
+            logger.error(
+                "운세 schema 준비가 30초 안에 끝나지 않아 이번 tick을 건너뜁니다."
+            )
+            return
+        try:
+            await asyncio.wait_for(
+                self._run_morning_briefing_tick(),
+                timeout=_MORNING_TICK_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "모닝 브리핑 tick이 %s초 제한을 초과해 취소되었습니다.",
+                _MORNING_TICK_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            logger.error(
+                "모닝 브리핑 tick 실패: %s",
+                exc,
+                exc_info=True,
+            )
 
     @morning_briefing_task.before_loop
     async def before_morning_briefing(self):

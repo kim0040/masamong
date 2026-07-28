@@ -1,3 +1,4 @@
+import aiosqlite
 import pytest
 
 import config
@@ -52,7 +53,11 @@ async def test_run_linkup_search_pipeline_uses_search(monkeypatch):
 
     monkeypatch.setattr(linkup_search, "_linkup_post_json", fake_post)
 
-    result = await linkup_search.run_linkup_search_pipeline("오늘 OpenAI 최신 업데이트 알려줘")
+    async with aiosqlite.connect(":memory:") as db:
+        result = await linkup_search.run_linkup_search_pipeline(
+            "오늘 OpenAI 최신 업데이트 알려줘",
+            db_conn=db,
+        )
 
     assert result["status"] == "success"
     assert result["provider"] == "linkup"
@@ -75,7 +80,11 @@ async def test_run_linkup_search_pipeline_uses_fetch_for_direct_url(monkeypatch)
 
     monkeypatch.setattr(linkup_search, "_linkup_post_json", fake_post)
 
-    result = await linkup_search.run_linkup_search_pipeline("이 링크 요약해줘 https://example.com/pricing")
+    async with aiosqlite.connect(":memory:") as db:
+        result = await linkup_search.run_linkup_search_pipeline(
+            "이 링크 요약해줘 https://example.com/pricing",
+            db_conn=db,
+        )
 
     assert result["status"] == "success"
     assert result["search_kind"] == "DIRECT_URL"
@@ -105,7 +114,11 @@ async def test_run_linkup_search_pipeline_retries_with_deep_on_low_quality(monke
 
     monkeypatch.setattr(linkup_search, "_linkup_post_json", fake_post)
 
-    result = await linkup_search.run_linkup_search_pipeline("오늘 오픈AI 발표 내용 알려줘")
+    async with aiosqlite.connect(":memory:") as db:
+        result = await linkup_search.run_linkup_search_pipeline(
+            "오늘 오픈AI 발표 내용 알려줘",
+            db_conn=db,
+        )
 
     assert result["status"] == "success"
     assert result["quality"]["depth"] == "deep"

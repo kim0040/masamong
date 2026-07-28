@@ -294,10 +294,18 @@ async def log_linkup_usage(
     depth: str | None = None,
     render_js: bool | None = None,
     used_at_iso: str | None = None,
-):
-    """Linkup 과금 이벤트를 기록합니다."""
+) -> bool:
+    """Linkup 물리 호출 직전 예상 비용을 예약합니다.
+
+    commit까지 완료된 경우에만 True를 반환합니다. 호출자는 False일 때
+    provider 요청을 실행하지 않아 사용량 저장 장애를 비용 우회로 해석하지
+    않아야 합니다.
+    """
     try:
         await _ensure_linkup_usage_table(db)
+        normalized_cost = float(cost_eur)
+        if not 0.0 < normalized_cost <= 1.0:
+            raise ValueError("Linkup 1회 예약 비용은 0 초과 1유로 이하여야 합니다.")
         used_at = used_at_iso or datetime.now(timezone.utc).isoformat()
         await db.execute(
             """
@@ -309,12 +317,18 @@ async def log_linkup_usage(
                 str(endpoint or "").strip().lower(),
                 (str(depth or "").strip().lower() or None),
                 None if render_js is None else (1 if bool(render_js) else 0),
-                float(cost_eur),
+                normalized_cost,
             ),
         )
         await db.commit()
+        return True
     except Exception as e:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         logger.error(f"Linkup 사용량 기록 중 오류: {e}", exc_info=True)
+        return False
 
 
 async def get_daily_api_count(db: aiosqlite.Connection, api_type: str) -> int:
@@ -373,6 +387,18 @@ async def archive_old_conversations(db: aiosqlite.Connection):
         logger.info(f"대화 기록 아카이빙 완료: {len(ids_to_archive)}개 레코드.")
 
     except Exception as e:
+        # INSERT가 성공한 뒤 DELETE(예: BM25 동기화 트리거)에서 실패하면
+        # 연결에는 아직 archive INSERT가 미커밋 상태로 남는다. 여기서
+        # 명시적으로 되돌리지 않으면 호출자가 나중에 수행한 commit이 그
+        # 불완전한 아카이브까지 함께 확정할 수 있으므로 반드시 rollback한다.
+        try:
+            await db.rollback()
+        except Exception as rollback_error:
+            logger.critical(
+                "RAG 아카이빙 실패 후 rollback도 실패했습니다: %s",
+                rollback_error,
+                exc_info=True,
+            )
         logger.error(f"RAG 아카이빙 작업 중 DB 오류: {e}", exc_info=True)
 
 
@@ -464,12 +490,16 @@ async def check_image_global_limit(db: aiosqlite.Connection) -> tuple[bool, int]
         return True, 0  # 오류 시 안전하게 제한
 
 
-async def log_image_generation(db: aiosqlite.Connection, user_id: int):
-    """이미지 생성을 기록합니다 (유저별 + 전역).
+async def log_image_generation(db: aiosqlite.Connection, user_id: int) -> bool:
+    """이미지 provider 호출 시도를 유저별·전역으로 예약합니다.
     
     Args:
         db: 데이터베이스 연결
-        user_id: 이미지를 생성한 유저 ID
+        user_id: 이미지를 요청한 유저 ID
+
+    Returns:
+        두 사용량 행을 모두 commit했으면 True. 기록 실패 시 provider
+        호출을 막을 수 있도록 False를 반환합니다.
     """
     try:
         now = datetime.now(timezone.utc).isoformat()
@@ -487,10 +517,19 @@ async def log_image_generation(db: aiosqlite.Connection, user_id: int):
         )
         
         await db.commit()
-        logger.info(f"이미지 생성 기록 완료 (user_id={user_id})")
+        logger.info(f"이미지 생성 시도 예약 완료 (user_id={user_id})")
+        return True
         
     except Exception as e:
-        logger.error(f"이미지 생성 기록 중 오류 (user_id={user_id}): {e}", exc_info=True)
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        logger.error(
+            f"이미지 생성 시도 예약 중 오류 (user_id={user_id}): {e}",
+            exc_info=True,
+        )
+        return False
 
 
 # ========== DM Rate Limiting (New) ==========
@@ -623,12 +662,24 @@ async def check_fortune_daily_limit(db: aiosqlite.Connection, user_id: int) -> t
 
     except Exception as e:
         logger.error(f"운세 제한 확인 중 오류: {e}", exc_info=True)
-        return False, 3
+        # 사용량 저장소 장애를 무제한 허용으로 해석하면 상세 LLM 호출이
+        # 폭주할 수 있으므로 비용이 드는 경로는 fail-closed 처리한다.
+        return True, 0
 
-async def log_fortune_usage(db: aiosqlite.Connection, user_id: int):
-    """운세 상세 조회 사용을 기록합니다."""
+async def log_fortune_usage(db: aiosqlite.Connection, user_id: int) -> bool:
+    """상세 LLM 물리 호출 직전에 사용량을 기록하고 성공 여부를 반환합니다."""
     try:
         api_type = f"fortune_detail_{user_id}"
-        await log_api_call(db, api_type)
+        await db.execute(
+            "INSERT INTO api_call_log (api_type, called_at) VALUES (?, ?)",
+            (api_type, datetime.now(timezone.utc).isoformat()),
+        )
+        await db.commit()
+        return True
     except Exception as e:
-        logger.error(f"운세 사용 기록 실패: {e}")
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        logger.error(f"운세 사용 기록 실패: {e}", exc_info=True)
+        return False

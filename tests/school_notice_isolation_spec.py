@@ -42,6 +42,16 @@ async def _requested_tables(monkeypatch, *, enabled: bool) -> set[str]:
             "user_id", "birth_date", "birth_time", "gender", "birth_place",
             "subscription_active", "subscription_time", "pending_payload",
             "last_fortune_sent", "last_fortune_content", "created_at",
+            "id", "scope", "policy_version", "notice_hash", "status",
+            "granted_at", "withdrawn_at", "updated_at",
+            "user_key", "school_id", "profile_json", "profile_version",
+            "enabled", "delivery_time", "source_id", "external_id",
+            "feedback_type", "topic", "interaction_id", "consumed_at",
+            "digest_date", "notice_id", "revision_count", "failure_reason",
+            "attempt_count", "delivered_at", "run_date", "profile_hash",
+            "collection_status", "may_include_stale", "item_count",
+            "http_requests", "llm_calls", "finished_at",
+            "next_attempt_at", "last_error",
         ]
 
     monkeypatch.setattr(bot, "_existing_tables", _fake_existing)
@@ -110,12 +120,13 @@ def _boot(tmp_path: Path, extra_lines: list[str]):
         "MASAMONG_REQUIRED_COGS=tools_cog,events,ai_handler",
         "MASAMONG_AUTO_MIGRATE=false",
         "MASAMONG_DB_BACKEND=sqlite",
-        "MASAMONG_DATABASE_FILE=:memory:",
+        f"MASAMONG_DATABASE_FILE={tmp_path / 'general' / 'main.db'}",
         "MASAMONG_MEMORY_SOURCES=discord",
         "DISCORD_EMBEDDING_BACKEND=sqlite",
         "KAKAO_STORE_BACKEND=local",
         "AI_MEMORY_ENABLED=false",
         "EMBEDDING_ENABLED=false",
+        "RERANK_ENABLED=false",
         "DISCORD_BOT_TOKEN=general-token",
         "MASAMONG_EXPECTED_DISCORD_BOT_USER_ID=replace-with-current-masamo-bot-user-id",
         "COMETAPI_KEY=test-cometapi-key",
@@ -165,12 +176,15 @@ def test_enabling_with_relative_paths_fails_closed(tmp_path):
 
 
 def test_enabling_with_absolute_paths_boots(tmp_path):
+    source_config_path = tmp_path / "sources.json"
+    source_config_path.write_text("{}", encoding="utf-8")
     result = _boot(
         tmp_path,
         [
             "SCHOOL_NOTICE_ENABLED=true",
             f"SCHOOL_NOTICE_DIGEST_DIR={tmp_path / 'digests'}",
             f"SCHOOL_NOTICE_CORE_DB={tmp_path / 'core.db'}",
+            f"SCHOOL_NOTICE_SOURCE_CONFIG={source_config_path}",
         ],
     )
 

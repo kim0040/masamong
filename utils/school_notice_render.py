@@ -26,6 +26,7 @@ _TITLE_LIMIT = 256
 _DESCRIPTION_LIMIT = 4096
 _FIELD_VALUE_LIMIT = 1024
 _EMBEDS_PER_MESSAGE = 10
+_EMBED_TEXT_PER_MESSAGE = 6000
 
 BAND_LABELS = {
     "action": "지금 확인",
@@ -53,6 +54,60 @@ def _truncate(text: str, limit: int) -> str:
     if len(rendered) <= limit:
         return rendered
     return rendered[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _shrink_text(text: str, excess: int, *, minimum: int = 1) -> str:
+    """문자 예산을 `excess`만큼 줄이되 빈 Discord 필드는 만들지 않습니다."""
+    target = max(minimum, len(text) - max(0, excess))
+    return _truncate(text, target)
+
+
+def _fit_embed_total(embed: discord.Embed) -> discord.Embed:
+    """Discord의 메시지당 전체 Embed 텍스트 6,000자 제한에 맞춥니다.
+
+    요약을 먼저 줄이고, 그래도 부족하면 뒤쪽의 보조 필드부터 줄입니다. 일정,
+    추천 근거, 자격 확인 경고 같은 앞쪽 핵심 필드는 가능한 한 보존합니다.
+    """
+    if len(embed) <= _EMBED_TEXT_PER_MESSAGE:
+        return embed
+
+    if embed.description:
+        embed.description = _shrink_text(
+            embed.description,
+            len(embed) - _EMBED_TEXT_PER_MESSAGE,
+        )
+
+    for index in range(len(embed.fields) - 1, -1, -1):
+        if len(embed) <= _EMBED_TEXT_PER_MESSAGE:
+            break
+        field = embed.fields[index]
+        embed.set_field_at(
+            index,
+            name=field.name,
+            value=_shrink_text(
+                field.value,
+                len(embed) - _EMBED_TEXT_PER_MESSAGE,
+            ),
+            inline=field.inline,
+        )
+
+    if len(embed) > _EMBED_TEXT_PER_MESSAGE and embed.footer.text:
+        embed.set_footer(
+            text=_shrink_text(
+                embed.footer.text,
+                len(embed) - _EMBED_TEXT_PER_MESSAGE,
+            )
+        )
+    if len(embed) > _EMBED_TEXT_PER_MESSAGE and embed.title:
+        embed.title = _shrink_text(
+            embed.title,
+            len(embed) - _EMBED_TEXT_PER_MESSAGE,
+        )
+    if len(embed) > _EMBED_TEXT_PER_MESSAGE:
+        raise ValueError(
+            "Embed 텍스트를 Discord 6000자 제한 안으로 줄일 수 없습니다."
+        )
+    return embed
 
 
 def _deadline_line(item: DigestItem, today: date | None) -> str | None:
@@ -155,7 +210,7 @@ def build_item_embed(
                 inline=False,
             )
 
-    return embed
+    return _fit_embed_total(embed)
 
 
 def build_header_embed(digest: Digest, *, shown: int, total: int) -> discord.Embed:
@@ -204,7 +259,7 @@ def build_header_embed(digest: Digest, *, shown: int, total: int) -> discord.Emb
                 inline=False,
             )
 
-    return embed
+    return _fit_embed_total(embed)
 
 
 def render_digest(
@@ -237,6 +292,33 @@ def chunk_embeds(
     *,
     per_message: int = _EMBEDS_PER_MESSAGE,
 ) -> list[list[discord.Embed]]:
-    """Discord의 메시지당 Embed 개수 상한에 맞춰 나눕니다."""
-    size = max(1, min(per_message, _EMBEDS_PER_MESSAGE))
-    return [embeds[index : index + size] for index in range(0, len(embeds), size)]
+    """메시지당 Embed 10개와 전체 텍스트 6,000자 상한에 맞춰 나눕니다."""
+    if type(per_message) is not int or per_message < 1:
+        raise ValueError("per_message는 1 이상의 정수여야 합니다.")
+    size = min(per_message, _EMBEDS_PER_MESSAGE)
+    groups: list[list[discord.Embed]] = []
+    current: list[discord.Embed] = []
+    current_text = 0
+
+    for index, embed in enumerate(embeds):
+        if not isinstance(embed, discord.Embed):
+            raise TypeError(f"embeds[{index}]는 discord.Embed여야 합니다.")
+        embed_text = len(embed)
+        if embed_text > _EMBED_TEXT_PER_MESSAGE:
+            raise ValueError(
+                f"embeds[{index}]가 Discord 6000자 제한을 초과합니다: "
+                f"{embed_text}>{_EMBED_TEXT_PER_MESSAGE}"
+            )
+        if current and (
+            len(current) >= size
+            or current_text + embed_text > _EMBED_TEXT_PER_MESSAGE
+        ):
+            groups.append(current)
+            current = []
+            current_text = 0
+        current.append(embed)
+        current_text += embed_text
+
+    if current:
+        groups.append(current)
+    return groups

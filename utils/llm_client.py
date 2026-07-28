@@ -14,7 +14,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, TypeVar
 
 try:
     import google.generativeai as genai
@@ -37,6 +38,17 @@ from logger_config import logger
 from utils import db as db_utils
 
 
+_ProviderResult = TypeVar("_ProviderResult")
+
+
+class LLMAdmissionTimeoutError(TimeoutError):
+    """Provider 호출 슬롯을 제한 시간 안에 확보하지 못한 경우."""
+
+
+class LLMProviderTimeoutError(TimeoutError):
+    """실제 provider 요청이 제한 시간을 넘긴 경우."""
+
+
 class LLMClient:
     """OpenAI-compatible 및 Gemini-compatible LLM 레인 라우팅 클라이언트.
 
@@ -51,6 +63,30 @@ class LLMClient:
         self._gemini_compat_clients: dict[tuple[str, str], Any] = {}
         self.debug_enabled = config.AI_DEBUG_ENABLED
         self._debug_log_len = getattr(config, "AI_DEBUG_LOG_MAX_LEN", 400)
+        self._max_concurrent_calls = max(
+            1,
+            int(getattr(config, "LLM_MAX_CONCURRENT_CALLS", 1)),
+        )
+        self._acquire_timeout_seconds = max(
+            0.001,
+            float(getattr(config, "LLM_ACQUIRE_TIMEOUT_SECONDS", 10)),
+        )
+        self._call_timeout_seconds = max(
+            0.001,
+            float(
+                getattr(
+                    config,
+                    "LLM_CALL_TIMEOUT_SECONDS",
+                    getattr(config, "AI_REQUEST_TIMEOUT", 120),
+                )
+            ),
+        )
+        # 논리 요청(generate_content 등)이 아니라 실제 provider target 호출 경계에
+        # 하나의 세마포어를 둔다. 따라서 primary→fallback이나
+        # get_ai_completion→safe_generate_content가 중첩 획득해 교착되지 않는다.
+        self._provider_call_semaphore = asyncio.BoundedSemaphore(
+            self._max_concurrent_calls
+        )
 
         self.gemini_configured = False
         if config.GEMINI_API_KEY and genai:
@@ -63,6 +99,66 @@ class LLMClient:
         routing_targets = self.get_lane_targets("routing")
         main_targets = self.get_lane_targets("main")
         self.use_cometapi = bool(routing_targets or main_targets)
+
+    async def _run_bounded_provider_call(
+        self,
+        call_factory: Callable[[], Awaitable[_ProviderResult]],
+        *,
+        lane_name: str,
+        log_extra: dict[str, Any] | None,
+    ) -> _ProviderResult:
+        """물리 LLM 호출 하나에 동시성·대기·실행 시간 상한을 적용합니다.
+
+        ``call_factory``는 슬롯을 얻은 뒤에만 coroutine을 만들도록 callable로
+        받습니다. 획득 timeout 시 생성되지 않은 coroutine이 남는 문제를 피하고,
+        모든 진입점이 동일한 실제 provider-call 경계를 공유하게 합니다.
+        """
+        acquired = False
+        try:
+            try:
+                await asyncio.wait_for(
+                    self._provider_call_semaphore.acquire(),
+                    timeout=self._acquire_timeout_seconds,
+                )
+                acquired = True
+            except asyncio.TimeoutError as exc:
+                raise LLMAdmissionTimeoutError(
+                    f"{lane_name} LLM 호출 슬롯을 "
+                    f"{self._acquire_timeout_seconds:g}초 안에 확보하지 못했습니다."
+                ) from exc
+
+            try:
+                async def _record_and_call():
+                    # 기존 성공 기반 cometapi/gemini rate-limit 키와 분리된
+                    # 물리 시도 계측이다. 요청 직전에 기록하므로 provider
+                    # 오류/빈 응답/timeout도 누락되지 않으며 기존 제한 의미는
+                    # 바꾸지 않는다. 계측 DB까지 같은 timeout 안에 두어 DB
+                    # 정체가 provider 슬롯을 무한 점유하지 않게 한다.
+                    if self._db:
+                        await db_utils.log_api_call(self._db, "llm_attempt")
+                    return await call_factory()
+
+                return await asyncio.wait_for(
+                    _record_and_call(),
+                    timeout=self._call_timeout_seconds,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                is_provider_timeout = (
+                    isinstance(exc, asyncio.TimeoutError)
+                    or (APITimeoutError is not None and isinstance(exc, APITimeoutError))
+                    or "timeout" in type(exc).__name__.lower()
+                )
+                if is_provider_timeout:
+                    raise LLMProviderTimeoutError(
+                        f"{lane_name} LLM provider 호출이 "
+                        f"{self._call_timeout_seconds:g}초 제한을 넘겼습니다."
+                    ) from exc
+                raise
+        finally:
+            if acquired:
+                self._provider_call_semaphore.release()
 
     @property
     def db(self):
@@ -172,7 +268,14 @@ class LLMClient:
         cache_key = (base_url.rstrip("/"), api_key)
         client = self._openai_clients.get(cache_key)
         if client is None:
-            client = AsyncOpenAI(base_url=cache_key[0], api_key=cache_key[1])
+            # SDK 기본 재시도(현재 기본 2회)와 애플리케이션의 명시적
+            # primary/fallback이 겹쳐 물리 요청이 증폭되지 않도록 끈다.
+            client = AsyncOpenAI(
+                base_url=cache_key[0],
+                api_key=cache_key[1],
+                max_retries=0,
+                timeout=self._call_timeout_seconds,
+            )
             self._openai_clients[cache_key] = client
         return client
 
@@ -184,7 +287,15 @@ class LLMClient:
         client = self._gemini_compat_clients.get(cache_key)
         if client is None:
             client = google_genai.Client(
-                http_options={"api_version": "v1beta", "base_url": cache_key[0]},
+                http_options={
+                    "api_version": "v1beta",
+                    "base_url": cache_key[0],
+                    # google-genai timeout 단위는 밀리초다.
+                    "timeout": max(1, int(self._call_timeout_seconds * 1000)),
+                    # SDK 기본 재시도를 사용하지 않고 1회 시도로 고정해
+                    # 애플리케이션 fallback과 물리 요청이 중첩되지 않게 한다.
+                    "retry_options": {"attempts": 1},
+                },
                 api_key=cache_key[1],
             )
             self._gemini_compat_clients[cache_key] = client
@@ -215,13 +326,21 @@ class LLMClient:
                 "temperature": config.AI_TEMPERATURE,
                 "frequency_penalty": config.AI_FREQUENCY_PENALTY,
                 "presence_penalty": config.AI_PRESENCE_PENALTY,
-                "timeout": config.AI_REQUEST_TIMEOUT,
+                "timeout": self._call_timeout_seconds,
                 "stream": False,
             }
             reasoning_effort = str(target.get("reasoning_effort") or "").strip()
             if reasoning_effort:
                 request_kwargs["reasoning_effort"] = reasoning_effort
-            completion = await client.chat.completions.create(**request_kwargs)
+
+            async def _request_openai_main():
+                return await client.chat.completions.create(**request_kwargs)
+
+            completion = await self._run_bounded_provider_call(
+                _request_openai_main,
+                lane_name=str(target.get("name") or "main"),
+                log_extra=log_extra,
+            )
             response_text = completion.choices[0].message.content
             reasoning_text = getattr(completion.choices[0].message, "reasoning_content", None)
             if not response_text and reasoning_text:
@@ -238,15 +357,26 @@ class LLMClient:
             if client is None:
                 return None
             merged_prompt = f"[System]\n{system_prompt}\n\n[User]\n{user_prompt}"
-            # to_thread는 취소가 불가하지만, wait_for로 호출측이 무한 대기하지 않도록 상한을 둔다.
-            # 타임아웃 시 TimeoutError가 레인 폴백(call_main_lane) 예외처리에서 처리된다.
-            response = await asyncio.wait_for(
-                asyncio.to_thread(
-                    client.models.generate_content,
+            async_client = getattr(client, "aio", None)
+            if async_client is None:
+                raise RuntimeError(
+                    "google-genai 비동기 클라이언트를 사용할 수 없습니다."
+                )
+
+            async def _request_gemini_main():
+                return await async_client.models.generate_content(
                     model=target["model"],
                     contents=merged_prompt,
-                ),
-                timeout=config.AI_REQUEST_TIMEOUT,
+                    config={
+                        "temperature": config.AI_TEMPERATURE,
+                        "max_output_tokens": max_tokens,
+                    },
+                )
+
+            response = await self._run_bounded_provider_call(
+                _request_gemini_main,
+                lane_name=str(target.get("name") or "main"),
+                log_extra=log_extra,
             )
             return (getattr(response, "text", "") or "").strip() or None
 
@@ -270,13 +400,21 @@ class LLMClient:
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": int(getattr(config, "ROUTING_LLM_MAX_TOKENS", 1024)),
                 "temperature": 0.0,
-                "timeout": config.AI_REQUEST_TIMEOUT,
+                "timeout": self._call_timeout_seconds,
                 "stream": False,
             }
             reasoning_effort = str(target.get("reasoning_effort") or "").strip()
             if reasoning_effort:
                 request_kwargs["reasoning_effort"] = reasoning_effort
-            completion = await client.chat.completions.create(**request_kwargs)
+
+            async def _request_openai_routing():
+                return await client.chat.completions.create(**request_kwargs)
+
+            completion = await self._run_bounded_provider_call(
+                _request_openai_routing,
+                lane_name=str(target.get("name") or "routing"),
+                log_extra=log_extra,
+            )
             response_text = completion.choices[0].message.content
             return response_text.strip() if response_text else None
 
@@ -284,13 +422,28 @@ class LLMClient:
             client = self.get_gemini_compat_client(target["base_url"], target["api_key"])
             if client is None:
                 return None
-            response = await asyncio.wait_for(
-                asyncio.to_thread(
-                    client.models.generate_content,
+            async_client = getattr(client, "aio", None)
+            if async_client is None:
+                raise RuntimeError(
+                    "google-genai 비동기 클라이언트를 사용할 수 없습니다."
+                )
+
+            async def _request_gemini_routing():
+                return await async_client.models.generate_content(
                     model=target["model"],
                     contents=prompt,
-                ),
-                timeout=config.AI_REQUEST_TIMEOUT,
+                    config={
+                        "temperature": 0.0,
+                        "max_output_tokens": int(
+                            getattr(config, "ROUTING_LLM_MAX_TOKENS", 1024)
+                        ),
+                    },
+                )
+
+            response = await self._run_bounded_provider_call(
+                _request_gemini_routing,
+                lane_name=str(target.get("name") or "routing"),
+                log_extra=log_extra,
             )
             return (getattr(response, "text", "") or "").strip() or None
 
@@ -325,6 +478,32 @@ class LLMClient:
         except (TypeError, ValueError, Exception):
             rendered = repr(prompt)
         return self.truncate_for_debug(rendered)
+
+    @staticmethod
+    def _truncate_prompt_preserving_ends(
+        value: Any,
+        max_chars: int,
+        *,
+        tail_fraction: float = 0.6,
+    ) -> str:
+        """최종 방어선에서 프롬프트의 시작과 최신 요구사항인 끝을 함께 보존한다."""
+        text = str(value or "")
+        limit = max(0, int(max_chars))
+        if len(text) <= limit:
+            return text
+        if limit == 0:
+            return ""
+
+        marker = "\n…(입력 길이 제한으로 일부 생략)…\n"
+        if limit <= len(marker):
+            return text[-limit:]
+        content_budget = limit - len(marker)
+        tail_chars = max(
+            1,
+            min(content_budget, int(content_budget * tail_fraction)),
+        )
+        head_chars = content_budget - tail_chars
+        return text[:head_chars] + marker + text[-tail_chars:]
 
     @staticmethod
     def looks_like_prompt_leakage(response_text: str) -> bool:
@@ -381,13 +560,23 @@ class LLMClient:
                 logger.warning(f"Gemini API 호출 제한({limit_key})에 도달했습니다.", extra=log_extra)
                 return None
 
-            response = await asyncio.wait_for(
-                model.generate_content_async(
+            async def _request_direct_gemini():
+                return await model.generate_content_async(
                     prompt,
                     generation_config=generation_config,
                     safety_settings=config.GEMINI_SAFETY_SETTINGS,
-                ),
-                timeout=config.AI_REQUEST_TIMEOUT,
+                    # deprecated google.generativeai의 GAPIC 기본 재시도를
+                    # 비활성화하고 transport timeout도 물리 호출과 맞춘다.
+                    request_options={
+                        "retry": None,
+                        "timeout": self._call_timeout_seconds,
+                    },
+                )
+
+            response = await self._run_bounded_provider_call(
+                _request_direct_gemini,
+                lane_name=limit_key,
+                log_extra=log_extra,
             )
             if self._db:
                 await db_utils.log_api_call(self._db, limit_key)
@@ -408,6 +597,8 @@ class LLMClient:
         user_prompt: str,
         log_extra: dict,
         model: str | None = None,
+        *,
+        raise_on_bounded_failure: bool = False,
     ) -> str | None:
         """메인 레인(primary/fallback)을 통해 응답을 생성합니다.
 
@@ -419,6 +610,8 @@ class LLMClient:
             user_prompt: 사용자 프롬프트
             log_extra: 로깅용 추가 정보
             model: 사용할 모델명 (None이면 기본값 사용)
+            raise_on_bounded_failure: timeout/포화 상태를 상위 호출자에 전달해
+                별도 provider fallback 증폭을 차단할지 여부
 
         Returns:
             생성된 응답 텍스트, 실패 시 None
@@ -438,8 +631,18 @@ class LLMClient:
                 logger.warning("[CometAPI] 호출 차단 - rate limit 도달", extra=log_extra)
                 return None
 
-            system_prompt = (system_prompt or "")[: int(getattr(config, "COMETAPI_SYSTEM_PROMPT_MAX_CHARS", 6000))]
-            user_prompt = (user_prompt or "")[: int(getattr(config, "COMETAPI_USER_PROMPT_MAX_CHARS", 12000))]
+            system_prompt = self._truncate_prompt_preserving_ends(
+                system_prompt,
+                int(getattr(config, "COMETAPI_SYSTEM_PROMPT_MAX_CHARS", 6000)),
+                tail_fraction=0.4,
+            )
+            # 메인 프롬프트는 [현재 질문]을 끝쪽에 배치한다. 혹시 다른
+            # 호출자가 초과 입력을 넘겨도 선두 절단으로 최신 질문을 잃지 않는다.
+            user_prompt = self._truncate_prompt_preserving_ends(
+                user_prompt,
+                int(getattr(config, "COMETAPI_USER_PROMPT_MAX_CHARS", 12000)),
+                tail_fraction=0.7,
+            )
 
             if self.debug_enabled:
                 self.debug(f"[CometAPI] system={self.truncate_for_debug(system_prompt)}", log_extra)
@@ -455,6 +658,19 @@ class LLMClient:
                         log_extra=log_extra,
                         max_tokens=int(getattr(config, "MAIN_LLM_MAX_TOKENS", config.COMETAPI_MAX_TOKENS)),
                     )
+                except (LLMAdmissionTimeoutError, LLMProviderTimeoutError) as lane_exc:
+                    # 포화 상태에서 fallback까지 대기열에 추가하거나, 완료 여부가
+                    # 불명확한 timeout 요청과 fallback을 중첩 실행하지 않는다.
+                    logger.warning(
+                        "[MainLLM:%s] bounded 호출 중단: %s",
+                        target.get("name"),
+                        lane_exc,
+                        extra=log_extra,
+                    )
+                    final_response = None
+                    if raise_on_bounded_failure:
+                        raise
+                    break
                 except Exception as lane_exc:
                     logger.warning("[MainLLM:%s] 호출 실패: %s", target.get("name"), lane_exc, extra=log_extra)
                     final_response = None
@@ -476,6 +692,10 @@ class LLMClient:
 
             return final_response.strip() if final_response else None
 
+        except (LLMAdmissionTimeoutError, LLMProviderTimeoutError):
+            if raise_on_bounded_failure:
+                raise
+            return None
         except Exception as e:
             if APITimeoutError and isinstance(e, APITimeoutError):
                 logger.error(f"CometAPI 요청 시간 초과 ({config.AI_REQUEST_TIMEOUT}s)", extra=log_extra)
@@ -521,6 +741,15 @@ class LLMClient:
                     response_text = await self.call_routing_lane_target(
                         target, prompt=prompt, log_extra=log_extra,
                     )
+                except (LLMAdmissionTimeoutError, LLMProviderTimeoutError) as lane_exc:
+                    logger.warning(
+                        "[RoutingLLM:%s] bounded 호출 중단: %s",
+                        target.get("name"),
+                        lane_exc,
+                        extra=log_extra,
+                    )
+                    response_text = None
+                    break
                 except Exception as lane_exc:
                     logger.warning("[RoutingLLM:%s] 호출 실패: %s", target.get("name"), lane_exc, extra=log_extra)
                     response_text = None
@@ -549,7 +778,23 @@ class LLMClient:
         import uuid
         log_extra = {'trace_id': f"gen_comp_{uuid.uuid4().hex[:4]}"}
         if self.use_cometapi:
-            res = await self.generate_content(system_role, prompt, log_extra, model=model)
+            try:
+                res = await self.generate_content(
+                    system_role,
+                    prompt,
+                    log_extra,
+                    model=model,
+                    raise_on_bounded_failure=True,
+                )
+            except (LLMAdmissionTimeoutError, LLMProviderTimeoutError) as exc:
+                # 슬롯 포화/timeout 뒤 직접 Gemini까지 연속 호출하면 동일한
+                # 논리 요청이 추가 provider 호출로 증폭될 수 있다.
+                logger.warning(
+                    "get_ai_completion bounded 호출 중단: %s",
+                    exc,
+                    extra=log_extra,
+                )
+                return None
             if res:
                 return res
 

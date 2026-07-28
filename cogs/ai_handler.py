@@ -46,7 +46,11 @@ import uuid
 import config
 from logger_config import logger
 from utils import db as db_utils
-from utils.llm_client import LLMClient
+from utils.llm_client import (
+    LLMAdmissionTimeoutError,
+    LLMClient,
+    LLMProviderTimeoutError,
+)
 from utils.intent_analyzer import IntentAnalyzer
 from utils.rag_manager import RAGManager
 from utils.embeddings import (
@@ -56,8 +60,14 @@ from utils.embeddings import (
 from database.bm25_index import BM25IndexManager
 from utils.hybrid_search import HybridSearchEngine
 from utils.reranker import Reranker, RerankerConfig
+from utils.privacy_consent import (
+    CONSENT_GRANTED,
+    FORTUNE_SCOPE,
+    get_policy,
+)
 
 KST = pytz.timezone('Asia/Seoul')
+FORTUNE_CONSENT_POLICY = get_policy(FORTUNE_SCOPE)
 
 class AIHandler(commands.Cog):
     """AI 에이전트 워크플로우를 통합 관리하는 Cog입니다.
@@ -66,6 +76,13 @@ class AIHandler(commands.Cog):
     - `ToolsCog`와 협력해 외부 API 호출, 후처리, 오류 복구를 담당합니다.
     - 대화 저장소(RAG)를 구축해 장기 기억과 능동형 제안을 지원합니다.
     """
+
+    # 메인 user prompt의 선택 컨텍스트는 아래 순서대로 예산을 받는다.
+    # 현재 질문과 도구 결과는 이 예산과 무관하게 먼저 자리를 예약한다.
+    _RECENT_HISTORY_PROMPT_MAX_CHARS = 4_000
+    _FORTUNE_PROMPT_MAX_CHARS = 1_200
+    _RAG_PROMPT_MAX_CHARS = 5_000
+    _PROMPT_OMISSION_MARKER = "\n…(문자 예산에 맞춰 일부 생략)…\n"
 
     def __init__(self, bot: commands.Bot):
         """AIHandler 초기화 — LLM 클라이언트, 임베딩 스토어, 검색 엔진 등 코어 컴포넌트를 설정합니다."""
@@ -83,31 +100,56 @@ class AIHandler(commands.Cog):
         # CPU 스래싱/메모리 스파이크가 발생한다. 동시 처리 수를 제한해 백프레셔를 건다.
         _ai_max_concurrent = max(1, int(getattr(config, "AI_MAX_CONCURRENT_PROCESSING", 3)))
         self.ai_processing_semaphore = asyncio.Semaphore(_ai_max_concurrent)
-        self.discord_embedding_store = DiscordEmbeddingStore(config.DISCORD_EMBEDDING_DB_PATH)
-        self.kakao_embedding_store = KakaoEmbeddingStore(
-            config.KAKAO_EMBEDDING_DB_PATH,
-            config.KAKAO_EMBEDDING_SERVER_MAP,
-        ) if (
-            config.KAKAO_MEMORY_ENABLED
-            and (config.KAKAO_EMBEDDING_DB_PATH or config.KAKAO_EMBEDDING_SERVER_MAP)
-        ) else None
-        self.bm25_manager = BM25IndexManager(config.BM25_DATABASE_PATH) if config.BM25_DATABASE_PATH else None
-
-        reranker: Reranker | None = None
-        if config.RERANK_ENABLED and config.RAG_RERANKER_MODEL_NAME:
-            reranker_config = RerankerConfig(
-                model_name=config.RAG_RERANKER_MODEL_NAME,
-                device=config.RAG_RERANKER_DEVICE,
-                score_threshold=config.RAG_RERANKER_SCORE_THRESHOLD,
-            )
-            reranker = Reranker(reranker_config)
-        self.reranker = reranker
-        self.hybrid_search_engine = HybridSearchEngine(
-            self.discord_embedding_store,
-            self.kakao_embedding_store,
-            self.bm25_manager,
-            reranker=self.reranker,
+        # General 저사양 프로필은 AI 답변 자체는 사용할 수 있지만 로컬 RAG는
+        # 끈 채 시작한다. 이때 사용되지 않을 저장소/검색/리랭커 객체까지 미리
+        # 만들지 않는다. 운영 중 플래그를 바꾸는 설정은 지원하지 않으므로
+        # Masamo의 활성 경로는 기존과 동일하게 한 번만 구성된다.
+        self.rag_enabled = bool(
+            config.AI_MEMORY_ENABLED and config.EMBEDDING_ENABLED
         )
+        self.discord_embedding_store = None
+        self.kakao_embedding_store = None
+        self.bm25_manager = None
+        self.reranker = None
+        self.hybrid_search_engine = None
+
+        if self.rag_enabled:
+            self.discord_embedding_store = DiscordEmbeddingStore(
+                config.DISCORD_EMBEDDING_DB_PATH
+            )
+            self.kakao_embedding_store = KakaoEmbeddingStore(
+                config.KAKAO_EMBEDDING_DB_PATH,
+                config.KAKAO_EMBEDDING_SERVER_MAP,
+            ) if (
+                config.KAKAO_MEMORY_ENABLED
+                and (
+                    config.KAKAO_EMBEDDING_DB_PATH
+                    or config.KAKAO_EMBEDDING_SERVER_MAP
+                )
+            ) else None
+            self.bm25_manager = (
+                BM25IndexManager(config.BM25_DATABASE_PATH)
+                if config.BM25_DATABASE_PATH
+                else None
+            )
+
+            if config.RERANK_ENABLED and config.RAG_RERANKER_MODEL_NAME:
+                reranker_config = RerankerConfig(
+                    model_name=config.RAG_RERANKER_MODEL_NAME,
+                    device=config.RAG_RERANKER_DEVICE,
+                    score_threshold=config.RAG_RERANKER_SCORE_THRESHOLD,
+                )
+                self.reranker = Reranker(reranker_config)
+            self.hybrid_search_engine = HybridSearchEngine(
+                self.discord_embedding_store,
+                self.kakao_embedding_store,
+                self.bm25_manager,
+                reranker=self.reranker,
+            )
+        else:
+            logger.info(
+                "로컬 RAG 비활성: embedding store/search/reranker 구성을 건너뜁니다."
+            )
         self.debug_enabled = config.AI_DEBUG_ENABLED
         self._debug_log_len = getattr(config, "AI_DEBUG_LOG_MAX_LEN", 400)
         self.llm_client = LLMClient(db=self.bot.db)
@@ -469,12 +511,20 @@ class AIHandler(commands.Cog):
         user_prompt: str,
         log_extra: dict,
         model: str | None = None,
+        *,
+        stop_on_bounded_failure: bool = False,
     ) -> str | None:
         """메인 레인(primary/fallback)을 통해 응답을 생성합니다.
 
         Rate Limit 확인 → 프롬프트 길이 제한 → Primary/Fallback 순차 호출 → 응답 반환.
         """
-        return await self.llm_client.generate_content(system_prompt, user_prompt, log_extra, model)
+        return await self.llm_client.generate_content(
+            system_prompt,
+            user_prompt,
+            log_extra,
+            model,
+            raise_on_bounded_failure=stop_on_bounded_failure,
+        )
 
     async def _cometapi_fast_generate_text(
         self,
@@ -612,11 +662,22 @@ Generate the optimized English image prompt:"""
         image_prompt = None
         
         if self.use_cometapi:
-            image_prompt = await self._cometapi_generate_content(
-                system_prompt,
-                user_prompt,
-                log_extra,
-            )
+            try:
+                image_prompt = await self._cometapi_generate_content(
+                    system_prompt,
+                    user_prompt,
+                    log_extra,
+                    stop_on_bounded_failure=True,
+                )
+            except (LLMAdmissionTimeoutError, LLMProviderTimeoutError) as exc:
+                # timeout 뒤 다른 LLM을 연속 호출하지 않는다. 호출자는 None을
+                # 받으면 검증된 원문 프롬프트로 이미지 생성을 계속할 수 있다.
+                logger.warning(
+                    "이미지 프롬프트 LLM bounded 호출 중단: %s",
+                    exc,
+                    extra=log_extra,
+                )
+                return None
             
             # CometAPI 결과에 한국어가 포함되어 있으면 실패로 처리 (재시도 유도)
             if image_prompt and any('\uac00' <= char <= '\ud7a3' for char in image_prompt):
@@ -627,7 +688,9 @@ Generate the optimized English image prompt:"""
                 )
                 image_prompt = None
             
-        # CometAPI 실패/한국어포함 또는 비활성화 시 Gemini 폴백(옵션)
+        # CometAPI가 정상 종료했지만 빈 응답/잘못된 언어를 반환했거나
+        # 비활성화된 경우에만 Gemini 폴백을 허용한다. timeout/포화는 위에서
+        # 즉시 끝내므로 provider 호출을 추가하지 않는다.
         if not image_prompt and self._can_use_direct_gemini():
             if self.use_cometapi: # CometAPI 시도 후 실패한 경우에만 로그
                 logger.info("CometAPI 이미지 프롬프트 생성 실패(또는 한국어 포함), Gemini로 시도합니다.", extra=log_extra)
@@ -929,7 +992,11 @@ Generate the optimized English image prompt:"""
         recent_messages: list[str] | None = None,
     ) -> tuple[str, list[dict[str, Any]], float, list[str]]:
         """RAG: 하이브리드 검색 결과를 바탕으로 컨텍스트를 구성합니다."""
-        if not config.AI_MEMORY_ENABLED:
+        if not getattr(
+            self,
+            "rag_enabled",
+            bool(config.AI_MEMORY_ENABLED and config.EMBEDDING_ENABLED),
+        ):
             return "", [], 0.0, []
 
         log_extra = {'guild_id': guild_id, 'channel_id': channel_id, 'user_id': user_id}
@@ -1251,6 +1318,81 @@ Generate the optimized English image prompt:"""
         )
         return f"{persona}\n\n{rules}{security_directive}"
 
+    @classmethod
+    def _clip_prompt_text(
+        cls,
+        value: Any,
+        max_chars: int,
+        *,
+        keep: str = "both",
+    ) -> str:
+        """프롬프트 조각을 정확한 문자 예산 안에서 자른다.
+
+        최근 대화는 최신 turn이 뒤에 있으므로 ``tail``을, RAG는 검색 순위가
+        앞에 있으므로 ``head``를 보존한다. 현재 질문과 도구 결과는 양끝을
+        남겨 대상과 마지막 요구사항이 함께 유지되게 한다.
+        """
+        text = str(value or "")
+        limit = max(0, int(max_chars))
+        if len(text) <= limit:
+            return text
+        if limit == 0:
+            return ""
+
+        marker = cls._PROMPT_OMISSION_MARKER
+        if limit <= len(marker):
+            if keep == "tail":
+                return text[-limit:]
+            return text[:limit]
+
+        content_budget = limit - len(marker)
+        if keep == "head":
+            return text[:content_budget] + marker
+        if keep == "tail":
+            return marker + text[-content_budget:]
+
+        # 양끝 보존 시 마지막 요구사항 쪽에 조금 더 예산을 배정한다.
+        tail_chars = max(1, (content_budget * 3) // 5)
+        head_chars = content_budget - tail_chars
+        return text[:head_chars] + marker + text[-tail_chars:]
+
+    def _compose_main_system_prompt(
+        self,
+        message: discord.Message,
+        *,
+        user_query: str,
+    ) -> str:
+        """페르소나와 영구 규칙을 system role 한 곳에만 구성한다."""
+        channel_prompt = self._get_channel_system_prompt(
+            message.channel.id,
+            guild_id=message.guild.id if message.guild else None,
+        )
+        agent_prompt = self._strip_mention_guard(config.AGENT_SYSTEM_PROMPT)
+
+        system_sections = [channel_prompt, agent_prompt]
+        if not message.guild:
+            system_sections.append(
+                "### DM 예외 규칙\n"
+                "현재 대화는 1:1 개인 창(DM)이다. 멘션 여부를 다시 판단하거나 "
+                "언급하지 말고 사용자의 질문에 정상적으로 답한다."
+            )
+
+        emoji_instruction = self._get_custom_emoji_instruction(
+            message.guild,
+            user_query,
+        )
+        if emoji_instruction:
+            system_sections.append(emoji_instruction)
+
+        system_prompt = "\n\n".join(
+            section.strip() for section in system_sections if section and section.strip()
+        )
+        max_chars = max(
+            400,
+            int(getattr(config, "COMETAPI_SYSTEM_PROMPT_MAX_CHARS", 6_000)),
+        )
+        return self._clip_prompt_text(system_prompt, max_chars, keep="both")
+
     def _compose_main_prompt(
         self,
         message: discord.Message,
@@ -1261,119 +1403,186 @@ Generate the optimized English image prompt:"""
         fortune_context: str | None = None,
         recent_history: list[dict] | None = None, # [NEW] 최근 대화 기록
     ) -> str:
-        """메인 모델에 전달할 프롬프트를 `emb` 스타일로 구성합니다.
-        
-        프롬프트 구조:
-        1. 시스템 페르소나/규칙
-        2. [현재 시간] - 서버 시간 (KST)
-        3. [과거 대화 기억] - RAG 컨텍스트
-        4. [도구 실행 결과] - 도구 출력 (있을 경우)
-        5. [오늘의 운세] - 사용자 운세 정보 (있을 경우) [NEW]
-        6. [현재 질문] - 사용자 쿼리
-        7. 지시사항
+        """메인 모델의 user role 컨텍스트를 고정 문자 예산으로 구성한다.
+
+        우선순위는 ``현재 질문/도구 결과``(필수) → ``최근 대화`` →
+        ``운세`` → ``RAG`` 순이다. 페르소나와 영구 규칙은
+        :meth:`_compose_main_system_prompt`에서만 system role에 넣는다.
         """
-        # 시스템 프롬프트 (페르소나 + 규칙)
-        system_part = self._get_channel_system_prompt(
-            message.channel.id,
-            guild_id=message.guild.id if message.guild else None,
+        prompt_limit = max(
+            800,
+            int(getattr(config, "COMETAPI_USER_PROMPT_MAX_CHARS", 20_000)),
+        )
+        question_prefix = "[현재 질문]\n"
+        tool_prefix = "[도구 실행 결과 (최우선 정보)]\n"
+        tool_rule = (
+            "도구 결과에 성공 데이터가 있으면 이를 최우선 사실로 사용하고, "
+            "명시적으로 오류/실패인 경우에만 조회 실패라고 답하세요."
+        )
+        final_rule = (
+            "현재 질문에 먼저 직접 답하세요. 선택 컨텍스트는 관련될 때만 짧게 "
+            "활용하고 현재 사실처럼 단정하지 마세요."
         )
 
-        # [FIX] DM일 경우 프롬프트에 섞여 들어간 멘션 제한 정책 제거 및 예외 규칙 주입
-        if not message.guild:
-            system_part = system_part.replace(config.MENTION_GUARD_SNIPPET, "")
-            system_part += (
-                "\n\n### [중요 예외 규칙]\n"
-                "현재 사용자와 당신은 1:1 개인 창(DM)에서 대화 중입니다. "
-                "따라서 멘션(@) 여부와 상관없이 모든 대화에 즉각적이고 정상적으로 응답해야 합니다. "
-                "기존의 '멘션이 없으면 응답하지 않는다'는 정책을 완전히 잊어버리세요."
+        has_tools = bool(tool_results_block)
+        required_section_count = 4 if has_tools else 2
+        fixed_required_chars = (
+            len(question_prefix)
+            + len(final_rule)
+            + (len(tool_prefix) + len(tool_rule) if has_tools else 0)
+            + (required_section_count - 1) * 2
+        )
+        required_content_budget = max(0, prompt_limit - fixed_required_chars)
+        raw_question = str(user_query or "")
+        raw_tools = str(tool_results_block or "")
+
+        if has_tools:
+            # 양쪽 모두 최소한의 자리를 먼저 확보하고, 남는 예산은 질문을
+            # 우선 완성한 뒤 도구 결과에 배정한다.
+            question_budget = min(
+                len(raw_question),
+                max(1, required_content_budget // 2),
             )
-
-        sections: list[str] = [system_part]
-
-        # 서버 현재 시간 (KST) - 항상 포함
-        current_time = db_utils.get_current_time()
-        sections.append(f"[현재 시간]\n{current_time}")
-
-        # [NEW] 상대방 정보 주입 (호칭 문제 해결)
-        user_name = message.author.display_name
-        sections.append(f"[상대방 정보]\n- 이름/닉네임: {user_name}\n- 지시사항: 상대방을 지칭할 때 '@사용자'라고 부르지 말고, 위 이름을 사용하거나 페르소나(오빠, 아재 등)에 맞춰서 불러줘.")
-
-        if fortune_context:
-             # [Optimization] 설명문 간소화
-             sections.append(f"[운세 참고]\n{fortune_context}")
-
-        # [NEW] 단기 기억 (최근 대화) - RAG보다 우선순위 높음
-        # [Optimization] 중복 제거: 단기 기억에 있는 내용은 RAG에서 제거하여 토큰 절약
-        recent_context_str = ""
-        if recent_history:
-            history_text_lines = []
-            for item in recent_history:
-                role = "User" if item['role'] == 'user' else "Bot"
-                text = item['parts'][0] if item['parts'] else ""
-                history_text_lines.append(f"{role}: {text}")
-            
-            if history_text_lines:
-                recent_context_str = "\n".join(history_text_lines)
-                
-                # [FIX] 너무 긴 단기 기억 텍스트가 API 토큰 제한을 넘지 않도록 자름
-                max_history_chars = int(getattr(config, "CONVERSATION_WINDOW_MAX_CHARS", 3000)) * 2
-                if len(recent_context_str) > max_history_chars:
-                    recent_context_str = recent_context_str[-max_history_chars:]
-                    # 잘린 문자열의 첫 줄이 중간에 잘리지 않도록 다음 개행문자부터 시작
-                    first_newline = recent_context_str.find("\n")
-                    if first_newline != -1:
-                        recent_context_str = recent_context_str[first_newline+1:]
-                        
-                sections.append(f"[최근 대화 흐름 (단기 기억)]\n{recent_context_str}\n(위 대화 흐름을 반드시 참고하여 이어지는 답변을 하세요.)")
-
-        # RAG 컨텍스트 (과거 대화 기억) - 단기 기억과 중복되면 제외
-        if rag_blocks:
-            filtered_rag = []
-            for block in rag_blocks:
-                snippet = block[:20] if len(block) > 20 else block
-                if snippet not in recent_context_str:
-                    # [Optimization] 각 블록을 설정된 글자수로 제한하여 토큰 절약
-                    truncated_block = block[:config.MAX_RAG_BLOCK_CHARS] + "..." if len(block) > config.MAX_RAG_BLOCK_CHARS else block
-                    filtered_rag.append(truncated_block)
-            
-            if filtered_rag:
-                rag_content = "\n\n".join(filtered_rag)
-                sections.append(
-                    "[과거 대화 기억 (재미/맥락 보강용)]\n"
-                    "아래 기억은 검색으로 회수된 후보이며, 현재 질문의 확정 사실은 아닙니다.\n"
-                    "현재 질문의 대상, 별명, 분위기, 서버 밈, 이전 농담 흐름과 자연스럽게 이어지면 "
-                    "가벼운 회상이나 드립 소재로 활용해도 됩니다.\n"
-                    "다만 기억 내용을 현재 상태처럼 단정하지 말고, '전에 그런 얘기 나온 적 있던데' 정도의 "
-                    "느슨한 참고 배경으로만 다루세요.\n"
-                    "관련성이 약하면 길게 설명하지 말고, 답변의 본론을 해치지 않는 선에서 한두 문장만 섞으세요.\n\n"
-                    f"{rag_content}"
+            tool_budget = min(
+                len(raw_tools),
+                max(0, required_content_budget - question_budget),
+            )
+            leftover = required_content_budget - question_budget - tool_budget
+            if leftover > 0:
+                question_growth = min(
+                    leftover,
+                    len(raw_question) - question_budget,
                 )
-
-        if tool_results_block:
-            sections.append(f"[도구 실행 결과 (최우선 정보)]\n{tool_results_block}")
-            sections.append("(⚠️ 절대적 지침: 위 [도구 실행 결과]는 방금 조회한 **실시간 사실**입니다. \n"
-                            "1. 결과에 데이터(주가, 날씨 등)가 있다면, **무조건** 이 데이터를 사용하여 답변해.\n"
-                            "2. '정보를 가져오지 못했다'고 거짓말하지 마.\n"
-                            "3. 만약 결과에 'Error'나 '실패'라고 적혀있다면, 그때만 실패했다고 말해.\n"
-                            "4. 결과 데이터가 여러 항목이면 핵심 수치/날짜를 우선 정리해서 전달해줘.)")
-
-
-        # 현재 질문
-        sections.append(f"[현재 질문]\n{user_query}")
-
-        # 지시사항 - RAG 데이터를 배경 지식으로 취급하도록 명시
-        if rag_blocks:
-            sections.append(
-                "최종 답변 지침: 먼저 현재 질문에 답하세요. "
-                "[과거 대화 기억]이 현재 대화와 자연스럽게 이어지면, 답변을 더 재밌고 친근하게 만드는 "
-                "양념처럼 짧게 활용하세요. "
-                "기억을 장황하게 요약하거나 현재 사실처럼 확정하지 말고, 도구 실행 결과가 있으면 도구 결과를 우선하세요. "
-                "기억이 애매하게만 맞으면 본론 뒤에 가벼운 농담이나 리액션으로만 처리하세요."
-            )
+                question_budget += max(0, question_growth)
+                leftover -= max(0, question_growth)
+            if leftover > 0:
+                tool_budget += min(
+                    leftover,
+                    len(raw_tools) - tool_budget,
+                )
         else:
-            sections.append("관련 기억은 없지만, 너만의 주관적인 의견이나 리액션을 섞어서 완전한 친구처럼 자연스럽게 답변해줘.")
+            question_budget = min(
+                len(raw_question),
+                required_content_budget,
+            )
+            tool_budget = 0
 
-        return "\n\n".join(sections)
+        required_sections: list[str] = []
+        if has_tools:
+            required_sections.extend(
+                [
+                    tool_prefix
+                    + self._clip_prompt_text(
+                        raw_tools,
+                        tool_budget,
+                        keep="both",
+                    ),
+                    tool_rule,
+                ]
+            )
+        required_sections.extend(
+            [
+                question_prefix
+                + self._clip_prompt_text(
+                    raw_question,
+                    question_budget,
+                    keep="both",
+                ),
+                final_rule,
+            ]
+        )
+        required_prompt = "\n\n".join(required_sections)
+
+        # 선택 컨텍스트는 필수 섹션이 차지하고 남은 예산만 사용할 수 있다.
+        remaining = max(0, prompt_limit - len(required_prompt))
+        selected_optional: list[tuple[int, str]] = []
+
+        user_name = self._clip_prompt_text(
+            getattr(message.author, "display_name", ""),
+            100,
+            keep="head",
+        )
+        metadata = (
+            f"- 현재 시간(KST): {db_utils.get_current_time()}\n"
+            f"- 상대방 이름/닉네임: {user_name}"
+        )
+
+        history_lines: list[str] = []
+        for item in recent_history or []:
+            if not isinstance(item, dict):
+                continue
+            role = "User" if item.get("role") == "user" else "Bot"
+            parts = item.get("parts") or []
+            text = parts[0] if isinstance(parts, list) and parts else ""
+            if text:
+                history_lines.append(f"{role}: {text}")
+        recent_context_str = "\n".join(history_lines)
+
+        filtered_rag: list[str] = []
+        per_rag_limit = min(
+            1_000,
+            max(1, int(getattr(config, "MAX_RAG_BLOCK_CHARS", 500))),
+        )
+        for raw_block in rag_blocks or []:
+            block = str(raw_block or "")
+            if not block:
+                continue
+            snippet = block[:20]
+            if recent_context_str and snippet in recent_context_str:
+                continue
+            filtered_rag.append(
+                self._clip_prompt_text(block, per_rag_limit, keep="head")
+            )
+        rag_content = "\n\n".join(filtered_rag)
+
+        # (표시 순서, 제목, 원문, 개별 최대 예산, 보존 방향)
+        # 할당 순서가 곧 우선순위다: 작은 메타데이터 → 최신 대화 → 동의된
+        # 운세 참고 → 검색 기반 과거 기억.
+        optional_candidates = [
+            (0, "[현재 상황]", metadata, 350, "head"),
+            (
+                2,
+                "[최근 대화 흐름 (선택 참고)]",
+                recent_context_str,
+                self._RECENT_HISTORY_PROMPT_MAX_CHARS,
+                "tail",
+            ),
+            (
+                1,
+                "[운세 참고 (선택 참고)]",
+                fortune_context or "",
+                self._FORTUNE_PROMPT_MAX_CHARS,
+                "both",
+            ),
+            (
+                3,
+                "[과거 대화 기억 (선택 참고)]",
+                rag_content,
+                self._RAG_PROMPT_MAX_CHARS,
+                "head",
+            ),
+        ]
+        for display_order, heading, raw_content, context_limit, keep in optional_candidates:
+            if not raw_content:
+                continue
+            wrapper_chars = len(heading) + 1
+            available = remaining - 2 - wrapper_chars
+            if available <= 0:
+                continue
+            content_budget = min(context_limit, available)
+            rendered = (
+                f"{heading}\n"
+                f"{self._clip_prompt_text(raw_content, content_budget, keep=keep)}"
+            )
+            selected_optional.append((display_order, rendered))
+            remaining -= len(rendered) + 2
+
+        optional_sections = [
+            section for _, section in sorted(selected_optional, key=lambda item: item[0])
+        ]
+        if not optional_sections:
+            return required_prompt
+        return "\n\n".join([*optional_sections, required_prompt])
 
     def _parse_tool_calls(self, text: str) -> list[dict]:
         """Lite 모델의 응답에서 <tool_plan> 또는 <tool_call> XML 태그를 파싱하여 JSON으로 변환합니다."""
@@ -1705,6 +1914,45 @@ Generate the optimized English image prompt:"""
         return {"error": f"'{tool_name}' 도구는 현재 비활성화되어 있습니다."}
 
 
+    async def _fortune_context_with_consent(self, user_id: int) -> str | None:
+        """현재 운세 동의가 유지된 DM 사용자에게만 저장 컨텍스트를 반환한다."""
+        if not getattr(self.bot, "db", None):
+            return None
+        try:
+            async with self.bot.db.execute(
+                """
+                SELECT up.last_fortune_content
+                FROM user_profiles AS up
+                JOIN privacy_consents AS pc
+                  ON pc.user_id = up.user_id
+                 AND pc.scope = ?
+                 AND pc.policy_version = ?
+                 AND pc.notice_hash = ?
+                 AND pc.status = ?
+                 AND pc.granted_at IS NOT NULL
+                 AND pc.withdrawn_at IS NULL
+                WHERE up.user_id = ?
+                """,
+                (
+                    FORTUNE_CONSENT_POLICY.scope,
+                    FORTUNE_CONSENT_POLICY.version,
+                    FORTUNE_CONSENT_POLICY.notice_hash,
+                    CONSENT_GRANTED,
+                    int(user_id),
+                ),
+            ) as cursor:
+                row = await cursor.fetchone()
+        except Exception:
+            # 동의 저장소 장애 때문에 일반 대화 자체를 막지는 않되, 개인정보
+            # 컨텍스트는 절대 fail-open으로 주입하지 않는다.
+            logger.error(
+                "운세 개인정보 컨텍스트 조회 실패: user_id=%s",
+                user_id,
+                exc_info=True,
+            )
+            return None
+        return str(row[0]) if row and row[0] else None
+
     async def process_agent_message(self, message: discord.Message):
         """2-Step Agent의 전체 흐름을 관리합니다."""
         if not self.is_ready:
@@ -1831,18 +2079,39 @@ Generate the optimized English image prompt:"""
             # [Move Up] 히스토리를 도구 선택 이전에 가져옴
             history = await self._get_recent_history(message, rag_prompt)
             
-            # 도구 계획 수립: LLM 의도 분석을 1차로, 실패 시에만 키워드 휴리스틱 fallback
-            llm_tool_plan = await self._detect_tools_by_llm(user_query, log_extra, history=history)
-            if llm_tool_plan:
-                raw_tool_plan = llm_tool_plan
-                llm_decision_trusted = True
-            else:
-                # LLM이 도구 불필요라고 판단했거나 실패 → 휴리스틱으로 보완
-                fallback_plan = self._detect_tools_by_keyword(user_query)
-                raw_tool_plan = fallback_plan
+            # 명확한 날씨/검색/이미지 요청과 일반 대화는 결정론적으로 라우팅한다.
+            # 이 경로를 실제 파이프라인에 연결하지 않으면 단순 인사에도 의도 분석
+            # LLM을 호출해 비용·대기시간을 불필요하게 늘리게 된다. None만 "로컬
+            # 규칙으로 판단을 유보함"을 뜻하고, 빈 배열은 "도구 불필요"라는 확정
+            # 결과이므로 둘을 구분한다.
+            local_tool_plan = self._select_tool_plan_without_intent_llm(
+                user_query,
+                rag_top_score=rag_top_score,
+                log_extra=log_extra,
+            )
+            if local_tool_plan is not None:
+                raw_tool_plan = local_tool_plan
                 llm_decision_trusted = False
-                if fallback_plan:
-                    logger.info("[도구계획] LLM 실패/무응답 → 키워드 fallback (%d개)", len(fallback_plan), extra=log_extra)
+            else:
+                llm_tool_plan = await self._detect_tools_by_llm(
+                    user_query,
+                    log_extra,
+                    history=history,
+                )
+                if llm_tool_plan:
+                    raw_tool_plan = llm_tool_plan
+                    llm_decision_trusted = True
+                else:
+                    # LLM이 도구 불필요라고 판단했거나 실패 → 휴리스틱으로 보완
+                    fallback_plan = self._detect_tools_by_keyword(user_query)
+                    raw_tool_plan = fallback_plan
+                    llm_decision_trusted = False
+                    if fallback_plan:
+                        logger.info(
+                            "[도구계획] LLM 실패/무응답 → 키워드 fallback (%d개)",
+                            len(fallback_plan),
+                            extra=log_extra,
+                        )
             tool_plan = self._sanitize_tool_plan(
                 user_query,
                 raw_tool_plan,
@@ -1946,24 +2215,17 @@ Generate the optimized English image prompt:"""
 
             # 도구 결과 포맷팅 및 프롬프트 구성
             tool_results_str = self._format_tool_results_for_prompt(tool_results)
-            channel_persona_prompt = self._get_channel_system_prompt(
-                message.channel.id,
-                guild_id=message.guild.id if message.guild else None,
+            system_prompt = self._compose_main_system_prompt(
+                message,
+                user_query=user_query,
             )
-            agent_system_prompt = self._strip_mention_guard(config.AGENT_SYSTEM_PROMPT)
-            system_prompt = f"{channel_persona_prompt}\n\n{agent_system_prompt}"
-            
-            # [NEW] 커스텀 이모지 지시문 추가 (최적화: 필요한 경우에만 샘플링하여 주입)
-            emoji_instruction = self._get_custom_emoji_instruction(message.guild, user_query)
-            if emoji_instruction:
-                system_prompt = emoji_instruction + "\n" + system_prompt
             
             # [NEW] 운세 컨텍스트 조회
             fortune_context = None
             if not message.guild and self.bot.db:
-                row = await self.bot.db.execute("SELECT last_fortune_content FROM user_profiles WHERE user_id = ?", (message.author.id,))
-                res = await row.fetchone()
-                if res and res[0]: fortune_context = res[0]
+                fortune_context = await self._fortune_context_with_consent(
+                    message.author.id
+                )
 
             main_prompt = self._compose_main_prompt(
                 message,
@@ -1999,7 +2261,12 @@ Generate the optimized English image prompt:"""
                         extra=log_extra,
                     )
                 if self.use_cometapi:
-                    final_response_text = await self._cometapi_generate_content(system_prompt, main_prompt, log_extra) or ""
+                    final_response_text = await self._cometapi_generate_content(
+                        system_prompt,
+                        main_prompt,
+                        log_extra,
+                        stop_on_bounded_failure=True,
+                    ) or ""
 
                 if not final_response_text and self._can_use_direct_gemini():
                     main_model = genai.GenerativeModel(config.AI_RESPONSE_MODEL_NAME, system_instruction=system_prompt)
@@ -2421,7 +2688,8 @@ Generate the optimized English image prompt:"""
                 alert_message = await self._cometapi_generate_content(
                     system_prompt,
                     user_prompt,
-                    log_extra
+                    log_extra,
+                    stop_on_bounded_failure=True,
                 )
 
             # 2. 실패 시 Gemini 폴백(옵션)
@@ -2476,7 +2744,8 @@ Generate the optimized English image prompt:"""
                 response_text = await self._cometapi_generate_content(
                     system_prompt,
                     user_prompt,
-                    log_extra
+                    log_extra,
+                    stop_on_bounded_failure=True,
                 )
 
             # 2. 실패 시 Gemini 폴백(옵션)

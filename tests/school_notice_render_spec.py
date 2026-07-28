@@ -8,6 +8,7 @@ import json
 from datetime import date
 from pathlib import Path
 
+import discord
 import pytest
 
 from utils.school_notice_contract import load_digest, parse_digest
@@ -188,9 +189,53 @@ def test_chunking_respects_discord_embed_limit():
     groups = chunk_embeds(embeds)
 
     assert all(len(group) <= 10 for group in groups)
+    assert all(sum(len(embed) for embed in group) <= 6000 for group in groups)
     assert sum(len(group) for group in groups) == 23
 
 
 def test_render_rejects_nonpositive_max_items():
     with pytest.raises(ValueError):
         render_digest(_digest(), max_items=0)
+
+
+def test_item_embed_is_fitted_to_total_discord_text_limit():
+    payload = json.loads((FIXTURES / "school_notice_digest.json").read_text(encoding="utf-8"))
+    item_payload = payload["items"][0]
+    item_payload["analysis"]["summary"] = "요약" * 9000
+    item_payload["analysis"]["topics"] = ["주제" * 900] * 5
+    item_payload["score"]["reasons"] = ["근거" * 900] * 5
+    item_payload["notice"]["attachments"] = [
+        {"name": "첨부" * 300, "url": "https://example.ac.kr/file"}
+    ]
+    item_payload["duplicate_sources"] = [
+        {"source_id": "other", "url": "https://example.ac.kr/other"}
+    ]
+
+    embed = build_item_embed(parse_digest(payload).items[0], today=TODAY)
+
+    assert len(embed) <= 6000
+    assert "왜 추천됐나" in _all_text(embed)
+
+
+def test_chunking_splits_on_total_text_even_below_ten_embeds():
+    embeds = [discord.Embed(description="x" * 3500) for _ in range(3)]
+
+    groups = chunk_embeds(embeds)
+
+    assert [len(group) for group in groups] == [1, 1, 1]
+    assert all(sum(len(embed) for embed in group) <= 6000 for group in groups)
+
+
+def test_chunking_rejects_a_single_oversized_embed():
+    oversized = discord.Embed(description="x" * 4096)
+    oversized.add_field(name="a", value="y" * 1024)
+    oversized.add_field(name="b", value="z" * 1024)
+
+    with pytest.raises(ValueError, match="6000"):
+        chunk_embeds([oversized])
+
+
+@pytest.mark.parametrize("per_message", [0, -1, True, 1.5])
+def test_chunking_rejects_invalid_group_size(per_message):
+    with pytest.raises(ValueError):
+        chunk_embeds([discord.Embed(title="ok")], per_message=per_message)

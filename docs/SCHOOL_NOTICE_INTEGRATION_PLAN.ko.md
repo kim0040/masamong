@@ -1,682 +1,520 @@
-# 학교 공지 추적 기능 명세와 마사몽 통합 계획
+# 학교 공지 기능 설명서
 
-이 문서 하나로 기능의 의도·설계·규칙·데이터 계약을 모두 파악할 수 있게 작성했다.
-원본 코어(`school_notice`, 17개 모듈 4,887 LOC, 테스트 1,781 LOC)는 이 저장소에
-없으므로, 여기 적힌 내용이 구현 기준이다. 수치와 규칙은 전부 코어 소스에서 확인해
-옮겼다.
+이 문서는 마사몽의 학교 공지 사용자 흐름, 외부 수집 코어와의 계약, 운영 설정, 실패 처리와
+한계를 설명한다. 기능은 General 인스턴스의 선택 기능이며, 기존 Masamo 운영에는 연결하지
+않는다.
 
----
+## 현재 지원 범위
 
-## 1. 이 기능이 푸는 문제
+- Masamo: `SCHOOL_NOTICE_ENABLED=false` 유지
+- General: 전용 DB와 외부 core를 준비하고 검증한 뒤에만 활성화
+- 마사몽 저장소: 자연어 등록·확인, 동의, profile/feedback, digest 계약 검증, Discord 전달
+- 외부 `school_notice` core: 공개 학교 게시판 수집, 사실 분석, 개인화 점수, digest 생성
+- 수집 시각: 매일 `23:00` KST systemd one-shot
+- 전달 시각: 사용자별, 신규 기본 `09:00` KST
+- 전달 대상 날짜: 보통 전날 23:00 batch가 만든 digest를 다음 날 사용자 시각에 전달하고,
+  장애 복구 때는 최근 3일 안의 가장 최신 유효 결과만 제한적으로 확인
+- 관련 공지가 없으면 자동 DM을 보내지 않음
 
-학교 공지는 게시판·학과·캠퍼스마다 흩어져 있고, 같은 글이 여러 곳에 다시 올라오며,
-중요한 조건과 마감이 긴 본문 안에 묻혀 있다.
+외부 core는 이 저장소에 vendoring되거나 release version이 고정되어 있지 않다. 이 문서에
+적힌 CLI와 JSON 계약을 만족하는 별도 설치본이 반드시 필요하다.
 
-목적은 **모든 공지를 대신 읽어주는 것도, 사용자를 대신해 신청하는 것도 아니다.**
-하루 한 번 공개 게시판의 최근 글을 제한적으로 확인해 다음 세 질문에 **근거 있는
-후보**를 제시하는 것이다.
+## 사용자 시나리오
 
-1. 내가 반드시 확인하거나 해야 할 일인가? → `action`
-2. 내 조건에 맞고 도움이 될 기회인가? → `opportunity`
-3. 당장 행동하지 않아도 알아둘 공지인가? → `reference`
+### 1. 목적별 동의
 
-출력은 최종 판단이 아니라 **우선순위가 붙은 후보 목록과 그 근거**다. 신청 전 원문
-확인은 항상 사용자 몫이며, UI는 이를 명시해야 한다.
+DM에서 시작한다.
 
-## 2. 설계 원칙
+```text
+!개인정보 동의 학교공지
+```
 
-이 여섯 가지가 구현 전반을 지배한다. 통합 과정에서 깨뜨리면 기능의 성격이 바뀐다.
+고지문에는 Discord 사용자 ID, 학교·과정·학년·학과·캠퍼스·학적·이수/성적·관심/알림
+설정과 피드백의 수집·이용, 보관·철회·삭제 범위가 나온다. 명령을 실행한 본인이
+`동의합니다` 버튼을 누르기 전에는 새 정보를 수집하거나 기존 프로필을 이용하지 않는다.
+현재 자연어 등록 UI는 아래의 최소 필드만 새로 저장하고, 이수/성적 등은 기존 core 호환
+profile에 이미 존재하는 경우까지 포함해 동의 범위로 보호한다.
 
-| 원칙 | 의미 |
+운영에서 프로필 추출 LLM을 켠 경우 사용자가 등록 명령에 입력한 제한된 자연어가 외부 LLM
+제공자에게 전달될 수 있다. 공지 분석 LLM을 켠 경우 공개 공지 본문이 전달될 수 있다.
+이때 개인화에 필요한 제한된 프로필 항목도 전달될 수 있다. 개인 프로필은 공지 개인화
+목적 이외에 사용하지 않는다.
+
+### 2. 자연어 등록
+
+```text
+!공지 등록 전북대 소프트웨어공학과 3학년이고 오전 9시에 알려줘
+```
+
+먼저 유한한 로컬 파서로 해석하므로 입력만으로 값이 명확하면 프로필 LLM 호출은 0회다.
+해결되지 않은 입력만 해석 시도당 routing primary 한 곳을 1회 호출하며 공급자 fallback이나
+자동 재시도는 하지 않는다. 한 등록 세션의 실제 공급자 호출은 초안과 보정을 합쳐 기본
+최대 3회다. 학교와 캠퍼스는 지원 카탈로그 값만 허용한다. 학과는 알려진 별칭을
+카탈로그 값으로 정규화하고, 카탈로그에 없더라도 사용자가 원문에 직접 쓴 제한된 공식
+학과명 형식만 보존한다. LLM이 학교·캠퍼스·학과를 임의로 만들 수는 없다.
+
+추출 대상에는 다음과 같은 값이 포함될 수 있다.
+
+- 학교, 캠퍼스, 학과
+- 학위 과정과 학년
+- 입학 유형과 현재 학적
+- 선호 주제
+- 사용자별 전달 시각
+
+필수 값이 빠지면 자연스럽게 다시 묻는다.
+
+### 3. 확인 후 저장
+
+봇은 정규화한 내용을 사람이 읽을 수 있는 형태로 보여주고 “제가 이렇게 이해했어요.
+맞을까요?”라고 묻는다.
+
+- `맞아`, `맞아요`, `네`, `예`, `확인`, `저장`: 그 값으로 저장
+- `학년은 4학년이고 8시 30분에 보내줘`: 현재 후보를 자연어로 수정한 뒤 다시 확인
+- `취소`, `그만`, `중단`: 저장하지 않고 종료
+
+확인 전에는 DB에 저장하지 않는다. 한 사용자당 등록 세션은 하나만 허용하며, 각 입력 대기,
+수정 횟수, LLM 추출과 전체 흐름은 유한한 timeout/횟수 상한을 가진다. 기존 프로필을 다시
+등록·수정하면 새 확인이 끝난 뒤에만 profile version을 올린다.
+
+신규 사용자의 전달 기본값은 `09:00` KST다. 사용자는 등록 대화 또는 별도 시간 명령으로
+바꿀 수 있다.
+
+### 4. 수집과 다음 날 전달
+
+23:00 KST batch는 다음 조건을 모두 만족하는 profile만 읽는다.
+
+- 현재 학교공지 정책에 동의함
+- 철회되지 않음
+- 학교 프로필이 존재함
+- `enabled=1`
+
+프로필의 `school_id`를 버전 관리된 카탈로그와 외부 core `sources.json`에 대조하고, 교집합의
+source ID만 core의 반복 `--source` 인자로 전달한다. 등록되지 않은 학교와 사용자 없는
+학교는 수집하지 않는다.
+
+처음 읽은 profile snapshot만 믿지 않는다. 실제 처리 직전, feedback 전후, daily 직전과
+publish 직전에 현재 동의, `enabled`, profile version과 정규화 JSON이 그대로인지 다시
+확인한다. 성공 run에는 사용한 `profile_version`과 전달 시각을 제외한 정규 프로필의
+`profile_hash`를 함께 기록한다. 다음 날 Cog도 현재 값과 정확히 일치할 때만 전달하므로,
+초 단위 timestamp가 같은 순간에 설정이 바뀌어도 이전 digest를 보내지 않는다. 전달 시각만
+바꾼 경우에는 개인화 내용이 그대로이므로 이미 생성된 digest를 무효화하지 않는다. 그 사이
+사용자가 철회·중지·수정하면 결과를 공개하거나 run을 성공 기록하지 않는다.
+
+검증된 사용자별 digest는 보통 다음 날 사용자가 선택한 시각에 전달한다. bot 재시작이나
+짧은 장애 뒤에는 최근 3일 범위에서 가장 최신의 유효한 성공·부분 성공 batch만 선택한다.
+더 최신 성공 batch가 있으면 그보다 오래된 결과를 대신 보내지 않는다. 개인화 결과의
+visible item이 0건이면 전달 run만 완료 상태로 기록하고 DM은 보내지 않는다.
+
+### 5. 피드백과 제어
+
+공지별 버튼:
+
+- `도움 됨`
+- `지원함`
+- `관심 없음`
+- `완료`
+
+같은 Discord interaction은 한 번만 기록한다. `관심 없음`은 비슷한 공지를 영구 차단하지
+않고 선호 가중치를 완만하게 낮춘다. 강한 주제 숨김은 사용자가 직접 `음소거`로 설정한다.
+등록금·수강·학적·졸업·병무 관련 근거 있는 필수 행정 공지는 보호 규칙에 따라 계속 보일 수
+있다.
+
+## 사용자 명령
+
+모든 개인화 명령은 DM에서 사용한다.
+
+| 명령 | 동작 |
 |---|---|
-| **사실 추출과 사용자 판단 분리** | LLM은 공지에서 사실만 뽑는다. "이 학생에게 추천할지"는 로컬 규칙이 정한다. 그래야 같은 분석을 여러 사용자에게 재사용하고 판정 이유를 재현할 수 있다 |
-| **놓칠 위험과 과잉 알림을 함께 관리** | 명시적 자격 불일치는 숨기되, 프로필 값이 없어 판단 불가한 것은 `UNKNOWN`으로 남기고 상한만 건다. 임의로 지워버리지 않는다 |
-| **피드백을 완만하게 반영** | `관심 없음` 한 번으로 비슷한 공지를 영구 차단하지 않는다. 90일 반감기로 서서히 중립에 돌아온다 |
-| **실패를 성공처럼 보이지 않기** | "오늘 새 공지 없음"과 "오늘 확인 실패"를 반드시 구분해 표시한다 |
-| **저사양 상한을 분명히** | 한 번 실행 후 종료. 요청 수·응답 크기·첨부·LLM 호출 전부 상한이 있다 |
-| **학교와 전달 채널 분리** | 학교별 차이는 JSON 설정으로, Discord는 얇은 어댑터로 처리한다 |
+| `!공지 [페이지]` | 현재 사용할 수 있는 digest의 지정 페이지를 다시 표시 |
+| `!공지 등록 <자연어>` | 신규 등록 또는 확인 기반 갱신 |
+| `!공지 수정 <자연어>` | 기존 프로필 후보를 자연어로 보정하고 다시 확인 |
+| `!공지 정보` | 저장된 최소 프로필, 전달 시각과 활성 상태 확인 |
+| `!공지 시간 HH:MM` | 사용자별 KST 전달 시각 변경 |
+| `!공지 중지` | 수집·전달 대상에서 일시 제외, 데이터 보존 |
+| `!공지 재개` | 현재 동의 확인 뒤 다시 활성화 |
+| `!공지 음소거 [주제]` | 목록 확인 또는 주제 숨김 |
+| `!공지 음소거해제 <주제>` | 주제 숨김 해제 |
+| `!공지 삭제` | 학교 프로필과 연결된 개인화 데이터 삭제 및 동의 철회 |
 
-## 3. 한 번의 실행에서 일어나는 일
+기존 프로필을 바꾸려면 `!공지 수정 <자연어>`를 실행하고 새 확인 과정을 거친다.
 
-```
-프로필 검증
-  → 같은 school_id의 source 선택
-  → source별 robots 확인 · 목록 첫 페이지 수집
-  → 최근 N개 상세 수집 · 본문 정규화
-  → (선택) 첨부 텍스트 추출
-  → 공지 upsert · 내용 변경 시 revision 저장
-  → 학교 DB의 active 공지 분석 또는 분석 캐시 조회
-  → 사용자 프로필·피드백으로 로컬 점수화
-  → 중복 묶기 · 알림 설정 적용
-  → Markdown/JSON digest와 실행 보고서 저장
-  → 프로세스 종료
-```
+`!개인정보 철회 학교공지`는 향후 profile 조회, batch, 개인화, feedback, 자동 전달을 즉시
+중단하지만 기존 데이터와 `enabled` 상태를 보존한다. `!공지 삭제`는 profile, feedback,
+전달·batch·delivery run과 사용자별 digest/profile 파생 파일을 정리한다. 일반 Discord
+대화와 서버 기록, 목적별 동의 감사 이벤트는 삭제하지 않는다.
+수집 batch가 같은 digest root의 lock을 잡고 있으면 삭제는 부분 삭제를 시도하지 않고
+수집 종료 후 다시 요청하도록 안내한다.
 
-책임 분리:
+## 지원 학교 카탈로그
 
-| 구성 요소 | 하는 일 | 하지 않는 일 |
+현재 마사몽 카탈로그는 14개 학교와 16개 core source ID를 정의한다.
+
+| school ID | 학교 | source ID |
 |---|---|---|
-| `sources.json` | 학교 URL·CSS 선택자·검증 계약 | 네트워크 요청 |
-| `http` | 안전한 제한 HTTP·robots·재시도 | HTML 의미 해석 |
-| `parsing` | 목록/상세 HTML → 공통 Notice | 사용자 관련성 판단 |
-| `attachments` | 선택 첨부의 제한적 텍스트 추출 | OCR·무제한 압축 해제 |
-| `storage` | 공지·revision·분석·프로필·피드백·digest 저장 | 외부 알림 전송 |
-| `analysis`, `llm` | 사실·날짜·자격 후보 구조화 | 사용자별 최종 결정 |
-| `personalization` | 프로필·피드백 기반 점수와 자격 판정 | 공지 원문 변경 |
-| `digest` | 중복 묶기·알림 설정·표현 | Discord API 호출 |
-| `daily` | 위 단계를 한 번 조율 | 상주 스케줄링 |
+| `jbnu` | 전북대학교 | `jbnu_campus`, `jbnu_software` |
+| `snu` | 서울대학교 | `snu_general` |
+| `pnu` | 부산대학교 | `pnu_general` |
+| `korea` | 고려대학교 | `korea_cs_undergrad` |
+| `jj` | 전주대학교 | `jj_academic` |
+| `skku` | 성균관대학교 | `skku_general` |
+| `gachon` | 가천대학교 | `gachon_general` |
+| `ssu` | 숭실대학교 | `ssu_general` |
+| `jnu` | 전남대학교 | `jnu_software` |
+| `scnu` | 국립순천대학교 | `scnu_academic` |
+| `mju` | 명지대학교 | `mju_general` |
+| `konkuk` | 건국대학교 | `konkuk_academic` |
+| `kookmin` | 국민대학교 | `kookmin_academic` |
+| `hanyang` | 한양대학교 | `hanyang_seoul`, `hanyang_erica` |
 
-모든 source가 같은 selector 기반 파서를 쓴다. 학교별 분기 클래스는 없고 특수한 URL도
-JSON의 정규식·template으로 표현한다.
+카탈로그는 `profiles/catalogs/school_notice_catalog.v1.json`이다. 학교가 목록에 있어도 외부
+core의 실제 `sources.json`에 같은 source ID가 없으면 실행하지 않는다. 새 학교는 카탈로그와
+core source 설정, selector/host/robots 계약, fixture/live-check를 함께 추가해야 한다.
+로그인·SSO·CAPTCHA 우회는 지원하지 않는다.
 
-## 4. 공지의 식별·변경·중복
+## 프로세스와 저장소 경계
 
-- 영속 식별자는 `(source_id, external_id)`.
-- 제목·게시일·본문·첨부 URL·본문 이미지 URL을 정규화해 `content_hash`를 만든다.
-  첨부 추출을 켜면 첨부 SHA-256도 최종 hash에 포함한다.
-- hash가 바뀌면 revision을 1 올리고 전체 snapshot을 저장한다.
-- 게시판 간 중복은 **정규화한 제목의 SHA 키**로 묶는다. 점수가 높은 한 건을 대표로
-  보여주고 나머지는 `duplicate_sources`에 원문 링크로 남긴다.
+```text
+Discord DM
+  └─ 동의 → 자연어 후보 → 사용자 확인 → General DB profile
 
-**한계**: 의미 기반(fuzzy/embedding) 비교가 아니다. 제목이 크게 다른 재게시는 놓치고,
-우연히 제목이 같은 다른 공지는 합쳐질 수 있다.
+23:00 KST systemd timer
+  └─ run_school_notice_batch.py (one-shot, thread 1)
+       ├─ 동의·활성 profile 조회
+       ├─ profile 학교 source만 선택
+       ├─ 미반영 feedback을 외부 core에 먼저 반영
+       ├─ 외부 core daily를 사용자별 순차 실행
+       └─ 계약 검증 후 digest/run report 원자적 공개
 
-## 5. 분석 — 규칙과 LLM의 경계
+상주 General bot
+  └─ 1분 delivery catch-up
+       ├─ 사용자별 시각과 보통 전날 digest 확인
+       ├─ 장애 시 최근 3일 중 최신 유효 batch만 제한적으로 확인
+       ├─ 동의 재검증
+       ├─ revision 단위 중복 방지
+       └─ 관련 item이 있을 때만 DM
+```
 
-### 5.1 규칙 우선
+상주 봇은 크롤링하거나 공지 분석 LLM을 호출하지 않는다. CPU/RSS가 일시적으로 증가하는
+수집·HTML parsing·분석은 `Type=oneshot` 별도 프로세스에서 수행한다.
 
-분석 입력은 제목 + 본문 (+선택적 첨부 텍스트)을 합쳐 **최대 18,000자**로 자른다.
-먼저 규칙으로 뽑는다.
+저장소:
 
-- 명시 날짜와 마감/행사 구분
-- 행동: `신청`, `지원`, `제출`, `등록`, `수강신청`, `납부`, `신고`, `참여`
-- 대상: `학부생`, `대학원생`, `재학생`, `휴학생`, `복학생`, `신입생`, `졸업예정자`,
-  `교직원`, `외국인학생`, `편입생`
-- 주제: `장학`, `등록금`, `수강`, `학적`, `졸업`, `취업`, `기숙사`, `국제교류`,
-  `공모전`, `병무`
-- 자격 조건: 학년 1~6, 학번 연도, 이수 학기, 편입 대상, GPA
-- 필수 표현, 근거 문장
-
-연도 없는 `월/일`은 제목이나 게시일에서 기준 연도를 찾은 경우에만 보완하고
-`inferred_year: true`로 표시한다. **날짜가 안 보이면 만들지 않는다.**
-
-### 5.2 LLM(DeepSeek)의 역할과 제한
-
-LLM을 켜면 규칙 결과와 공지 텍스트를 보내 구조화 JSON의 품질을 보완한다.
-
-- **프로필·피드백·API 키는 프롬프트에 넣지 않는다.**
-- 공지 내용은 신뢰할 수 없는 입력으로 취급하고, 그 안의 지시를 따르지 않도록
-  system prompt에서 분리한다.
-
-LLM 결과를 그대로 신뢰하지 않고 다음을 **버린다**:
-
-| 검증 | 처리 |
+| 데이터 | 소유자/위치 |
 |---|---|
-| 규칙이 못 찾은 날짜를 LLM이 새로 만듦 | 버림 |
-| 근거 문장이 원문에 실제로 없음 | 버림 |
-| 자격 조건이 검증 가능한 학년·편입·GPA 범위 밖 | 버림 |
-| 필수 여부에 필수 표현 근거가 없음 | 받지 않음 |
-| JSON 오류 | 의미를 더하지 않는 1회 수리 후 실패 처리 |
-| API 장애·예산 소진·계약 위반 | 규칙 결과로 fallback |
+| Discord 사용자 ID와 정규화 profile | General main DB |
+| 목적별 동의 current/event | General main DB |
+| feedback, 전달·batch·delivery run | General main DB |
+| 공지 snapshot/revision/분석 cache | 외부 core SQLite |
+| 사용자별 digest/run report | General 전용 digest directory |
+| 학교/별칭/source mapping | 버전 관리된 catalog + 외부 `sources.json` |
 
-분석 캐시 키는 `notice_id + content_hash + analyzer_version`이며 analyzer version에
-모델명이 들어간다. 내용·규칙 버전·모델이 같으면 같은 DB에서 재호출하지 않는다.
+두 프로필이 이 경로와 DB를 공유하지 않는다. Masamo에는 school table이 없어도
+`SCHOOL_NOTICE_ENABLED=false`이면 정상 기동해야 한다.
 
-기본 예산: 실행당 20회, 한국 날짜 기준 하루 30회, 요청당 재시도 2회, 연속 실패 3회 시
-회로 차단, JSON 수리 호출 1회.
+## Batch wrapper
 
-## 6. 개인화 점수 규칙
+기본 명령:
 
-**기능의 핵심.** 점수는 20점에서 시작한다. 아래가 코드의 실제 규칙이다.
-
-| 신호 | 효과 |
-|---|---:|
-| 학부/대학원 대상 일치 | +20 |
-| 학부생 프로필에 재학생 대상 | +10 |
-| 학위 대상이 반대인 공지 | −40 |
-| 명시 학년 일치 / 불일치 | +15 / −35 및 `INELIGIBLE` |
-| 학번·이수학기·GPA·입학유형 일치 | `ELIGIBLE` |
-| 위 강한 조건 불일치 | −45 및 `INELIGIBLE` |
-| 위 조건이 있으나 프로필 값 없음 | `UNKNOWN`, 최종 **69점 상한** |
-| 전공 직접 일치 / 다른 전공 전용 게시판 | +22 / −20 |
-| source 학위 tag 일치 / 불일치 | +10 / −35 |
-| 캠퍼스 일치 / 불일치 | +12 / −15 |
-| `strict_campus`에서 캠퍼스 불일치 | −60 및 `INELIGIBLE` |
-| 편입 프로필 + 편입 관련 원문 | +15 |
-| 학적 대상 일치 | +10 |
-| 휴학생인데 재학생 전용 | −25 |
-| 관심·선호 항목 일치 | 항목당 +6, 최대 +18 |
-| 우선 키워드 일치 | 항목당 +10, 최대 +20 |
-| 해야 할 행동 존재 / 필수 표현 | +10 / +20 |
-| 긴급도 low / normal / high / critical | +0 / +3 / +10 / +18 |
-| 마감 3일 / 7일 / 30일 이내 / 그 이후 | +20 / +15 / +8 / +2 |
-| 마감 지남 | −50, 필수가 아니면 숨김 |
-
-적용 순서가 중요하다.
-
-1. 위 신호를 합산하고 **0~100으로 clamp**
-2. 주제 피드백 가중치를 **곱한다** (7장)
-3. `muted_topics` 또는 제외 키워드 일치 → **20점 상한**
-4. 단, **필수 행정 공지 보호**: 주제가 `등록금·수강·학적·졸업·병무` 중 하나이고
-   필수 표현이 있으며 `INELIGIBLE`이 아니면 → **최소 70점 보장** (3번을 무시)
-5. 확인 불가 자격 조건이 있으면 → **69점 상한**
-6. 다시 0~100 clamp 후 반올림
-
-밴드:
-
-```
-마감 지났고 필수 아님 → hidden
-score >= 80 → action
-score >= 60 → opportunity
-score >= 40 → reference
-그 외        → hidden
-INELIGIBLE  → 점수와 무관하게 숨김
+```bash
+MASAMONG_ENV_FILE=/etc/masamong/general.env \
+  <masamong-venv>/bin/python scripts/run_school_notice_batch.py \
+  --core-python <core-venv>/bin/python \
+  --core-cwd <core-repository> \
+  --source-config <core-repository>/school_notice/sources.json
 ```
 
-digest 단계에서 사용자의 `minimum_score`, `include_bands`, 밴드별 최대 개수를 한 번 더
-적용한다.
+옵션:
 
-**이 점수는 확률이나 모델 confidence가 아니다.** 설명 가능하고 조정 가능한 우선순위
-휴리스틱이다. 그래서 `score.reasons`에 근거가 함께 나오며, UI는 이것을 반드시
-노출해야 한다.
-
-## 7. 피드백 설계
-
-두 종류로 나뉜다.
-
-**선호 학습** — 공지의 topic에 완만한 가중치를 남긴다.
-
-| 피드백 | 가중치 델타 |
-|---|---:|
-| `applied` | +0.10 |
-| `useful` | +0.06 |
-| `saved` | +0.04 |
-| `already_knew` | −0.03 |
-| `not_interested` | −0.06 |
-
-누적 효과는 **90일 반감기**(`0.5 ^ (경과일/90)`)로 감쇠하고, 최종 가중치는
-**0.70~1.30**으로 제한된다.
-
-**해당 공지 상태** — 그 공지에 직접 적용된다.
-
-- `completed`, `dismiss_once`: 즉시 숨김
-- `not_eligible`: 명시적 자격 없음 처리
-- `mute_topic`: 사용자가 고른 주제를 강하게 낮춤 (단 6장 4번 보호 규칙이 우선)
-
-**의도적으로 하지 않는 것**: `not_interested`를 여러 번 눌러도 자동으로 `mute_topic`으로
-승격하지 않는다. 사용자 의도를 과도하게 추측하지 않기 위한 선택이다.
-
-topic 분류가 틀리면 피드백이 인접 공지에도 영향을 준다. 그래서 UI는 **"왜 덜 보이는지"
-근거를 표시하고 명시적 음소거 해제 기능을 제공해야 한다.** "영구 차단"처럼 표현하면
-설계 의도와 어긋난다.
-
-## 8. 실패 처리
-
-source 상태:
-
-- `healthy`: 오류 없이 선택한 상세를 처리
-- `degraded`: 일부 상세는 성공했지만 오류 있음
-- `failed`: 오류가 있고 상세 성공 0건
-
-전체 실행은 모든 source 실패 시 `failed`, 오류가 하나라도 있으면 `partial`, 그 외
-`succeeded`.
-
-| 상황 | 동작 | 사용자가 알아야 할 것 |
-|---|---|---|
-| 목록 요청 실패 | 그 source 신규 수집 생략 | 이전 active 공지가 다시 표시될 수 있음 |
-| 일부 상세 실패 | 성공한 글만 갱신 | 실패한 새 글은 당일 digest에서 빠질 수 있음 |
-| HTML 구조 변경 | 최소 계약 경고·실패 | source 설정 수정 필요 |
-| LLM 키 없음/장애 | 규칙 분석으로 계속 | 요약·자격 정밀도 하락 |
-| 요청/LLM 예산 소진 | 유한 실패 | 무한 재시도 안 함 |
-| 이미지 전용 본문 | 텍스트 부족 경고 | 세부 조건을 놓칠 수 있음 |
-| 자격 정보 없음 | `UNKNOWN`, 69점 상한 | 원문 확인 필요 |
-| 마감 추출 실패 | 날짜를 만들지 않음 | 원문 일정 확인 필요 |
-
-실패한 source가 있으면 `may_include_stale_notices: true`가 되고, **digest에 오래된
-공지가 섞였을 수 있다는 경고를 반드시 함께 표시해야 한다.** 이것이 원칙 4를 구현하는
-유일한 신호다.
-
-## 9. 보안·자원 경계
-
-- **공개·비로그인 페이지만** 수집. 로그인/SSO/CAPTCHA 우회 없음.
-- URL scheme은 HTTP/HTTPS만. source의 `allowed_hosts` 밖으로 나가는 redirect 차단.
-- DNS·IP가 private/loopback/link-local/reserved/multicast면 차단 (SSRF 방어).
-- HTML 3 MB, binary 기본 최대 20 MB.
-- HTTP connector 전체 4, host당 1, host별 최소 0.2초 간격.
-- 429·5xx·네트워크/timeout만 최대 2회 재시도.
-- robots 401/403은 전체 금지로 처리. 200이면 내용을 따름.
-- ZIP 계열 문서는 엔트리 100개, 개별 20 MB, 총 해제 100 MB 상한.
-- `--low-resource`: source당 상세 **4건**, 첨부 **0**, 전체 HTTP **30회** 강제.
-
-실측(`--low-resource --no-llm`, 전북대 2개 source): **HTTP 12회, 3.95초, 최대 RSS 약
-68 MiB.**
-
-`--ignore-robots`가 구현되어 있으나 **운영에서 사용 금지.** 자동 신청·대리 제출 기능은
-범위 밖이며 추가하지 않는다.
-
-## 10. 지원 학교 (16개 source)
-
-`jbnu_campus`(전북대 교내), `jbnu_software`(전북대 소프트웨어공학과), `snu_general`(서울대),
-`pnu_general`(부산대), `korea_cs_undergrad`(고려대 컴퓨터학과), `jj_academic`(전주대),
-`skku_general`(성균관대), `gachon_general`(가천대), `ssu_general`(숭실대),
-`jnu_software`(전남대 소프트웨어공학과), `scnu_academic`(순천대), `mju_general`(명지대),
-`konkuk_academic`(건국대), `kookmin_academic`(국민대), `hanyang_seoul`, `hanyang_erica`.
-
-전남대 중앙 홈페이지는 `robots.txt`가 전체 수집을 금지하므로 **우회하지 않고** 학과
-게시판을 쓴다. 한양대는 한 목록에서 캠퍼스 표식을 읽어 두 source로 분리한다.
-
-새 학교 추가는 `sources.json`에 항목을 복제하고 selector·정규식을 지정한 뒤
-`live-check --source <id>`로 계약을 확인한다. 인증·SPA·브라우저 렌더링이 필요한
-게시판은 범위 밖이다.
-
-## 11. 알려진 한계 (구현됨으로 오해하면 안 되는 것)
-
-- `DailyNoticeJob` 1회 = **프로필 1명 + 학교 1개**. 사용자가 늘면 같은 학교를 사람 수만큼
-  재크롤링한다.
-- 오래된 `active` 공지의 자동 만료 정책이 없다. 마감이 없거나 추출 실패한 옛 글이 남을 수 있다.
-- 목록 **첫 페이지만** 읽는다. 과거 backfill 없음.
-- 제목 기반 중복은 semantic 판정이 아니다 (4장).
-- OCR·이미지 비전 없음. 스캔 PDF는 `ocr_required`로 보존만 한다.
-- `language_scores`, 인정학점, 이수과목은 저장은 되지만 **자격 판정에 쓰이지 않는다.**
-- digest 파일명에 user_key가 없다. 같은 날짜·디렉터리면 **덮어쓴다.**
-- 전달 성공·재전송·interaction 멱등성은 코어 범위 밖이다 (마사몽이 구현해야 함).
-
----
-
-## 12. 데이터 계약
-
-코어가 산출하는 구조. 통합 코드는 이것만 보고 작성한다.
-
-### 12.1 digest JSON
-
+```text
+--date YYYY-MM-DD
+--dry-run
+--no-llm / --use-llm
+--low-resource
+--max-details-per-source N
+--max-requests N
+--max-profiles N
+--profile-timeout-seconds N
+--feedback-timeout-seconds N
+--batch-deadline-seconds N
 ```
-schema_version: int          # 현재 1. 다르면 전달 중단
+
+`--source-config`를 생략하면 `SCHOOL_NOTICE_SOURCE_CONFIG`, 그것도 없으면
+`<core-cwd>/school_notice/sources.json`을 사용한다. 날짜를 생략해도 서버 timezone에
+의존하지 않고 `Asia/Seoul` 오늘 날짜를 계산해 core `daily --date`에 항상 명시한다.
+
+기본은 `--no-llm --low-resource`다. `--use-llm`을 운영자가 명시한 경우에만 공지 분석
+LLM을 켠다.
+
+### Feedback 선처리
+
+미반영 feedback은 사용자 `daily`보다 먼저 외부 core의 `feedback` CLI에 전달한다.
+프로세스 종료 코드 0과 구조화 JSON의 `recorded > 0`을 모두 확인한 ID만 `consumed_at`으로
+표시한다. 한 건이라도 실패하면 옛 선호 상태로 digest를 만들지 않고 그 사용자의 daily를
+실패로 남겨 다음 유한 batch에 보류한다.
+
+### Stage와 publish
+
+- 임시 profile과 directory는 각각 mode `0600`, `0700`
+- core 출력은 사용자·날짜·schema·크기·타입·URL·항목 수 계약을 검증
+- 공개 run report는 원문/error text를 제외한 최소 집계만 보존
+- run report를 먼저, digest를 마지막에 `os.replace`
+- 최종 JSON은 mode `0600`
+- 임시 profile은 성공/실패와 관계없이 제거
+- digest root별 non-blocking file lock으로 batch 하나만 허용
+- lock 획득 뒤 같은 service UID가 만든 실제 `.profiles/run-*` directory만 stale cleanup;
+  symlink와 다른 이름은 건드리지 않음
+
+dry-run은 SQLite일 때 `mode=ro`로 열고 lock, directory, profile/digest 파일, DB update를
+만들지 않는다.
+
+### 자원 한도와 종료 코드
+
+기본 한도:
+
+| 한도 | 기본 | 코드 허용 범위 |
+|---|---:|---:|
+| profile 수 | 50 | 1~500 |
+| profile daily timeout | 600초 | 1~1800초 |
+| feedback timeout | 60초 | 1~300초 |
+| 전체 deadline | 1800초 | 1~7200초 |
+
+profile 상한을 넘으면 `never-run → least-recently-run → user_key` 순으로 고르는 공정
+rotation을 사용한다. 처리하지 못한 사용자가 다음 batch에서 우선된다. 하지만 용량 부족을
+숨기지 않고 종료 코드 2와 경고를 남긴다.
+
+| 코드 | 의미 |
+|---:|---|
+| 0 | 대상 없음, 모두 `succeeded`, 또는 정확히 기록된 `partial` |
+| 1 | `SCHOOL_NOTICE_ENABLED=false` |
+| 2 | profile/feedback/daily 실패, timeout, deadline, profile cap |
+| 3 | single-flight lock 충돌 |
+
+외부 core가 nonzero로 끝나면 생성된 파일이 있어도 성공으로 간주하지 않는다. 각 사용자
+`school_notice_batch_runs.status`와 run report의 `status`/`collection_health`도 함께 본다.
+`partial`은 숨겨진 완전 성공이 아니다. `school_notice_batch_runs`에는
+`profile_version`과 `profile_hash`도 필요하며, 이 컬럼이 생기기 전의 기존 run은 새 batch가
+성공할 때까지 전달 불가 상태로 취급한다. 이는 옛 개인화 결과를 잘못 보내지 않기 위한
+의도적인 fail-closed 동작이다.
+
+## Digest 계약
+
+마사몽이 읽는 JSON 최상위:
+
+```text
+schema_version: int
 user_key: str
-date: str                    # "YYYY-MM-DD" (Asia/Seoul)
-summary: {action: int, opportunity: int, reference: int}
+date: YYYY-MM-DD
+summary: {action, opportunity, reference}
 collection_health: object | null
-items: [ item, ... ]
+items: array
 ```
 
-`collection_health`:
+각 item의 핵심:
 
-```
-status: "healthy" | "degraded" | "failed"
-healthy / degraded / failed: int
-may_include_stale_notices: bool
-sources: { <source_id>: {status, list_candidates, details_succeeded,
-                         details_failed, errors: [str]} }
-```
-
-`item`:
-
-```
+```text
 notice_id: int
-dedup_key: str
 revision_count: int
-change: "new" | "updated" | "unchanged"
-duplicate_sources: [ {source_id, url} ]
-
-notice:
-  candidate: {source_id, external_id, title, url, published_text|null,
-              author|null, category|null, pinned: bool,
-              source_university|null, source_board|null, source_tags: [str]}
-  title, body_text, body_characters, published_text, author
-  attachments: [ {kind, url, name|null} ]
-  inline_images, attachment_extractions
-  base_content_hash, content_hash
-  warnings: [str]
-
-analysis:
-  schema_version, summary, audiences[], topics[], actions[]
-  required: bool
-  urgency: "low" | "normal" | "high" | "critical"
-  dates: [ {date: "YYYY-MM-DD", kind, evidence, inferred_year?: bool} ]
-  eligibility_rules[], evidence[], confidence: float
-  analysis_source: "rules" | <모델명>
-  warnings: [str]
-
-score:
-  score: float (0~100)
-  band: "action" | "opportunity" | "reference" | "hidden"
-  eligibility: "ELIGIBLE" | "LIKELY_ELIGIBLE" | "INELIGIBLE" | "UNKNOWN"
-  reasons: [str]
-  topics: [str]
-  deadline: "YYYY-MM-DD" | null
-  next_event: "YYYY-MM-DD" | null
-  profile_version: int
-  mandatory_protected: bool
+change: new | updated | unchanged
+notice.candidate: source_id, external_id, title, url, source metadata
+analysis: summary, audiences, topics, actions, required, urgency, dates, evidence
+score: score, band, eligibility, reasons, deadline, profile_version
+duplicate_sources: array
 ```
 
-렌더링 규칙:
+수신 검증은 fail-closed다.
 
-- `body_text`는 수백~수천 자다. Embed에는 **`analysis.summary`**를 쓴다.
-- `score.reasons`가 "왜 추천됨"의 근거다. **반드시 노출한다.**
-- `eligibility == "UNKNOWN"`이면 "원문 확인 필요"를 명시한다.
-- `dates[].inferred_year == true`는 연도를 추론한 값이므로 마감 표시 시 주의 문구를 붙인다.
-- 밴드·최소점수 필터는 코어가 이미 적용했으므로 **재적용하지 않는다.**
+- 파일 최대 8 MiB
+- item 최대 300개
+- JSON depth와 문자열 길이 상한
+- 필수 타입/enum/URL 검증
+- digest의 `user_key`와 요청한 사용자가 다르면 거부
+- digest 날짜와 요청 날짜가 다르면 거부
+- 예상 schema version 불일치 거부
+- 중복 notice/revision 거부
+- Discord embed 6,000자, 한 메시지 10개 제한
 
-### 12.2 사용자 프로필
+본문 전체 대신 `analysis.summary`를 표시하고 `score.reasons`를 “왜 추천됐는지” 근거로
+보여준다. `eligibility=UNKNOWN`과 추론 날짜는 원문 확인이 필요함을 표시한다. 공지 원문
+링크가 최종 판단 기준이다.
 
-필수: `user_key`, `school_id`, `degree_level`.
+## 개인화와 알림 의미
 
-```
-degree_level ∈ {undergraduate, master, doctorate, integrated, non_degree}
-grade: int 1~6            # undergraduate이면 필수
-```
+외부 core는 공지의 사실 추출과 사용자별 판단을 분리한다. LLM을 켜도 공지 사실·근거 후보
+구조화에만 사용하고, 사용자 profile에 대한 최종 점수는 재현 가능한 로컬 규칙이 담당해야
+한다.
 
-리스트 필드 (각 최대 100개, 항목당 100자): `career_interests`, `preferred_topics`,
-`muted_topics`, `include_keywords`, `exclude_keywords`, `double_majors`, `minors`,
-`completed_courses`, `unknown_fields`
+대표 band:
 
-숫자 범위: `student_number_year` 1900~2100, `completed_semesters` 0~30,
-`gpa_last_semester` 0~4.5, `transfer_approved_credits` 0~300
-
-`language_scores`: 최대 20개 객체. `timezone`: 기본 `Asia/Seoul`.
-
-`notification_preferences`: `minimum_score`(기본 40), `include_bands`,
-`max_action` / `max_opportunity` / `max_reference`, `strict_campus`.
-
-**마사몽 매핑**: `user_key = f"discord-{user_id}"`로 고정하고 테이블에 원본 `user_id`를 함께 둔다.
-
-### 12.3 피드백 타입
-
-```
-선호 학습:  useful, saved, applied, not_interested, already_knew
-공지 상태:  completed, dismiss_once, not_eligible
-강한 설정:  mute_topic
+```text
+score >= 80  → action
+score >= 60  → opportunity
+score >= 40  → reference
+그 외        → hidden
+INELIGIBLE   → hidden
 ```
 
-식별은 `notice_id` 또는 `(source_id, external_id)`.
+명시 자격 조건이 있으나 profile 값이 없어 판단할 수 없으면 `UNKNOWN`과 69점 상한을
+사용한다. 마감이 지난 비필수 공지는 숨긴다. 등록금·수강·학적·졸업·병무의 근거 있는 필수
+공지는 사용자의 일반 주제 음소거보다 우선할 수 있다.
 
-### 12.4 실행 상태
+이 점수는 합격 확률이나 모델 confidence가 아니다. 설명 가능한 우선순위다. 신청·제출 전에
+항상 원문을 확인해야 한다.
 
-```
-status: "succeeded" | "partial" | "failed"
-exit code: failed → 2, 그 외 → 0
-```
+## 전달 멱등성과 재시도
 
-**`partial`은 exit 0이다.** 종료 코드만으로 성공 판정하면 안 되고 `daily-run-*.json`의
-status와 `collection_health`를 확인해야 한다.
+- 전달 식별은 사용자 + notice + revision 기준이다.
+- 같은 revision은 재발송하지 않는다.
+- 내용이 바뀌어 revision이 증가한 공지는 업데이트로 다시 전달할 수 있다.
+- 하루 delivery run은 사용자/대상 날짜별 상태, attempt, 다음 시도, 안전한 error code를
+  기록한다.
+- 1분 catch-up이 사용자별 시각을 확인하므로 bot 재시작이나 짧은 지연을 흡수한다.
+- 한 tick의 사용자 수, 사용자별 처리 시간, 최대 attempt와 retry 간격을 제한한다.
+- DM 차단, contract 오류, timeout, send 실패를 성공으로 기록하지 않는다.
+- 일부 item 전송 뒤 실패한 경우 이미 기록된 revision은 다시 보내지 않고 남은 item만
+  재시도한다.
+- 자동 전달은 `SCHOOL_NOTICE_MAX_ITEMS_PER_DM`개씩 페이지로 나눈다. 한 페이지가
+  성공하면 각 revision을 즉시 기록하고 failure attempt를 0으로 되돌린 뒤
+  `more_pending` 상태로 남은 페이지를 다음 1분 tick에서 이어 보낸다. 연속 실패만 최대
+  attempt를 소비한다.
+- visible item이 없으면 완료로 기록하되 DM하지 않는다.
 
-### 12.5 CLI
+사용자가 수동 `!공지 [페이지]`를 실행하는 것과 자동 전달 기록은 구분한다. 예를 들어
+`!공지 2`로 두 번째 페이지를 확인할 수 있다. 수동 확인은 “오늘 아무 관련 공지 없음”을
+알려줄 수 있지만 자동 scheduler는 불필요한 빈 알림을 보내지 않는다.
 
-```
-python -m school_notice daily \
-  --no-llm --low-resource \
-  --profile <profile.json> --db <sqlite> --output-dir <dir> \
-  [--date YYYY-MM-DD] [--max-details-per-source N] [--max-requests N]
-```
+## 운영 설정
 
-산출: `daily-digest-<date>.md`, `daily-digest-<date>.json`, `daily-run-<date>.json`
-기타 명령: `list-sources`, `init-db`, `live-check`, `feedback`, `llm-check`
+주요 env:
 
-### 12.6 테스트 fixture
+```dotenv
+SCHOOL_NOTICE_ENABLED=false
+SCHOOL_NOTICE_DIGEST_DIR=/var/lib/masamong/general/notice/out
+SCHOOL_NOTICE_CORE_DB=/var/lib/masamong/general/notice/core.db
+SCHOOL_NOTICE_CATALOG_PATH=/srv/masamong/current/profiles/catalogs/school_notice_catalog.v1.json
+SCHOOL_NOTICE_SOURCE_CONFIG=/srv/school-notice/school_notice/sources.json
 
-`tests/fixtures/school_notice_digest.json`으로 커밋할 실제 구조 (축약).
+SCHOOL_NOTICE_DELIVERY_HOUR=9
+SCHOOL_NOTICE_DELIVERY_MINUTE=0
 
-```json
-{
-  "schema_version": 1,
-  "user_key": "discord-100000000000000001",
-  "date": "2026-07-27",
-  "summary": { "action": 10, "opportunity": 3, "reference": 0 },
-  "collection_health": {
-    "status": "degraded",
-    "healthy": 1, "degraded": 1, "failed": 0,
-    "may_include_stale_notices": false,
-    "sources": {
-      "jbnu_software": { "status": "healthy", "list_candidates": 10,
-        "details_succeeded": 4, "details_failed": 0, "errors": [] },
-      "jbnu_campus": { "status": "degraded", "list_candidates": 10,
-        "details_succeeded": 3, "details_failed": 1,
-        "errors": ["detail_timeout"] }
-    }
-  },
-  "items": [
-    {
-      "notice_id": 16,
-      "dedup_key": "368b4d339aca1d77a82c13dd",
-      "revision_count": 1,
-      "change": "unchanged",
-      "notice": {
-        "candidate": {
-          "source_id": "jbnu_software",
-          "external_id": "394145",
-          "title": "2026학년도 2학기 휴학 및 복학 신청 안내",
-          "url": "https://software.jbnu.ac.kr/bbs/software/527/394145/artclView.do",
-          "published_text": "2026.06.18",
-          "author": "소프트웨어공학과",
-          "category": null,
-          "pinned": true,
-          "source_university": "전북대학교",
-          "source_board": "소프트웨어공학과 공지",
-          "source_tags": ["소프트웨어공학과"]
-        },
-        "title": "[학부] 2026학년도 2학기 휴학 및 복학 신청 안내",
-        "body_text": "2026학년도 2학기 휴학 및 복학 신청기간 등을 다음과 같이 알려드립니다. ...",
-        "body_characters": 529,
-        "published_text": "2026.06.18",
-        "author": "소프트웨어공학과",
-        "attachments": [
-          { "kind": "attachment",
-            "url": "https://software.jbnu.ac.kr/bbs/software/527/353100/download.do",
-            "name": "자주하는 문의사항(휴학 및 복학)v5.hwp" }
-        ],
-        "inline_images": [],
-        "attachment_extractions": [],
-        "base_content_hash": "8f2b9a0a01b4a96e1eb79949ff3939e66cf1f68a76ea8a4ff72188b34ff17029",
-        "content_hash": "33d45ae6c86fd6600ac1bc83954b24a7a5bedd973b9d0ca0f47767c178b011a8",
-        "warnings": ["list_detail_title_difference"]
-      },
-      "analysis": {
-        "schema_version": 1,
-        "summary": "학기 휴학 및 복학 신청기간 등을 다음과 같이 알려드립니다.",
-        "audiences": ["학부생"],
-        "topics": ["등록금", "수강", "학적"],
-        "actions": ["신청", "등록", "수강신청", "납부"],
-        "required": true,
-        "urgency": "high",
-        "dates": [
-          { "date": "2026-09-01", "kind": "deadline",
-            "evidence": "휴학 · 복학 허가일 : 2026. 9. 1.( 화 ) [ 개강일 ] 부터" },
-          { "date": "2026-09-29", "kind": "deadline",
-            "evidence": "7.21.( 화 ) ~ 9.29.( 화 ) [ 수업일수 1/4 선 ]",
-            "inferred_year": true }
-        ],
-        "eligibility_rules": [],
-        "evidence": ["휴학 · 복학 신청 가능 기간"],
-        "confidence": 0.58,
-        "analysis_source": "rules",
-        "warnings": ["image_only_section"]
-      },
-      "score": {
-        "score": 100.0,
-        "band": "action",
-        "eligibility": "LIKELY_ELIGIBLE",
-        "reasons": ["학부 대상 일치", "필수 표현 포함", "마감 30일 이내"],
-        "topics": ["등록금", "수강", "학적"],
-        "deadline": "2026-09-01",
-        "next_event": "2026-09-29",
-        "profile_version": 1,
-        "mandatory_protected": true
-      },
-      "duplicate_sources": []
-    }
-  ]
-}
+SCHOOL_NOTICE_PROFILE_LLM_ENABLED=true
+SCHOOL_NOTICE_PROFILE_MAX_REVISIONS=3
+SCHOOL_NOTICE_PROFILE_INPUT_TIMEOUT_SECONDS=120
+SCHOOL_NOTICE_PROFILE_LLM_TIMEOUT_SECONDS=20
+
+SCHOOL_NOTICE_DELIVERY_BATCH_SIZE=10
+SCHOOL_NOTICE_DELIVERY_MAX_ATTEMPTS=3
+SCHOOL_NOTICE_DELIVERY_RETRY_MINUTES=10
+SCHOOL_NOTICE_DELIVERY_USER_TIMEOUT_SECONDS=30
+
+SCHOOL_NOTICE_BATCH_MAX_PROFILES=50
+SCHOOL_NOTICE_BATCH_PROFILE_TIMEOUT_SECONDS=600
+SCHOOL_NOTICE_BATCH_FEEDBACK_TIMEOUT_SECONDS=60
+SCHOOL_NOTICE_BATCH_TOTAL_TIMEOUT_SECONDS=1800
+
+SCHOOL_NOTICE_MAX_ITEMS_PER_DM=10
+SCHOOL_NOTICE_SCHEMA_VERSION=1
+SCHOOL_NOTICE_STALE_WARNING_ENABLED=false
 ```
 
-추가 fixture: 빈 결과(items 0건), `may_include_stale_notices: true`,
-`eligibility: "UNKNOWN"`, `schema_version: 99`(거부 확인용).
+`SCHOOL_NOTICE_MAX_ITEMS_PER_DM`은 자동·수동 한 페이지의 최대 항목 수다.
+경로는 실제 배포 layout의 절대 경로여야 한다. `SCHOOL_NOTICE_ENABLED=true`이면 digest와
+core DB 경로는 비어 있지 않은 절대 경로여야 하고, catalog와 source config는 실제 파일로
+존재해야 한다. 조건을 만족하지 않으면 기동을 중단한다. 위 예시는 `/srv` layout이며
+`profiles/general.env.example` 및 systemd 템플릿도 같은 layout을 사용한다. 실제 서버에서
+다른 경로를 쓰면 env와 unit의 모든 절대 경로를 함께 바꾼다.
 
----
+23:00 수집 시각의 source of truth는 아래 systemd timer다. 봇 env의
+`SCHOOL_NOTICE_DELIVERY_HOUR/MINUTE`는 신규 profile의 기본 전달 시각이며, 저장된
+사용자별 `delivery_time`이 우선한다.
 
-## 13. 마사몽 통합
+## systemd timer
 
-### 13.1 대상 프로필은 `general`
+템플릿:
 
-신규 테이블이 필요한데 `masamo`는 `MASAMONG_AUTO_MIGRATE=true`가 config에서 금지되어
-있다. general은 빈 DB라 실패해도 누적 운영 데이터에 영향이 없고, 롤백은 유닛 하나만
-내리면 된다. `masamo` 승격은 별도 승인된 migration으로만 한다.
+- `deploy/systemd/masamong-school-notice-batch.service`
+- `deploy/systemd/masamong-school-notice-batch.timer`
 
-### 13.2 크롤링을 봇 프로세스 안에서 돌리지 않는다
+timer:
 
-코어는 실행당 RSS가 약 68 MiB 뛰고 bs4 파싱은 CPU 바운드다. `tasks.loop`로 봇
-이벤트 루프에 넣으면 `MASAMONG_CPU_THREADS=1` 환경에서 봇 응답성이 무너지고,
-크롤링 실패가 봇 안정성에 전이된다.
-
-```
-[systemd timer 08:00]  코어 batch (별도 프로세스)
-        └─> digest JSON  +  sidecar SQLite
-
-[마사몽 봇 (상주)]  tasks.loop 08:10
-        └─> digest JSON 읽기 → Embed 변환 → DM 발송 → 전달 상태 기록
-        └─> 버튼 interaction → 피드백 기록 → 다음 batch가 반영
-```
-
-접점은 **digest JSON 파일과 피드백 테이블뿐**이다.
-
-### 13.3 저장소 2단 분리
-
-| 데이터 | 위치 | 이유 |
-|---|---|---|
-| 공지 snapshot·revision·분석 캐시·API 예산 | sidecar SQLite (코어 소유) | 재생성 가능한 크롤링 부산물 |
-| 사용자 프로필·피드백·전달 상태 | 마사몽 DB (신규 테이블) | Discord 사용자와 결합 |
-
-코어 `storage`(710 LOC)를 async/TiDB로 포팅하지 않는다. 위험 대비 이득이 없다.
-
-### 13.4 신규 테이블
-
-마사몽 `compat_db`가 `?`를 TiDB용 `%s`로 변환하므로 쿼리는 **`?` 스타일로만** 쓴다.
-
-SQLite (`database/schema.sql`):
-
-```sql
-CREATE TABLE IF NOT EXISTS school_notice_profiles (
-    user_id INTEGER PRIMARY KEY,
-    user_key TEXT NOT NULL UNIQUE,
-    school_id TEXT NOT NULL,
-    profile_json TEXT NOT NULL,
-    profile_version INTEGER NOT NULL DEFAULT 1,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now', 'utc')),
-    updated_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS school_notice_feedback (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_key TEXT NOT NULL,
-    source_id TEXT NOT NULL,
-    external_id TEXT NOT NULL,
-    feedback_type TEXT NOT NULL,
-    topic TEXT,
-    interaction_id TEXT NOT NULL UNIQUE,
-    created_at TEXT NOT NULL,
-    consumed_at TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_school_notice_feedback_user
-    ON school_notice_feedback (user_key, created_at);
-
-CREATE TABLE IF NOT EXISTS school_notice_deliveries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_key TEXT NOT NULL,
-    digest_date TEXT NOT NULL,
-    notice_id INTEGER NOT NULL,
-    status TEXT NOT NULL,
-    failure_reason TEXT,
-    attempt_count INTEGER NOT NULL DEFAULT 1,
-    delivered_at TEXT NOT NULL,
-    UNIQUE (user_key, digest_date, notice_id)
-);
-
-CREATE TABLE IF NOT EXISTS school_notice_batch_runs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_key TEXT NOT NULL,
-    run_date TEXT NOT NULL,
-    status TEXT NOT NULL,
-    collection_status TEXT,
-    may_include_stale INTEGER NOT NULL DEFAULT 0,
-    item_count INTEGER NOT NULL DEFAULT 0,
-    http_requests INTEGER,
-    llm_calls INTEGER,
-    finished_at TEXT NOT NULL,
-    UNIQUE (user_key, run_date)
-);
+```ini
+OnCalendar=*-*-* 23:00:00 Asia/Seoul
+Persistent=true
+RandomizedDelaySec=0
+AccuracySec=1min
 ```
 
-TiDB (`database/schema_tidb.sql`) — 같은 구조에 `BIGINT PRIMARY KEY AUTO_RANDOM`,
-`VARCHAR(n)`, `KEY` / `UNIQUE KEY` 문법을 적용한다. 시각 컬럼은 기존 관례대로
-`VARCHAR(64)`.
+service는 `Type=oneshot`, 내부 최대 deadline 7,200초에 cleanup 여유를 둔
+`RuntimeMaxSec=7800`, CPU/BLAS thread 1, 낮은 CPU/IO weight, `UMask=0077`,
+`NoNewPrivileges=true`를 사용한다. env에는 secret을 unit literal로 넣지 않고
+`MASAMONG_ENV_FILE=/etc/masamong/general.env`만 선택한다.
 
-멱등성 키: 전달 `(user_key, digest_date, notice_id)`, 피드백 `interaction_id`,
-batch `(user_key, run_date)`.
+템플릿은 core나 venv를 설치하지 않는다. 실제 service 사용자, group, path, 권한을 맞춘 뒤
+수동 dry-run과 제한된 batch가 성공해야 timer를 켠다. Masamo에는 timer를 활성화하지 않는다.
 
-### 13.5 config 키
+## 실패와 알림 정책
 
-전부 기본값을 두어 legacy/masamo에 영향이 없어야 한다.
-
-```
-SCHOOL_NOTICE_ENABLED                 기본 false   # 마스터 스위치
-SCHOOL_NOTICE_DIGEST_DIR              기본 ""      # 절대 경로
-SCHOOL_NOTICE_CORE_DB                 기본 ""      # sidecar SQLite 절대 경로
-SCHOOL_NOTICE_DELIVERY_HOUR           기본 8
-SCHOOL_NOTICE_DELIVERY_MINUTE         기본 10
-SCHOOL_NOTICE_MAX_ITEMS_PER_DM        기본 10
-SCHOOL_NOTICE_SCHEMA_VERSION          기본 1
-SCHOOL_NOTICE_STALE_WARNING_ENABLED   기본 true
-```
-
-`SCHOOL_NOTICE_ENABLED=true`인데 `DIGEST_DIR`가 비었거나 상대 경로면 기동 실패로
-처리한다 (기존 명시적 프로필 fail-closed 패턴과 일치). 명시적 프로필은 env 파일 밖의
-값을 읽지 않으므로 `general.env.example`에 예시를 넣는다.
-
-### 13.6 영향 지점
-
-| 파일 | 변경 |
+| 상황 | 처리 |
 |---|---|
-| `config.py` | 13.5 키 추가 |
-| `database/schema.sql`, `schema_tidb.sql` | 13.4 DDL |
-| `main.py` `_verify_runtime_schema`, `_migrate_db` | 신규 테이블 **조건부** 추가 |
-| `main.py` `cog_list` | `school_notice_cog` 등록 |
-| `cogs/school_notice_cog.py` | 신규 |
-| `utils/school_notice_contract.py` | digest 파싱·검증 |
-| `utils/school_notice_render.py` | digest → Embed |
-| `scripts/run_school_notice_batch.py` | 프로필 export → 코어 호출 → 피드백 import |
-| `profiles/general.env.example` | 신규 키 예시 |
+| profile 동의 없음/철회 | batch와 전달에서 제외 |
+| 지원하지 않는 학교/source 불일치 | profile 실행 실패, 다른 학교 전체 수집으로 fallback하지 않음 |
+| feedback 반영 실패 | 그 사용자 daily 보류 |
+| 일부 source 실패 | `partial`/degraded를 정확히 기록 |
+| 모든 source/core 실패 | failed, 새 digest 성공 공개 안 함 |
+| digest 계약 불일치 | 전달 거부 |
+| 관련 visible item 0 | 완료 기록, 자동 DM 없음 |
+| DM 차단/HTTP 실패 | 유한 재시도 상태 |
+| batch 중복 실행 | lock 충돌 종료 코드 3 |
+| deadline/profile cap | 종료 코드 2, 다음 실행 공정 rotation |
 
-### 13.7 반드시 지킬 제약
+`SCHOOL_NOTICE_STALE_WARNING_ENABLED=false`가 기본이므로 수집 문제만으로 사용자에게 빈 경고
+DM을 만들지 않는다. 운영자가 true로 켜면 stale 경고의 의미와 사용자 경험을 별도로
+검토해야 한다.
 
-1. **신규 테이블을 무조건 required로 만들면 masamo 기동이 실패한다.** `AUTO_MIGRATE=false`라
-   테이블이 없으면 startup에서 막힌다. `kakao_chunks`와 같은 방식으로
-   `if config.SCHOOL_NOTICE_ENABLED:` 조건부로 넣고, **조건부 검증을 먼저 작성한 뒤
-   테이블을 추가한다.**
-2. `SCHOOL_NOTICE_ENABLED` 기본값은 `false`. masamo에서 기본으로 켜지지 않는다.
-3. 새 Cog를 `MASAMONG_REQUIRED_COGS`에 넣지 않는다. 로드 실패가 봇 기동을 막으면 안 된다.
-4. 봇 프로세스 안에서 크롤링하지 않는다 (13.2).
-5. 다중 사용자 분리(11장) 전까지 사용자 수를 제한한다 (권장 5명 이하). 안 그러면 같은
-   학교를 사람 수만큼 재크롤링해 차단당할 수 있다.
+## 알려진 한계
 
-### 13.8 착수 순서
+- 외부 core는 이 저장소에서 version/release가 고정되지 않는다.
+- wrapper는 사용자 profile별로 core `daily`를 실행한다. 같은 학교 사용자 여러 명의
+  크롤링 결과를 하나로 공유하지 못해 같은 학교를 여러 번 수집할 수 있다.
+- 따라서 현재 보장은 “모든 학교가 아니라 등록된 profile의 학교만”이지 “학교당 하루 한
+  번”이 아니다.
+- core가 목록 첫 페이지만 읽거나, OCR/브라우저 렌더링을 지원하지 않거나, selector가
+  깨지는 등의 한계는 core 배포본에 따라 남는다.
+- 제목 기반 중복은 의미 기반 중복이 아닐 수 있다.
+- 공개·비로그인 게시판만 대상이며 robots, 허용 host, redirect와 요청 크기 제한을 지켜야
+  한다.
+- 학교 공지는 추천 후보와 근거를 제공할 뿐 신청·제출을 대신하거나 자격을 보증하지 않는다.
+- bot 여러 replica에서 같은 scheduler를 동시에 소유하는 distributed lease는 제공하지
+  않는다. profile당 상주 bot 하나, batch timer 하나만 운영한다.
 
-1. `utils/school_notice_contract.py` + fixture — 계약이 없으면 나머지가 추측이 된다.
-2. `utils/school_notice_render.py` — Discord 없이 순수 함수로. 테스트가 쉬워진다.
-3. Cog와 명령 — 수동 조회부터.
-4. DDL + 조건부 검증 (13.7-①의 순서 준수) → 프로필 CRUD, 피드백 버튼.
-5. batch 스크립트 — 코어가 아직 없으면 fixture를 복사하고 12.4 상태 계약만 재현하는
-   fake로 인터페이스를 완성한다. 나중에 실행 경로만 교체된다.
+## 검증
 
-### 13.9 완료 기준
+마사몽:
 
-- [ ] `schema_version` 불일치 digest를 거부한다
-- [ ] fixture 4종(정상·빈·health 실패·UNKNOWN)이 모두 렌더링된다
-- [ ] `may_include_stale_notices: true`면 경고가 표시된다
-- [ ] `eligibility: "UNKNOWN"`이면 원문 확인 안내가 표시된다
-- [ ] `score.reasons`가 "왜 추천됨"으로 노출된다
-- [ ] 음소거 해제 경로가 있고 "영구 차단"으로 표현하지 않는다
-- [ ] 프로필 CRUD가 12.2 enum·범위를 그대로 검증한다
-- [ ] 같은 `interaction_id` 피드백이 1건만 저장된다
-- [ ] 신규 테이블이 masamo 기동을 막지 않는다
-- [ ] `SCHOOL_NOTICE_ENABLED=false`에서 기존 동작이 완전히 동일하다
-- [ ] `partial` 상태가 성공으로 오판되지 않는다
-- [ ] 같은 날 같은 공지가 두 번 전달되지 않는다
+```bash
+.venv/bin/python -m pytest -q \
+  tests/school_notice_profile_spec.py \
+  tests/school_notice_contract_spec.py \
+  tests/school_notice_render_spec.py \
+  tests/school_notice_batch_spec.py \
+  tests/school_notice_cog_spec.py \
+  tests/school_notice_isolation_spec.py
+```
+
+추가 확인:
+
+- 외부 core 전체 테스트
+- 등록 → 오인식 수정 → 확인 → 저장 → 재수정 → 취소 시나리오
+- 미동의·철회·정책 변경 fail-closed
+- 14개 학교 별칭과 지원하지 않는 학교 거부
+- 등록 profile source만 core 명령에 포함
+- KST 23:00 timer와 다음 날 09:00/사용자 시간
+- 최근 3일 복구 범위에서 최신 유효 batch만 선택
+- 빈 digest 자동 무알림
+- revision 중복 방지, 수동 페이지 조회, 자동 페이지 연속 전달과 부분 전송 후 재시도
+- feedback 실제 반영 뒤에만 consumed
+- dry-run 완전 무변경
+- timeout/deadline/lock/profile rotation
+- Masamo flag false에서 school table 없이 정상 기동
+- General/외부 core/sidecar/digest/log 경로가 Masamo와 겹치지 않음
+
+운영 배치와 rollback은 [배포 가이드](../DEPLOYMENT.md)를 따른다.

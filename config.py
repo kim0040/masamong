@@ -50,7 +50,15 @@ def _resolve_profile_env_values(path: Path) -> dict[str, str]:
                 value = resolve_key(referenced_key, (*stack, key))
                 if value or default is None:
                     return value
-            return default or ""
+                return default or ""
+            if default is not None:
+                return default
+            # 명시 프로필은 상속된 shell/systemd secret을 읽지 않는다. 참조가
+            # 파일에도 없으면 빈 문자열로 조용히 바꾸지 말고 변수명만 밝혀 실패한다.
+            raise RuntimeError(
+                "선택한 env 파일 내부에 정의되지 않은 변수 참조입니다: "
+                f"{referenced_key}"
+            )
 
         value = _ENV_REFERENCE_RE.sub(replace_reference, raw_value)
         resolved[key] = value
@@ -527,17 +535,75 @@ if REQUIRE_EXPLICIT_PROFILE:
             "명시적 프로필의 MASAMONG_PROFILE과 MASAMONG_INSTANCE_NAME이 다릅니다: "
             f"profile={PROFILE!r}, instance={INSTANCE_NAME!r}"
         )
+    _identity_env_keys = (
+        "MASAMONG_PROFILE",
+        "MASAMONG_INSTANCE_NAME",
+        "MASAMONG_REQUIRE_EXPLICIT_PROFILE",
+        "DISCORD_BOT_TOKEN",
+        "MASAMONG_EXPECTED_DISCORD_BOT_USER_ID",
+        "MASAMONG_AUTO_MIGRATE",
+    )
+    _missing_identity_env_keys = [
+        key for key in _identity_env_keys if key not in _EXPLICIT_ENV_KEYS
+    ]
+    if _missing_identity_env_keys:
+        raise RuntimeError(
+            "명시적 운영 프로필의 identity/credential 값은 config.json이나 "
+            "상속 환경이 아니라 선택한 env 파일에 직접 있어야 합니다: "
+            + ", ".join(_missing_identity_env_keys)
+        )
+    if PROFILE == "general":
+        _general_disabled_feature_keys = (
+            "AI_MEMORY_ENABLED",
+            "EMBEDDING_ENABLED",
+            "RERANK_ENABLED",
+        )
+        _unsafe_general_features = [
+            key
+            for key in _general_disabled_feature_keys
+            # env 줄이 빠진 경우에도 profile-owned config.json의 오래된
+            # true가 되살아나면 General이 무거운 ML 경로를 올릴 수 있다.
+            # 최종 유효값을 검사해 어떤 설정 출처로도 우회하지 못하게 한다.
+            if as_bool(load_config_value(key, False), False)
+        ]
+        if _unsafe_general_features:
+            raise RuntimeError(
+                "명시적 general 프로필은 저사양 steady-state 보호를 위해 "
+                "다음 기능을 활성화할 수 없습니다: "
+                + ", ".join(_unsafe_general_features)
+            )
     if PROFILE == "masamo":
         # 기존 저사양 서버의 값을 코드가 추정하면 배포 시 CPU/RU 제한이 조용히
         # 풀릴 수 있다. 현재 운영값을 선택한 masamo env 파일에 그대로 옮기도록
         # 강제하고, 무제한이나 오타는 시작 전에 거부한다.
         _masamo_positive_limit_keys = (
             "MASAMONG_CPU_THREADS",
+            "MASAMONG_EXECUTOR_WORKERS",
             "AI_MAX_CONCURRENT_PROCESSING",
+            "AI_QUEUE_WAIT_TIMEOUT_SECONDS",
+            "LLM_MAX_CONCURRENT_CALLS",
+            "LLM_ACQUIRE_TIMEOUT_SECONDS",
+            "LLM_CALL_TIMEOUT_SECONDS",
             "EMBEDDING_MAX_CONCURRENCY",
             "RAG_MAX_BACKGROUND_TASKS",
             "RAG_MAX_TRACKED_WINDOWS",
+            "KAKAO_API_MAX_CONCURRENCY",
+            "MASAMONG_DISCORD_MAX_MESSAGES",
         )
+        _masamo_limit_maximums = {
+            "MASAMONG_CPU_THREADS": 64,
+            "MASAMONG_EXECUTOR_WORKERS": 16,
+            "AI_MAX_CONCURRENT_PROCESSING": 16,
+            "AI_QUEUE_WAIT_TIMEOUT_SECONDS": 30,
+            "LLM_MAX_CONCURRENT_CALLS": 16,
+            "LLM_ACQUIRE_TIMEOUT_SECONDS": 60,
+            "LLM_CALL_TIMEOUT_SECONDS": 300,
+            "EMBEDDING_MAX_CONCURRENCY": 8,
+            "RAG_MAX_BACKGROUND_TASKS": 64,
+            "RAG_MAX_TRACKED_WINDOWS": 4_096,
+            "KAKAO_API_MAX_CONCURRENCY": 16,
+            "MASAMONG_DISCORD_MAX_MESSAGES": 1_000,
+        }
         _masamo_resource_errors: list[str] = []
         for _limit_key in _masamo_positive_limit_keys:
             _limit_raw = _EXPLICIT_ENV_VALUES.get(_limit_key)
@@ -548,6 +614,11 @@ if REQUIRE_EXPLICIT_PROFILE:
             if _limit_value <= 0:
                 _masamo_resource_errors.append(
                     f"{_limit_key} (파일 내 양의 정수 필요)"
+                )
+            elif _limit_value > _masamo_limit_maximums[_limit_key]:
+                _masamo_resource_errors.append(
+                    f"{_limit_key} (안전 상한 "
+                    f"{_masamo_limit_maximums[_limit_key]} 이하 필요)"
                 )
         _tokenizers_parallelism_raw = _EXPLICIT_ENV_VALUES.get(
             "TOKENIZERS_PARALLELISM"
@@ -711,11 +782,30 @@ if GUILD_SETTINGS_MODE not in {"static", "database"}:
     )
 
 _cpu_thread_default = 1 if PROFILE == "general" else 0
-CPU_THREAD_LIMIT = max(
-    0,
-    as_int(
-        load_config_value("MASAMONG_CPU_THREADS", _cpu_thread_default),
-        _cpu_thread_default,
+CPU_THREAD_LIMIT = min(
+    64,
+    max(
+        0,
+        as_int(
+            load_config_value("MASAMONG_CPU_THREADS", _cpu_thread_default),
+            _cpu_thread_default,
+        ),
+    ),
+)
+# asyncio.to_thread()/run_in_executor 경로도 저사양 프로필의 CPU 예산을
+# 우회하지 않도록 기본 executor 크기를 별도로 제한한다.
+_executor_workers_default = CPU_THREAD_LIMIT if CPU_THREAD_LIMIT > 0 else 2
+EXECUTOR_WORKERS = min(
+    16,
+    max(
+        1,
+        as_int(
+            load_config_value(
+                "MASAMONG_EXECUTOR_WORKERS",
+                _executor_workers_default,
+            ),
+            _executor_workers_default,
+        ),
     ),
 )
 if CPU_THREAD_LIMIT > 0:
@@ -740,6 +830,11 @@ if CPU_THREAD_LIMIT > 0:
 DB_BACKEND = str(load_config_value('MASAMONG_DB_BACKEND', 'sqlite')).strip().lower()
 if DB_BACKEND not in {"sqlite", "tidb"}:
     raise RuntimeError(f"지원하지 않는 MASAMONG_DB_BACKEND 값입니다: {DB_BACKEND}")
+if REQUIRE_EXPLICIT_PROFILE and "MASAMONG_DB_BACKEND" not in _EXPLICIT_ENV_KEYS:
+    raise RuntimeError(
+        "명시적 운영 프로필은 MASAMONG_DB_BACKEND를 선택한 env 파일에 "
+        "직접 지정해야 합니다."
+    )
 if REQUIRE_EXPLICIT_PROFILE and DB_BACKEND == "tidb":
     _relative_profile_config_paths = [
         setting_name
@@ -769,21 +864,25 @@ if REQUIRE_EXPLICIT_PROFILE and DB_BACKEND == "sqlite":
             "명시적 SQLite 프로필은 MASAMONG_DATABASE_FILE을 파일에 지정해야 합니다."
         )
     _database_file_text = str(_DATABASE_FILE_RAW).strip()
-    if _database_file_text != ":memory:":
-        _database_file_path = Path(_database_file_text).expanduser()
-        if not _database_file_path.is_absolute():
-            raise RuntimeError(
-                "명시적 SQLite 프로필의 MASAMONG_DATABASE_FILE은 "
-                "절대 경로여야 합니다."
-            )
-        if not re.search(
-            rf"(^|[^a-z0-9]){re.escape(PROFILE)}([^a-z0-9]|$)",
-            _database_file_path.as_posix().lower(),
-        ):
-            raise RuntimeError(
-                "명시적 SQLite 프로필의 MASAMONG_DATABASE_FILE 경로에는 "
-                f"인스턴스 이름 {PROFILE!r}이 포함되어야 합니다."
-            )
+    if _database_file_text == ":memory:":
+        raise RuntimeError(
+            "명시적 운영 프로필은 재시작 시 사라지는 SQLite :memory: DB를 "
+            "사용할 수 없습니다."
+        )
+    _database_file_path = Path(_database_file_text).expanduser()
+    if not _database_file_path.is_absolute():
+        raise RuntimeError(
+            "명시적 SQLite 프로필의 MASAMONG_DATABASE_FILE은 "
+            "절대 경로여야 합니다."
+        )
+    if not re.search(
+        rf"(^|[^a-z0-9]){re.escape(PROFILE)}([^a-z0-9]|$)",
+        _database_file_path.as_posix().lower(),
+    ):
+        raise RuntimeError(
+            "명시적 SQLite 프로필의 MASAMONG_DATABASE_FILE 경로에는 "
+            f"인스턴스 이름 {PROFILE!r}이 포함되어야 합니다."
+        )
 TIDB_HOST = load_config_value('MASAMONG_DB_HOST')
 TIDB_PORT = as_int(load_config_value('MASAMONG_DB_PORT', 4000), 4000)
 TIDB_NAME = as_str(load_config_value('MASAMONG_DB_NAME', 'masamong'), 'masamong')
@@ -825,6 +924,27 @@ if EXPECTED_DB_NAME and DB_BACKEND == "tidb" and TIDB_NAME != EXPECTED_DB_NAME:
         f"configured={TIDB_NAME!r}, expected={EXPECTED_DB_NAME!r}"
     )
 if REQUIRE_EXPLICIT_PROFILE and DB_BACKEND == "tidb":
+    _tidb_identity_env_keys = (
+        "MASAMONG_DB_HOST",
+        "MASAMONG_DB_PORT",
+        "MASAMONG_DB_NAME",
+        "MASAMONG_EXPECTED_DB_NAME",
+        "MASAMONG_DB_USER",
+        "MASAMONG_DB_PASSWORD",
+        "MASAMONG_DB_SSL_CA",
+        "MASAMONG_DB_SSL_VERIFY_IDENTITY",
+        "MASAMONG_DB_STRICT_REMOTE_ONLY",
+        "MASAMONG_DB_REQUIRE_TLS",
+    )
+    _missing_tidb_identity_env_keys = [
+        key for key in _tidb_identity_env_keys if key not in _EXPLICIT_ENV_KEYS
+    ]
+    if _missing_tidb_identity_env_keys:
+        raise RuntimeError(
+            "명시적 TiDB identity/credential 값은 선택한 env 파일에 "
+            "직접 있어야 합니다: "
+            + ", ".join(_missing_tidb_identity_env_keys)
+        )
     _profile_db_name = {
         "masamo": "masamong",
         "general": "masamong_general",
@@ -912,41 +1032,65 @@ GLOBAL_DAILY_LLM_LIMIT = as_int(load_config_value('GLOBAL_DAILY_LLM_LIMIT', 5000
 # [저사양 보호] 동시에 처리할 수 있는 AI 메시지 최대 개수 (전역 세마포어).
 # 저사양 서버에서 동시 요청이 몰릴 때 임베딩/LLM 폭주를 막는다. 서버 사양에 맞게 조정.
 _ai_concurrency_default = 1 if PROFILE == "general" else 3
-AI_MAX_CONCURRENT_PROCESSING = max(
-    1,
-    as_int(
-        load_config_value(
-            'AI_MAX_CONCURRENT_PROCESSING',
+AI_MAX_CONCURRENT_PROCESSING = min(
+    16,
+    max(
+        1,
+        as_int(
+            load_config_value(
+                'AI_MAX_CONCURRENT_PROCESSING',
+                _ai_concurrency_default,
+            ),
             _ai_concurrency_default,
         ),
-        _ai_concurrency_default,
+    ),
+)
+# 실행 중 동시성뿐 아니라 semaphore 앞에서 기다리는 작업에도 시간 상한을 둔다.
+# Discord 이벤트 burst가 장시간 대기 task로 누적되는 것을 막는다.
+AI_QUEUE_WAIT_TIMEOUT_SECONDS = min(
+    30,
+    max(
+        1,
+        as_int(
+            load_config_value("AI_QUEUE_WAIT_TIMEOUT_SECONDS", 5),
+            5,
+        ),
     ),
 )
 # 로컬 임베딩 encode는 CPU 사용량이 크므로 별도 동시성/대기 태스크 상한을 둔다.
-EMBEDDING_MAX_CONCURRENCY = max(
-    1,
-    as_int(load_config_value("EMBEDDING_MAX_CONCURRENCY", 1), 1),
+EMBEDDING_MAX_CONCURRENCY = min(
+    8,
+    max(
+        1,
+        as_int(load_config_value("EMBEDDING_MAX_CONCURRENCY", 1), 1),
+    ),
 )
 _rag_background_tasks_default = 2 if PROFILE == "general" else 16
-RAG_MAX_BACKGROUND_TASKS = max(
-    1,
-    as_int(
-        load_config_value(
-            "RAG_MAX_BACKGROUND_TASKS",
+RAG_MAX_BACKGROUND_TASKS = min(
+    64,
+    max(
+        1,
+        as_int(
+            load_config_value(
+                "RAG_MAX_BACKGROUND_TASKS",
+                _rag_background_tasks_default,
+            ),
             _rag_background_tasks_default,
         ),
-        _rag_background_tasks_default,
     ),
 )
 _rag_tracked_windows_default = 64 if PROFILE == "general" else 256
-RAG_MAX_TRACKED_WINDOWS = max(
-    1,
-    as_int(
-        load_config_value(
-            "RAG_MAX_TRACKED_WINDOWS",
+RAG_MAX_TRACKED_WINDOWS = min(
+    4_096,
+    max(
+        1,
+        as_int(
+            load_config_value(
+                "RAG_MAX_TRACKED_WINDOWS",
+                _rag_tracked_windows_default,
+            ),
             _rag_tracked_windows_default,
         ),
-        _rag_tracked_windows_default,
     ),
 )
 # 프롬프트 최대 토큰 (초과 시 RAG 컨텍스트 줄임)
@@ -963,6 +1107,12 @@ INTENT_HISTORY_LIMIT = as_int(load_config_value('INTENT_HISTORY_LIMIT', 5), 5)
 INTENT_LLM_ENABLED = as_bool(load_config_value('INTENT_LLM_ENABLED', 'true'))
 INTENT_LLM_ALWAYS_RUN = as_bool(load_config_value('INTENT_LLM_ALWAYS_RUN', 'true'))
 INTENT_LLM_RAG_STRONG_BYPASS = as_bool(load_config_value('INTENT_LLM_RAG_STRONG_BYPASS', 'true'))
+# 한 메시지의 LLM 도구 계획이 외부 API 호출을 증폭하지 않도록 하드 상한을 둔다.
+# 운영자가 더 큰 값을 넣어도 안전 상한(3)을 넘길 수 없다.
+AGENT_MAX_TOOL_CALLS = min(
+    3,
+    max(1, as_int(load_config_value('AGENT_MAX_TOOL_CALLS', 3), 3)),
+)
 
 # 메시지 1개당 최대 글자수 (프롬프트 포함 시)
 MAX_MESSAGE_CHARS = as_int(load_config_value('MAX_MESSAGE_CHARS', 1800), 1800)
@@ -1146,10 +1296,22 @@ LINKUP_MONTHLY_BUDGET_EUR = max(
 LINKUP_MONTHLY_BUDGET_ENFORCED = as_bool(load_config_value('LINKUP_MONTHLY_BUDGET_ENFORCED', 'true'))
 
 # 범용 웹 탐색 파이프라인 예산/캐시 설정
-WEB_RAG_FAST_LLM_MAX_CALLS = max(0, as_int(load_config_value('WEB_RAG_FAST_LLM_MAX_CALLS', 3), 3))
-WEB_RAG_MAX_SELECTED_URLS = max(1, as_int(load_config_value('WEB_RAG_MAX_SELECTED_URLS', 5), 5))
-WEB_RAG_MAX_SUMMARIZED_ARTICLES = max(1, as_int(load_config_value('WEB_RAG_MAX_SUMMARIZED_ARTICLES', 4), 4))
-WEB_RAG_MAX_CANDIDATES = max(5, as_int(load_config_value('WEB_RAG_MAX_CANDIDATES', 24), 24))
+WEB_RAG_FAST_LLM_MAX_CALLS = min(
+    5,
+    max(0, as_int(load_config_value('WEB_RAG_FAST_LLM_MAX_CALLS', 3), 3)),
+)
+WEB_RAG_MAX_SELECTED_URLS = min(
+    10,
+    max(1, as_int(load_config_value('WEB_RAG_MAX_SELECTED_URLS', 5), 5)),
+)
+WEB_RAG_MAX_SUMMARIZED_ARTICLES = min(
+    5,
+    max(1, as_int(load_config_value('WEB_RAG_MAX_SUMMARIZED_ARTICLES', 4), 4)),
+)
+WEB_RAG_MAX_CANDIDATES = min(
+    100,
+    max(5, as_int(load_config_value('WEB_RAG_MAX_CANDIDATES', 24), 24)),
+)
 WEB_RAG_CACHE_TTL_SECONDS = max(0, as_int(load_config_value('WEB_RAG_CACHE_TTL_SECONDS', 300), 300))
 WEB_RAG_CACHE_MAX_ENTRIES = max(1, as_int(load_config_value('WEB_RAG_CACHE_MAX_ENTRIES', 128), 128))
 WEB_RAG_FAST_PROMPT_MAX_CHARS = max(800, as_int(load_config_value('WEB_RAG_FAST_PROMPT_MAX_CHARS', 8000), 8000))
@@ -1175,9 +1337,42 @@ IMAGE_MODEL = as_str(load_config_value('IMAGE_MODEL', 'gemini-3.1-flash-image'),
 IMAGE_ASPECT_RATIO = as_str(load_config_value('IMAGE_ASPECT_RATIO', '1:1'), '1:1')
 
 # 이미지 생성 사용량 제한
-IMAGE_USER_LIMIT = as_int(load_config_value('IMAGE_USER_LIMIT', 10), 10)  # 유저당 6시간 내 최대 10장
-IMAGE_USER_RESET_HOURS = as_int(load_config_value('IMAGE_USER_RESET_HOURS', 6), 6)  # 6시간 후 리셋
-IMAGE_GLOBAL_DAILY_LIMIT = as_int(load_config_value('IMAGE_GLOBAL_DAILY_LIMIT', 50), 50)  # 전역 일일 50장
+IMAGE_USER_LIMIT = min(
+    50,
+    max(1, as_int(load_config_value('IMAGE_USER_LIMIT', 10), 10)),
+)
+IMAGE_USER_RESET_HOURS = min(
+    168,
+    max(1, as_int(load_config_value('IMAGE_USER_RESET_HOURS', 6), 6)),
+)
+IMAGE_GLOBAL_DAILY_LIMIT = min(
+    1_000,
+    max(1, as_int(load_config_value('IMAGE_GLOBAL_DAILY_LIMIT', 50), 50)),
+)
+IMAGE_GENERATION_QUEUE_TIMEOUT_SECONDS = min(
+    30,
+    max(
+        1,
+        as_int(
+            load_config_value("IMAGE_GENERATION_QUEUE_TIMEOUT_SECONDS", 5),
+            5,
+        ),
+    ),
+)
+IMAGE_GENERATION_TIMEOUT_SECONDS = min(
+    180,
+    max(
+        30,
+        as_int(load_config_value("IMAGE_GENERATION_TIMEOUT_SECONDS", 90), 90),
+    ),
+)
+IMAGE_COMMAND_COOLDOWN_SECONDS = min(
+    60,
+    max(
+        1,
+        as_int(load_config_value("IMAGE_COMMAND_COOLDOWN_SECONDS", 10), 10),
+    ),
+)
 
 # 이미지 생성 안전 설정
 IMAGE_SAFETY_TOLERANCE = 0  # 가장 엄격한 수준 (0=strict, 5=permissive) - 절대 변경 금지
@@ -1300,9 +1495,14 @@ if REQUIRE_EXPLICIT_PROFILE:
         )
 
 # 검색 엔진 활성화 설정. 환경변수로 프로필별 강제 비활성화할 수 있다.
+_embedding_enabled_default = (
+    False
+    if PROFILE == "general"
+    else as_bool(EMBED_CONFIG.get("embedding_enabled", True), True)
+)
 EMBEDDING_ENABLED = as_bool(
-    load_config_value("EMBEDDING_ENABLED", EMBED_CONFIG.get("embedding_enabled", True)),
-    True,
+    load_config_value("EMBEDDING_ENABLED", _embedding_enabled_default),
+    _embedding_enabled_default,
 )
 # BM25는 현재 운영 정책상 사용하지 않음 (로컬/서버 공통 비활성화)
 BM25_ENABLED = False
@@ -1360,7 +1560,10 @@ if RAG_RERANKER_SCORE_THRESHOLD is not None:
 SEARCH_CHUNKING_ENABLED = as_bool(load_config_value('SEARCH_CHUNKING_ENABLED', False))
 SEARCH_NEIGHBORHOOD_EXPAND_ENABLED = as_bool(load_config_value('SEARCH_NEIGHBORHOOD_EXPAND_ENABLED', False))
 SEARCH_QUERY_EXPANSION_ENABLED = as_bool(load_config_value('SEARCH_QUERY_EXPANSION_ENABLED', True))
-RERANK_ENABLED = as_bool(load_config_value('RERANK_ENABLED', False))
+RERANK_ENABLED = as_bool(
+    load_config_value('RERANK_ENABLED', False),
+    False,
+)
 USER_MEMORY_ENABLED = as_bool(load_config_value('USER_MEMORY_ENABLED', False))
 SELF_REFLECTION_ENABLED = as_bool(load_config_value('SELF_REFLECTION_ENABLED', False))
 DISABLE_VERBOSE_THINKING_OUTPUT = as_bool(load_config_value('DISABLE_VERBOSE_THINKING_OUTPUT', True))
@@ -1429,12 +1632,112 @@ AI_INTENT_MODEL_NAME = as_str(load_config_value('AI_INTENT_MODEL_NAME', 'gemini-
 AI_RESPONSE_MODEL_NAME = as_str(load_config_value('AI_RESPONSE_MODEL_NAME', 'gemini-2.5-flash'), 'gemini-2.5-flash')
 FORTUNE_MODEL_LITE = as_str(load_config_value('FORTUNE_MODEL_LITE', 'DeepSeek-V3.2-Exp-nothinking'), 'DeepSeek-V3.2-Exp-nothinking')
 FORTUNE_MODEL_PRO = as_str(load_config_value('FORTUNE_MODEL_PRO', 'DeepSeek-V3.2-Exp-thinking'), 'DeepSeek-V3.2-Exp-thinking')
+# 별자리 LLM 결과는 사용자별 정보가 아닌 KST 날짜·별자리 기준으로 공유한다.
+# 캐시/쿨다운/물리 호출 상한은 모두 잘못된 환경값으로 비활성화되지 않게
+# 안전 범위 안으로 제한한다.
+FORTUNE_ZODIAC_CACHE_MAX_ENTRIES = min(
+    128,
+    max(
+        13,
+        as_int(load_config_value("FORTUNE_ZODIAC_CACHE_MAX_ENTRIES", 32), 32),
+    ),
+)
+FORTUNE_ZODIAC_CACHE_TTL_SECONDS = min(
+    172800,
+    max(
+        300,
+        as_int(load_config_value("FORTUNE_ZODIAC_CACHE_TTL_SECONDS", 90000), 90000),
+    ),
+)
+FORTUNE_ZODIAC_NEGATIVE_CACHE_TTL_SECONDS = min(
+    300,
+    max(
+        5,
+        as_int(
+            load_config_value("FORTUNE_ZODIAC_NEGATIVE_CACHE_TTL_SECONDS", 30),
+            30,
+        ),
+    ),
+)
+FORTUNE_ZODIAC_USER_COOLDOWN_SECONDS = min(
+    60,
+    max(
+        1,
+        as_int(load_config_value("FORTUNE_ZODIAC_USER_COOLDOWN_SECONDS", 5), 5),
+    ),
+)
+FORTUNE_ZODIAC_DAILY_PHYSICAL_LIMIT = min(
+    120,
+    max(
+        1,
+        as_int(load_config_value("FORTUNE_ZODIAC_DAILY_PHYSICAL_LIMIT", 30), 30),
+    ),
+)
+FORTUNE_ZODIAC_LLM_TIMEOUT_SECONDS = min(
+    45,
+    max(
+        5,
+        as_int(load_config_value("FORTUNE_ZODIAC_LLM_TIMEOUT_SECONDS", 35), 35),
+    ),
+)
 FORTUNE_MORNING_BRIEFING_ENABLED = as_bool(
     load_config_value(
         "FORTUNE_MORNING_BRIEFING_ENABLED",
         "false" if PROFILE == "general" else "true",
     ),
     PROFILE != "general",
+)
+FORTUNE_MORNING_MAX_GENERATION_ATTEMPTS = min(
+    5,
+    max(
+        1,
+        as_int(
+            load_config_value("FORTUNE_MORNING_MAX_GENERATION_ATTEMPTS", 3),
+            3,
+        ),
+    ),
+)
+FORTUNE_MORNING_MAX_SEND_ATTEMPTS = min(
+    5,
+    max(
+        1,
+        as_int(
+            load_config_value("FORTUNE_MORNING_MAX_SEND_ATTEMPTS", 3),
+            3,
+        ),
+    ),
+)
+FORTUNE_MORNING_RETRY_BASE_SECONDS = min(
+    3600,
+    max(
+        60,
+        as_int(
+            load_config_value("FORTUNE_MORNING_RETRY_BASE_SECONDS", 60),
+            60,
+        ),
+    ),
+)
+# 1분 scheduler 주기보다 짧게 제한해 느린 LLM/Discord 요청이 다음 tick을
+# 쉬지 않고 이어 붙이는 상황을 막는다.
+FORTUNE_MORNING_LLM_TIMEOUT_SECONDS = min(
+    40,
+    max(
+        5,
+        as_int(
+            load_config_value("FORTUNE_MORNING_LLM_TIMEOUT_SECONDS", 35),
+            35,
+        ),
+    ),
+)
+FORTUNE_MORNING_SEND_TIMEOUT_SECONDS = min(
+    15,
+    max(
+        3,
+        as_int(
+            load_config_value("FORTUNE_MORNING_SEND_TIMEOUT_SECONDS", 10),
+            10,
+        ),
+    ),
 )
 RPM_LIMIT_INTENT = max(1, as_int(load_config_value('RPM_LIMIT_INTENT', 15), 15))
 RPM_LIMIT_RESPONSE = max(1, as_int(load_config_value('RPM_LIMIT_RESPONSE', 15), 15))
@@ -1446,12 +1749,55 @@ AI_FREQUENCY_PENALTY = 0.0
 AI_PRESENCE_PENALTY = 0.0
 KAKAO_API_RPM_LIMIT = max(1, as_int(load_config_value('KAKAO_API_RPM_LIMIT', 60), 60))
 KAKAO_API_RPD_LIMIT = max(1, as_int(load_config_value('KAKAO_API_RPD_LIMIT', 95000), 95000))
-KAKAO_API_MAX_CONCURRENCY = max(1, as_int(load_config_value('KAKAO_API_MAX_CONCURRENCY', 6), 6))
+KAKAO_API_MAX_CONCURRENCY = min(
+    16,
+    max(1, as_int(load_config_value('KAKAO_API_MAX_CONCURRENCY', 6), 6)),
+)
 KAKAO_API_TIMEOUT_SECONDS = max(1, as_int(load_config_value('KAKAO_API_TIMEOUT_SECONDS', 10), 10))
 KRX_API_RPD_LIMIT = 9000
 AI_RESPONSE_LENGTH_LIMIT = 300
 AI_COOLDOWN_SECONDS = 3
-AI_REQUEST_TIMEOUT = as_int(load_config_value('AI_REQUEST_TIMEOUT', 120), 120)  # AI 응답 제한 시간 (초)
+# 외부 LLM 요청은 잘못된 환경값으로 무한 대기하거나 지나치게 오래 점유하지 않도록
+# 1~300초 범위로 제한한다.
+AI_REQUEST_TIMEOUT = min(
+    300,
+    max(1, as_int(load_config_value('AI_REQUEST_TIMEOUT', 120), 120)),
+)
+# 모든 LLMClient 진입점이 공유하는 실제 provider-call 동시성 상한이다.
+# 기존 AI 메시지 동시성 설정을 기본값으로 사용해 현재 저사양 운영값을 보존하되,
+# 운세/요약/백그라운드 호출처럼 메시지 세마포어를 우회하는 경로도 보호한다.
+LLM_MAX_CONCURRENT_CALLS = min(
+    16,
+    max(
+        1,
+        as_int(
+            load_config_value(
+                'LLM_MAX_CONCURRENT_CALLS',
+                AI_MAX_CONCURRENT_PROCESSING,
+            ),
+            AI_MAX_CONCURRENT_PROCESSING,
+        ),
+    ),
+)
+# 대기열 자체가 무한히 늘지 않도록 provider slot 획득에도 짧은 제한을 둔다.
+LLM_ACQUIRE_TIMEOUT_SECONDS = min(
+    60,
+    max(
+        1,
+        as_int(load_config_value('LLM_ACQUIRE_TIMEOUT_SECONDS', 10), 10),
+    ),
+)
+# SDK의 자체 timeout 외에 이벤트 루프 레벨에서도 각 물리 호출을 제한한다.
+LLM_CALL_TIMEOUT_SECONDS = min(
+    300,
+    max(
+        1,
+        as_int(
+            load_config_value('LLM_CALL_TIMEOUT_SECONDS', AI_REQUEST_TIMEOUT),
+            AI_REQUEST_TIMEOUT,
+        ),
+    ),
+)
 # CometAPI 보호장치 (외부 LLM 과호출/과토큰 방지)
 COMETAPI_RPM_LIMIT = max(1, as_int(load_config_value('COMETAPI_RPM_LIMIT', 40), 40))
 COMETAPI_RPD_LIMIT = max(1, as_int(load_config_value('COMETAPI_RPD_LIMIT', 3000), 3000))
@@ -1476,12 +1822,20 @@ if RAG_GUILD_SCOPE not in {"channel", "user"}:
 # AI 메모리/RAG 기능은 기본 활성화지만, 저사양 환경에서는 환경변수/설정으로 비활성화할 수 있다.
 # 과거 embedding_enabled=false가 실제 실행을 끄지 못하던 불일치를 없애기 위해
 # enable_local_embeddings가 없으면 EMBEDDING_ENABLED를 기본값으로 사용한다.
+_ai_memory_enabled_default = (
+    False
+    if PROFILE == "general"
+    else as_bool(
+        EMBED_CONFIG.get("enable_local_embeddings", EMBEDDING_ENABLED),
+        EMBEDDING_ENABLED,
+    )
+)
 AI_MEMORY_ENABLED = as_bool(
     load_config_value(
         'AI_MEMORY_ENABLED',
-        EMBED_CONFIG.get("enable_local_embeddings", EMBEDDING_ENABLED),
+        _ai_memory_enabled_default,
     ),
-    EMBEDDING_ENABLED,
+    _ai_memory_enabled_default,
 )
 LITE_MODEL_SYSTEM_PROMPT = _extract_prompt_value("lite_system_prompt", FALLBACK_LITE_PROMPT)
 AGENT_SYSTEM_PROMPT = _extract_prompt_value("agent_system_prompt", FALLBACK_AGENT_PROMPT)
@@ -1509,8 +1863,17 @@ RAG_ARCHIVING_CONFIG = {
         ),
         PROFILE != "general",
     ),
-    "history_limit": as_int(load_config_value("RAG_ARCHIVE_HISTORY_LIMIT", 20000), 20000),
-    "batch_size": as_int(load_config_value("RAG_ARCHIVE_BATCH_SIZE", 1000), 1000),
+    "history_limit": max(
+        1,
+        as_int(load_config_value("RAG_ARCHIVE_HISTORY_LIMIT", 20000), 20000),
+    ),
+    "batch_size": min(
+        10_000,
+        max(
+            1,
+            as_int(load_config_value("RAG_ARCHIVE_BATCH_SIZE", 1000), 1000),
+        ),
+    ),
     "check_interval_hours": max(
         1,
         as_int(load_config_value("RAG_ARCHIVE_INTERVAL_HOURS", 24), 24),
@@ -1573,9 +1936,18 @@ FUN_KEYWORD_TRIGGERS = { "enabled": True, "cooldown_seconds": 60, "triggers": { 
 AI_DEBUG_ENABLED = as_bool(load_config_value('AI_DEBUG_ENABLED', False))
 AI_DEBUG_LOG_MAX_LEN = int(load_config_value('AI_DEBUG_LOG_MAX_LEN', 400))
 KMA_API_DAILY_CALL_LIMIT = 10000
-KMA_API_MAX_RETRIES = int(load_config_value("KMA_API_MAX_RETRIES", 3))
-KMA_API_RETRY_DELAY_SECONDS = int(load_config_value("KMA_API_RETRY_DELAY_SECONDS", 2))
-KMA_API_TIMEOUT = int(load_config_value("KMA_API_TIMEOUT", 30))
+KMA_API_MAX_RETRIES = min(
+    5,
+    max(1, as_int(load_config_value("KMA_API_MAX_RETRIES", 3), 3)),
+)
+KMA_API_RETRY_DELAY_SECONDS = min(
+    30,
+    max(0, as_int(load_config_value("KMA_API_RETRY_DELAY_SECONDS", 2), 2)),
+)
+KMA_API_TIMEOUT = min(
+    120,
+    max(1, as_int(load_config_value("KMA_API_TIMEOUT", 30), 30)),
+)
 DEFAULT_LOCATION_NAME = str(load_config_value("DEFAULT_LOCATION_NAME", "광양"))
 DEFAULT_NX = str(load_config_value("DEFAULT_NX", "73"))
 DEFAULT_NY = str(load_config_value("DEFAULT_NY", "70"))
@@ -1694,15 +2066,163 @@ if REQUIRE_EXPLICIT_PROFILE:
 # 수집·분석은 별도 batch 프로세스가 수행하고 봇은 결과 digest만 읽어 전달한다.
 # 봇 프로세스 안에서 크롤링하지 않으므로 저사양 서버의 상주 예산이 그대로 유지된다.
 SCHOOL_NOTICE_ENABLED = as_bool(load_config_value("SCHOOL_NOTICE_ENABLED", "false"))
+if REQUIRE_EXPLICIT_PROFILE and PROFILE == "masamo":
+    _masamo_school_notice_raw = _EXPLICIT_ENV_VALUES.get(
+        "SCHOOL_NOTICE_ENABLED"
+    )
+    if (
+        _masamo_school_notice_raw is None
+        or str(_masamo_school_notice_raw).strip().lower()
+        not in {"0", "false", "no", "n", "off"}
+        or SCHOOL_NOTICE_ENABLED
+    ):
+        raise RuntimeError(
+            "학교 공지 수집·개인화는 general 인스턴스가 소유합니다. "
+            "누적 운영 masamo env에는 SCHOOL_NOTICE_ENABLED=false를 "
+            "직접 명시해야 합니다."
+        )
 SCHOOL_NOTICE_DIGEST_DIR = as_str(load_config_value("SCHOOL_NOTICE_DIGEST_DIR", ""), "")
 SCHOOL_NOTICE_CORE_DB = as_str(load_config_value("SCHOOL_NOTICE_CORE_DB", ""), "")
+# 학교/소스 allowlist는 버전 관리된 카탈로그를 기준으로 한다. 외부 코어의
+# sources.json도 기능을 켠 인스턴스에서 명시해 "전체 학교" 암묵 실행을 막는다.
+SCHOOL_NOTICE_CATALOG_PATH = as_str(
+    load_config_value(
+        "SCHOOL_NOTICE_CATALOG_PATH",
+        str(
+            PROJECT_ROOT
+            / "profiles"
+            / "catalogs"
+            / "school_notice_catalog.v1.json"
+        ),
+    ),
+    str(
+        PROJECT_ROOT
+        / "profiles"
+        / "catalogs"
+        / "school_notice_catalog.v1.json"
+    ),
+)
+SCHOOL_NOTICE_SOURCE_CONFIG = as_str(
+    load_config_value("SCHOOL_NOTICE_SOURCE_CONFIG", ""),
+    "",
+)
+# 수집은 deploy/systemd의 versioned timer가 23:00 KST로 단일 관리하고,
+# 봇은 전날 digest를 사용자별 시각(기본 09:00 KST)에 전달한다.
 SCHOOL_NOTICE_DELIVERY_TIME = {
-    "hour": max(0, min(23, as_int(load_config_value("SCHOOL_NOTICE_DELIVERY_HOUR", 8), 8))),
+    # 이전 전역 설정은 신규 프로필의 기본값으로만 유지한다. 저장 뒤에는 각
+    # 사용자의 school_notice_profiles.delivery_time이 우선한다.
+    "hour": max(0, min(23, as_int(load_config_value("SCHOOL_NOTICE_DELIVERY_HOUR", 9), 9))),
     "minute": max(
         0,
-        min(59, as_int(load_config_value("SCHOOL_NOTICE_DELIVERY_MINUTE", 10), 10)),
+        min(59, as_int(load_config_value("SCHOOL_NOTICE_DELIVERY_MINUTE", 0), 0)),
     ),
 }
+SCHOOL_NOTICE_DEFAULT_DELIVERY_TIME = (
+    f"{SCHOOL_NOTICE_DELIVERY_TIME['hour']:02d}:"
+    f"{SCHOOL_NOTICE_DELIVERY_TIME['minute']:02d}"
+)
+SCHOOL_NOTICE_PROFILE_LLM_ENABLED = as_bool(
+    load_config_value("SCHOOL_NOTICE_PROFILE_LLM_ENABLED", "true"),
+    True,
+)
+SCHOOL_NOTICE_PROFILE_MAX_REVISIONS = min(
+    3,
+    max(
+        1,
+        as_int(load_config_value("SCHOOL_NOTICE_PROFILE_MAX_REVISIONS", 3), 3),
+    ),
+)
+SCHOOL_NOTICE_PROFILE_INPUT_TIMEOUT_SECONDS = min(
+    300,
+    max(
+        30,
+        as_int(
+            load_config_value("SCHOOL_NOTICE_PROFILE_INPUT_TIMEOUT_SECONDS", 120),
+            120,
+        ),
+    ),
+)
+SCHOOL_NOTICE_PROFILE_LLM_TIMEOUT_SECONDS = min(
+    60,
+    max(
+        5,
+        as_int(
+            load_config_value("SCHOOL_NOTICE_PROFILE_LLM_TIMEOUT_SECONDS", 20),
+            20,
+        ),
+    ),
+)
+SCHOOL_NOTICE_DELIVERY_BATCH_SIZE = min(
+    50,
+    max(
+        1,
+        as_int(load_config_value("SCHOOL_NOTICE_DELIVERY_BATCH_SIZE", 10), 10),
+    ),
+)
+SCHOOL_NOTICE_DELIVERY_MAX_ATTEMPTS = min(
+    5,
+    max(
+        1,
+        as_int(load_config_value("SCHOOL_NOTICE_DELIVERY_MAX_ATTEMPTS", 3), 3),
+    ),
+)
+SCHOOL_NOTICE_DELIVERY_RETRY_MINUTES = min(
+    120,
+    max(
+        1,
+        as_int(load_config_value("SCHOOL_NOTICE_DELIVERY_RETRY_MINUTES", 10), 10),
+    ),
+)
+SCHOOL_NOTICE_DELIVERY_USER_TIMEOUT_SECONDS = min(
+    120,
+    max(
+        5,
+        as_int(
+            load_config_value("SCHOOL_NOTICE_DELIVERY_USER_TIMEOUT_SECONDS", 30),
+            30,
+        ),
+    ),
+)
+SCHOOL_NOTICE_BATCH_MAX_PROFILES = min(
+    500,
+    max(
+        1,
+        as_int(load_config_value("SCHOOL_NOTICE_BATCH_MAX_PROFILES", 50), 50),
+    ),
+)
+SCHOOL_NOTICE_BATCH_PROFILE_TIMEOUT_SECONDS = min(
+    1_800,
+    max(
+        30,
+        as_int(
+            load_config_value("SCHOOL_NOTICE_BATCH_PROFILE_TIMEOUT_SECONDS", 600),
+            600,
+        ),
+    ),
+)
+SCHOOL_NOTICE_BATCH_FEEDBACK_TIMEOUT_SECONDS = min(
+    300,
+    max(
+        1,
+        as_int(
+            load_config_value(
+                "SCHOOL_NOTICE_BATCH_FEEDBACK_TIMEOUT_SECONDS",
+                60,
+            ),
+            60,
+        ),
+    ),
+)
+SCHOOL_NOTICE_BATCH_TOTAL_TIMEOUT_SECONDS = min(
+    7_200,
+    max(
+        SCHOOL_NOTICE_BATCH_PROFILE_TIMEOUT_SECONDS,
+        as_int(
+            load_config_value("SCHOOL_NOTICE_BATCH_TOTAL_TIMEOUT_SECONDS", 1800),
+            1800,
+        ),
+    ),
+)
 SCHOOL_NOTICE_MAX_ITEMS_PER_DM = max(
     1,
     min(20, as_int(load_config_value("SCHOOL_NOTICE_MAX_ITEMS_PER_DM", 10), 10)),
@@ -1712,8 +2232,8 @@ SCHOOL_NOTICE_SCHEMA_VERSION = max(
     as_int(load_config_value("SCHOOL_NOTICE_SCHEMA_VERSION", 1), 1),
 )
 SCHOOL_NOTICE_STALE_WARNING_ENABLED = as_bool(
-    load_config_value("SCHOOL_NOTICE_STALE_WARNING_ENABLED", "true"),
-    True,
+    load_config_value("SCHOOL_NOTICE_STALE_WARNING_ENABLED", "false"),
+    False,
 )
 if SCHOOL_NOTICE_ENABLED:
     # 기능을 켜 두고 경로가 없으면 매일 조용히 아무것도 전달하지 않는 상태가 된다.
@@ -1722,11 +2242,18 @@ if SCHOOL_NOTICE_ENABLED:
     for _path_key, _path_value in (
         ("SCHOOL_NOTICE_DIGEST_DIR", SCHOOL_NOTICE_DIGEST_DIR),
         ("SCHOOL_NOTICE_CORE_DB", SCHOOL_NOTICE_CORE_DB),
+        ("SCHOOL_NOTICE_CATALOG_PATH", SCHOOL_NOTICE_CATALOG_PATH),
+        ("SCHOOL_NOTICE_SOURCE_CONFIG", SCHOOL_NOTICE_SOURCE_CONFIG),
     ):
         if not str(_path_value).strip():
             _school_notice_errors.append(f"{_path_key} 미지정")
         elif not Path(str(_path_value)).expanduser().is_absolute():
             _school_notice_errors.append(f"{_path_key}는 절대 경로여야 함")
+        elif _path_key in {
+            "SCHOOL_NOTICE_CATALOG_PATH",
+            "SCHOOL_NOTICE_SOURCE_CONFIG",
+        } and not Path(str(_path_value)).expanduser().is_file():
+            _school_notice_errors.append(f"{_path_key} 파일이 없음")
     if _school_notice_errors:
         raise RuntimeError(
             "SCHOOL_NOTICE_ENABLED=true인데 필수 경로 설정이 올바르지 않습니다: "
@@ -1819,6 +2346,22 @@ if MEMBER_CACHE_ENABLED and not MEMBERS_INTENT_ENABLED:
         "MASAMONG_MEMBER_CACHE_ENABLED=true이면 "
         "MASAMONG_MEMBERS_INTENT_ENABLED=true가 필요합니다."
     )
+# discord.py의 기본 메시지 캐시(1,000개)는 저사양 이중 인스턴스에서 불필요한
+# 상주 메모리를 만든다. 명령/대화 기능에 필요한 최근 참조만 bounded하게 둔다.
+_discord_message_cache_default = 100 if PROFILE == "general" else 200
+DISCORD_MAX_MESSAGES = min(
+    1_000,
+    max(
+        50,
+        as_int(
+            load_config_value(
+                "MASAMONG_DISCORD_MAX_MESSAGES",
+                _discord_message_cache_default,
+            ),
+            _discord_message_cache_default,
+        ),
+    ),
+)
 
 intents = discord.Intents.default()
 intents.messages = True

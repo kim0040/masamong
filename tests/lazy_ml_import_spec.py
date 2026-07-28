@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from utils import embeddings
+from utils import query_rewriter
 from utils import reranker as reranker_module
 
 
@@ -63,6 +64,92 @@ if heavy_modules:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_disabled_rag_does_not_construct_storage_or_search_objects(monkeypatch):
+    """RAG/embedding을 끈 프로필은 사용하지 않을 객체 그래프도 만들지 않는다."""
+    import cogs.ai_handler as ai_handler_module
+
+    class _UnexpectedConstruction:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("disabled RAG object was constructed")
+
+    monkeypatch.setattr(ai_handler_module.config, "AI_MEMORY_ENABLED", False)
+    monkeypatch.setattr(ai_handler_module.config, "EMBEDDING_ENABLED", False)
+    monkeypatch.setattr(
+        ai_handler_module,
+        "DiscordEmbeddingStore",
+        _UnexpectedConstruction,
+    )
+    monkeypatch.setattr(
+        ai_handler_module,
+        "KakaoEmbeddingStore",
+        _UnexpectedConstruction,
+    )
+    monkeypatch.setattr(ai_handler_module, "BM25IndexManager", _UnexpectedConstruction)
+    monkeypatch.setattr(ai_handler_module, "Reranker", _UnexpectedConstruction)
+    monkeypatch.setattr(
+        ai_handler_module,
+        "HybridSearchEngine",
+        _UnexpectedConstruction,
+    )
+
+    class _Bot:
+        db = None
+
+        @staticmethod
+        def get_cog(_name):
+            return None
+
+    handler = ai_handler_module.AIHandler(_Bot())
+
+    assert handler.rag_enabled is False
+    assert handler.discord_embedding_store is None
+    assert handler.kakao_embedding_store is None
+    assert handler.bm25_manager is None
+    assert handler.reranker is None
+    assert handler.hybrid_search_engine is None
+    assert handler.rag_manager.embedding_store is None
+    assert handler.rag_manager.hybrid_search_engine is None
+
+
+@pytest.mark.asyncio
+async def test_disabled_embedding_helpers_never_attempt_optional_imports(monkeypatch):
+    """비활성 플래그는 우발적인 직접 호출에서도 무거운 import를 차단한다."""
+    def _unexpected_import():
+        raise AssertionError("optional ML import attempted while disabled")
+
+    monkeypatch.setattr(embeddings.config, "EMBEDDING_ENABLED", False)
+    monkeypatch.setattr(embeddings, "_get_numpy", _unexpected_import)
+    monkeypatch.setattr(
+        embeddings,
+        "_get_sentence_transformer_class",
+        _unexpected_import,
+    )
+
+    assert await embeddings.get_embedding("본문", prefix="query: ") is None
+    assert await embeddings.get_embedding_token_limit(reserve_tokens=32) > 0
+    assert await embeddings.count_embedding_tokens("한 두 세") == 3
+    assert await embeddings.trim_text_to_embedding_token_limit("짧은 본문", 8) == "짧은 본문"
+
+
+@pytest.mark.asyncio
+async def test_disabled_rag_query_rewriter_does_not_load_model(monkeypatch):
+    """재작성 옵션이 남아 있어도 상위 RAG 플래그가 꺼지면 모델을 올리지 않는다."""
+    monkeypatch.setattr(query_rewriter.config, "AI_MEMORY_ENABLED", False)
+    monkeypatch.setattr(query_rewriter.config, "EMBEDDING_ENABLED", False)
+    monkeypatch.setattr(query_rewriter.config, "RAG_QUERY_REWRITE_ENABLED", True)
+    monkeypatch.setattr(
+        query_rewriter,
+        "_get_sentence_transformer_class",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("query rewrite model import attempted while disabled")
+        ),
+    )
+
+    assert await query_rewriter.expand_query("테스트 질문", max_variants=3) == [
+        "테스트 질문"
+    ]
+
+
 @pytest.mark.asyncio
 async def test_embedding_model_still_loads_on_first_real_request(monkeypatch):
     """lazy import 이후에도 기존 float32 임베딩 API를 유지한다."""
@@ -78,6 +165,7 @@ async def test_embedding_model_still_loads_on_first_real_request(monkeypatch):
 
     monkeypatch.setattr(embeddings, "_MODEL", None)
     monkeypatch.setattr(embeddings, "SentenceTransformer", FakeSentenceTransformer)
+    monkeypatch.setattr(embeddings.config, "EMBEDDING_ENABLED", True)
     monkeypatch.setattr(embeddings.config, "CPU_THREAD_LIMIT", 0)
     monkeypatch.setattr(embeddings.config, "LOCAL_EMBEDDING_LOCAL_FILES_ONLY", False)
 

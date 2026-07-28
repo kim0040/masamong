@@ -1,312 +1,364 @@
-# 🤖 마사몽 — Discord AI 챗봇
+# 마사몽 제품·사용 설명서
 
-<p align="center">
-  <strong>한국어 중심 Discord AI 챗봇</strong><br/>
-  듀얼 레인 LLM · 구조화 메모리(RAG) · 날씨 · 금융 · 웹 검색 · 운세 · 이미지 생성
-</p>
+마사몽은 Discord에서 AI 대화, 선택적 기억/RAG, 날씨·금융·웹 검색, 이미지 생성,
+개인 운세, 커뮤니티 기능과 선택적 학교 공지 개인화를 제공하는 한국어 중심 봇이다.
+운영판은 하나의 공통 코드를 사용하되 `masamo`와 `general` 두 프로필의 데이터와
+실행 경계를 완전히 분리한다.
 
-<p align="center">
-  <a href="../../README.md">English</a> &nbsp;|&nbsp;
-  <a href="README.ja.md">日本語</a>
-</p>
-
----
-
-## 개요
-
-마사몽은 Discord 서버에서 동작하는 **한국어 중심 AI 챗봇**입니다.  
-멘션 기반 대화, 구조화 메모리/RAG, Kakao 대화 벡터 검색, 날씨/금융/웹 검색 도구, 운세, 이미지 생성, 커뮤니티 기능을 하나의 런타임으로 통합 운영합니다.
-
-- **언어**: Python 3.10+
-- **프레임워크**: `discord.py` >=2.7.1
-- **LLM**: CometAPI (OpenAI-compatible) + Gemini (선택적 fallback)
-- **DB**: TiDB (운영) / SQLite (개발)
-- **라이선스**: MIT
-
----
-
-## 빠른 시작
-
-### 사전 요구사항
 - Python 3.10+
-- Discord Bot Token ([Developer Portal](https://discord.com/developers/applications))
-- CometAPI Key (또는 Gemini API Key)
+- `discord.py` 2.7.1+
+- 운영 DB: TiDB, 개발·격리 테스트: SQLite
+- LLM: OpenAI 호환 공급자와 Gemini, 레인별 primary/fallback
+- 로컬 기억 기능: CPU용 SentenceTransformer/RAG 스택(선택)
 
-### 설치
+운영 절차는 [배포 가이드](../DEPLOYMENT.md), 두 판의 경계는
+[인스턴스 분리 가이드](INSTANCE_SEPARATION.ko.md), 학교 공지의 세부 계약은
+[학교 공지 통합 설명서](SCHOOL_NOTICE_INTEGRATION_PLAN.ko.md)를 따른다.
+
+## 제품 구성
+
+### AI 대화와 도구
+
+- 허용된 서버 채널에서는 봇 멘션으로, DM에서는 멘션 없이 대화한다.
+- 명백한 인사·도구 요청은 로컬 규칙으로 먼저 분기해 불필요한 의도 분석 LLM 호출을
+  줄인다. 애매한 요청만 설정에 따라 routing LLM을 쓴다.
+- 응답 LLM과 routing LLM은 서로 다른 레인으로 설정할 수 있다.
+- 날씨, 지진, 금융, 환율, 웹/뉴스 검색, 이미지 생성 등의 외부 도구를 연결한다.
+- 한 AI 턴이 계획할 수 있는 도구 호출은 최대 3개다.
+- 대화 입력·RAG 블록·프롬프트·출력에는 길이와 토큰 상한이 있다.
+
+### 기억/RAG
+
+- Discord 대화와, Masamo에 한해 기존 Kakao 대화 저장소를 검색할 수 있다.
+- 임베딩, BM25, 구조화 메모리, 재순위화는 각각 기능 플래그로 끌 수 있다.
+- General은 Masamo의 Kakao mapping이나 누적 데이터를 복사·조회하지 않는다.
+- 로컬 벡터는 메모리 매핑과 제한된 배치 검색을 사용하고, 백그라운드 작업과 추적
+  윈도 수를 제한한다.
+
+### 일반 기능
+
+- `!날씨 [지역] [날짜]`: 기상청 기반 날씨 조회
+- `!이미지 <프롬프트>`: 사용자/전역 사용량 제한을 확인한 이미지 생성
+- `!랭킹`: 서버 활동 순위와 차트
+- `!요약`: 제한된 대화 문맥 요약
+- `!투표 "주제" "항목1" "항목2"`: 투표
+- `/config`: 서버 AI 활성화·허용 채널·언어 설정
+- `/persona`: 서버 페르소나 조회·설정
+
+기능별 API 키 또는 feature flag가 없으면 해당 기능은 비활성화되거나 명시적인 오류를
+반환한다. 부분적으로 로드된 운영 상태를 숨기지 않도록 명시적 프로필은 필수 Cog 로드
+실패 시 기동을 중단한다.
+
+## General과 Masamo
+
+코드를 두 벌로 포크하지 않는다. 같은 검증된 release SHA를 서로 다른 두 프로세스로
+실행한다.
+
+| 항목 | Masamo | General |
+|---|---|---|
+| 역할 | 현재 운영 중인 기존 커뮤니티 봇 | 새 일반판 |
+| Discord 앱/토큰 | 현재 값 그대로 | 별도 신규 앱/토큰 |
+| TiDB | 기존 `masamong` 그대로 | 신규 `masamong_general` |
+| DB 계정 | 기존 DB만 접근 | General DB만 접근 |
+| 대화·운세·사용량 | 누적 데이터 보존 | 빈 상태에서 시작 |
+| 기억 소스 | `discord,kakao` | `discord`만 |
+| env/config/prompt/embedding | Masamo 전용 절대 경로 | General 전용 절대 경로 |
+| 로그와 service | 별도 | 별도 |
+| 학교 공지 | `SCHOOL_NOTICE_ENABLED=false` 유지 | 외부 코어 준비·검증 뒤에만 활성화 |
+
+기존 `masamong` DB의 이름을 바꾸거나 새 General에 복사하지 않는다. 두 프로세스가 같은
+DB를 공유하면 운세 프로필, DM/LLM 사용량, 사용자 선호, 메시지·기억 키가 섞이므로 완전
+분리가 아니다. 자세한 배치 순서는 [인스턴스 분리 가이드](INSTANCE_SEPARATION.ko.md)에
+있다.
+
+## 개인정보 동의
+
+### 동의가 필요한 정보
+
+일반 Discord 대화와 Discord 서버가 제공하는 정보는 아래 목적별 동의의 대상이 아니다.
+봇이 별도로 질문해 저장하고 이후 재사용하는 두 종류의 프로필만 명시 동의를 받는다.
+
+| 목적 | 수집·이용 정보 | 주된 이용 |
+|---|---|---|
+| 운세 | Discord 사용자 ID, 필수 생년월일, 사용자가 선택한 출생 시각·성별·출생지 | 운세 생성, 구독 DM, 동의한 운세 문맥 |
+| 학교공지 | Discord 사용자 ID, 학교·학위·학년·학과·캠퍼스·입학/학적·관심/알림 설정과 피드백 | 관련 공지 판정, digest, DM |
+
+운세 문장 생성에는 실제 등록한 항목과 Discord 표시 이름이 외부 LLM에 전달될 수 있다.
+학교 자연어 프로필 추출 또는 공지 분석 LLM을 운영 설정에서 켠 경우 해당 처리에도 외부
+LLM이 사용될 수 있다. 제공하지 않은 선택 항목은 추측하거나 임의 기본값으로 바꾸지 않는다.
+현재 자연어 등록은 위 최소 필드만 저장한다. 기존 core 호환 profile에 이수 정보나 성적
+등의 추가 값이 이미 있다면 같은 학교공지 동의 범위로 보호한다.
+
+### 동의 방법
+
+DM에서 실행한다.
+
+```text
+!개인정보
+!개인정보 동의 운세
+!개인정보 동의 학교공지
+```
+
+정책 본문과 버전을 표시한 뒤 명령을 실행한 본인이 `동의합니다` 버튼을 눌러야 저장된다.
+버튼을 누르기 전에는 새 개인정보를 수집하지 않고 기존 프로필도 이용하지 않는다.
+현재 동의 상태와 동의·철회 이벤트 이력은 분리해 기록한다. 정책 버전 또는 고지문 hash가
+바뀌면 재동의 전까지 fail-closed로 처리한다.
+
+### 철회와 삭제의 차이
+
+```text
+!개인정보 철회 운세
+!개인정보 철회 학교공지
+```
+
+철회는 즉시 향후 프로필 조회, 개인화, LLM 처리, 피드백 수집과 자동 발송을 중단한다.
+기존 프로필·구독·활성 설정은 자동 삭제하지 않으므로 나중에 재동의하면 이어서 사용할 수
+있다.
+
+```text
+!운세 삭제
+!공지 삭제
+```
+
+삭제는 해당 기능의 프로필과 구독/대기 상태, 피드백, 전달·실행 기록 및 사용자별 파생
+파일을 정리하고 동의도 철회한다. 일반 Discord 대화와 서버 기록은 변경하지 않는다.
+동의·철회 감사 이벤트는 처리 이력으로 별도 보존한다. 파생 파일 정리 일부가 실패하면
+봇은 완전 삭제처럼 응답하지 않고 운영자 확인이 필요하다고 알린다.
+
+## 운세
+
+### 사용자 흐름
+
+1. DM에서 `!개인정보 동의 운세`를 실행하고 본인이 버튼으로 동의한다.
+2. `!운세 등록`으로 대화형 등록을 시작한다.
+3. 생년월일은 필수이며 실제 달력 날짜, 미래일 여부, 최대 120년 범위를 검증한다.
+4. 출생 시각·성별·출생지는 선택 사항이다. `모름` 또는 `응답 안 함`이면 `NULL`로
+   저장하며 정오·특정 성별·지역으로 대신 채우지 않는다.
+5. 각 단계는 최대 3번만 다시 묻고, 60초 timeout 또는 `취소` 입력 시 아무것도 저장하지
+   않고 끝낸다.
+
+명령:
+
+```text
+!운세
+!운세 상세
+!이번달운세
+!올해운세
+!별자리
+!운세 구독 HH:MM
+!운세 구독취소
+!운세 삭제
+```
+
+서버의 `!운세`는 짧은 결과, DM 또는 `상세`·월간·연간은 상세 결과를 제공한다. 개인
+프로필을 사용해 외부 LLM으로 생성하는 일간 요약·상세·월간·연간 운세는 모두 합산 하루
+3회다. 사용자별 직렬화 구간에서 한도를 확인하고 외부 호출을 시작하기 전에 사용량을
+예약하므로 동시 요청으로 한도를 우회하지 않는다. 공급자 실패나 빈 응답도 이미 시작된
+호출이면 사용량에 포함한다. 사용자가 별자리를 직접 지정한 조회·순위는 개인 프로필을
+읽지 않아 운세 동의 없이 쓸 수 있지만, 저장된 생년월일에서 별자리를 찾는 경로는 현재
+운세 동의를 요구한다. 별자리 외부 생성도 일별 물리 호출 상한·singleflight·TTL/LRU
+cache·timeout·실패 cache로 제한한다.
+
+### 모닝 브리핑의 유한 상태
+
+모닝 브리핑은 1분 주기로 확인하되 한 tick에서 사용자 한 명의 한 단계만 처리한다.
+`pending_payload`에 대상 날짜, 상태, 생성/발송 횟수, 다음 시도 시각과 생성 문장을
+영속화한다.
+
+- 생성과 DM 발송을 분리한다.
+- 기본 생성 최대 3회, 발송 최대 3회다.
+- 실패 시 유한한 지수 backoff를 사용한다.
+- 발송 재시도는 저장된 문장을 재사용하므로 LLM을 다시 부르지 않는다.
+- 기본 LLM timeout 35초, 발송 10초, tick 전체 50초로 60초 주기보다 짧다.
+- 자정 사전 생성은 다음 날짜 운세를 만들고, 과거 대상 날짜 문장을 보내지 않는다.
+- 재등록 시 이전 대기 작업과 운세 문맥을 지운다.
+- 철회 또는 현재 정책 미동의 사용자는 조회와 발송 직전 두 단계에서 제외한다.
+
+따라서 느린 공급자·DM 차단·프로세스 재시작이 매분 무한 LLM 호출로 이어지지 않는다.
+
+## 학교 공지
+
+학교 공지는 General 전용 선택 기능이다. Masamo 운영에서는 계속
+`SCHOOL_NOTICE_ENABLED=false`다.
+
+### 자연어 등록과 확인
+
+DM에서 목적별 동의 후 다음처럼 말한다.
+
+```text
+!공지 등록 전북대 소프트웨어공학과 3학년이고 오전 9시에 알려줘
+```
+
+봇은 지원 카탈로그의 값으로만 학교·과정·학년·학과·캠퍼스·전달 시각 등을 정규화하고
+“제가 이렇게 이해했어요. 맞을까요?”라는 요약을 보여준다.
+
+- 맞으면 `맞아`, `네`, `확인`, `저장` 등으로 확정한다.
+- 틀리면 `학년은 4학년이고 8시 30분에 보내줘`처럼 자연어로 수정한다.
+- `취소`를 입력하면 저장하지 않는다.
+- 누락된 필수 정보는 다시 묻는다.
+- 확인 전에는 DB에 저장하지 않는다.
+- 한 사용자에게 등록 세션은 하나만 허용하고 입력·수정 횟수·대기 시간·LLM timeout에
+  상한을 둔다.
+- 먼저 유한한 로컬 파서로 해석한다. 입력만으로 값이 명확하면 프로필 LLM을 호출하지
+  않는다.
+- 로컬 해석으로 해결되지 않은 입력만 해석 시도당 routing primary 한 곳을 1회 호출하며,
+  공급자 fallback이나 자동 재시도는 하지 않는다. 한 등록 세션의 실제 공급자 호출은
+  초안과 보정을 합쳐 기본 최대 3회다.
+- 신규 기본 전달 시각은 `09:00` KST다.
+
+사용 명령:
+
+```text
+!공지 [페이지]
+!공지 등록 <자연어>
+!공지 수정 <자연어>
+!공지 정보
+!공지 시간 HH:MM
+!공지 중지
+!공지 재개
+!공지 음소거 [주제]
+!공지 음소거해제 <주제>
+!공지 삭제
+```
+
+`!공지 정보`로 현재 저장값과 전달 상태를 확인할 수 있다. 기존 값을 바꾸려면
+`!공지 수정 <자연어>`로 새 후보를 확인한 뒤 저장한다.
+`관심 없음` 피드백은 유사 주제를 영구 차단하지 않고 우선순위를 완만하게 낮춘다.
+명시적인 주제 숨김은 `음소거`를 사용하며, 등록금·수강·학적·졸업·병무의 근거 있는 필수
+공지는 보호 규칙에 따라 계속 표시될 수 있다.
+
+### 수집과 전달
+
+```text
+동의·활성 프로필
+  → 해당 프로필 학교의 source ID만 선택
+  → 23:00 KST 외부 one-shot core 실행
+  → 사용자별 digest 계약 검증·원자적 공개
+  → 보통 다음 날 사용자별 시각(기본 09:00 KST)에 DM
+```
+
+- 모든 학교를 일괄 크롤링하지 않는다.
+- 현재 동의가 있고 `enabled=1`인 등록 프로필만 batch 대상이다.
+- 카탈로그와 외부 core source 설정 양쪽에 존재하는 해당 학교 source만 실행한다.
+- 사용자의 조건과 관련된 visible item이 없으면 자동 DM을 보내지 않는다.
+- 수집 실패와 “관련 공지 없음”은 내부 실행 상태에서 구분한다. 기본 설정에서는 실패만으로
+  사용자에게 불필요한 stale 경고 DM을 만들지 않는다.
+- 재시작·장애 복구 때는 최근 3일 안에서 가장 최신의 유효한 성공·부분 성공 batch만
+  고려한다. 더 최신 성공 batch가 있으면 그보다 오래된 결과를 대신 보내지 않는다.
+- 같은 공지 revision은 중복 발송하지 않고 내용이 바뀐 revision은 새 변경으로 다룬다.
+- 자동 전달 항목이 한 DM의 상한을 넘으면 페이지로 나눈다. 성공한 revision은 즉시
+  기록하고 남은 페이지는 다음 1분 scheduler tick에서 이어 보낸다. 성공한 페이지는
+  실패 attempt를 소비하지 않는다.
+- DM 차단·계약 오류·일시 실패는 사용자별 유한 횟수와 다음 재시도 시각으로 관리한다.
+
+지원 카탈로그는 14개 학교, 16개 source ID다.
+
+| 학교 | source |
+|---|---|
+| 전북대학교 | `jbnu_campus`, `jbnu_software` |
+| 서울대학교 | `snu_general` |
+| 부산대학교 | `pnu_general` |
+| 고려대학교 | `korea_cs_undergrad` |
+| 전주대학교 | `jj_academic` |
+| 성균관대학교 | `skku_general` |
+| 가천대학교 | `gachon_general` |
+| 숭실대학교 | `ssu_general` |
+| 전남대학교 | `jnu_software` |
+| 국립순천대학교 | `scnu_academic` |
+| 명지대학교 | `mju_general` |
+| 건국대학교 | `konkuk_academic` |
+| 국민대학교 | `kookmin_academic` |
+| 한양대학교 | `hanyang_seoul`, `hanyang_erica` |
+
+이 목록은 마사몽 측 프로필 카탈로그다. 실제 수집에는 별도 설치한 외부
+`school_notice` 코어와 일치하는 `sources.json`이 필요하다. 코어는 이 저장소에 포함되거나
+버전이 고정되어 있지 않으며, 현재 구조는 사용자 프로필별 `daily`를 실행하므로 같은 학교
+사용자가 여러 명이면 같은 학교를 여러 번 수집할 수 있다. “등록된 학교만 수집”은
+보장하지만 “학교당 정확히 한 번 수집”은 보장하지 않는다.
+
+## API·자원 보호
+
+모든 LLMClient 물리 호출은 공통 세마포어와 획득 timeout, 호출 timeout을 거친다.
+OpenAI 호환 SDK 자체 재시도는 꺼 두고, Gemini 시도 수도 제한한다. timeout이 불명확한
+요청 위에 fallback을 중첩해 호출하지 않는다. 사용자/글로벌 일일 사용량과 공급자 RPM/RPD
+제한도 별도로 적용한다.
+
+저사양 프로필에는 다음 값을 env 파일에 양의 정수로 명시한다.
+
+```dotenv
+MASAMONG_CPU_THREADS=1
+MASAMONG_EXECUTOR_WORKERS=1
+AI_MAX_CONCURRENT_PROCESSING=1
+AI_QUEUE_WAIT_TIMEOUT_SECONDS=5
+LLM_MAX_CONCURRENT_CALLS=1
+LLM_ACQUIRE_TIMEOUT_SECONDS=10
+LLM_CALL_TIMEOUT_SECONDS=120
+EMBEDDING_MAX_CONCURRENCY=1
+RAG_MAX_BACKGROUND_TASKS=2
+RAG_MAX_TRACKED_WINDOWS=64
+MASAMONG_DISCORD_MAX_MESSAGES=100
+TOKENIZERS_PARALLELISM=false
+```
+
+Masamo 전환에서는 예제 숫자로 덮어쓰지 말고 현재 서비스의 실제 제한을 보존한다.
+General은 처음에 로컬 memory와 반복 scheduler를 끈 뒤 두 프로세스의 합산 CPU, RSS,
+thread, load average를 측정해 기능을 단계적으로 켠다. 학교 수집은 봇 프로세스가 아닌
+`Type=oneshot` 프로세스에서 CPU thread 1개, low nice/IO, profile/전체 deadline으로
+실행한다.
+
+## 설치와 실행
 
 ```bash
 git clone https://github.com/kim0040/masamong.git
 cd masamong
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 ```
 
-**가상 환경 생성:**
-
-| OS | 명령어 |
-|----|--------|
-| **macOS / Linux** | `python3 -m venv venv && source venv/bin/activate` |
-| **Windows (CMD)** | `python -m venv venv && venv\Scripts\activate.bat` |
-| **Windows (PowerShell)** | `python -m venv venv && venv\Scripts\Activate.ps1` |
-
-**의존성 설치:**
+로컬 임베딩/RAG가 필요할 때만:
 
 ```bash
-pip install -r requirements.txt
-pip install -r requirements-cpu.txt   # CPU 서버용 (RAG/임베딩)
+python -m pip install -r requirements-cpu.txt
 ```
 
-### 설정
+개발 환경은 루트 예제를 복사해 별도 개발 토큰과 SQLite를 사용한다. 운영은
+`profiles/general.env.example`, `profiles/masamo.env.example`과
+[인스턴스 분리 가이드](INSTANCE_SEPARATION.ko.md)를 사용하며, 저장소의 `.env`를 두
+인스턴스가 공유하지 않는다.
 
 ```bash
-cp .env.example .env
-cp emb_config.example.json emb_config.json
-cp prompts.example.json prompts.json
+MASAMONG_ENV_FILE=/absolute/path/to/profile.env \
+  PYTHONPATH=. .venv/bin/python main.py
 ```
 
-`.env` 파일을 편집하여 API 키를 입력하세요. **최소 필요 항목:**
+명시적 프로필에서는 선택한 env 파일이 유일한 환경 설정 출처다. systemd나 shell에만
+남아 있는 키는 파일로 옮기지 않으면 전환 후 사용되지 않는다.
 
-```env
-DISCORD_BOT_TOKEN=your_token_here
-COMETAPI_KEY=your_cometapi_key
-COMETAPI_BASE_URL=https://api.cometapi.com/v1
-USE_COMETAPI=true
-```
-
-> **팁:** `python setup.py`를 실행하면 대화형 설정 마법사를 사용할 수 있습니다.
->
-> 일반판과 마사모판을 함께 운영하려면 운영 데이터에 손대기 전에
-> [인스턴스 분리 가이드](INSTANCE_SEPARATION.ko.md)를 먼저 확인하세요.
-
-### 실행
+## 테스트와 운영 문서
 
 ```bash
-# macOS / Linux
-PYTHONPATH=. python main.py
-
-# Windows (CMD)
-set PYTHONPATH=. && python main.py
-
-# Windows (PowerShell)
-$env:PYTHONPATH="."; python main.py
+.venv/bin/python -m pytest -q
+.venv/bin/python -m compileall -q .
+.venv/bin/python -m pip check
 ```
 
----
+실제 두 env의 오프라인 경계 검사:
 
-## 주요 기능
-
-| 기능 | 설명 |
-|------|------|
-| **AI 대화** | `@마사몽` 멘션으로 LLM 응답 (채널별 페르소나 적용) |
-| **DM 대화** | 멘션 없이 1:1 대화 (5시간당 30회 제한) |
-| **메모리 / RAG** | 하이브리드 검색 (임베딩 + BM25 + RRF)으로 대화 기억 회상 |
-| **날씨** | 기상청 KMA 실시간/주간/중기 예보 + 지진 알림 + `!날씨` |
-| **금융** | 주식(국내/해외), 환율 — Finnhub, yfinance, KRX, EximBank |
-| **웹 검색** | 실시간 웹/뉴스 검색 — Linkup API (주력) / DuckDuckGo (대체) |
-| **이미지 생성** | `!이미지 <프롬프트>` — CometAPI Gemini Image |
-| **운세** | 일간/월간/연간 운세 + 별자리 + 구독 |
-| **랭킹** | 서버 활동 랭킹 + 통계 차트 (`!랭킹`) |
-| **요약** | 채널 대화 요약 (`!요약`) |
-| **투표** | `!투표 "주제" "항목1" "항목2"` |
-
-### 명령어
-
-| 명령어 | 설명 |
-|--------|------|
-| `@마사몽 <메시지>` | AI 대화 (서버, 멘션 필수) |
-| `!날씨 [지역] [일자]` | 날씨 예보 |
-| `!운세` / `!별자리` | 운세 및 별자리 |
-| `!랭킹` | 서버 활동 랭킹 |
-| `!요약` | 채널 대화 요약 |
-| `!투표 "주제" "항목1" "항목2"` | 투표 생성 |
-| `!이미지 <프롬프트>` | AI 이미지 생성 |
-| `!도움` | 도움말 |
-| `/config` | 슬래시 커맨드 — AI 설정 |
-| `/persona` | 슬래시 커맨드 — 페르소나 설정 |
-
----
-
-## 아키텍처
-
-마사몽은 **3단계 듀얼 레인 에이전트 파이프라인**을 사용합니다:
-
-```
-메시지 → 의도 분석 (Routing Lane) → 도구 실행 → RAG 검색 → 응답 생성 (Main Lane)
+```bash
+.venv/bin/python scripts/validate_profile_separation.py \
+  /etc/masamong/masamo.env \
+  /etc/masamong/general.env
 ```
 
-[📗 상세 아키텍처 (한국어)](ARCHITECTURE.ko.md) &nbsp;|&nbsp; [📘 상세 아키텍처 (English)](ARCHITECTURE.en.md)
-
-[📐 UML 명세 (English)](UML_SPEC.en.md) &nbsp;|&nbsp; [📐 UML 명세 (한국어)](UML_SPEC.ko.md) — C4, 컴포넌트, 클래스, 시퀀스, 액티비티, 상태, ER 다이어그램 (총 15종)
-
----
-
-## 프로젝트 구조
-
-```
-masamong/
-├── main.py              # 봇 진입점, Cog 로드, DB 마이그레이션
-├── config.py            # 설정 (.env → config.json → 기본값)
-├── setup.py             # 대화형 설정 마법사
-├── prompts.example.json # 채널 페르소나 템플릿 (prompts.json으로 복사)
-├── emb_config.example.json # RAG/임베딩 설정 템플릿 (emb_config.json으로 복사)
-│
-├── cogs/                 # Discord Cog 모듈
-│   ├── ai_handler.py     # AI 파이프라인 (핵심)
-│   ├── tools_cog.py      # 외부 도구 통합
-│   ├── weather_cog.py    # 날씨 명령어 + 강수/인사 알림
-│   ├── fortune_cog.py    # 운세 / 별자리 / 구독
-│   ├── activity_cog.py   # 활동 추적 + 랭킹
-│   └── ...
-│
-├── utils/                # 유틸리티 모듈
-│   ├── llm_client.py     # LLM 레인 라우팅 (Primary/Fallback)
-│   ├── intent_analyzer.py # 의도 분석 + 도구 탐지
-│   ├── rag_manager.py    # RAG / 임베딩 / 메모리 관리
-│   ├── hybrid_search.py  # 임베딩 + BM25 + RRF 검색
-│   ├── locale.py         # 다국어(i18n) 지원
-│   ├── constants.py      # 공유 상수 (NSFW, 제한값 등)
-│   ├── discord_helpers.py # Discord 메시지 유틸리티
-│   └── api_handlers/     # Finnhub, yfinance, KRX, Kakao, EximBank
-│
-├── locales/              # 다국어 메시지 파일
-│   ├── ko.json           # 한국어
-│   ├── en.json           # English
-│   └── ja.json           # 日本語
-│
-├── database/             # TiDB/SQLite 스키마 + 어댑터
-├── scripts/              # 운영 스크립트 (smoke test, 마이그레이션 등)
-└── docs/                 # 문서
-```
-
----
-
-## 듀얼 레인 LLM 시스템
-
-```mermaid
-flowchart LR
-    subgraph Routing["Routing Lane (의도 분석)"]
-        RP["Primary<br/>gemini-3.1-flash-lite"]
-        RF["Fallback<br/>gemini-2.5-flash"]
-        RP -->|"실패"| RF
-    end
-
-    subgraph Main["Main Lane (응답 생성)"]
-        MP["Primary<br/>DeepSeek-V3.2-Exp"]
-        MF["Fallback<br/>DeepSeek-R1"]
-        MP -->|"실패"| MF
-    end
-
-    Caller["LLMClient"] --> Routing
-    Caller --> Main
-
-    style RP fill:#e3f2fd,stroke:#1565c0
-    style MP fill:#fff8e1,stroke:#f57f17
-```
-
-각 레인은 **Primary + Fallback** 타깃을 가지며 실패 시 자동 전환됩니다.  
-자세한 내용은 [ARCHITECTURE.md](ARCHITECTURE.ko.md)를 참조하세요.
-
----
-
-## 설정 우선순위
-
-```
-1. 환경변수 (.env)          ← 최우선
-2. config.json              ← 보조
-3. 코드 기본값 (config.py)   ← 최하위
-```
-
-**주요 환경변수:**
-| 변수 | 용도 |
-|------|------|
-| `DISCORD_BOT_TOKEN` | Discord 봇 토큰 (필수) |
-| `COMETAPI_KEY` | CometAPI 키 (기본 LLM) |
-| `GEMINI_API_KEY` | Gemini 키 (선택적 fallback) |
-| `KMA_API_KEY` | 기상청 API 키 |
-| `LINKUP_API_KEY` | 웹 검색 API 키 |
-| `MASAMONG_DB_BACKEND` | `tidb` 또는 `sqlite` |
-
-전체 환경변수는 `.env.example`을 참조하세요.
-
----
-
-## 다국어 지원 (i18n)
-
-마사몽은 한국어(ko), 영어(en), 일본어(ja)를 지원합니다.
-
-### 전역 언어 설정
-
-`.env` 파일에서 기본 언어를 설정합니다:
-
-```env
-MASAMONG_LANG=ko  # ko, en, ja 중 선택
-```
-
-### 서버별 언어 설정
-
-Discord에서 슬래시 명령어로 서버별 언어를 변경할 수 있습니다:
-
-```
-/config language 한국어
-/config language English
-/config language 日本語
-```
-
-### 새 언어 추가
-
-`locales/` 디렉토리에 새 JSON 파일을 생성하고 `utils/locale.py`의 `SUPPORTED_LANGUAGES`에 추가합니다.
-
-자세한 내용은 [SETTINGS_GUIDE.md](SETTINGS_GUIDE.md)를 참조하세요.
-
----
-
-## 기술 스택
-
-| 계층 | 기술 |
-|------|------|
-| 봇 프레임워크 | discord.py >=2.7.1 |
-| LLM 제공자 | CometAPI (OpenAI-compatible), Google Gemini |
-| LLM 아키텍처 | Dual Lane (Routing + Main) with Primary/Fallback |
-| 데이터베이스 | TiDB (운영), SQLite (개발) |
-| 벡터 검색 | SentenceTransformers + TiDB VECTOR(384) / 코사인 유사도 |
-| 웹 검색 | Linkup API, DuckDuckGo |
-| 금융 | Finnhub, yfinance, KRX API, EximBank |
-| 날씨 | 기상청(KMA) API |
-| 차트 | matplotlib, seaborn |
-| 테스트 | pytest |
-
-### 임베딩 모델
-
-| 모델 | 용도 |
-|------|------|
-| `dragonkue/multilingual-e5-small-ko-v2` | 한국어 최적화 임베딩 |
-| `upskyy/e5-small-korean` | 쿼리 재작성 |
-| `BAAI/bge-reranker-v2-m3` | Cross-encoder 재순위화 |
-
----
+| 문서 | 내용 |
+|---|---|
+| [INSTANCE_SEPARATION.ko.md](INSTANCE_SEPARATION.ko.md) | General/Masamo 경계와 전환 |
+| [../DEPLOYMENT.md](../DEPLOYMENT.md) | 백업, 읽기 전용 preflight, migration, 재시작, rollback |
+| [SCHOOL_NOTICE_INTEGRATION_PLAN.ko.md](SCHOOL_NOTICE_INTEGRATION_PLAN.ko.md) | 외부 core와 학교 공지 계약 |
+| [ARCHITECTURE.ko.md](ARCHITECTURE.ko.md) | 전체 아키텍처 |
+| [SETTINGS_GUIDE.md](SETTINGS_GUIDE.md) | 일반 설정 |
 
 ## 라이선스
 
-MIT License
-
-Copyright (c) 2025-2026 kim0040
-
-이 소프트웨어의 복제본과 관련 문서 파일을 소유한任何人에게 제한 없이 소프트웨어를 다룰 수 있는 권한을 무료로 부여합니다. 여기에는 소프트웨어의 사용, 복사, 수정, 병합, 출판, 배포, 서브라이선스, 판매 권한이 제한 없이 포함됩니다.
-
-본 소프트웨어는 "있는 그대로" 제공되며, 어떠한 종류의 보증도 제공되지 않습니다.
-
----
-
-## 문서
-
-| 문서 | 언어 | 내용 |
-|------|------|------|
-| [ARCHITECTURE.md](ARCHITECTURE.ko.md) | 한국어 | 시스템 아키텍처 상세 (15개 다이어그램) |
-| [ARCHITECTURE.en.md](ARCHITECTURE.en.md) | English | System architecture detail (15 diagrams) |
-| [UML_SPEC.md](UML_SPEC.ko.md) | 한국어 | UML 분석 — C4, 클래스, 시퀀스, ER (17개 다이어그램) |
-| [../README.md](../../README.md) | English | 영문 README |
-| [README.ja.md](README.ja.md) | 日本語 | 일본어 README |
-
----
-
-<p align="center">
-  Made with 🐍 by <a href="https://github.com/kim0040">kim0040</a>
-</p>
+MIT

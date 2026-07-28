@@ -1,315 +1,251 @@
-# 🤖 Masamong — Discord AI Chatbot
+# Masamong
 
-<p align="center">
-  <strong>Korean-language AI chatbot for Discord</strong><br/>
-  Dual-lane LLM · Structured Memory (RAG) · Weather · Finance · Web Search · Fortune · Image Generation
-</p>
+Masamong is a Korean-first Discord assistant with AI chat, bounded external-tool
+use, optional conversation memory, weather and finance lookup, image generation,
+fortune readings, community utilities, and an optional personalized school-notice
+service.
 
-<p align="center">
-  <a href="docs/README.ko.md">한국어</a> &nbsp;|&nbsp;
-  <a href="docs/README.ja.md">日本語</a>
-</p>
+[한국어 제품·사용 설명서](docs/README.ko.md) ·
+[General/Masamo separation](docs/INSTANCE_SEPARATION.ko.md) ·
+[Operations and deployment](DEPLOYMENT.md) ·
+[School-notice integration](docs/SCHOOL_NOTICE_INTEGRATION_PLAN.ko.md)
 
----
+## Runtime model
 
-## Overview
+- Python 3.10+ and `discord.py` 2.7.1+
+- TiDB in production; SQLite for development and isolated tests
+- OpenAI-compatible and Gemini LLM providers with primary/fallback lanes
+- Optional local embedding/RAG stack from `requirements-cpu.txt`
+- One shared code release, with physically isolated `general` and `masamo`
+  runtime profiles
 
-Masamong is a modular Discord bot that integrates AI conversation, structured memory (RAG), KakaoTalk chat vector search, and external tools (weather, finance, web search, image generation) into a single runtime.
+The two production editions are not forks:
 
-- **Language**: Python 3.10+
-- **Framework**: `discord.py` >=2.7.1
-- **LLM**: CometAPI (OpenAI-compatible) + optional Gemini fallback
-- **DB Backend**: TiDB (production) / SQLite (development)
-- **License**: MIT
+| Boundary | Masamo | General |
+|---|---|---|
+| Purpose | Existing community deployment | New clean deployment |
+| Discord app/token | Existing app and token | Separate app and token |
+| Database | Existing TiDB `masamong` | New TiDB `masamong_general` |
+| Memory | Existing Discord and Kakao data | Discord only; no Masamo data |
+| Configuration | Dedicated env/config/prompt/embedding files | Separate dedicated files |
+| Logs/service | Dedicated paths and service | Separate paths and service |
+| School notices | Kept disabled | Enabled only after the external core is installed and validated |
 
----
+Never point both profiles at the same token, database, DB account, writable path,
+prompt file, embedding store, log, or service. The existing Masamo database keeps
+its current name and data; it is not renamed, copied into General, or rebuilt.
 
-## Quick Start
+## Features
 
-### Prerequisites
-- Python 3.10+
-- Discord Bot Token ([Developer Portal](https://discord.com/developers/applications))
-- CometAPI Key (or Gemini API Key)
+- AI conversation in configured guild channels and DMs
+- Fast local routing for obvious small talk/tool requests; optional LLM intent
+  routing for ambiguous requests
+- Weather, earthquake, finance, exchange-rate, web/news, and image tools
+- Discord and optional Kakao memory with hybrid retrieval
+- Daily/monthly/yearly fortune, zodiac, and persistent morning briefing
+- Activity ranking, conversation summary, polls, localization, and guild persona
+  settings
+- Optional school-notice personalization for registered users and supported
+  schools
 
-### Install
+All external LLM calls share bounded concurrency, queue-acquisition timeout,
+per-call timeout, provider rate limits, prompt/output caps, and finite
+primary/fallback attempts. A single AI turn can plan at most three tool calls.
+Fortune generation and school collection also use explicit finite attempt and
+runtime limits; neither scheduler retries indefinitely.
+
+## Privacy boundary
+
+Ordinary Discord conversation and information supplied by Discord servers retain
+their existing behavior. Separately collected, reusable personal profiles require
+purpose-specific consent:
+
+- `fortune`: Discord user ID and birth date, plus optional birth time, gender, and
+  birthplace
+- `school_notice`: school/student profile, delivery preferences, and notice
+  feedback
+
+Consent is requested in DM and is recorded only after the same user presses the
+consent button. Current consent and append-only consent events are stored
+separately.
+
+```text
+!개인정보
+!개인정보 동의 운세
+!개인정보 동의 학교공지
+!개인정보 철회 운세
+!개인정보 철회 학교공지
+```
+
+Withdrawal stops future profile use, personalization, and automatic delivery but
+preserves stored data and settings for a possible later re-consent. Explicit
+deletion is separate:
+
+```text
+!운세 삭제
+!공지 삭제
+```
+
+Those deletion commands remove the corresponding feature profile and derived
+personalization state and withdraw consent. They do not delete ordinary Discord
+conversation or server records. Consent/audit events remain as the processing
+history.
+
+## School-notice behavior
+
+The Discord bot does not crawl websites. A separate, externally installed
+`school_notice` core runs as a bounded one-shot batch and publishes validated JSON
+digests; the bot only handles onboarding, delivery, and feedback.
+
+The user flow is:
+
+1. In DM, the user gives school information naturally with `!공지 등록 ...`.
+2. Masamong first uses its bounded local parser. Clear input makes no profile-LLM
+   call. Only unresolved input may call the routing primary once for that
+   interpretation attempt, with no provider fallback or retry; the whole session is
+   capped at three provider calls by default.
+3. The user confirms, corrects the summary in natural language, or cancels.
+4. Nothing is stored until confirmation. New profiles default to `09:00` KST, and
+   the user can choose another delivery time.
+5. The `23:00` KST batch selects sources only for consented, enabled, registered
+   profiles. It does not crawl every school.
+6. Normally the resulting digest is delivered the following day at that user's
+   time. After an outage, delivery considers only the newest valid result from the
+   previous three days and never falls back behind a newer successful batch. If no
+   relevant notice exists, no automatic DM is sent.
+
+Long automatic digests are sent in bounded pages. Each successfully sent revision
+is recorded immediately, and any remaining page continues on a later one-minute
+scheduler tick without consuming a failure attempt for the successful page.
+
+The versioned catalog currently covers 14 universities and 16 source IDs:
+Jeonbuk, Seoul National, Pusan National, Korea, Jeonju, Sungkyunkwan, Gachon,
+Soongsil, Chonnam National, Sunchon National, Myongji, Konkuk, Kookmin, and
+Hanyang. A school is usable only when the separately deployed core has matching,
+validated source definitions.
+
+The external core is not vendored or release-pinned by this repository, and its
+current per-profile job may crawl the same school more than once when several users
+register it. The implementation guarantees “registered profiles only,” not
+“exactly once per school.”
+
+Masamo production must keep `SCHOOL_NOTICE_ENABLED=false`. General may enable it
+only after its own schema, catalog, core DB, digest directory, source config,
+one-shot batch, and 23:00 KST timer pass validation.
+
+## Quick start
 
 ```bash
 git clone https://github.com/kim0040/masamong.git
 cd masamong
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 ```
 
-**Create virtual environment:**
-
-| OS | Command |
-|----|---------|
-| **macOS / Linux** | `python3 -m venv venv && source venv/bin/activate` |
-| **Windows (CMD)** | `python -m venv venv && venv\Scripts\activate.bat` |
-| **Windows (PowerShell)** | `python -m venv venv && venv\Scripts\Activate.ps1` |
-
-**Install dependencies:**
+Install the CPU-only memory stack only when local embedding/RAG is enabled:
 
 ```bash
-pip install -r requirements.txt
-pip install -r requirements-cpu.txt   # CPU server extras (RAG/embedding)
+python -m pip install -r requirements-cpu.txt
 ```
 
-### Configure
+For local development, copy the root examples and fill in a separate development
+token and database. For production, do not reuse the root `.env`; install a strict
+profile file based on `profiles/general.env.example` or by preserving and
+augmenting the existing Masamo environment. Select it from outside the process:
 
 ```bash
-cp .env.example .env
-cp emb_config.example.json emb_config.json
-cp prompts.example.json prompts.json
+MASAMONG_ENV_FILE=/absolute/path/to/profile.env \
+  PYTHONPATH=. .venv/bin/python main.py
 ```
 
-Edit `.env` with your API keys. **Minimum required:**
+Explicit profiles fail closed when their profile/instance identity, bot user ID,
+database identity, TLS settings, required files, required Cogs, or resource limits
+do not match.
 
-```env
-DISCORD_BOT_TOKEN=your_token_here
-COMETAPI_KEY=your_cometapi_key
-COMETAPI_BASE_URL=https://api.cometapi.com/v1
-USE_COMETAPI=true
+## Common user commands
+
+| Command | Behavior |
+|---|---|
+| `@Masamong <message>` | AI conversation in an allowed guild channel |
+| DM message | Private AI conversation, subject to DM and LLM limits |
+| `!날씨 [지역] [날짜]` | Weather lookup |
+| `!이미지 <prompt>` | Image generation with user/global quota guards |
+| `!운세`, `!운세 상세` | Daily summary or detailed fortune |
+| `!운세 등록` | Consent-gated DM registration |
+| `!운세 구독 HH:MM` | Persistent morning briefing |
+| `!이번달운세`, `!올해운세` | Detailed monthly/yearly readings |
+| `!별자리` | Zodiac information/ranking |
+| `!공지 [page]` | View a page of the available school digest in DM |
+| `!공지 등록 <natural language>` | Confirm-before-save school onboarding |
+| `!공지 수정 <natural language>` | Confirm-before-save profile correction |
+| `!공지 정보` | Show the saved profile and delivery state |
+| `!공지 시간 HH:MM` | Set a per-user delivery time |
+| `!공지 중지`, `!공지 재개` | Pause/resume school processing and delivery |
+| `!랭킹`, `!요약`, `!투표 ...` | Community utilities |
+| `/config`, `/persona` | Guild AI policy and persona |
+
+Some commands and schedulers are feature-flagged or permission-restricted.
+
+## Resource and API safety
+
+Low-spec deployments should explicitly set, not merely inherit:
+
+```dotenv
+MASAMONG_CPU_THREADS=1
+MASAMONG_EXECUTOR_WORKERS=1
+AI_MAX_CONCURRENT_PROCESSING=1
+AI_QUEUE_WAIT_TIMEOUT_SECONDS=5
+LLM_MAX_CONCURRENT_CALLS=1
+LLM_ACQUIRE_TIMEOUT_SECONDS=10
+LLM_CALL_TIMEOUT_SECONDS=120
+EMBEDDING_MAX_CONCURRENCY=1
+RAG_MAX_BACKGROUND_TASKS=2
+RAG_MAX_TRACKED_WINDOWS=64
+MASAMONG_DISCORD_MAX_MESSAGES=100
+TOKENIZERS_PARALLELISM=false
 ```
 
-> **Tip:** Run `python setup.py` for an interactive setup wizard.
->
-> Running isolated General and Masamo instances? Read the
-> [instance separation runbook](docs/INSTANCE_SEPARATION.ko.md) before touching production data.
+Preserve the actual existing Masamo values during its profile cutover. Start
+General with memory and recurring jobs disabled, measure combined CPU/RSS, and
+enable only the features that fit the host.
 
-### Run
+## Verification
 
 ```bash
-# macOS / Linux
-PYTHONPATH=. python main.py
-
-# Windows (CMD)
-set PYTHONPATH=. && python main.py
-
-# Windows (PowerShell)
-$env:PYTHONPATH="."; python main.py
+.venv/bin/python -m pytest -q
+.venv/bin/python -m compileall -q .
+.venv/bin/python -m pip check
 ```
 
----
+Validate real General and Masamo profile files offline before either service is
+started:
 
-## Features
-
-| Feature | Description |
-|---------|-------------|
-| **AI Chat** | `@Masamong` mention triggers LLM response with channel persona |
-| **DM Chat** | 1:1 conversation without mention (30 per 5h rate limit) |
-| **Memory / RAG** | Hybrid search (embedding + BM25 + RRF) across conversation history |
-| **Weather** | KMA real-time/forecast/earthquake alerts + `!weather` command |
-| **Finance** | Stocks (US/KR), exchange rates via Finnhub, yfinance, KRX, EximBank |
-| **Web Search** | Real-time web/news via Linkup API (primary) / DuckDuckGo (fallback) |
-| **Image Gen** | `!image <prompt>` via CometAPI Gemini Image |
-| **Fortune** | Daily/monthly/yearly fortune + zodiac + subscription |
-| **Activity** | Server ranking charts (`!ranking`) |
-| **Summary** | Channel conversation summary (`!summary`) |
-| **Polls** | `!poll "topic" "opt1" "opt2"` |
-
-### Commands
-
-| Command | Description |
-|---------|-------------|
-| `@Masamong <msg>` | AI conversation (guild, mention required) |
-| `!weather [location] [date]` | Weather forecast |
-| `!fortune` / `!zodiac` | Fortune & zodiac reading |
-| `!ranking` | Server activity ranking |
-| `!summary` | Channel conversation summary |
-| `!poll "topic" "opt1" "opt2"` | Create a poll |
-| `!image <prompt>` | AI image generation |
-| `!help` | Show help |
-| `/config` | Slash command — configure AI settings |
-| `/persona` | Slash command — set channel persona |
-
----
-
-## Architecture
-
-Masamong uses a **3-stage dual-lane agent pipeline**:
-
-```
-Message → Intent Analysis (Routing Lane) → Tool Execution → RAG Search → Response (Main Lane)
+```bash
+.venv/bin/python scripts/validate_profile_separation.py \
+  /etc/masamong/masamo.env \
+  /etc/masamong/general.env
 ```
 
-[📘 Full Architecture (English)](docs/ARCHITECTURE.en.md) &nbsp;|&nbsp; [📗 Full Architecture (한국어)](docs/ARCHITECTURE.ko.md)
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the read-only production fingerprint,
+additive privacy-consent migration, controlled restart, post-deploy observation,
+and rollback procedure.
 
-[📐 UML Specification (English)](docs/UML_SPEC.en.md) &nbsp;|&nbsp; [📐 UML 명세 (한국어)](docs/UML_SPEC.ko.md) — C4, component, class, sequence, activity, state, and ER diagrams (15 total)
+## Repository map
 
----
-
-## Project Structure
-
+```text
+main.py                         runtime, schema verification, Cog loading
+config.py                       strict profile and resource configuration
+cogs/                           Discord features
+utils/                          LLM, RAG, privacy, weather, school contracts
+database/                       SQLite and TiDB schemas/adapters
+profiles/                       isolated profile examples and school catalog
+scripts/                        read-only inspection and bounded one-shot jobs
+deploy/systemd/                 school batch service/timer templates
+tests/                          functional, contract, safety, and resource tests
+docs/                           architecture and operations documentation
 ```
-masamong/
-├── main.py              # Bot entry point, Cog loader, DB migration
-├── config.py            # Configuration from .env / config.json / defaults
-├── setup.py             # Interactive setup wizard
-├── prompts.example.json # Channel personas template (copy to prompts.json)
-├── emb_config.example.json # RAG/embedding config template (copy to emb_config.json)
-│
-├── cogs/                 # Discord Cog modules
-│   ├── ai_handler.py     # Core AI pipeline
-│   ├── tools_cog.py      # External tool integration
-│   ├── weather_cog.py    # Weather commands + rain/greeting alerts
-│   ├── fortune_cog.py    # Fortune / zodiac / subscription
-│   ├── activity_cog.py   # Activity tracking + ranking
-│   └── ...
-│
-├── utils/                # Utility modules
-│   ├── llm_client.py     # LLM lane routing (Primary/Fallback)
-│   ├── intent_analyzer.py # Intent analysis + tool detection
-│   ├── rag_manager.py    # RAG / embedding / memory management
-│   ├── hybrid_search.py  # Embedding + BM25 + RRF search
-│   ├── locale.py         # i18n (internationalization) support
-│   ├── constants.py      # Shared constants (NSFW, limits, etc.)
-│   ├── discord_helpers.py # Discord message utilities
-│   └── api_handlers/     # Finnhub, yfinance, KRX, Kakao, EximBank
-│
-├── locales/              # i18n message files
-│   ├── ko.json           # Korean
-│   ├── en.json           # English
-│   └── ja.json           # Japanese
-│
-├── database/             # TiDB/SQLite schema + adapter
-├── scripts/              # Operational scripts (smoke test, migration, etc.)
-└── docs/                 # Documentation
-```
-
----
-
-## Dual-Lane LLM System
-
-```mermaid
-flowchart LR
-    subgraph Routing["Routing Lane (Intent Analysis)"]
-        RP["Primary<br/>gemini-3.1-flash-lite"]
-        RF["Fallback<br/>gemini-2.5-flash"]
-        RP -->|"fail"| RF
-    end
-
-    subgraph Main["Main Lane (Response Generation)"]
-        MP["Primary<br/>DeepSeek-V3.2-Exp"]
-        MF["Fallback<br/>DeepSeek-R1"]
-        MP -->|"fail"| MF
-    end
-
-    Caller["LLMClient"] --> Routing
-    Caller --> Main
-
-    style RP fill:#e3f2fd,stroke:#1565c0
-    style MP fill:#fff8e1,stroke:#f57f17
-```
-
-Each lane has **Primary + Fallback** targets with automatic failover.  
-See [ARCHITECTURE.en.md](docs/ARCHITECTURE.en.md) for the full diagram.
-
----
-
-## Configuration Priority
-
-```
-1. Environment variables (.env)    ← highest
-2. config.json                     ← supplementary
-3. Code defaults (config.py)       ← lowest
-```
-
-**Key env vars:**
-| Variable | Purpose |
-|----------|---------|
-| `DISCORD_BOT_TOKEN` | Discord bot token (required) |
-| `COMETAPI_KEY` | CometAPI key (primary LLM) |
-| `GEMINI_API_KEY` | Gemini key (optional fallback) |
-| `KMA_API_KEY` | Weather API key |
-| `LINKUP_API_KEY` | Web search API key |
-| `MASAMONG_DB_BACKEND` | `tidb` or `sqlite` |
-
-See `.env.example` for the complete reference.
-
----
-
-## Internationalization (i18n)
-
-Masamong supports Korean (ko), English (en), and Japanese (ja).
-
-### Global Language Setting
-
-Set the default language in `.env`:
-
-```env
-MASAMONG_LANG=ko  # ko, en, or ja
-```
-
-### Per-Server Language Setting
-
-Use the slash command in Discord to change the language per server:
-
-```
-/config language 한국어
-/config language English
-/config language 日本語
-```
-
-### Adding a New Language
-
-Create a new JSON file in the `locales/` directory and add the language code to `SUPPORTED_LANGUAGES` in `utils/locale.py`.
-
-See [docs/SETTINGS_GUIDE.md](docs/SETTINGS_GUIDE.md) for details.
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Bot Framework | discord.py >=2.7.1 |
-| LLM Provider | CometAPI (OpenAI-compatible), Google Gemini |
-| LLM Architecture | Dual Lane (Routing + Main) with Primary/Fallback |
-| Database | TiDB (production), SQLite (development) |
-| Vector Search | SentenceTransformers + TiDB VECTOR(384) / cosine similarity |
-| Web Search | Linkup API, DuckDuckGo |
-| Finance | Finnhub, yfinance, KRX API, EximBank |
-| Weather | KMA (Korea Meteorological Administration) |
-| Charting | matplotlib, seaborn |
-| Testing | pytest |
-
-### Embedding Models
-
-| Model | Purpose |
-|-------|---------|
-| `dragonkue/multilingual-e5-small-ko-v2` | Korean-optimized embeddings |
-| `upskyy/e5-small-korean` | Query rewriting |
-| `BAAI/bge-reranker-v2-m3` | Cross-encoder re-ranking |
-
----
 
 ## License
 
-MIT License
-
-Copyright (c) 2025-2026 kim0040
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files, to deal in the Software
-without restriction, including without limitation the rights to use, copy,
-modify, merge, publish, distribute, sublicense, and/or sell copies of the
-Software, and to permit persons to whom the Software is furnished to do so.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
-
----
-
-## Documentation
-
-| Document | Language | Content |
-|----------|----------|---------|
-| [ARCHITECTURE.en.md](docs/ARCHITECTURE.en.md) | English | System architecture in detail (15 diagrams) |
-| [ARCHITECTURE.md](docs/ARCHITECTURE.ko.md) | 한국어 | 시스템 아키텍처 상세 (15개 다이어그램) |
-| [UML_SPEC.md](docs/UML_SPEC.ko.md) | 한국어 | UML analysis — C4, class, sequence, ER (17 diagrams) |
-| [README.ko.md](docs/README.ko.md) | 한국어 | Korean README |
-| [README.ja.md](docs/README.ja.md) | 日本語 | Japanese README |
-
----
-
-<p align="center">
-  Made with 🐍 by <a href="https://github.com/kim0040">kim0040</a>
-</p>
+MIT

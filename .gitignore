@@ -169,7 +169,6 @@ profiles/*.yml
 # =============================================================================
 
 # 배포/기여/계획 문서 (로컬 전용)
-DEPLOYMENT.md
 docs/CHANGELOG.md
 docs/CONTRIBUTING.md
 docs/QUICKSTART.md

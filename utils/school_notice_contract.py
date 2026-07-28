@@ -10,12 +10,39 @@ digest는 마사몽 봇이 아니라 별도 batch 프로세스가 만든 파일�
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 SUPPORTED_SCHEMA_VERSION = 1
+
+# digest는 별도 프로세스가 만든 외부 입력이다. 파일과 컬렉션 상한을 함께 두어
+# 잘못된 산출물 하나가 저사양 봇의 메모리를 소진하지 못하게 한다. 코어 프로필의
+# 밴드별 최대치(각 100)를 모두 허용하면서도 그 이상은 계약 오류로 처리한다.
+MAX_DIGEST_FILE_BYTES = 8 * 1024 * 1024
+MAX_DIGEST_ITEMS = 300
+MAX_HEALTH_SOURCES = 128
+MAX_COLLECTION_ENTRIES = 100
+MAX_RAW_STRING_CHARS = 3_000_000
+MAX_TOTAL_STRING_CHARS = MAX_DIGEST_FILE_BYTES
+MAX_JSON_NODES = 100_000
+MAX_JSON_DEPTH = 32
+
+_MAX_USER_KEY = 128
+_MAX_SOURCE_ID = 64
+_MAX_EXTERNAL_ID = 128
+_MAX_DEDUP_KEY = 256
+_MAX_URL = 4096
+_MAX_TITLE = 2048
+_MAX_ITEM_TEXT = 20_000
+_MAX_SHORT_TEXT = 1024
+_MAX_LIST_TEXT = 2048
+_MAX_EVIDENCE = 8192
+_MAX_COUNTER = 1_000_000
+_MISSING = object()
 
 BANDS = frozenset({"action", "opportunity", "reference", "hidden"})
 ELIGIBILITIES = frozenset(
@@ -59,21 +86,233 @@ def _require(payload: Any, key: str, types: tuple[type, ...], where: str) -> Any
     return value
 
 
-def _optional_str(payload: dict[str, Any], key: str) -> str | None:
-    value = payload.get(key)
-    if value is None:
+def _bounded_string(
+    value: Any,
+    *,
+    where: str,
+    max_length: int,
+    allow_empty: bool = True,
+) -> str:
+    if not isinstance(value, str):
+        raise DigestContractError(
+            f"{where}: 문자열이어야 합니다 ({type(value).__name__})"
+        )
+    rendered = value.strip() if not allow_empty else value
+    if not allow_empty and not rendered:
+        raise DigestContractError(f"{where}: 비어 있지 않은 문자열이어야 합니다.")
+    if len(value) > max_length:
+        raise DigestContractError(
+            f"{where}: 문자열이 너무 깁니다 ({len(value)}>{max_length})"
+        )
+    return rendered
+
+
+def _optional_str(
+    payload: dict[str, Any],
+    key: str,
+    *,
+    where: str,
+    max_length: int = _MAX_SHORT_TEXT,
+) -> str | None:
+    value = payload.get(key, _MISSING)
+    if value is _MISSING or value is None:
         return None
-    return str(value)
+    return _bounded_string(
+        value,
+        where=f"{where}.{key}",
+        max_length=max_length,
+    )
+
+
+def _optional_bool(
+    payload: dict[str, Any],
+    key: str,
+    *,
+    where: str,
+    default: bool,
+) -> bool:
+    value = payload.get(key, _MISSING)
+    if value is _MISSING:
+        return default
+    if type(value) is not bool:
+        raise DigestContractError(
+            f"{where}.{key}: boolean이어야 합니다 ({type(value).__name__})"
+        )
+    return value
+
+
+def _int_value(
+    value: Any,
+    *,
+    where: str,
+    minimum: int = 0,
+    maximum: int = _MAX_COUNTER,
+) -> int:
+    if type(value) is not int:
+        raise DigestContractError(
+            f"{where}: 정수여야 합니다 ({type(value).__name__})"
+        )
+    if not minimum <= value <= maximum:
+        raise DigestContractError(
+            f"{where}: {minimum}~{maximum} 범위여야 합니다 ({value!r})"
+        )
+    return value
+
+
+def _optional_int(
+    payload: dict[str, Any],
+    key: str,
+    *,
+    where: str,
+    default: int,
+    minimum: int = 0,
+    maximum: int = _MAX_COUNTER,
+) -> int:
+    value = payload.get(key, _MISSING)
+    if value is _MISSING:
+        return default
+    return _int_value(
+        value,
+        where=f"{where}.{key}",
+        minimum=minimum,
+        maximum=maximum,
+    )
+
+
+def _number_value(
+    value: Any,
+    *,
+    where: str,
+    minimum: float,
+    maximum: float,
+) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise DigestContractError(
+            f"{where}: 숫자여야 합니다 ({type(value).__name__})"
+        )
+    rendered = float(value)
+    if not math.isfinite(rendered) or not minimum <= rendered <= maximum:
+        raise DigestContractError(
+            f"{where}: {minimum:g}~{maximum:g}의 유한한 숫자여야 합니다 "
+            f"({value!r})"
+        )
+    return rendered
+
+
+def _string_list(
+    payload: dict[str, Any],
+    key: str,
+    *,
+    where: str,
+    max_items: int = MAX_COLLECTION_ENTRIES,
+    max_length: int = _MAX_LIST_TEXT,
+) -> tuple[str, ...]:
+    value = payload.get(key, _MISSING)
+    if value is _MISSING:
+        return ()
+    if not isinstance(value, list):
+        raise DigestContractError(f"{where}.{key}: 배열이어야 합니다.")
+    if len(value) > max_items:
+        raise DigestContractError(
+            f"{where}.{key}: 항목이 너무 많습니다 ({len(value)}>{max_items})"
+        )
+    return tuple(
+        _bounded_string(
+            item,
+            where=f"{where}.{key}[{index}]",
+            max_length=max_length,
+        )
+        for index, item in enumerate(value)
+    )
+
+
+def _http_url(value: Any, *, where: str, allow_empty: bool = False) -> str:
+    rendered = _bounded_string(
+        value,
+        where=where,
+        max_length=_MAX_URL,
+        allow_empty=allow_empty,
+    )
+    if not rendered and allow_empty:
+        return rendered
+    parsed = urlsplit(rendered)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise DigestContractError(
+            f"{where}: http/https 절대 URL이어야 합니다 ({rendered!r})"
+        )
+    return rendered
+
+
+def _validate_payload_budget(payload: Any) -> None:
+    """직접 `parse_digest`를 부른 경우에도 파일 입력과 같은 자원 상한을 적용."""
+    total_chars = 0
+    nodes = 0
+    stack: list[tuple[Any, int]] = [(payload, 0)]
+    while stack:
+        value, depth = stack.pop()
+        nodes += 1
+        if nodes > MAX_JSON_NODES:
+            raise DigestContractError(
+                f"digest JSON 노드가 너무 많습니다 ({nodes}>{MAX_JSON_NODES})"
+            )
+        if depth > MAX_JSON_DEPTH:
+            raise DigestContractError(
+                f"digest JSON 중첩이 너무 깊습니다 ({depth}>{MAX_JSON_DEPTH})"
+            )
+        if isinstance(value, str):
+            if len(value) > MAX_RAW_STRING_CHARS:
+                raise DigestContractError(
+                    "digest JSON 문자열 하나가 너무 깁니다 "
+                    f"({len(value)}>{MAX_RAW_STRING_CHARS})"
+                )
+            total_chars += len(value)
+            if total_chars > MAX_TOTAL_STRING_CHARS:
+                raise DigestContractError(
+                    "digest JSON 문자열 총량이 너무 큽니다 "
+                    f"({total_chars}>{MAX_TOTAL_STRING_CHARS})"
+                )
+        elif isinstance(value, dict):
+            for key, child in value.items():
+                if not isinstance(key, str):
+                    raise DigestContractError(
+                        "digest JSON 객체 키는 문자열이어야 합니다."
+                    )
+                if len(key) > _MAX_SHORT_TEXT:
+                    raise DigestContractError("digest JSON 객체 키가 너무 깁니다.")
+                total_chars += len(key)
+                if total_chars > MAX_TOTAL_STRING_CHARS:
+                    raise DigestContractError(
+                        "digest JSON 문자열 총량이 너무 큽니다 "
+                        f"({total_chars}>{MAX_TOTAL_STRING_CHARS})"
+                    )
+                stack.append((child, depth + 1))
+        elif isinstance(value, (list, tuple)):
+            stack.extend((child, depth + 1) for child in value)
+        elif isinstance(value, float) and not math.isfinite(value):
+            raise DigestContractError(
+                f"digest JSON에 유한하지 않은 숫자가 있습니다: {value!r}"
+            )
 
 
 def _parse_iso_date(value: Any, where: str) -> date | None:
     """`YYYY-MM-DD`만 허용합니다. 형식이 다르면 날짜를 추측하지 않습니다."""
     if value is None:
         return None
+    rendered = _bounded_string(
+        value,
+        where=where,
+        max_length=10,
+        allow_empty=False,
+    )
     try:
-        return date.fromisoformat(str(value))
-    except ValueError as exc:
-        raise DigestContractError(f"{where}: 날짜 형식이 올바르지 않습니다 {value!r}") from exc
+        parsed = date.fromisoformat(rendered)
+    except (TypeError, ValueError) as exc:
+        raise DigestContractError(
+            f"{where}: 날짜 형식이 올바르지 않습니다 {value!r}"
+        ) from exc
+    if parsed.isoformat() != rendered:
+        raise DigestContractError(f"{where}: YYYY-MM-DD 형식이어야 합니다 {value!r}")
+    return parsed
 
 
 @dataclass(frozen=True)
@@ -211,19 +450,39 @@ def _parse_dates(raw: Any, where: str) -> tuple[NoticeDate, ...]:
         return ()
     if not isinstance(raw, list):
         raise DigestContractError(f"{where}: dates는 배열이어야 합니다.")
+    if len(raw) > MAX_COLLECTION_ENTRIES:
+        raise DigestContractError(
+            f"{where}: dates 항목이 너무 많습니다 "
+            f"({len(raw)}>{MAX_COLLECTION_ENTRIES})"
+        )
     parsed: list[NoticeDate] = []
     for index, entry in enumerate(raw):
         if not isinstance(entry, dict):
             raise DigestContractError(f"{where}.dates[{index}]: 객체가 아닙니다.")
-        value = _parse_iso_date(entry.get("date"), f"{where}.dates[{index}]")
+        entry_where = f"{where}.dates[{index}]"
+        value = _parse_iso_date(entry.get("date"), f"{entry_where}.date")
         if value is None:
             continue
         parsed.append(
             NoticeDate(
                 value=value,
-                kind=str(entry.get("kind") or "unknown"),
-                evidence=str(entry.get("evidence") or ""),
-                inferred_year=bool(entry.get("inferred_year", False)),
+                kind=_bounded_string(
+                    entry.get("kind", "unknown"),
+                    where=f"{entry_where}.kind",
+                    max_length=64,
+                    allow_empty=False,
+                ),
+                evidence=_bounded_string(
+                    entry.get("evidence", ""),
+                    where=f"{entry_where}.evidence",
+                    max_length=_MAX_EVIDENCE,
+                ),
+                inferred_year=_optional_bool(
+                    entry,
+                    "inferred_year",
+                    where=entry_where,
+                    default=False,
+                ),
             )
         )
     return tuple(parsed)
@@ -234,44 +493,170 @@ def _parse_health(raw: Any) -> CollectionHealth | None:
         return None
     if not isinstance(raw, dict):
         raise DigestContractError("collection_health는 객체이거나 null이어야 합니다.")
-    status = str(raw.get("status") or "healthy")
+    status = _bounded_string(
+        raw.get("status", "healthy"),
+        where="collection_health.status",
+        max_length=16,
+        allow_empty=False,
+    )
     if status not in HEALTH_STATUSES:
-        raise DigestContractError(f"collection_health.status 값이 올바르지 않습니다: {status!r}")
-    sources_raw = raw.get("sources") or {}
+        raise DigestContractError(
+            f"collection_health.status 값이 올바르지 않습니다: {status!r}"
+        )
+    sources_raw = raw.get("sources", {})
     if not isinstance(sources_raw, dict):
         raise DigestContractError("collection_health.sources는 객체여야 합니다.")
+    if len(sources_raw) > MAX_HEALTH_SOURCES:
+        raise DigestContractError(
+            "collection_health.sources 항목이 너무 많습니다 "
+            f"({len(sources_raw)}>{MAX_HEALTH_SOURCES})"
+        )
     sources: list[SourceHealth] = []
     for source_id, entry in sources_raw.items():
+        source_id = _bounded_string(
+            source_id,
+            where="collection_health.sources source_id",
+            max_length=_MAX_SOURCE_ID,
+            allow_empty=False,
+        )
         if not isinstance(entry, dict):
-            raise DigestContractError(f"collection_health.sources[{source_id}]: 객체가 아닙니다.")
-        source_status = str(entry.get("status") or "healthy")
+            raise DigestContractError(
+                f"collection_health.sources[{source_id}]: 객체가 아닙니다."
+            )
+        entry_where = f"collection_health.sources[{source_id}]"
+        source_status = _bounded_string(
+            entry.get("status", "healthy"),
+            where=f"{entry_where}.status",
+            max_length=16,
+            allow_empty=False,
+        )
         if source_status not in HEALTH_STATUSES:
             raise DigestContractError(
                 f"collection_health.sources[{source_id}].status 값이 올바르지 않습니다."
             )
-        errors = entry.get("errors") or []
-        if not isinstance(errors, list):
-            raise DigestContractError(
-                f"collection_health.sources[{source_id}].errors는 배열이어야 합니다."
-            )
+        errors = _string_list(
+            entry,
+            "errors",
+            where=entry_where,
+            max_length=_MAX_LIST_TEXT,
+        )
         sources.append(
             SourceHealth(
-                source_id=str(source_id),
+                source_id=source_id,
                 status=source_status,
-                list_candidates=int(entry.get("list_candidates", 0) or 0),
-                details_succeeded=int(entry.get("details_succeeded", 0) or 0),
-                details_failed=int(entry.get("details_failed", 0) or 0),
-                errors=tuple(str(item) for item in errors),
+                list_candidates=_optional_int(
+                    entry,
+                    "list_candidates",
+                    where=entry_where,
+                    default=0,
+                ),
+                details_succeeded=_optional_int(
+                    entry,
+                    "details_succeeded",
+                    where=entry_where,
+                    default=0,
+                ),
+                details_failed=_optional_int(
+                    entry,
+                    "details_failed",
+                    where=entry_where,
+                    default=0,
+                ),
+                errors=errors,
             )
+        )
+    healthy = _optional_int(raw, "healthy", where="collection_health", default=0)
+    degraded = _optional_int(raw, "degraded", where="collection_health", default=0)
+    failed = _optional_int(raw, "failed", where="collection_health", default=0)
+    expected_counts = {
+        "healthy": sum(item.status == "healthy" for item in sources),
+        "degraded": sum(item.status == "degraded" for item in sources),
+        "failed": sum(item.status == "failed" for item in sources),
+    }
+    actual_counts = {
+        "healthy": healthy,
+        "degraded": degraded,
+        "failed": failed,
+    }
+    if actual_counts != expected_counts:
+        raise DigestContractError(
+            "collection_health 요약 수치가 sources 상태와 일치하지 않습니다: "
+            f"got={actual_counts!r}, expected={expected_counts!r}"
         )
     return CollectionHealth(
         status=status,
-        healthy=int(raw.get("healthy", 0) or 0),
-        degraded=int(raw.get("degraded", 0) or 0),
-        failed=int(raw.get("failed", 0) or 0),
-        may_include_stale_notices=bool(raw.get("may_include_stale_notices", False)),
+        healthy=healthy,
+        degraded=degraded,
+        failed=failed,
+        may_include_stale_notices=_optional_bool(
+            raw,
+            "may_include_stale_notices",
+            where="collection_health",
+            default=False,
+        ),
         sources=tuple(sorted(sources, key=lambda item: item.source_id)),
     )
+
+
+def _parse_attachments(raw: Any, where: str) -> tuple[dict[str, Any], ...]:
+    if raw is _MISSING:
+        return ()
+    if not isinstance(raw, list):
+        raise DigestContractError(f"{where}: 배열이어야 합니다.")
+    if len(raw) > MAX_COLLECTION_ENTRIES:
+        raise DigestContractError(
+            f"{where}: 항목이 너무 많습니다 ({len(raw)}>{MAX_COLLECTION_ENTRIES})"
+        )
+    parsed: list[dict[str, Any]] = []
+    for index, entry in enumerate(raw):
+        entry_where = f"{where}[{index}]"
+        if not isinstance(entry, dict):
+            raise DigestContractError(f"{entry_where}: 객체여야 합니다.")
+        name = _bounded_string(
+            entry.get("name", "첨부"),
+            where=f"{entry_where}.name",
+            max_length=_MAX_SHORT_TEXT,
+            allow_empty=False,
+        )
+        url = _http_url(entry.get("url"), where=f"{entry_where}.url")
+        normalized: dict[str, Any] = {"name": name, "url": url}
+        if "kind" in entry:
+            normalized["kind"] = _bounded_string(
+                entry["kind"],
+                where=f"{entry_where}.kind",
+                max_length=64,
+                allow_empty=False,
+            )
+        parsed.append(normalized)
+    return tuple(parsed)
+
+
+def _parse_duplicate_sources(raw: Any, where: str) -> tuple[dict[str, str], ...]:
+    if raw is _MISSING:
+        return ()
+    if not isinstance(raw, list):
+        raise DigestContractError(f"{where}: 배열이어야 합니다.")
+    if len(raw) > MAX_COLLECTION_ENTRIES:
+        raise DigestContractError(
+            f"{where}: 항목이 너무 많습니다 ({len(raw)}>{MAX_COLLECTION_ENTRIES})"
+        )
+    parsed: list[dict[str, str]] = []
+    for index, entry in enumerate(raw):
+        entry_where = f"{where}[{index}]"
+        if not isinstance(entry, dict):
+            raise DigestContractError(f"{entry_where}: 객체여야 합니다.")
+        parsed.append(
+            {
+                "source_id": _bounded_string(
+                    entry.get("source_id"),
+                    where=f"{entry_where}.source_id",
+                    max_length=_MAX_SOURCE_ID,
+                    allow_empty=False,
+                ),
+                "url": _http_url(entry.get("url"), where=f"{entry_where}.url"),
+            }
+        )
+    return tuple(parsed)
 
 
 def _parse_item(raw: Any, index: int) -> DigestItem:
@@ -284,81 +669,165 @@ def _parse_item(raw: Any, index: int) -> DigestItem:
     analysis = _require(raw, "analysis", (dict,), where)
     score = _require(raw, "score", (dict,), where)
 
-    change = str(raw.get("change") or "unchanged")
+    change = _bounded_string(
+        raw.get("change", "unchanged"),
+        where=f"{where}.change",
+        max_length=16,
+        allow_empty=False,
+    )
     if change not in CHANGES:
         raise DigestContractError(f"{where}.change 값이 올바르지 않습니다: {change!r}")
 
-    band = str(_require(score, "band", (str,), f"{where}.score"))
+    band = _bounded_string(
+        _require(score, "band", (str,), f"{where}.score"),
+        where=f"{where}.score.band",
+        max_length=16,
+        allow_empty=False,
+    )
     if band not in BANDS:
         raise DigestContractError(f"{where}.score.band 값이 올바르지 않습니다: {band!r}")
 
-    eligibility = str(_require(score, "eligibility", (str,), f"{where}.score"))
+    eligibility = _bounded_string(
+        _require(score, "eligibility", (str,), f"{where}.score"),
+        where=f"{where}.score.eligibility",
+        max_length=32,
+        allow_empty=False,
+    )
     if eligibility not in ELIGIBILITIES:
         raise DigestContractError(
             f"{where}.score.eligibility 값이 올바르지 않습니다: {eligibility!r}"
         )
 
-    urgency = str(analysis.get("urgency") or "normal")
+    urgency = _bounded_string(
+        analysis.get("urgency", "normal"),
+        where=f"{where}.analysis.urgency",
+        max_length=16,
+        allow_empty=False,
+    )
     if urgency not in URGENCIES:
-        raise DigestContractError(f"{where}.analysis.urgency 값이 올바르지 않습니다: {urgency!r}")
+        raise DigestContractError(
+            f"{where}.analysis.urgency 값이 올바르지 않습니다: {urgency!r}"
+        )
 
-    score_value = _require(score, "score", (int, float), f"{where}.score")
-    if not 0 <= float(score_value) <= 100:
-        raise DigestContractError(f"{where}.score.score는 0~100이어야 합니다: {score_value!r}")
-
-    attachments_raw = notice.get("attachments") or []
-    if not isinstance(attachments_raw, list):
-        raise DigestContractError(f"{where}.notice.attachments는 배열이어야 합니다.")
-
-    duplicates_raw = raw.get("duplicate_sources") or []
-    if not isinstance(duplicates_raw, list):
-        raise DigestContractError(f"{where}.duplicate_sources는 배열이어야 합니다.")
-
-    def _string_tuple(container: dict[str, Any], key: str) -> tuple[str, ...]:
-        values = container.get(key) or []
-        if not isinstance(values, list):
-            raise DigestContractError(f"{where}: {key}는 배열이어야 합니다.")
-        return tuple(str(item) for item in values)
+    score_value = _number_value(
+        _require(score, "score", (int, float), f"{where}.score"),
+        where=f"{where}.score.score",
+        minimum=0,
+        maximum=100,
+    )
+    notice_id = _int_value(
+        _require(raw, "notice_id", (int,), where),
+        where=f"{where}.notice_id",
+        minimum=1,
+        maximum=2**63 - 1,
+    )
+    dedup_key = _bounded_string(
+        raw.get("dedup_key"),
+        where=f"{where}.dedup_key",
+        max_length=_MAX_DEDUP_KEY,
+        allow_empty=False,
+    )
+    revision_count = _optional_int(
+        raw,
+        "revision_count",
+        where=where,
+        default=1,
+        minimum=1,
+    )
+    source_id = _bounded_string(
+        _require(candidate, "source_id", (str,), f"{where}.notice.candidate"),
+        where=f"{where}.notice.candidate.source_id",
+        max_length=_MAX_SOURCE_ID,
+        allow_empty=False,
+    )
+    external_id = _bounded_string(
+        _require(candidate, "external_id", (str,), f"{where}.notice.candidate"),
+        where=f"{where}.notice.candidate.external_id",
+        max_length=_MAX_EXTERNAL_ID,
+        allow_empty=False,
+    )
+    url = _http_url(
+        _require(candidate, "url", (str,), f"{where}.notice.candidate"),
+        where=f"{where}.notice.candidate.url",
+    )
+    title_value = notice.get("title", _MISSING)
+    if title_value is _MISSING or title_value is None or title_value == "":
+        title_value = candidate.get("title")
+    title = _bounded_string(
+        title_value,
+        where=f"{where}.notice.title",
+        max_length=_MAX_TITLE,
+        allow_empty=False,
+    )
 
     return DigestItem(
-        notice_id=int(_require(raw, "notice_id", (int,), where)),
-        dedup_key=str(raw.get("dedup_key") or ""),
+        notice_id=notice_id,
+        dedup_key=dedup_key,
         change=change,
-        revision_count=int(raw.get("revision_count", 1) or 1),
-        source_id=str(_require(candidate, "source_id", (str,), f"{where}.notice.candidate")),
-        external_id=str(
-            _require(candidate, "external_id", (str,), f"{where}.notice.candidate")
+        revision_count=revision_count,
+        source_id=source_id,
+        external_id=external_id,
+        url=url,
+        title=title,
+        university=_optional_str(
+            candidate,
+            "source_university",
+            where=f"{where}.notice.candidate",
         ),
-        url=str(_require(candidate, "url", (str,), f"{where}.notice.candidate")),
-        title=str(notice.get("title") or candidate.get("title") or ""),
-        university=_optional_str(candidate, "source_university"),
-        board=_optional_str(candidate, "source_board"),
-        author=_optional_str(notice, "author"),
-        published_text=_optional_str(notice, "published_text"),
-        attachments=tuple(
-            item for item in attachments_raw if isinstance(item, dict)
+        board=_optional_str(
+            candidate,
+            "source_board",
+            where=f"{where}.notice.candidate",
         ),
-        summary=str(analysis.get("summary") or ""),
-        topics=_string_tuple(analysis, "topics"),
-        actions=_string_tuple(analysis, "actions"),
-        audiences=_string_tuple(analysis, "audiences"),
-        required=bool(analysis.get("required", False)),
+        author=_optional_str(notice, "author", where=f"{where}.notice"),
+        published_text=_optional_str(
+            notice,
+            "published_text",
+            where=f"{where}.notice",
+        ),
+        attachments=_parse_attachments(
+            notice.get("attachments", _MISSING),
+            f"{where}.notice.attachments",
+        ),
+        summary=_bounded_string(
+            analysis.get("summary", ""),
+            where=f"{where}.analysis.summary",
+            max_length=_MAX_ITEM_TEXT,
+        ),
+        topics=_string_list(analysis, "topics", where=f"{where}.analysis"),
+        actions=_string_list(analysis, "actions", where=f"{where}.analysis"),
+        audiences=_string_list(analysis, "audiences", where=f"{where}.analysis"),
+        required=_optional_bool(
+            analysis,
+            "required",
+            where=f"{where}.analysis",
+            default=False,
+        ),
         urgency=urgency,
         dates=_parse_dates(analysis.get("dates"), f"{where}.analysis"),
-        analysis_source=str(analysis.get("analysis_source") or "rules"),
-        score=float(score_value),
+        analysis_source=_bounded_string(
+            analysis.get("analysis_source", "rules"),
+            where=f"{where}.analysis.analysis_source",
+            max_length=128,
+            allow_empty=False,
+        ),
+        score=score_value,
         band=band,
         eligibility=eligibility,
-        reasons=_string_tuple(score, "reasons"),
+        reasons=_string_list(score, "reasons", where=f"{where}.score"),
         deadline=_parse_iso_date(score.get("deadline"), f"{where}.score.deadline"),
         next_event=_parse_iso_date(score.get("next_event"), f"{where}.score.next_event"),
-        mandatory_protected=bool(score.get("mandatory_protected", False)),
-        duplicate_sources=tuple(
-            {"source_id": str(item.get("source_id") or ""), "url": str(item.get("url") or "")}
-            for item in duplicates_raw
-            if isinstance(item, dict)
+        mandatory_protected=_optional_bool(
+            score,
+            "mandatory_protected",
+            where=f"{where}.score",
+            default=False,
         ),
-        warnings=_string_tuple(notice, "warnings"),
+        duplicate_sources=_parse_duplicate_sources(
+            raw.get("duplicate_sources", _MISSING),
+            f"{where}.duplicate_sources",
+        ),
+        warnings=_string_list(notice, "warnings", where=f"{where}.notice"),
     )
 
 
@@ -366,68 +835,183 @@ def parse_digest(
     payload: Any,
     *,
     expected_schema_version: int = SUPPORTED_SCHEMA_VERSION,
+    expected_user_key: str | None = None,
+    expected_digest_date: date | None = None,
 ) -> Digest:
     """digest JSON 객체를 검증해 `Digest`로 변환합니다.
 
     Raises:
         DigestContractError: 스키마 버전이 다르거나 계약을 만족하지 않을 때.
     """
-    if not isinstance(payload, dict):
-        raise DigestContractError("digest 최상위 값은 JSON 객체여야 합니다.")
+    try:
+        if not isinstance(payload, dict):
+            raise DigestContractError("digest 최상위 값은 JSON 객체여야 합니다.")
+        _validate_payload_budget(payload)
 
-    schema_version = _require(payload, "schema_version", (int,), "digest")
-    if int(schema_version) != int(expected_schema_version):
-        # 알 수 없는 스키마를 부분 해석하면 잘못된 마감/자격을 보여줄 수 있다.
-        raise DigestContractError(
-            "지원하지 않는 digest schema_version입니다: "
-            f"got={schema_version!r}, expected={expected_schema_version!r}"
+        expected_version = _int_value(
+            expected_schema_version,
+            where="expected_schema_version",
+            minimum=1,
+            maximum=2**31 - 1,
         )
+        schema_version = _int_value(
+            _require(payload, "schema_version", (int,), "digest"),
+            where="digest.schema_version",
+            minimum=1,
+            maximum=2**31 - 1,
+        )
+        if schema_version != expected_version:
+            # 알 수 없는 스키마를 부분 해석하면 잘못된 마감/자격을 보여줄 수 있다.
+            raise DigestContractError(
+                "지원하지 않는 digest schema_version입니다: "
+                f"got={schema_version!r}, expected={expected_version!r}"
+            )
 
-    user_key = str(_require(payload, "user_key", (str,), "digest")).strip()
-    if not user_key:
-        raise DigestContractError("digest.user_key가 비어 있습니다.")
+        user_key = _bounded_string(
+            _require(payload, "user_key", (str,), "digest"),
+            where="digest.user_key",
+            max_length=_MAX_USER_KEY,
+            allow_empty=False,
+        )
+        digest_date = _parse_iso_date(
+            _require(payload, "date", (str,), "digest"),
+            "digest.date",
+        )
+        if digest_date is None:
+            raise DigestContractError("digest.date가 필요합니다.")
 
-    digest_date = _parse_iso_date(_require(payload, "date", (str,), "digest"), "digest.date")
-    if digest_date is None:
-        raise DigestContractError("digest.date가 필요합니다.")
+        items_raw = payload.get("items", [])
+        if items_raw is None:
+            items_raw = []
+        if not isinstance(items_raw, list):
+            raise DigestContractError("digest.items는 배열이어야 합니다.")
+        if len(items_raw) > MAX_DIGEST_ITEMS:
+            raise DigestContractError(
+                f"digest.items 항목이 너무 많습니다 "
+                f"({len(items_raw)}>{MAX_DIGEST_ITEMS})"
+            )
+        items = tuple(_parse_item(item, index) for index, item in enumerate(items_raw))
+        notice_ids = [item.notice_id for item in items]
+        if len(notice_ids) != len(set(notice_ids)):
+            raise DigestContractError("digest.items에 중복 notice_id가 있습니다.")
 
-    items_raw = payload.get("items")
-    if items_raw is None:
-        items_raw = []
-    if not isinstance(items_raw, list):
-        raise DigestContractError("digest.items는 배열이어야 합니다.")
+        summary_raw = payload.get("summary", {})
+        if not isinstance(summary_raw, dict):
+            raise DigestContractError("digest.summary는 객체여야 합니다.")
+        summary = {
+            band: _optional_int(
+                summary_raw,
+                band,
+                where="digest.summary",
+                default=0,
+                maximum=MAX_DIGEST_ITEMS,
+            )
+            for band in BAND_ORDER
+        }
 
-    summary_raw = payload.get("summary") or {}
-    if not isinstance(summary_raw, dict):
-        raise DigestContractError("digest.summary는 객체여야 합니다.")
-    summary = {band: int(summary_raw.get(band, 0) or 0) for band in BAND_ORDER}
+        digest = Digest(
+            schema_version=schema_version,
+            user_key=user_key,
+            digest_date=digest_date,
+            summary=summary,
+            items=items,
+            collection_health=_parse_health(payload.get("collection_health")),
+        )
+        return ensure_digest_identity(
+            digest,
+            expected_user_key=expected_user_key,
+            expected_digest_date=expected_digest_date,
+        )
+    except DigestContractError:
+        raise
+    except (TypeError, ValueError, OverflowError) as exc:
+        # 외부 입력의 숫자 변환 등은 호출자가 한 종류의 계약 오류로 처리할 수
+        # 있어야 한다. 원래 예외는 체인에 남겨 운영 로그에서 원인을 확인한다.
+        raise DigestContractError(
+            f"digest 값을 해석할 수 없습니다: {type(exc).__name__}: {exc}"
+        ) from exc
 
-    return Digest(
-        schema_version=int(schema_version),
-        user_key=user_key,
-        digest_date=digest_date,
-        summary=summary,
-        items=tuple(_parse_item(item, index) for index, item in enumerate(items_raw)),
-        collection_health=_parse_health(payload.get("collection_health")),
-    )
+
+def ensure_digest_identity(
+    digest: Digest,
+    *,
+    expected_user_key: str | None = None,
+    expected_digest_date: date | None = None,
+) -> Digest:
+    """파일 경로가 아니라 digest 내부 소유자·날짜를 호출자 기대값에 결합."""
+    if expected_user_key is not None:
+        expected_key = _bounded_string(
+            expected_user_key,
+            where="expected_user_key",
+            max_length=_MAX_USER_KEY,
+            allow_empty=False,
+        )
+        if digest.user_key != expected_key:
+            raise DigestContractError(
+                "digest.user_key가 요청 사용자와 다릅니다: "
+                f"got={digest.user_key!r}, expected={expected_key!r}"
+            )
+    if expected_digest_date is not None:
+        if not isinstance(expected_digest_date, date):
+            raise DigestContractError("expected_digest_date는 date여야 합니다.")
+        if digest.digest_date != expected_digest_date:
+            raise DigestContractError(
+                "digest.date가 요청 날짜와 다릅니다: "
+                f"got={digest.digest_date.isoformat()!r}, "
+                f"expected={expected_digest_date.isoformat()!r}"
+            )
+    return digest
 
 
 def load_digest(
     path: str | Path,
     *,
     expected_schema_version: int = SUPPORTED_SCHEMA_VERSION,
+    expected_user_key: str | None = None,
+    expected_digest_date: date | None = None,
 ) -> Digest:
     """digest JSON 파일을 읽어 검증합니다."""
     file_path = Path(path)
     try:
-        raw = file_path.read_text(encoding="utf-8")
+        declared_size = file_path.stat().st_size
+        if declared_size > MAX_DIGEST_FILE_BYTES:
+            raise DigestContractError(
+                f"digest 파일이 너무 큽니다: {declared_size}>{MAX_DIGEST_FILE_BYTES}"
+            )
+        encoded = file_path.read_bytes()
     except OSError as exc:
         raise DigestContractError(f"digest 파일을 읽을 수 없습니다: {file_path}") from exc
+    if len(encoded) > MAX_DIGEST_FILE_BYTES:
+        raise DigestContractError(
+            f"digest 파일이 너무 큽니다: {len(encoded)}>{MAX_DIGEST_FILE_BYTES}"
+        )
     try:
-        payload = json.loads(raw)
+        raw = encoded.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise DigestContractError(
+            f"digest 파일이 UTF-8이 아닙니다: {file_path}"
+        ) from exc
+    try:
+        payload = json.loads(
+            raw,
+            parse_constant=_reject_json_constant,
+        )
     except json.JSONDecodeError as exc:
-        raise DigestContractError(f"digest 파일이 유효한 JSON이 아닙니다: {file_path}") from exc
-    return parse_digest(payload, expected_schema_version=expected_schema_version)
+        raise DigestContractError(
+            f"digest 파일이 유효한 JSON이 아닙니다: {file_path}"
+        ) from exc
+    return parse_digest(
+        payload,
+        expected_schema_version=expected_schema_version,
+        expected_user_key=expected_user_key,
+        expected_digest_date=expected_digest_date,
+    )
+
+
+def _reject_json_constant(value: str) -> None:
+    raise DigestContractError(
+        f"digest JSON에 허용되지 않는 숫자 상수가 있습니다: {value}"
+    )
 
 
 def digest_path_for(directory: str | Path, digest_date: date) -> Path:
