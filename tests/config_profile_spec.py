@@ -52,6 +52,10 @@ def _profile_env(tmp_path: Path, *, memory_sources: str = "discord") -> Path:
                 "EMBEDDING_ENABLED=false",
                 "DISCORD_BOT_TOKEN=general-token",
                 "MASAMONG_EXPECTED_DISCORD_BOT_USER_ID=replace-with-current-masamo-bot-user-id",
+                # 명시적 프로필은 켜 둔 기능의 자격증명을 기동 시점에 요구한다.
+                # LINKUP_API_KEY는 비워 두어 provider가 legacy로 정해지게 한다.
+                "COMETAPI_KEY=test-cometapi-key",
+                "KMA_API_KEY=test-kma-key",
             ]
         ),
         encoding="utf-8",
@@ -841,3 +845,123 @@ def test_explicit_general_accepts_bootstrap_and_steady_state_migration_modes(
     assert result.stdout.strip().splitlines()[-1] == str(
         auto_migrate == "true"
     )
+
+
+def _strip_env_key(profile_path: Path, key: str) -> None:
+    """선택한 프로필 env 파일에서 특정 키 줄만 제거합니다."""
+    kept = [
+        line
+        for line in profile_path.read_text(encoding="utf-8").splitlines()
+        if not line.startswith(f"{key}=")
+    ]
+    profile_path.write_text("\n".join(kept), encoding="utf-8")
+
+
+def _boot(profile_path: Path, code: str = "import config"):
+    """선택한 프로필로 config를 import하는 하위 프로세스를 실행합니다."""
+    env = os.environ.copy()
+    env["MASAMONG_ENV_FILE"] = str(profile_path)
+    return subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=15,
+    )
+
+
+def test_explicit_profile_rejects_missing_llm_credentials(tmp_path):
+    # 명시적 프로필은 상속 환경을 무시하므로 env 파일에서 key가 빠지면
+    # 빈 문자열로 조용히 기동한 뒤 사용자가 봇을 부를 때에야 실패했다.
+    profile_path = _profile_env(tmp_path)
+    _strip_env_key(profile_path, "COMETAPI_KEY")
+
+    result = _boot(profile_path)
+
+    assert result.returncode != 0
+    assert "LLM_MAIN_PRIMARY_API_KEY" in result.stderr
+
+
+def test_explicit_profile_rejects_placeholder_credentials(tmp_path):
+    profile_path = _profile_env(tmp_path)
+    _strip_env_key(profile_path, "KMA_API_KEY")
+    with profile_path.open("a", encoding="utf-8") as handle:
+        handle.write("\nKMA_API_KEY=replace-with-key\n")
+
+    result = _boot(profile_path)
+
+    assert result.returncode != 0
+    assert "KMA_API_KEY" in result.stderr
+    assert "placeholder" in result.stderr
+
+
+def test_explicit_profile_allows_missing_key_for_disabled_cog(tmp_path):
+    # key가 없는 인스턴스는 Cog를 명시적으로 빼는 것이 정직한 표현이다.
+    profile_path = _profile_env(tmp_path)
+    _strip_env_key(profile_path, "KMA_API_KEY")
+    with profile_path.open("a", encoding="utf-8") as handle:
+        handle.write("\nMASAMONG_DISABLED_COGS=weather_cog\n")
+
+    result = _boot(profile_path, "import config; print(config.PROFILE)")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "general"
+
+
+def test_credential_check_ignores_lane_with_disabled_provider(tmp_path):
+    # provider가 none인 레인은 호출되지 않으므로 key를 요구하면 안 된다.
+    profile_path = _profile_env(tmp_path)
+    with profile_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            "\nLLM_MAIN_FALLBACK_PROVIDER=none"
+            "\nLLM_MAIN_FALLBACK_API_KEY=\n"
+        )
+
+    result = _boot(profile_path, "import config; print(config.PROFILE)")
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_linkup_key_required_only_when_linkup_is_active_provider(tmp_path):
+    # provider가 legacy면 Linkup은 호출되지 않으므로 key가 없어도 된다.
+    profile_path = _profile_env(tmp_path)
+    with profile_path.open("a", encoding="utf-8") as handle:
+        handle.write("\nLINKUP_ENABLED=true\nWEB_SEARCH_PROVIDER=legacy\n")
+
+    assert _boot(profile_path, "import config").returncode == 0
+
+    _strip_env_key(profile_path, "WEB_SEARCH_PROVIDER")
+    with profile_path.open("a", encoding="utf-8") as handle:
+        handle.write("\nWEB_SEARCH_PROVIDER=linkup\n")
+
+    result = _boot(profile_path)
+
+    assert result.returncode != 0
+    assert "LINKUP_API_KEY" in result.stderr
+
+
+def test_legacy_profile_does_not_require_feature_credentials(tmp_path):
+    # 현재 원격 운영(legacy 경로)은 이 검사의 영향을 받지 않아야 한다.
+    env = os.environ.copy()
+    for key in tuple(env):
+        if key.startswith("MASAMONG_"):
+            env.pop(key, None)
+    env["MASAMONG_LOG_FILE"] = os.devnull
+    env["MASAMONG_ERROR_LOG_FILE"] = os.devnull
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import config; print(config.PROFILE, config.REQUIRE_EXPLICIT_PROFILE)",
+        ],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "legacy False"

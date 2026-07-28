@@ -1608,6 +1608,88 @@ EVENING_GREETING_TIME = {
     "hour": as_int(load_config_value("EVENING_GREETING_HOUR", 23), 23),
     "minute": as_int(load_config_value("EVENING_GREETING_MINUTE", 50), 50),
 }
+
+# ========== 명시적 프로필 기능 자격증명 검증 ==========
+# 경계 키(토큰/DB/TLS)는 위에서 이미 fail-closed로 막지만 기능 키는 그렇지 않다.
+# 명시적 프로필은 상속 환경을 의도적으로 무시하므로 env 파일에서 API key 한 줄만
+# 빠져도 기본값(보통 빈 문자열)으로 조용히 기동한 뒤, 사용자가 봇을 부르는
+# 시점에야 실패한다. 실제로 켜 둔 기능의 자격증명만 기동 시점에 확인해
+# 전환 실패를 런타임이 아니라 배포 시점에 드러낸다.
+_CREDENTIAL_PLACEHOLDER_MARKERS = (
+    "replace-with",
+    "replace_with",
+    "your_",
+    "your-",
+    "changeme",
+    "placeholder",
+)
+
+
+def _credential_problem(value: Any) -> str | None:
+    """자격증명이 비었거나 예제 placeholder 그대로인지 판정합니다."""
+    rendered = as_str(value, "").strip()
+    if not rendered:
+        return "값이 비어 있음"
+    lowered = rendered.lower()
+    if any(marker in lowered for marker in _CREDENTIAL_PLACEHOLDER_MARKERS):
+        return "예제 placeholder가 그대로 남아 있음"
+    return None
+
+
+if REQUIRE_EXPLICIT_PROFILE:
+    _credential_errors: list[str] = []
+    if LLM_MAIN_PRIMARY_PROVIDER == "none":
+        _credential_errors.append(
+            "LLM_MAIN_PRIMARY_PROVIDER (답변 생성 레인이 비활성)"
+        )
+    # provider가 none인 레인은 호출되지 않으므로 key를 요구하지 않는다.
+    for _lane_key_name, _lane_provider, _lane_api_key in (
+        (
+            "LLM_MAIN_PRIMARY_API_KEY",
+            LLM_MAIN_PRIMARY_PROVIDER,
+            LLM_MAIN_PRIMARY_API_KEY,
+        ),
+        (
+            "LLM_MAIN_FALLBACK_API_KEY",
+            LLM_MAIN_FALLBACK_PROVIDER,
+            LLM_MAIN_FALLBACK_API_KEY,
+        ),
+        (
+            "LLM_ROUTING_PRIMARY_API_KEY",
+            LLM_ROUTING_PRIMARY_PROVIDER,
+            LLM_ROUTING_PRIMARY_API_KEY,
+        ),
+        (
+            "LLM_ROUTING_FALLBACK_API_KEY",
+            LLM_ROUTING_FALLBACK_PROVIDER,
+            LLM_ROUTING_FALLBACK_API_KEY,
+        ),
+    ):
+        if _lane_provider == "none":
+            continue
+        _lane_problem = _credential_problem(_lane_api_key)
+        if _lane_problem:
+            _credential_errors.append(f"{_lane_key_name} ({_lane_problem})")
+    # Linkup은 provider로 선택되고(tools_cog) 동시에 활성일 때만(linkup_search)
+    # 실제로 호출된다. 둘 중 하나만 켜진 인스턴스에 key를 요구하지 않는다.
+    if LINKUP_ENABLED and WEB_SEARCH_PROVIDER == "linkup":
+        _linkup_problem = _credential_problem(LINKUP_API_KEY)
+        if _linkup_problem:
+            _credential_errors.append(f"LINKUP_API_KEY ({_linkup_problem})")
+    # 날씨 Cog를 올리면 명령과 정기 알림 모두 KMA key를 실제로 사용한다.
+    # key가 없는 인스턴스는 MASAMONG_DISABLED_COGS로 Cog를 빼는 것이 정직하다.
+    if "weather_cog" not in DISABLED_COGS:
+        _kma_problem = _credential_problem(KMA_API_KEY)
+        if _kma_problem:
+            _credential_errors.append(f"KMA_API_KEY ({_kma_problem})")
+    if _credential_errors:
+        raise RuntimeError(
+            "명시적 프로필에서 켜 둔 기능의 자격증명이 선택한 env 파일에 "
+            "없습니다. 명시적 프로필은 systemd/shell 상속값을 무시하므로 "
+            "해당 키를 env 파일 안에 직접 적어야 합니다: "
+            + ", ".join(_credential_errors)
+        )
+
 DEFAULT_TSUNDERE_PERSONA = _extract_prompt_value("default_persona", FALLBACK_PERSONA)
 DEFAULT_TSUNDERE_RULES = _extract_prompt_value("default_rules", FALLBACK_RULES)
 
