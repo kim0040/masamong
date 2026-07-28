@@ -252,6 +252,7 @@ class ReMasamongBot(commands.Bot):
                     "user_preferences",
                     "dm_usage_logs",
                     "channel_summary_state",
+                    "bot_admin_accounts",
                 }
             )
         if config.DB_BACKEND == "tidb":
@@ -387,6 +388,27 @@ class ReMasamongBot(commands.Bot):
                 raise RuntimeError(
                     "channel_summary_state 필수 컬럼이 없습니다: "
                     + ", ".join(missing_summary_columns)
+                )
+
+            admin_columns = set(
+                await get_table_columns(self.db, "bot_admin_accounts")
+            )
+            required_admin_columns = {
+                "instance_name",
+                "user_id",
+                "role",
+                "enabled",
+                "changed_by",
+                "created_at",
+                "updated_at",
+            }
+            missing_admin_columns = sorted(
+                required_admin_columns - admin_columns
+            )
+            if missing_admin_columns:
+                raise RuntimeError(
+                    "bot_admin_accounts 필수 컬럼이 없습니다: "
+                    + ", ".join(missing_admin_columns)
                 )
 
         if config.SCHOOL_NOTICE_ENABLED:
@@ -583,6 +605,7 @@ class ReMasamongBot(commands.Bot):
                         "user_activity_log",
                         "linkup_usage_log",
                         "channel_summary_state",
+                        "bot_admin_accounts",
                         "conversation_windows",
                         "system_counters",
                         "api_call_log",
@@ -621,6 +644,7 @@ class ReMasamongBot(commands.Bot):
                         "user_activity_log",
                         "linkup_usage_log",
                         "channel_summary_state",
+                        "bot_admin_accounts",
                         "conversation_windows",
                         "system_counters",
                         "api_call_log",
@@ -874,7 +898,8 @@ class ReMasamongBot(commands.Bot):
         cog_list = [
             'weather_cog', 'tools_cog', 'events', 'commands', 'privacy_cog', 'ai_handler',
             'fun_cog', 'activity_cog', 'poll_cog', 'settings_cog',
-            'maintenance_cog', 'proactive_assistant', 'fortune_cog', 'help_cog'
+            'maintenance_cog', 'proactive_assistant', 'fortune_cog', 'admin_cog',
+            'help_cog'
         ]
         # 학교 공지 Cog는 기능을 켠 인스턴스에서만 올린다. 끈 인스턴스에는
         # 해당 테이블이 없으므로 Cog를 올려두면 명령이 DB 오류를 낸다.

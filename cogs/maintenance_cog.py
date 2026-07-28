@@ -16,6 +16,7 @@ import config
 from logger_config import logger
 from utils import db as db_utils
 from database.bm25_index import bulk_rebuild
+from utils.admin_policy import is_superadmin
 
 class MaintenanceCog(commands.Cog):
     """봇의 백그라운드 유지보수 작업을 관리합니다."""
@@ -147,7 +148,7 @@ class MaintenanceCog(commands.Cog):
             self._last_conversation_ts = datetime.now(timezone.utc)
 
     @commands.group(name="debug", hidden=True)
-    @commands.is_owner()
+    @commands.check(lambda ctx: is_superadmin(ctx.author.id))
     async def debug(self, ctx: commands.Context):
         """(관리자 전용) 디버깅 명령어"""
         if ctx.invoked_subcommand is None:

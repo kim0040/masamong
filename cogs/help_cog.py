@@ -510,7 +510,8 @@ class MasamongHomeView(discord.ui.View):
                 "- `/config channel`: 응답 허용 채널 추가/제거\n"
                 "- `/config language`: 서버 언어\n"
                 "- `/persona view`, `/persona set`: 이 서버 전용 말투\n"
-                "- 관리자 권한이 필요하며 다른 서버의 설정과 섞이지 않습니다."
+                f"- 서버 관리 권한이 필요하며 다른 서버의 설정과 섞이지 않습니다.\n"
+                f"- 권한 범위 확인과 인스턴스 관리: `{prefix}관리`"
             ),
             "privacy": (
                 "🔐 **개인정보 관리**\n"

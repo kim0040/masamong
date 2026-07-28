@@ -30,6 +30,7 @@
 | embedding | 현재 파일과 Kakao mapping 보존 | 별도 파일, Kakao mapping 없음 |
 | 기억 소스 | 정확히 `discord,kakao` | 정확히 `discord` |
 | 로그 | `masamo*.log` | `general*.log` |
+| 최고/등록 관리자 | Masamo 전용 env ID와 `instance_name=masamo` 행 | 별도 General env ID와 `instance_name=general` 행 |
 | 서비스 unit | `masamong-masamo.service` | `masamong-general.service` |
 | 정기 작업 | 기존 작업·학교 23:00·편입 23:35 timer 소유 | 첫 부트스트랩에는 전부 끄고 검증 뒤 필요한 작업만 소유 |
 | 학교 공지 | 현재 schema/core DB/digest/timer 소유 | `SCHOOL_NOTICE_ENABLED=false`, Masamo 상태 공유 금지 |
@@ -88,6 +89,7 @@ MASAMONG_GUILD_SETTINGS_MODE=static
 MASAMONG_DB_NAME=masamong
 MASAMONG_EXPECTED_DB_NAME=masamong
 MASAMONG_MEMORY_SOURCES=discord,kakao
+MASAMONG_SUPERADMIN_USER_IDS=replace-with-current-masamo-superadmin-user-id
 ```
 
 `static`은 기존 prompt의 채널/페르소나 동작을 유지한다. 오래된 `guild_settings` 값을
@@ -137,6 +139,8 @@ ls -la /srv/masamong/current/config.json
 위 파일을 별도 경로로 복사한 후 placeholder를 실제 값으로 바꾼다. General에는 Masamo
 prompt의 채널 ID, Kakao mapping, 기존 embedding 파일 또는 사용자 데이터를 복사하지 않는다.
 새 DB 계정은 `masamong_general`에만 최소 권한을 가져야 한다.
+General의 `MASAMONG_SUPERADMIN_USER_IDS`는 별도로 정하기 전까지 비워 두며 Masamo 값을
+복사하지 않는다. `bot_admin_accounts`도 General DB에서 독립적으로 시작한다.
 
 General의 첫 빈 DB 생성 때만 `MASAMONG_AUTO_MIGRATE=true`를 사용한다. 이 계정이 기존
 `masamong`에 접근하지 못한다는 것을 먼저 확인한다. 스키마 생성과 smoke test가 끝난 뒤에는
@@ -201,6 +205,8 @@ Restart=on-failure
 - `MASAMONG_AUTO_MIGRATE=false`에서는 startup 및 runtime helper가 DDL을 실행하지 않고
   필수 테이블과 `guild_settings`, `user_profiles` 컬럼을 읽기 전용으로 검증
 - 프로필별 로그 파일을 열 수 없으면 명시적 운영 프로필은 기동 실패
+- 최고 관리자 env는 현재 프로필에서만 읽고, 등록 관리자는
+  `bot_admin_accounts(instance_name, user_id)`로 다시 격리
 
 `MASAMONG_EXPECTED_DISCORD_BOT_USER_ID`는 Discord Developer Portal의 해당 애플리케이션
 bot user ID를 십진 정수로 적는다. 두 프로필 값은 반드시 달라야 한다.

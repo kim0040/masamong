@@ -56,6 +56,18 @@ CREATE TABLE IF NOT EXISTS channel_summary_state (
     PRIMARY KEY (guild_id, channel_id)
 );
 
+-- 프로필별 봇 관리자. Discord 서버 관리자 권한과 섞지 않는다.
+CREATE TABLE IF NOT EXISTS bot_admin_accounts (
+    instance_name TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    changed_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (instance_name, user_id)
+);
+
 -- 모든 대화 내용을 순차적으로 저장하는 테이블
 CREATE TABLE IF NOT EXISTS conversation_history (
     message_id INTEGER PRIMARY KEY,

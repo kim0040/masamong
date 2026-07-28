@@ -49,6 +49,19 @@ CREATE TABLE IF NOT EXISTS channel_summary_state (
     KEY idx_channel_summary_updated (updated_at)
 );
 
+-- 프로필별 봇 관리자. Discord 서버 관리자 권한과 섞지 않는다.
+CREATE TABLE IF NOT EXISTS bot_admin_accounts (
+    instance_name VARCHAR(32) NOT NULL,
+    user_id BIGINT NOT NULL,
+    role VARCHAR(32) NOT NULL,
+    enabled TINYINT(1) NOT NULL DEFAULT 1,
+    changed_by BIGINT NOT NULL,
+    created_at VARCHAR(64) NOT NULL,
+    updated_at VARCHAR(64) NOT NULL,
+    PRIMARY KEY (instance_name, user_id),
+    KEY idx_bot_admin_role (instance_name, role, enabled)
+);
+
 CREATE TABLE IF NOT EXISTS conversation_history (
     message_id BIGINT PRIMARY KEY,
     guild_id BIGINT NOT NULL,

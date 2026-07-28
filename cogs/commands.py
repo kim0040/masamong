@@ -16,6 +16,7 @@ from pathlib import Path
 
 import config
 from logger_config import logger
+from utils.admin_policy import is_superadmin
 from utils.discord_helpers import clip_discord_text
 
 class UserCommands(commands.Cog):
@@ -46,11 +47,9 @@ class UserCommands(commands.Cog):
         logger.info("UserCommands Cog가 성공적으로 초기화되었습니다.")
 
     @commands.command(name='delete_log', aliases=['로그삭제'])
-    @commands.has_permissions(administrator=True) # 관리자 권한이 있는 사용자만 실행 가능
-    @commands.guild_only() # 서버 채널에서만 사용 가능
     async def delete_log(self, ctx: commands.Context):
         """
-        봇의 로그 파일을 삭제합니다. (관리자 전용, 서버 전용)
+        봇의 로그 파일을 삭제합니다. (인스턴스 최고 관리자 전용)
 
         사용법:
         - `!delete_log`
@@ -61,8 +60,16 @@ class UserCommands(commands.Cog):
         참고:
         - `config.LOG_FILE_NAME`에 정의된 파일을 삭제합니다.
         """
+        if not is_superadmin(ctx.author.id):
+            await ctx.send(
+                "❌ 전역 로그 작업은 현재 인스턴스의 최고 관리자만 실행할 수 있습니다."
+            )
+            return
         log_filename = config.LOG_FILE_NAME
-        log_extra = {'guild_id': ctx.guild.id, 'author_id': ctx.author.id}
+        log_extra = {
+            'guild_id': ctx.guild.id if ctx.guild else 0,
+            'author_id': ctx.author.id,
+        }
         try:
             if os.path.exists(log_filename):
                 os.remove(log_filename)
@@ -78,15 +85,12 @@ class UserCommands(commands.Cog):
     @delete_log.error
     async def delete_log_error(self, ctx: commands.Context, error):
         """`delete_log` 명령어에서 발생하는 특정 오류를 처리합니다."""
-        log_extra = {'guild_id': ctx.guild.id, 'author_id': ctx.author.id}
-        if isinstance(error, commands.MissingPermissions):
-            await ctx.send(config.MSG_CMD_NO_PERM)
-            logger.warning(f"사용자가 권한 없이 `delete_log` 명령어를 시도했습니다.", extra=log_extra)
-        elif isinstance(error, commands.NoPrivateMessage):
-            await ctx.send(config.MSG_CMD_GUILD_ONLY)
-        else:
-            logger.error(f"`delete_log` 명령어 처리 중 예기치 않은 오류 발생: {error}", exc_info=True, extra=log_extra)
-            await ctx.send(config.MSG_CMD_ERROR)
+        log_extra = {
+            'guild_id': ctx.guild.id if ctx.guild else 0,
+            'author_id': ctx.author.id,
+        }
+        logger.error(f"`delete_log` 명령어 처리 중 예기치 않은 오류 발생: {error}", exc_info=True, extra=log_extra)
+        await ctx.send(config.MSG_CMD_ERROR)
 
 
     
