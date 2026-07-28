@@ -1405,6 +1405,29 @@ async def test_bare_notice_command_opens_unified_dashboard(
 
 
 @pytest.mark.asyncio
+async def test_dashboard_does_not_claim_profile_was_lost_before_reconsent(
+    tmp_path,
+    monkeypatch,
+):
+    cog, _bot, db = await _make_cog(tmp_path, monkeypatch)
+    await _register_profile(cog)
+    await withdraw_consent(db, USER_ID, SCHOOL_NOTICE_SCOPE)
+    monkeypatch.setattr(config, "SCHOOL_NOTICE_ENABLED", True)
+    ctx = _FakeContext()
+    try:
+        await cog.send_dashboard(ctx)
+
+        embed = ctx.messages[0]["embed"]
+        state = next(
+            field.value for field in embed.fields if field.name == "현재 상태"
+        )
+        assert state == "동의 확인 필요"
+        assert "설정 전" not in state
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
 async def test_initial_collection_is_one_bounded_user_scoped_no_llm_run(
     tmp_path,
     monkeypatch,

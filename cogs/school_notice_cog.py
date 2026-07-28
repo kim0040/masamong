@@ -1711,7 +1711,9 @@ class SchoolNoticeCog(commands.Cog):
         row = await self._profile_row(int(ctx.author.id)) if consented else None
         has_profile = row is not None
         state = (
-            ("사용 중" if row["enabled"] else "중지됨")
+            "동의 확인 필요"
+            if not consented
+            else ("사용 중" if row["enabled"] else "중지됨")
             if has_profile
             else "설정 전"
         )
