@@ -152,6 +152,35 @@ def test_optional_context_has_independent_hard_budgets(monkeypatch):
     assert len(prompt) <= config.COMETAPI_USER_PROMPT_MAX_CHARS
 
 
+def test_recent_channel_history_keeps_speaker_identity_separate(monkeypatch):
+    monkeypatch.setattr(config, "COMETAPI_USER_PROMPT_MAX_CHARS", 4_000)
+    handler = _handler()
+
+    prompt = handler._compose_main_prompt(
+        _message(),
+        user_query="내가 말한 건 뭐였지?",
+        rag_blocks=[],
+        tool_results_block=None,
+        recent_history=[
+            {
+                "role": "user",
+                "speaker": "민수",
+                "is_current_user": False,
+                "parts": ["부산으로 가자"],
+            },
+            {
+                "role": "user",
+                "speaker": "테스트 사용자",
+                "is_current_user": True,
+                "parts": ["서울로 가자"],
+            },
+        ],
+    )
+
+    assert "User(민수): 부산으로 가자" in prompt
+    assert "User(테스트 사용자·현재 질문자): 서울로 가자" in prompt
+
+
 @pytest.mark.asyncio
 async def test_image_prompt_timeout_uses_raw_prompt_without_direct_llm_fallback():
     handler = _handler()

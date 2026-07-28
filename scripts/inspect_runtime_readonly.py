@@ -72,6 +72,7 @@ _EXPLICIT_PROFILE_TABLES = frozenset(
         "conversation_history_archive",
         "user_preferences",
         "dm_usage_logs",
+        "channel_summary_state",
     }
 )
 _SCHOOL_NOTICE_TABLES = frozenset(
@@ -109,6 +110,7 @@ _TABLE_TIMESTAMP_COLUMNS = {
     "privacy_consents": "updated_at",
     "privacy_consent_events": "created_at",
     "dm_usage_logs": "reset_at",
+    "channel_summary_state": "updated_at",
     "discord_chat_embeddings": "timestamp",
     "discord_memory_entries": "timestamp",
     "kakao_chunks": "start_date",
@@ -170,6 +172,15 @@ _CORE_EXPECTED_COLUMNS = {
             "granted_at",
             "withdrawn_at",
             "created_at",
+        }
+    ),
+    "channel_summary_state": frozenset(
+        {
+            "guild_id",
+            "channel_id",
+            "anchor_message_id",
+            "summary_text",
+            "updated_at",
         }
     ),
 }

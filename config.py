@@ -1275,7 +1275,10 @@ if WEB_SEARCH_PROVIDER not in {"linkup", "legacy"}:
 # Linkup 검색 설정
 LINKUP_ENABLED = as_bool(load_config_value('LINKUP_ENABLED', 'true'))
 LINKUP_TIMEOUT_SECONDS = max(5, as_int(load_config_value('LINKUP_TIMEOUT_SECONDS', 40), 40))
-LINKUP_FETCH_RENDER_JS = as_bool(load_config_value('LINKUP_FETCH_RENDER_JS', 'true'))
+LINKUP_FETCH_RENDER_JS = as_bool(load_config_value('LINKUP_FETCH_RENDER_JS', 'false'))
+LINKUP_FETCH_JS_RETRY_ENABLED = as_bool(
+    load_config_value('LINKUP_FETCH_JS_RETRY_ENABLED', 'true')
+)
 LINKUP_OUTPUT_TYPE = as_str(load_config_value('LINKUP_OUTPUT_TYPE', 'searchResults'), 'searchResults')
 if LINKUP_OUTPUT_TYPE not in {"searchResults", "sourcedAnswer", "structured"}:
     LINKUP_OUTPUT_TYPE = "searchResults"

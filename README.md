@@ -43,13 +43,16 @@ its current name and data; it is not renamed, copied into General, or rebuilt.
 - AI conversation in configured guild channels and DMs
 - Fast local routing for obvious small talk/tool requests; optional LLM intent
   routing for ambiguous requests
+- Web search with normalized source URLs, same-query singleflight, a bounded
+  non-JavaScript fetch path, and one final answer-model call; verified sources
+  are rendered directly in the Discord response
 - KMA observation, six-hour nowcast, short/mid-range forecast, active warning,
   earthquake, typhoon/impact outlook, finance, exchange-rate, web/news, and
   image tools
 - Discord and optional Kakao memory with hybrid retrieval
 - Daily/monthly/yearly fortune, zodiac, and persistent morning briefing
-- Activity ranking, conversation summary, polls, localization, and guild persona
-  settings
+- Activity ranking, restart-safe incremental conversation summaries, polls,
+  localization, and guild persona settings
 - Optional school-notice personalization for registered users and supported
   schools
 - Optional DM-only subscription to 20 official transfer-admissions notice
@@ -68,6 +71,14 @@ per-call timeout, provider rate limits, prompt/output caps, and finite
 primary/fallback attempts. A single AI turn can plan at most three tool calls.
 Fortune generation and school collection also use explicit finite attempt and
 runtime limits; neither scheduler retries indefinitely.
+
+Conversation context labels every speaker and marks the current requester.
+Follow-up search expansion uses only that requester's earlier turns, so one
+member's subject cannot silently become another member's query. Retrieved web
+content is treated as untrusted evidence rather than instructions. The search
+result and tool context feed the common response path, which calls the main
+answer model once instead of creating a preliminary search answer and then
+calling the answer model again.
 
 Optional NumPy, SentenceTransformer, Transformers, Torch, and model construction
 run in executor threads on first use, including their heavy import phase. A load
@@ -130,6 +141,22 @@ Those deletion commands remove the corresponding feature profile and derived
 personalization state and withdraw consent. They do not delete ordinary Discord
 conversation or server records. Consent/audit events remain as the processing
 history.
+
+## Discord menu and summary state
+
+In a guild, the prefix command itself posts a small launcher because Discord
+prefix messages cannot be ephemeral. Pressing **Open my menu** returns the full
+dashboard only to the caller. School notices, transfer subscriptions, and
+privacy/profile management are visibly disabled there and point to DM; no
+personal setting or result is read for the public launcher. Each member must run
+their own `!메뉴`, and another member cannot use its button. In DM, the full
+personal dashboard remains available.
+
+`!요약` persists only its per-guild/per-channel anchor and bounded summary in
+`channel_summary_state`. This lets the next summary continue after a restart
+without reprocessing the whole channel. The table is additive, and unrelated
+conversation, embedding, profile, and delivery rows are neither replaced nor
+deleted.
 
 ## School-notice behavior
 
@@ -248,7 +275,7 @@ do not match.
 |---|---|
 | `@Masamong <message>` | AI conversation in an allowed guild channel |
 | DM message | Private AI conversation, subject to DM and LLM limits |
-| `!메뉴`, `!도움` | Unified feature dashboard and detailed help |
+| `!메뉴`, `!도움` | Unified help; a guild menu opens its details privately to the caller and disables DM-only actions |
 | `!날씨 [지역] [날짜]` | KMA observation, six-hour outlook, forecast, and active warnings |
 | `!이미지 <prompt>` | Image generation with user/global quota guards |
 | `!운세`, `!운세 상세` | Daily summary or detailed fortune |
@@ -288,6 +315,10 @@ EMBEDDING_MAX_CONCURRENCY=1
 RAG_MAX_BACKGROUND_TASKS=2
 RAG_MAX_TRACKED_WINDOWS=64
 MASAMONG_DISCORD_MAX_MESSAGES=100
+STRUCTURED_MEMORY_QUERY_LIMIT=384
+STRUCTURED_MEMORY_FALLBACK_QUERY_LIMIT=1024
+LINKUP_FETCH_RENDER_JS=false
+LINKUP_FETCH_JS_RETRY_ENABLED=true
 TOKENIZERS_PARALLELISM=false
 ```
 
@@ -301,6 +332,7 @@ enable only the features that fit the host.
 .venv/bin/python -m pytest -q
 .venv/bin/python -m compileall -q .
 .venv/bin/python -m pip check
+.venv/bin/python scripts/verify_bang_commands.py
 .venv/bin/python -m school_notice live-check \
   --details-per-source 2 --max-requests 96 \
   --output-dir /tmp/masamong-school-livecheck
@@ -311,6 +343,11 @@ enable only the features that fit the host.
   --lock-file /tmp/masamong-transfer/batch.lock \
   --max-retries 0
 ```
+
+The two API smoke scripts are deliberately excluded from the offline suite.
+`scripts/smoke_linkup_live.py` reserves at most one standard Linkup search, and
+`scripts/smoke_llm_quality_live.py` makes at most one primary answer-model call.
+Run them only as an explicit billable production-key check.
 
 The live check performs real public HTML requests, so it is an explicit operator
 action rather than part of the offline unit suite. Review every source's list
@@ -327,8 +364,9 @@ started:
 ```
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for read-only production fingerprints,
-additive privacy/school/transfer schema migrations, controlled restart, 23:00/23:35 timers,
-verification, post-deploy observation, and rollback. Memory provenance/vector
+additive privacy/school/transfer/summary-state schema migrations, immutable
+release metadata, controlled restart, 23:00/23:35 timers, verification,
+post-deploy observation, and rollback. Memory provenance/vector
 changes follow the non-destructive shadow strategy in
 [docs/MEMORY_INDEX_MIGRATION.ko.md](docs/MEMORY_INDEX_MIGRATION.ko.md).
 

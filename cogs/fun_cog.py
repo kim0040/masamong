@@ -7,7 +7,7 @@
 import discord
 from discord.ext import commands
 from typing import Dict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 
 import config
@@ -33,7 +33,7 @@ class FunCog(commands.Cog):
         self.ai_handler: AIHandler | None = None # main.py에서 주입됨
         # 채널별 키워드 기능 쿨다운을 관리하는 딕셔너리
         self.keyword_cooldowns: Dict[int, datetime] = {}
-        # DB 변경 없이 증분 요약을 지원하기 위한 메모리 캐시 (채널 단위)
+        # 빠른 재사용용 메모리 캐시. 기준점 원본은 channel_summary_state에 영속화한다.
         self.summary_cache: Dict[int, SummaryCacheEntry] = {}
         logger.info("FunCog가 성공적으로 초기화되었습니다.")
 
@@ -70,6 +70,111 @@ class FunCog(commands.Cog):
         )
         self._trim_summary_cache()
 
+    async def _load_summary_state(
+        self,
+        guild_id: int,
+        channel_id: int,
+    ) -> SummaryCacheEntry | None:
+        """재시작 전 저장한 요약 기준점을 읽어 메모리 캐시에 복원합니다."""
+        if not getattr(self.bot, "db", None):
+            return None
+        try:
+            async with self.bot.db.execute(
+                """
+                SELECT anchor_message_id, summary_text, updated_at
+                FROM channel_summary_state
+                WHERE guild_id = ? AND channel_id = ?
+                LIMIT 1
+                """,
+                (int(guild_id), int(channel_id)),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if not row:
+                return None
+            updated_raw = str(row["updated_at"] or "")
+            try:
+                updated_at = datetime.fromisoformat(
+                    updated_raw.replace("Z", "+00:00")
+                ).replace(tzinfo=None)
+            except (TypeError, ValueError):
+                updated_at = datetime.now()
+            entry = SummaryCacheEntry(
+                anchor_message_id=int(row["anchor_message_id"]),
+                summary_text=str(row["summary_text"] or "").strip(),
+                updated_at=updated_at,
+            )
+            if not entry.summary_text:
+                return None
+            self.summary_cache[int(channel_id)] = entry
+            self._trim_summary_cache()
+            return entry
+        except Exception as exc:
+            logger.warning(
+                "요약 상태 조회 실패: guild=%s channel=%s error=%s",
+                guild_id,
+                channel_id,
+                exc,
+            )
+            return None
+
+    async def _persist_summary_state(
+        self,
+        guild_id: int,
+        channel_id: int,
+        anchor_message_id: int,
+        summary_text: str,
+    ) -> bool:
+        """요약 상태 한 행만 additive upsert합니다. 대화/기존 요약을 삭제하지 않습니다."""
+        if not getattr(self.bot, "db", None):
+            return False
+        backend = str(getattr(self.bot.db, "backend", config.DB_BACKEND))
+        updated_at = datetime.now(timezone.utc).isoformat()
+        if backend == "tidb":
+            query = """
+                INSERT INTO channel_summary_state
+                    (guild_id, channel_id, anchor_message_id, summary_text, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    anchor_message_id = VALUES(anchor_message_id),
+                    summary_text = VALUES(summary_text),
+                    updated_at = VALUES(updated_at)
+            """
+        else:
+            query = """
+                INSERT INTO channel_summary_state
+                    (guild_id, channel_id, anchor_message_id, summary_text, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(guild_id, channel_id) DO UPDATE SET
+                    anchor_message_id = excluded.anchor_message_id,
+                    summary_text = excluded.summary_text,
+                    updated_at = excluded.updated_at
+            """
+        try:
+            await self.bot.db.execute(
+                query,
+                (
+                    int(guild_id),
+                    int(channel_id),
+                    int(anchor_message_id),
+                    str(summary_text).strip(),
+                    updated_at,
+                ),
+            )
+            await self.bot.db.commit()
+            return True
+        except Exception as exc:
+            try:
+                await self.bot.db.rollback()
+            except Exception:
+                pass
+            logger.error(
+                "요약 상태 저장 실패: guild=%s channel=%s error=%s",
+                guild_id,
+                channel_id,
+                exc,
+            )
+            return False
+
     # --- 핵심 실행 로직 ---
 
     async def execute_summarize(self, channel: discord.TextChannel, author: discord.User, status_msg: discord.Message = None):
@@ -99,7 +204,13 @@ class FunCog(commands.Cog):
                     return
 
                 cache_entry = self.summary_cache.get(channel_id)
+                if cache_entry is None:
+                    cache_entry = await self._load_summary_state(
+                        guild_id,
+                        channel_id,
+                    )
                 response_text = None
+                should_persist = True
 
                 # 1) 캐시 앵커 이후 신규 대화가 적으면 증분 요약
                 if (
@@ -116,11 +227,26 @@ class FunCog(commands.Cog):
 
                     if new_count <= 0:
                         response_text = cache_entry.summary_text
-                    elif new_count <= getattr(config, "SUMMARY_INCREMENTAL_MAX_NEW_MESSAGES", 24):
+                        should_persist = False
+                    else:
+                        delta_lookback = getattr(
+                            config,
+                            "SUMMARY_INCREMENTAL_DELTA_LOOKBACK",
+                            48,
+                        )
+                        if new_count > getattr(
+                            config,
+                            "SUMMARY_INCREMENTAL_MAX_NEW_MESSAGES",
+                            24,
+                        ):
+                            delta_lookback = max(
+                                delta_lookback,
+                                getattr(config, "SUMMARY_MAX_LOOKBACK", 120),
+                            )
                         delta_context = await self.ai_handler.get_recent_conversation_text(
                             guild_id,
                             channel_id,
-                            look_back=getattr(config, "SUMMARY_INCREMENTAL_DELTA_LOOKBACK", 48),
+                            look_back=delta_lookback,
                             max_chars=getattr(config, "SUMMARY_MAX_CONTEXT_CHARS", 3200),
                             include_bot=True,
                             after_message_id=cache_entry.anchor_message_id,
@@ -164,6 +290,13 @@ class FunCog(commands.Cog):
                     else: await channel.send(response_text or "대화 내용을 요약하다가 머리에 쥐났어요. 다시 시도해주세요.")
                 else:
                     self._update_summary_cache(channel_id, latest_message_id, response_text)
+                    if should_persist:
+                        await self._persist_summary_state(
+                            guild_id,
+                            channel_id,
+                            latest_message_id,
+                            response_text,
+                        )
                     rendered = (
                         "**📈 최근 대화 요약 (마사몽 ver.)**\n"
                         f"{response_text}"

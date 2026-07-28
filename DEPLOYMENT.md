@@ -130,9 +130,12 @@ MASAMONG_ENV_FILE=/etc/masamong/general.env \
   --expected-db masamong_general
 ```
 
-초기 Masamo 검사에서 privacy table 누락을 보고하는 것은 아래 additive migration 전이라면
-예상 가능한 상태다. 그 밖의 DB/profile mismatch, 기존 핵심 table/column 누락, 연결 실패를
-무시하지 않는다. 출력은 배포 전·migration 후·재시작 후 세 번 저장해 비교한다.
+초기 Masamo 검사에서 privacy 또는 `channel_summary_state` table 누락을 보고하는 것은
+각 additive migration 전이라면 예상 가능한 상태다. 새 release의 검사기는
+`channel_summary_state`를 필수 대상으로 보므로, schema 적용 전 기준값은 현재 운영
+release의 검사기로 먼저 보존한다. 그 밖의 DB/profile mismatch, 기존 핵심 table/column
+누락, 연결 실패를 무시하지 않는다. 출력은 배포 전·migration 후·재시작 후 세 번 저장해
+비교한다.
 
 ## 5. 개인정보 동의 table one-shot
 
@@ -183,6 +186,37 @@ read-only preflight를 다시 실행해 기존 table 집계가 보존됐는지 �
 [docs/MEMORY_INDEX_MIGRATION.ko.md](docs/MEMORY_INDEX_MIGRATION.ko.md)의 shadow table,
 checkpointed backfill, dual-write, feature-flag 전환 절차를 따른다.
 
+### 채널 증분 요약 상태 table one-shot
+
+새 release는 `!요약`의 채널별 기준점과 제한된 요약문만 저장하는
+`channel_summary_state`를 요구한다. 코드 전환 전에 새 release 경로의
+`scripts/apply_summary_state_schema.py`를 실행한다. 이 스크립트는 정확히 한 개의
+`CREATE TABLE IF NOT EXISTS`만 허용하며 기존 table이나 row에 `ALTER`, `UPDATE`,
+`DELETE`, backfill 또는 seed를 하지 않는다.
+
+Dry-run:
+
+```bash
+MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
+  <venv>/bin/python <new-release>/scripts/apply_summary_state_schema.py \
+  --expected-profile masamo \
+  --expected-db masamong
+```
+
+적용:
+
+```bash
+MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
+  <venv>/bin/python <new-release>/scripts/apply_summary_state_schema.py \
+  --expected-profile masamo \
+  --expected-db masamong \
+  --apply \
+  --confirm 'APPLY SUMMARY STATE SCHEMA TO profile=masamo backend=tidb database=masamong'
+```
+
+적용 뒤 새 release의 read-only 검사기로 다섯 필수 column과 기존 핵심 table 집계를
+확인한다. 최초 행은 사용자가 다음 `!요약`을 성공시킬 때만 생성된다.
+
 ### 전체 데이터 이관 도구는 이 배포에 사용하지 않는다
 
 `scripts/migrate_latest_data_to_tidb.py`는 기존 Masamo의 profile 전환이나 개인정보 table
@@ -208,6 +242,21 @@ git -C <release-dir> rev-parse HEAD
 가능하면 현재 디렉터리를 직접 덮어쓰기보다 검증된 SHA의 immutable release 디렉터리를 만들고
 `current` symlink를 원자적으로 전환한다. 어떤 방식이든 systemd가 실행할 SHA와 로컬에서
 테스트한 SHA가 정확히 같아야 한다.
+
+`git archive`처럼 운영 release에 `.git`이 없는 배포는 루트에
+`.release-metadata.json`을 함께 설치한다. 그렇지 않으면 `!업데이트`가 현재 SHA와 최근
+변경 내역을 읽을 수 없다. 메타데이터는 commit 이후 정확한 저장소에서 생성하고, archive와
+같은 release 디렉터리에 mode `0644`로 둔다.
+
+```bash
+<venv>/bin/python scripts/build_release_metadata.py \
+  --repo . \
+  --output /tmp/masamong-release-metadata.json
+```
+
+파일은 `commit_sha`, 최근 `commits`와 schema version만 담고 secret을 포함하지 않는다.
+별도 경로에 설치하는 경우에만 서비스 env에
+`MASAMONG_RELEASE_METADATA_FILE=/absolute/path/release-metadata.json`을 지정한다.
 
 서버에서는 새 가상환경 또는 기존 가상환경의 호환성을 확인한다.
 
@@ -249,7 +298,7 @@ systemctl status <masamo-service> --no-pager
 - 학교 공지 Cog 활성, 다섯 table과 전용 경로 검증 완료
 - 편입 공지 Cog 활성, 구독·전달·동의안내 table과 전용 경로 검증 완료
 - 모든 필수 Cog 로드
-- 지진 30초 monitor가 LLM 없이 시작되고, 최초 기존 통보 기준점이
+- 지진 60초 monitor가 LLM 없이 시작되고, 최초 기존 통보 기준점이
   `system_counters.earthquake_alert_last_occurred_epoch_v1`에 생성됨
 - thread/executor/AI/LLM/RAG/message-cache 상한
 - 프로세스 하나, 예상 RSS/thread/CPU
@@ -260,8 +309,13 @@ systemctl status <masamo-service> --no-pager
 
 - 일반 멘션 대화와 DM 대화, 중복 응답 없음
 - 명백한 도구 요청이 의도 LLM을 불필요하게 호출하지 않는지
-- 날씨, 금융/환율, 웹 검색, 이미지 quota
-- `!랭킹`, `!요약`, `!투표`, 설정/페르소나
+- 날씨, 금융/환율, 웹 검색, 본문 출처 목록, 이미지 quota
+- `!랭킹`, `!요약`, `!투표`, `!업데이트`, 설정/페르소나
+- `.git` 없는 release에서 `!업데이트`가 `.release-metadata.json`으로 정상 응답하는지
+- 서버 `!메뉴`의 상세 화면이 호출자에게만 보이고, 다른 사용자가 launcher를 사용할 수
+  없으며 학교·편입·개인정보 버튼이 `DM`으로 표시되어 비활성인지
+- `!요약` 뒤 재기동해도 같은 `guild_id/channel_id`의 저장 기준점부터 이어지며, 새
+  메시지가 없을 때 `channel_summary_state`를 다시 쓰지 않는지
 - `!개인정보` 상태, 운세/학교공지/편입공지의 동의·거부·철회 흐름
 - 운세 미동의 차단, 선택 항목 `NULL`, 개인 LLM 운세 합산 일 3회, 구독 설정
 - 기존 Discord/Kakao RAG 조회와 기존 prompt 채널
@@ -480,15 +534,16 @@ timer는 `OnCalendar=*-*-* 23:35:00 Asia/Seoul`, `Persistent=true`이며 General
 
 ## 12. Rollback
 
-### DB 쓰기 전 또는 additive privacy/school/transfer table만 추가한 경우
+### DB 쓰기 전 또는 additive privacy/school/transfer/summary-state table만 추가한 경우
 
 1. 새 service/timer를 중지한다.
 2. 이전 release SHA, env, config, prompt/embedding과 unit을 복원한다.
 3. `daemon-reload` 후 이전 Masamo service 하나만 시작한다.
 4. identity/DB target와 read-only fingerprint를 다시 확인한다.
 
-privacy table 두 개, school table 다섯 개와 편입 관련 세 table은 additive이므로 이전
-코드가 사용하지 않으면 그대로 둘 수 있다. 서둘러 drop하지 않는다.
+privacy table 두 개, school table 다섯 개, 편입 관련 세 table과
+`channel_summary_state`는 additive이므로 이전 코드가 사용하지 않으면 그대로 둘 수 있다.
+서둘러 drop하지 않는다.
 
 ### 새 코드가 DB에 쓰기 시작한 경우
 
@@ -515,6 +570,11 @@ privacy table 두 개, school table 다섯 개와 편입 관련 세 table은 add
 - 목적별 동의 없이 운세/학교 개인정보를 읽거나 자동 발송하지 않음
 - 철회는 처리 중단, 삭제는 해당 프로필만 삭제, 일반 대화는 유지
 - LLM/운세 scheduler의 유한 retry와 유휴 호출 증가 없음
+- 웹 검색 한 턴의 최종 답변 LLM이 1회이고 출처가 Discord 본문에 유지되며, 같은 동시
+  검색은 singleflight로 합쳐짐
+- `.git` 없는 immutable release에서도 `!업데이트`가 release metadata로 응답함
+- 서버 `!메뉴` 상세는 호출자 전용이고 DM 전용 버튼은 비활성, 개인 정보 조회 없음
+- `channel_summary_state` 추가 뒤 기존 table count가 감소하지 않고 재기동 요약이 이어짐
 - Masamo 학교 flag/Cog 활성, 23:00 KST timer 하나, 전용 writable path와 다섯 table 확인
 - 등록 프로필 source만 수집하고 관련 공지가 없을 때 무알림, 사용자별 기본 09:00 전달
 - General 학교 flag false이고 Masamo school DB/file/timer 접근 없음

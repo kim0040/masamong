@@ -6,7 +6,12 @@ from utils.hybrid_search import HybridSearchEngine
 
 
 class DummyDiscordStore:
+    def __init__(self):
+        self.structured_calls = 0
+        self.legacy_calls = 0
+
     async def fetch_recent_embeddings(self, server_id, channel_id, user_id, limit):
+        self.legacy_calls += 1
         return [
             {
                 "message_id": 1,
@@ -25,6 +30,7 @@ class DummyDiscordStore:
         ]
 
     async def fetch_recent_memory_entries(self, *, server_id, channel_id, user_id=None, limit=200):
+        self.structured_calls += 1
         return []
 
 
@@ -62,3 +68,33 @@ async def test_hybrid_search_returns_embedding_match(monkeypatch):
     assert "하이브리드 검색 테스트 관련 메시지" in (top_entry.get("dialogue_block") or "")
     assert top_entry["origin"] == "Discord"
     assert top_entry["combined_score"] > 0.0
+
+
+@pytest.mark.asyncio
+async def test_query_variants_reuse_same_discord_database_rows(monkeypatch):
+    monkeypatch.setattr(config, "SEARCH_QUERY_EXPANSION_ENABLED", False)
+    monkeypatch.setattr(config, "RAG_QUERY_REWRITE_VARIANTS", 3)
+    monkeypatch.setattr(config, "RAG_SIMILARITY_THRESHOLD", 0.1)
+
+    async def fake_get_embedding(_text: str, prefix: str = ""):
+        return np.array([0.9, 0.1], dtype=np.float32)
+
+    monkeypatch.setattr("utils.hybrid_search.get_embedding", fake_get_embedding)
+    store = DummyDiscordStore()
+    engine = HybridSearchEngine(
+        discord_store=store,
+        kakao_store=None,
+        bm25_manager=None,
+    )
+
+    result = await engine.search(
+        "후속 질문",
+        guild_id=123,
+        channel_id=456,
+        user_id=789,
+        recent_messages=["직전 대화 주제"],
+    )
+
+    assert len(result.query_variants) == 2
+    assert store.structured_calls == 1
+    assert store.legacy_calls == 1

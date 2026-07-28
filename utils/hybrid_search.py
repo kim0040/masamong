@@ -75,13 +75,36 @@ class HybridSearchEngine:
         else:
             self.chunker = None
 
-        self.embedding_limit = getattr(config, "LOCAL_EMBEDDING_QUERY_LIMIT", 200)
+        self.embedding_limit = max(
+            16,
+            min(int(getattr(config, "LOCAL_EMBEDDING_QUERY_LIMIT", 200)), 2_000),
+        )
         self.embedding_threshold = config.RAG_SIMILARITY_THRESHOLD
-        self.structured_memory_limit = getattr(config, "STRUCTURED_MEMORY_QUERY_LIMIT", self.embedding_limit)
-        self.structured_memory_fallback_limit = getattr(
-            config,
-            "STRUCTURED_MEMORY_FALLBACK_QUERY_LIMIT",
-            max(self.structured_memory_limit, self.embedding_limit),
+        self.structured_memory_limit = max(
+            32,
+            min(
+                int(
+                    getattr(
+                        config,
+                        "STRUCTURED_MEMORY_QUERY_LIMIT",
+                        self.embedding_limit,
+                    )
+                ),
+                1_000,
+            ),
+        )
+        self.structured_memory_fallback_limit = max(
+            self.structured_memory_limit,
+            min(
+                int(
+                    getattr(
+                        config,
+                        "STRUCTURED_MEMORY_FALLBACK_QUERY_LIMIT",
+                        max(self.structured_memory_limit, self.embedding_limit),
+                    )
+                ),
+                2_500,
+            ),
         )
         self.structured_memory_threshold = getattr(
             config,
@@ -115,6 +138,8 @@ class HybridSearchEngine:
 
         candidate_map: Dict[str, dict[str, Any]] = {}
         dialogue_cache: Dict[tuple[str, int, int], List[dict[str, Any]]] = {}
+        # 쿼리 변형마다 같은 TiDB BLOB 행을 다시 읽지 않도록 검색 1회 범위에서 공유한다.
+        discord_row_cache: Dict[str, List[Any]] = {}
         for variant in variants:
             embed_entries = await self._embedding_candidates(
                 variant,
@@ -122,6 +147,7 @@ class HybridSearchEngine:
                 channel_id=channel_id,
                 user_id=user_id,
                 dialogue_cache=dialogue_cache,
+                row_cache=discord_row_cache,
             )
             for rank, entry in enumerate(embed_entries[: self.embedding_top_n]):
                 # 임베딩 후보는 가중치 계산을 위해 랭크를 기록한다.
@@ -229,6 +255,7 @@ class HybridSearchEngine:
         channel_id: int,
         user_id: int | None,
         dialogue_cache: Dict[tuple[str, int, int], List[dict[str, Any]]] | None = None,
+        row_cache: Dict[str, List[Any]] | None = None,
     ) -> List[dict[str, Any]]:
         if _get_numpy() is None:
             if not self._warned_numpy:
@@ -241,20 +268,25 @@ class HybridSearchEngine:
             return []
 
         dispatcher: List[dict[str, Any]] = []
-        discord_rows = await self.discord_store.fetch_recent_memory_entries(
-            server_id=guild_id,
-            channel_id=channel_id,
-            user_id=user_id,
-            limit=self.structured_memory_limit,
-        )
-        use_legacy_discord_rows = not discord_rows
-        if use_legacy_discord_rows:
-            discord_rows = await self.discord_store.fetch_recent_embeddings(
+        cache = row_cache if row_cache is not None else {}
+        if "structured" not in cache:
+            cache["structured"] = await self.discord_store.fetch_recent_memory_entries(
                 server_id=guild_id,
                 channel_id=channel_id,
                 user_id=user_id,
-                limit=self.embedding_limit,
+                limit=self.structured_memory_limit,
             )
+        discord_rows = cache["structured"]
+        use_legacy_discord_rows = not discord_rows
+        if use_legacy_discord_rows:
+            if "legacy" not in cache:
+                cache["legacy"] = await self.discord_store.fetch_recent_embeddings(
+                    server_id=guild_id,
+                    channel_id=channel_id,
+                    user_id=user_id,
+                    limit=self.embedding_limit,
+                )
+            discord_rows = cache["legacy"]
 
         dispatcher.extend(
             await self._score_discord_rows(
@@ -271,12 +303,16 @@ class HybridSearchEngine:
             and not use_legacy_discord_rows
             and self.structured_memory_fallback_limit > self.structured_memory_limit
         ):
-            wider_rows = await self.discord_store.fetch_recent_memory_entries(
-                server_id=guild_id,
-                channel_id=channel_id,
-                user_id=user_id,
-                limit=self.structured_memory_fallback_limit,
-            )
+            if "structured_wide" not in cache:
+                cache["structured_wide"] = (
+                    await self.discord_store.fetch_recent_memory_entries(
+                        server_id=guild_id,
+                        channel_id=channel_id,
+                        user_id=user_id,
+                        limit=self.structured_memory_fallback_limit,
+                    )
+                )
+            wider_rows = cache["structured_wide"]
             dispatcher.extend(
                 await self._score_discord_rows(
                     query_vector,
@@ -288,12 +324,14 @@ class HybridSearchEngine:
                 )
             )
         if not dispatcher and not use_legacy_discord_rows:
-            legacy_rows = await self.discord_store.fetch_recent_embeddings(
-                server_id=guild_id,
-                channel_id=channel_id,
-                user_id=user_id,
-                limit=self.embedding_limit,
-            )
+            if "legacy" not in cache:
+                cache["legacy"] = await self.discord_store.fetch_recent_embeddings(
+                    server_id=guild_id,
+                    channel_id=channel_id,
+                    user_id=user_id,
+                    limit=self.embedding_limit,
+                )
+            legacy_rows = cache["legacy"]
             dispatcher.extend(
                 await self._score_discord_rows(
                     query_vector,

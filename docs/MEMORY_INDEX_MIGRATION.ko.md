@@ -54,6 +54,18 @@ MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
 이 한계는 기존 데이터가 잘못됐다는 뜻이 아니다. 현재 표본 품질은 정상이며, 운영 중인
 v1을 덮어쓰는 것보다 v2 shadow index로 비교하는 편이 안전하다.
 
+## 현재 즉시 적용하는 무삭제 최적화
+
+이번 release는 vector schema나 기존 BLOB을 바꾸지 않는다. 대신 한 사용자 검색 안에서
+질의 변형마다 같은 `discord_memory_entries` 행을 반복 SELECT하던 경로를 하나의 제한된
+후보 집합으로 공유한다. 운영 권장 상한은 `STRUCTURED_MEMORY_QUERY_LIMIT=384`,
+fallback은 `STRUCTURED_MEMORY_FALLBACK_QUERY_LIMIT=1024`다. 이는 DB read와 Python
+점수화 비용을 줄이는 설정이며, 누적 기존 행을 삭제하거나 다시 임베딩하지 않는다.
+
+`channel_summary_state`는 `!요약`의 서버·채널별 마지막 메시지 기준점과 제한된 요약문을
+보존하는 별도 additive table이다. 임베딩 index가 아니며 v1/v2 기억 migration 대상에도
+섞지 않는다.
+
 ## 목표 v2 계약
 
 새 index는 기존 table을 변경하지 않고 별도 table로 만든다. 실제 TiDB의 지원 vector

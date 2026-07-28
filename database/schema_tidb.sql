@@ -38,6 +38,17 @@ CREATE TABLE IF NOT EXISTS linkup_usage_log (
     KEY idx_linkup_usage_time (used_at)
 );
 
+-- 채널 요약의 증분 기준점. 기존 대화 행은 수정하거나 삭제하지 않는다.
+CREATE TABLE IF NOT EXISTS channel_summary_state (
+    guild_id BIGINT NOT NULL,
+    channel_id BIGINT NOT NULL,
+    anchor_message_id BIGINT NOT NULL,
+    summary_text MEDIUMTEXT NOT NULL,
+    updated_at VARCHAR(64) NOT NULL,
+    PRIMARY KEY (guild_id, channel_id),
+    KEY idx_channel_summary_updated (updated_at)
+);
+
 CREATE TABLE IF NOT EXISTS conversation_history (
     message_id BIGINT PRIMARY KEY,
     guild_id BIGINT NOT NULL,

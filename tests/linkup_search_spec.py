@@ -1,3 +1,5 @@
+import asyncio
+
 import aiosqlite
 import pytest
 
@@ -15,7 +17,10 @@ def _prepare_linkup_defaults(monkeypatch):
     monkeypatch.setattr(config, "LINKUP_QUALITY_RETRY_ENABLED", True)
     monkeypatch.setattr(config, "LINKUP_DEEP_RETRY_MIN_SOURCES", 2)
     monkeypatch.setattr(config, "LINKUP_MIN_ANSWER_CHARS", 120)
+    monkeypatch.setattr(config, "LINKUP_FETCH_RENDER_JS", False)
+    monkeypatch.setattr(config, "LINKUP_FETCH_JS_RETRY_ENABLED", True)
     linkup_search._pipeline_cache.clear()
+    linkup_search._pipeline_inflight.clear()
 
 
 def test_infer_linkup_depth():
@@ -33,7 +38,7 @@ def test_url_query_prefers_fetch_first():
             "https://example.com 이 페이지와 경쟁사 비교해줘",
             "https://example.com",
         )
-        is True
+        is False
     )
 
 
@@ -65,6 +70,7 @@ async def test_run_linkup_search_pipeline_uses_search(monkeypatch):
     assert calls
     assert calls[0][0] == "search"
     assert calls[0][1]["outputType"] == "searchResults"
+    assert "includeInlineCitations" not in calls[0][1]
     assert "fromDate" in calls[0][1]
     assert "toDate" in calls[0][1]
 
@@ -90,6 +96,56 @@ async def test_run_linkup_search_pipeline_uses_fetch_for_direct_url(monkeypatch)
     assert result["search_kind"] == "DIRECT_URL"
     assert result["source_urls"] == ["https://example.com/pricing"]
     assert calls and calls[0][0] == "fetch"
+    assert calls[0][1]["renderJs"] is False
+
+
+@pytest.mark.asyncio
+async def test_direct_fetch_retries_js_once_only_when_plain_fetch_is_empty(monkeypatch):
+    calls = []
+
+    async def fake_post(endpoint: str, payload: dict):
+        calls.append((endpoint, dict(payload)))
+        return {"markdown": "JS 본문"} if payload["renderJs"] else {"markdown": ""}
+
+    monkeypatch.setattr(linkup_search, "_linkup_post_json", fake_post)
+
+    async with aiosqlite.connect(":memory:") as db:
+        result = await linkup_search.run_linkup_search_pipeline(
+            "이 링크 요약 https://example.com/app",
+            db_conn=db,
+        )
+
+    assert result["status"] == "success"
+    assert [payload["renderJs"] for _, payload in calls] == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_identical_concurrent_queries_share_one_billed_provider_call(monkeypatch):
+    calls = 0
+
+    async def fake_post(_endpoint: str, _payload: dict):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.02)
+        return {
+            "results": [
+                {"name": "A", "url": "https://a.example.com", "content": "alpha"},
+                {"name": "B", "url": "https://b.example.com", "content": "beta"},
+            ]
+        }
+
+    monkeypatch.setattr(linkup_search, "_linkup_post_json", fake_post)
+    monkeypatch.setattr(config, "LINKUP_QUALITY_RETRY_ENABLED", False)
+
+    async with aiosqlite.connect(":memory:") as db:
+        first, second = await asyncio.gather(
+            linkup_search.run_linkup_search_pipeline("  같은   검색어 ", db_conn=db),
+            linkup_search.run_linkup_search_pipeline("같은 검색어", db_conn=db),
+        )
+
+    assert first["status"] == second["status"] == "success"
+    assert calls == 1
+    assert second.get("shared_inflight") is True
 
 
 @pytest.mark.asyncio
