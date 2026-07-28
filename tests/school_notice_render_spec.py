@@ -86,6 +86,19 @@ def test_unknown_eligibility_tells_user_to_check_the_original():
     assert "원문을 직접 확인" in text
 
 
+def test_short_or_image_only_body_is_disclosed():
+    payload = json.loads((FIXTURES / "school_notice_digest.json").read_text(encoding="utf-8"))
+    payload["items"][0]["notice"]["warnings"] = ["body_too_short:0<40"]
+    payload["items"][0]["analysis"]["summary"] = payload["items"][0]["notice"]["title"]
+    item = parse_digest(payload).items[0]
+
+    text = _all_text(build_item_embed(item, today=TODAY))
+
+    assert "본문 확인" in text
+    assert "이미지 중심" in text
+    assert "원문 이미지와 첨부파일" in text
+
+
 def test_inferred_year_deadline_is_marked():
     digest = _digest("school_notice_digest_unknown.json")
     item = digest.visible_items()[0]

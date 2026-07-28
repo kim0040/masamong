@@ -160,6 +160,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--feedback-timeout-seconds", type=int)
     parser.add_argument("--batch-deadline-seconds", type=int)
     parser.add_argument(
+        "--only-user-id",
+        type=int,
+        help=(
+            "등록 직후 초기 확인용 Discord 사용자 ID. 지정하면 동의된 해당 "
+            "프로필 한 건만 읽고 다른 사용자 프로필은 조회하지 않습니다."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="코어를 실행하지 않고 대상 프로필만 출력",
@@ -269,10 +277,20 @@ async def open_db(*, read_only: bool = False):
     )
 
 
-async def load_profiles(db) -> ProfileLoadResult:
-    """전달 대상 프로필을 읽어옵니다."""
-    async with db.execute(
-        """
+async def load_profiles(
+    db,
+    *,
+    only_user_id: int | None = None,
+) -> ProfileLoadResult:
+    """전달 대상 프로필을 읽어옵니다.
+
+    ``only_user_id``는 등록 직후 한 번 실행하는 최소 범위 수집용이다. 양수가
+    아니면 명시적으로 거부하며, SQL 조건을 DB에서 적용해 다른 사용자 프로필을
+    애플리케이션 메모리로 읽지 않는다.
+    """
+    if only_user_id is not None and int(only_user_id) <= 0:
+        raise ValueError("--only-user-id는 양의 정수여야 합니다.")
+    query = """
         SELECT snp.user_id, snp.user_key, snp.school_id,
                snp.profile_version, snp.profile_json
         FROM school_notice_profiles AS snp
@@ -291,18 +309,23 @@ async def load_profiles(db) -> ProfileLoadResult:
         ) AS latest_run
           ON latest_run.user_key = snp.user_key
         WHERE snp.enabled = 1
+    """
+    params: list[object] = [
+        SCHOOL_NOTICE_CONSENT_POLICY.scope,
+        SCHOOL_NOTICE_CONSENT_POLICY.version,
+        SCHOOL_NOTICE_CONSENT_POLICY.notice_hash,
+        CONSENT_GRANTED,
+    ]
+    if only_user_id is not None:
+        query += "\n AND snp.user_id = ?"
+        params.append(int(only_user_id))
+    query += """
         ORDER BY
             CASE WHEN latest_run.last_finished IS NULL THEN 0 ELSE 1 END,
             latest_run.last_finished,
             snp.user_key
-        """,
-        (
-            SCHOOL_NOTICE_CONSENT_POLICY.scope,
-            SCHOOL_NOTICE_CONSENT_POLICY.version,
-            SCHOOL_NOTICE_CONSENT_POLICY.notice_hash,
-            CONSENT_GRANTED,
-        ),
-    ) as cursor:
+    """
+    async with db.execute(query, tuple(params)) as cursor:
         rows = await cursor.fetchall()
     profiles = []
     invalid_count = 0
@@ -1347,7 +1370,14 @@ async def run_batch(args: argparse.Namespace) -> int:
     # dry-run은 lock/작업 디렉터리/프로필 파일/DB UPDATE를 전혀 만들지 않는다.
     db = await open_db(read_only=bool(args.dry_run))
     try:
-        profiles = await load_profiles(db)
+        only_user_id = getattr(args, "only_user_id", None)
+        if only_user_id is not None and int(only_user_id) <= 0:
+            print("--only-user-id는 양의 정수여야 합니다.", file=sys.stderr)
+            return 2
+        profiles = await load_profiles(
+            db,
+            only_user_id=int(only_user_id) if only_user_id is not None else None,
+        )
         invalid_profiles_present = profiles.invalid_count > 0
 
         if args.dry_run:
@@ -1379,7 +1409,12 @@ async def run_batch(args: argparse.Namespace) -> int:
             print("활성 프로필이 없습니다.")
             return 0
 
-        feedback_count = await pending_feedback_count(db)
+        if only_user_id is not None and profiles:
+            feedback_count = len(
+                await pending_feedback_for_profile(db, profiles[0])
+            )
+        else:
+            feedback_count = await pending_feedback_count(db)
         print(f"대상 프로필 {len(profiles)}명, 미반영 피드백 {feedback_count}건")
         if args.dry_run:
             school_counts = Counter(str(profile["school_id"]) for profile in profiles)

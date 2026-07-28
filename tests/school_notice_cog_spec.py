@@ -10,6 +10,7 @@ import shutil
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
 import aiosqlite
@@ -130,6 +131,7 @@ async def _make_cog(tmp_path, monkeypatch, *, fixture="school_notice_digest.json
     monkeypatch.setattr(config, "SCHOOL_NOTICE_PROFILE_MAX_REVISIONS", 3)
     monkeypatch.setattr(config, "SCHOOL_NOTICE_PROFILE_INPUT_TIMEOUT_SECONDS", 30)
     monkeypatch.setattr(config, "SCHOOL_NOTICE_PROFILE_LLM_TIMEOUT_SECONDS", 5)
+    monkeypatch.setattr(config, "SCHOOL_NOTICE_INITIAL_CRAWL_ENABLED", False)
     monkeypatch.setattr(config, "SCHOOL_NOTICE_DELIVERY_BATCH_SIZE", 10)
     monkeypatch.setattr(config, "SCHOOL_NOTICE_DELIVERY_MAX_ATTEMPTS", 3)
     monkeypatch.setattr(config, "SCHOOL_NOTICE_DELIVERY_RETRY_MINUTES", 10)
@@ -885,8 +887,16 @@ async def test_batch_snapshot_keeps_digest_ready_after_delivery_time_only_change
 async def test_profile_upsert_bumps_version_and_keeps_one_row(tmp_path, monkeypatch):
     cog, _bot, db = await _make_cog(tmp_path, monkeypatch)
     try:
-        await _register_profile(cog)
-        await cog.upsert_profile(
+        first = await cog.upsert_profile(
+            USER_ID,
+            {
+                "user_key": USER_KEY,
+                "school_id": "jbnu",
+                "degree_level": "undergraduate",
+                "grade": 3,
+            },
+        )
+        legacy_without_run = await cog.upsert_profile(
             USER_ID,
             {"user_key": USER_KEY, "school_id": "skku", "degree_level": "master"},
         )
@@ -898,6 +908,36 @@ async def test_profile_upsert_bumps_version_and_keeps_one_row(tmp_path, monkeypa
         assert count == 1
         assert school_id == "skku"
         assert version == 2
+        assert first.created
+        assert first.needs_initial_collection
+        assert not legacy_without_run.created
+        assert legacy_without_run.needs_initial_collection
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_profile_with_completed_collection_does_not_repeat_initial_run(
+    tmp_path,
+    monkeypatch,
+):
+    cog, _bot, db = await _make_cog(tmp_path, monkeypatch)
+    try:
+        await _register_profile(cog)
+        await _record_batch_run(cog, TODAY)
+
+        result = await cog.upsert_profile(
+            USER_ID,
+            {
+                "user_key": USER_KEY,
+                "school_id": "jbnu",
+                "degree_level": "undergraduate",
+                "grade": 4,
+            },
+        )
+
+        assert not result.created
+        assert not result.needs_initial_collection
     finally:
         await db.close()
 
@@ -1352,7 +1392,73 @@ async def test_bare_notice_command_opens_unified_dashboard(
             for child in message["view"].children
             if isinstance(child, discord.ui.Button)
         }
-        assert labels == {"설정·변경", "최근 공지", "알림 시간", "알림 재개"}
+        assert labels == {
+            "설정·변경",
+            "최근 공지",
+            "수집 상태",
+            "알림 시간",
+            "내 설정",
+            "알림 재개",
+        }
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_initial_collection_is_one_bounded_user_scoped_no_llm_run(
+    tmp_path,
+    monkeypatch,
+):
+    cog, _bot, db = await _make_cog(tmp_path, monkeypatch)
+    commands_seen = []
+
+    class FakeStatusMessage:
+        def __init__(self):
+            self.edits = []
+
+        async def edit(self, **kwargs):
+            self.edits.append(kwargs)
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_create_subprocess_exec(*command, **kwargs):
+        commands_seen.append((command, kwargs))
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        school_notice_module.asyncio,
+        "create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(config, "PROJECT_ROOT", ROOT)
+    monkeypatch.setattr(
+        config,
+        "SCHOOL_NOTICE_SOURCE_CONFIG",
+        str(ROOT / "school_notice" / "sources.json"),
+    )
+    monkeypatch.setattr(config, "SCHOOL_NOTICE_INITIAL_CRAWL_MAX_ATTEMPTS", 2)
+    monkeypatch.setattr(config, "SCHOOL_NOTICE_INITIAL_CRAWL_TIMEOUT_SECONDS", 30)
+    monkeypatch.setattr(config, "SCHOOL_NOTICE_INITIAL_CRAWL_RETRY_SECONDS", 5)
+    cog.deliver_to_user = AsyncMock(return_value="nothing_to_send")
+    status = FakeStatusMessage()
+    try:
+        await cog._run_initial_collection(
+            user_id=USER_ID,
+            status_message=status,
+        )
+
+        assert len(commands_seen) == 1
+        command = list(commands_seen[0][0])
+        assert command[command.index("--only-user-id") + 1] == str(USER_ID)
+        assert command[command.index("--max-profiles") + 1] == "1"
+        assert "--no-llm" in command
+        assert "--low-resource" in command
+        assert any("관련 공지가 없으면" in edit["content"] for edit in status.edits)
+        cog.deliver_to_user.assert_awaited_once()
     finally:
         await db.close()
 

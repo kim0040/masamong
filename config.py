@@ -2211,6 +2211,49 @@ SCHOOL_NOTICE_PROFILE_LLM_TIMEOUT_SECONDS = min(
         ),
     ),
 )
+SCHOOL_NOTICE_INITIAL_CRAWL_ENABLED = as_bool(
+    load_config_value("SCHOOL_NOTICE_INITIAL_CRAWL_ENABLED", "true"),
+    True,
+)
+SCHOOL_NOTICE_INITIAL_CRAWL_TIMEOUT_SECONDS = min(
+    1_800,
+    max(
+        30,
+        as_int(
+            load_config_value(
+                "SCHOOL_NOTICE_INITIAL_CRAWL_TIMEOUT_SECONDS",
+                660,
+            ),
+            660,
+        ),
+    ),
+)
+SCHOOL_NOTICE_INITIAL_CRAWL_MAX_ATTEMPTS = min(
+    2,
+    max(
+        1,
+        as_int(
+            load_config_value(
+                "SCHOOL_NOTICE_INITIAL_CRAWL_MAX_ATTEMPTS",
+                2,
+            ),
+            2,
+        ),
+    ),
+)
+SCHOOL_NOTICE_INITIAL_CRAWL_RETRY_SECONDS = min(
+    60,
+    max(
+        5,
+        as_int(
+            load_config_value(
+                "SCHOOL_NOTICE_INITIAL_CRAWL_RETRY_SECONDS",
+                20,
+            ),
+            20,
+        ),
+    ),
+)
 SCHOOL_NOTICE_DELIVERY_BATCH_SIZE = min(
     50,
     max(

@@ -362,7 +362,10 @@ def score_notice(
     title = str(notice_payload.get("title") or candidate.get("title") or "")
     body = str(notice_payload.get("body_text") or "")
     source_board = str(candidate.get("source_board") or "")
-    searchable_text = "\n".join((title, body, source_board))
+    source_category = str(candidate.get("category") or "")
+    searchable_text = "\n".join(
+        (title, body, source_board, source_category)
+    )
     topics = [str(item) for item in analysis.get("topics", [])]
     audiences = [str(item) for item in analysis.get("audiences", [])]
     actions = [str(item) for item in analysis.get("actions", [])]

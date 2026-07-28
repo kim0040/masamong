@@ -17,6 +17,30 @@ from .personalization import score_notice, validate_profile
 from .storage import NoticeRepository
 
 
+def select_detail_candidates(
+    candidates,
+    limit: int,
+):
+    """저사양 한도 안에서 최신 일반 공지를 놓치지 않게 고릅니다.
+
+    대학 게시판은 오래된 고정 공지를 목록 맨 위에 여러 건 두는 경우가 많다.
+    단순 앞 N건은 매일 같은 고정 공지만 읽고 실제 신규 공지를 누락할 수 있다.
+    고정 공지는 최대 한 건만 포함하고 나머지 예산을 목록 순서상 최신 일반
+    공지에 배정한다.
+    """
+    if limit <= 0:
+        return []
+    regular = [candidate for candidate in candidates if not candidate.pinned]
+    pinned = [candidate for candidate in candidates if candidate.pinned]
+    if not pinned:
+        return list(candidates[:limit])
+    if not regular:
+        return pinned[:limit]
+    if limit == 1:
+        return regular[:1]
+    return [pinned[0], *regular[: limit - 1]]
+
+
 @dataclass(frozen=True)
 class DailyRunResult:
     run_id: str
@@ -133,7 +157,10 @@ class DailyNoticeJob:
                                 "minimum_list_contract_failed:"
                                 f"{len(candidates)}<{source.validation.min_list_items}"
                             )
-                        selected = candidates[: self.max_details_per_source]
+                        selected = select_detail_candidates(
+                            candidates,
+                            self.max_details_per_source,
+                        )
                         stats["selected"] = len(selected)
                     except Exception as exc:
                         stats["errors"].append(

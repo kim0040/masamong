@@ -196,6 +196,7 @@ def _args(**overrides):
         profile_timeout_seconds=None,
         feedback_timeout_seconds=None,
         batch_deadline_seconds=None,
+        only_user_id=None,
         dry_run=False,
     )
     defaults.update(overrides)
@@ -618,6 +619,35 @@ async def _consented_profile_db():
     await db.commit()
     await grant_consent(db, 1, SCHOOL_NOTICE_SCOPE)
     return db
+
+
+@pytest.mark.asyncio
+async def test_only_user_filter_never_loads_other_consented_profiles():
+    db = await _consented_profile_db()
+    try:
+        await db.execute(
+            """
+            INSERT INTO school_notice_profiles (
+                user_id, user_key, school_id, profile_json, profile_version, enabled
+            ) VALUES (2, 'discord-2', 'snu', ?, 1, 1)
+            """,
+            (
+                json.dumps(
+                    {"user_key": "discord-2", "school_id": "snu"}
+                ),
+            ),
+        )
+        await db.commit()
+        await grant_consent(db, 2, SCHOOL_NOTICE_SCOPE)
+
+        selected = await load_profiles(db, only_user_id=2)
+
+        assert len(selected) == 1
+        assert selected[0]["user_key"] == "discord-2"
+        with pytest.raises(ValueError):
+            await load_profiles(db, only_user_id=0)
+    finally:
+        await db.close()
 
 
 @pytest.mark.asyncio

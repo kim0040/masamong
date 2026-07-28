@@ -97,7 +97,16 @@ class AsyncFetcher:
         self._session = aiohttp.ClientSession(
             timeout=timeout,
             connector=connector,
-            headers={"User-Agent": self.user_agent, "Accept": "text/html,*/*;q=0.8"},
+            # 공개 게시판에는 사용자 프로필·Discord 식별자·쿠키·Referer를
+            # 보내지 않는다. 요청 URL은 버전 관리된 source와 그 공개 목록에서
+            # 추출한 공지 ID로만 구성된다.
+            headers={
+                "User-Agent": self.user_agent,
+                "Accept": "text/html,*/*;q=0.8",
+                "DNT": "1",
+            },
+            cookie_jar=aiohttp.DummyCookieJar(),
+            trust_env=False,
         )
         return self
 

@@ -86,8 +86,9 @@ purpose-specific consent:
 
 - `fortune`: Discord user ID and birth date, plus optional birth time, gender, and
   birthplace
-- `school_notice`: school/student profile, delivery preferences, and notice
-  feedback
+- `school_notice`: required Discord user ID, school, degree program, and
+  undergraduate grade; only user-supplied campus/department/status/topics/time
+  and notice feedback are optional
 
 Consent is requested in DM and is recorded only after the same user presses the
 consent button. Current consent and append-only consent events are stored
@@ -117,10 +118,18 @@ history.
 
 ## School-notice behavior
 
-The Discord bot process does not crawl websites. The vendored `school_notice`
-package runs in a separate bounded one-shot systemd process and publishes
-validated JSON digests; the always-on bot handles onboarding, delivery, and
-feedback.
+The always-on Discord process never imports and runs the crawler in its event
+loop. The vendored `school_notice` package runs in a separate bounded process:
+once for the registering user immediately after first confirmation, and later
+from the `23:00` systemd one-shot. Both paths publish validated JSON digests; the
+bot handles onboarding, status, delivery, and feedback.
+
+This is public-HTML crawling, not a university API integration. The fetcher reads
+version-controlled public list/detail URLs with source-specific CSS selectors,
+robots/host/redirect/request-size guards, no cookie jar, and no proxy inheritance.
+It never sends a Discord ID, student profile, user input, or interest data to a
+school site. Image-only notices remain linked candidates but are explicitly
+labelled as requiring the original image/attachment to be checked.
 
 The user flow is:
 
@@ -133,9 +142,12 @@ The user flow is:
 3. The user confirms, corrects the summary in natural language, or cancels.
 4. Nothing is stored until confirmation. New profiles default to `09:00` KST, and
    the user can choose another delivery time.
-5. The `23:00` KST batch selects sources only for consented, enabled, registered
-   profiles. It does not crawl every school.
-6. Normally the resulting digest is delivered the following day at that user's
+5. On a genuinely new profile, a one-user, one-thread, no-LLM process immediately
+   checks only that school's sources. It has a finite timeout and at most one
+   retry for a batch-lock collision.
+6. The `23:00` KST batch later selects sources only for consented, enabled,
+   registered profiles. It does not crawl every school.
+7. Normally the nightly digest is delivered the following day at that user's
    time. After an outage, delivery considers only the newest valid result from the
    previous three days and never falls back behind a newer successful batch. If no
    relevant notice exists, no automatic DM is sent.
@@ -205,6 +217,7 @@ do not match.
 | `!공지 등록 <natural language>` | Confirm-before-save school onboarding |
 | `!공지 수정 <natural language>` | Confirm-before-save profile correction |
 | `!공지 정보` | Show the saved profile and delivery state |
+| `!공지 상태` | Show the latest registered-school collection status |
 | `!공지 시간 HH:MM` | Set a per-user delivery time |
 | `!공지 중지`, `!공지 재개` | Pause/resume school processing and delivery |
 | `!랭킹`, `!요약`, `!투표 ...` | Community utilities |
@@ -241,7 +254,15 @@ enable only the features that fit the host.
 .venv/bin/python -m pytest -q
 .venv/bin/python -m compileall -q .
 .venv/bin/python -m pip check
+.venv/bin/python -m school_notice live-check \
+  --details-per-source 2 --max-requests 96 \
+  --output-dir /tmp/masamong-school-livecheck
 ```
+
+The live check performs real public HTML requests, so it is an explicit operator
+action rather than part of the offline unit suite. Review every source's list
+contract, detail contract, and body-quality status; a selector failure must not
+be reported as “no new notices.”
 
 Validate real General and Masamo profile files offline before either service is
 started:

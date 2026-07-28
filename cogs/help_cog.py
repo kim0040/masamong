@@ -195,6 +195,7 @@ class MasamongHelpCommand(commands.HelpCommand):
         elif command.name == '공지':
             examples = (
                 f"`{prefix}공지 등록 전북대 소프트웨어공학과 3학년, 오전 9시 알림`\n"
+                f"`{prefix}공지 상태`\n"
                 f"`{prefix}공지 정보`\n"
                 f"`{prefix}공지 시간 09:00`"
             )
@@ -260,6 +261,132 @@ class MasamongHomeView(discord.ui.View):
         self.user_id = int(ctx.author.id)
         self.school_notice.disabled = bot.get_cog("SchoolNoticeCog") is None
 
+    @discord.ui.select(
+        placeholder="기능별 빠른 사용법 보기",
+        min_values=1,
+        max_values=1,
+        row=1,
+        options=[
+            discord.SelectOption(
+                label="AI 대화·검색",
+                value="ai",
+                emoji="💬",
+                description="대화, 최신 검색, 뉴스 질문",
+            ),
+            discord.SelectOption(
+                label="날씨·재난",
+                value="weather",
+                emoji="🌦️",
+                description="기상청 날씨와 공통 재난 알림",
+            ),
+            discord.SelectOption(
+                label="학교 공지",
+                value="school",
+                emoji="🎓",
+                description="등록, 첫 확인, 상태, 알림",
+            ),
+            discord.SelectOption(
+                label="운세",
+                value="fortune",
+                emoji="🔮",
+                description="등록, 오늘·월간·연간, 구독",
+            ),
+            discord.SelectOption(
+                label="이미지·요약",
+                value="creative",
+                emoji="🎨",
+                description="이미지 생성과 채널 대화 요약",
+            ),
+            discord.SelectOption(
+                label="랭킹·투표",
+                value="community",
+                emoji="🗳️",
+                description="서버 커뮤니티 편의 기능",
+            ),
+            discord.SelectOption(
+                label="서버 관리자 설정",
+                value="admin",
+                emoji="⚙️",
+                description="AI 채널, 말투, 언어 설정",
+            ),
+            discord.SelectOption(
+                label="개인정보 관리",
+                value="privacy",
+                emoji="🔐",
+                description="동의 현황, 철회, 기능 데이터 삭제",
+            ),
+        ],
+    )
+    async def quick_guide(
+        self,
+        interaction: discord.Interaction,
+        select: discord.ui.Select,
+    ) -> None:
+        prefix = self.ctx.clean_prefix or config.COMMAND_PREFIX or "!"
+        guides = {
+            "ai": (
+                "💬 **AI 대화·검색**\n"
+                "- 서버: 마사몽을 멘션하고 자연스럽게 질문\n"
+                "- DM: 멘션 없이 바로 질문\n"
+                "- 최신 정보가 필요하면 `최신 자료를 검색해서 출처와 함께 알려줘`처럼 요청\n"
+                "- 처리 중에는 단계와 경과 시간이 한 메시지에서 갱신됩니다."
+            ),
+            "weather": (
+                "🌦️ **날씨·재난**\n"
+                f"- `{prefix}날씨 서울`, `{prefix}날씨 내일 부산`, "
+                f"`{prefix}날씨 이번주 제주`\n"
+                "- 지진은 기상청 발표 후 약 30초 주기로 확인하며 공통 공식 문구만 사용\n"
+                "- 같은 지진군의 후속 이벤트는 기존 Discord 메시지를 수정해 누적 표시"
+            ),
+            "school": (
+                "🎓 **학교 공지**\n"
+                "- DM에서 **학교 공지** 버튼을 누르거나 `학교 공지 설정`이라고 말하기\n"
+                "- 학교·과정·학년만 필수, 나머지는 선택\n"
+                "- 첫 등록 직후 한 번 확인, 이후 매일 23시 수집\n"
+                f"- 상태 확인: `{prefix}공지 상태` · 저장 정보: `{prefix}공지 정보`"
+            ),
+            "fortune": (
+                "🔮 **운세**\n"
+                f"- 오늘: `{prefix}운세` · 상세: `{prefix}운세 상세`\n"
+                f"- 등록: `{prefix}운세 등록` · 아침 알림: `{prefix}운세 구독 08:00`\n"
+                f"- 월간/연간: `{prefix}이번달운세`, `{prefix}올해운세`\n"
+                "- 개인정보는 고지 후 본인이 동의 버튼을 눌러야 이용합니다."
+            ),
+            "creative": (
+                "🎨 **이미지·요약**\n"
+                f"- 이미지: `{prefix}이미지 우주복을 입은 고양이` (서버 전용)\n"
+                f"- 최근 대화 요약: `{prefix}요약` (서버 전용)\n"
+                "- 긴 작업은 상태 메시지를 유지하고 완료되면 같은 자리에 결과를 표시합니다."
+            ),
+            "community": (
+                "🗳️ **랭킹·투표**\n"
+                f"- `{prefix}랭킹 오늘`, `{prefix}랭킹 이번주`, `{prefix}랭킹 전체`\n"
+                f"- `{prefix}투표 \"점심 메뉴\" \"국밥\" \"라멘\"`\n"
+                "- 랭킹은 현재 채널 범위이며, 투표의 공백 포함 항목은 큰따옴표로 묶습니다."
+            ),
+            "admin": (
+                "⚙️ **서버 관리자 설정**\n"
+                "- `/config set_ai`: 서버 AI 켜기/끄기\n"
+                "- `/config channel`: 응답 허용 채널 추가/제거\n"
+                "- `/config language`: 서버 언어\n"
+                "- `/persona view`, `/persona set`: 이 서버 전용 말투\n"
+                "- 관리자 권한이 필요하며 다른 서버의 설정과 섞이지 않습니다."
+            ),
+            "privacy": (
+                "🔐 **개인정보 관리**\n"
+                f"- 상태: `{prefix}개인정보`\n"
+                f"- 철회: `{prefix}개인정보 철회 운세` / "
+                f"`{prefix}개인정보 철회 학교공지`\n"
+                f"- 기능 데이터 삭제: `{prefix}운세 삭제` / `{prefix}공지 삭제`\n"
+                "- 철회와 삭제는 다르며, 일반 Discord 대화·서버 기록은 그대로 유지됩니다."
+            ),
+        }
+        await interaction.response.send_message(
+            guides.get(select.values[0], "해당 안내를 찾지 못했습니다."),
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if int(interaction.user.id) == self.user_id:
             return True
@@ -273,6 +400,7 @@ class MasamongHomeView(discord.ui.View):
         label="학교 공지",
         style=discord.ButtonStyle.primary,
         emoji="🎓",
+        row=0,
     )
     async def school_notice(
         self,
@@ -303,6 +431,7 @@ class MasamongHomeView(discord.ui.View):
         label="오늘 운세",
         style=discord.ButtonStyle.primary,
         emoji="🔮",
+        row=0,
     )
     async def fortune(
         self,
@@ -333,6 +462,7 @@ class MasamongHomeView(discord.ui.View):
         label="개인정보",
         style=discord.ButtonStyle.secondary,
         emoji="🔐",
+        row=0,
     )
     async def privacy(
         self,
@@ -356,6 +486,7 @@ class MasamongHomeView(discord.ui.View):
         label="전체 도움말",
         style=discord.ButtonStyle.secondary,
         emoji="📖",
+        row=0,
     )
     async def help(
         self,
@@ -387,8 +518,9 @@ class HelpCog(commands.Cog):
         embed = discord.Embed(
             title="🤖 마사몽 메뉴",
             description=(
-                "원하는 기능을 버튼으로 선택하세요. 개인정보가 필요한 기능은 "
-                "동의 화면이 이어서 열리고, 동의 후 원래 요청도 자동으로 계속됩니다."
+                "바로 시작하려면 버튼을, 사용법을 먼저 보려면 아래 선택 메뉴를 "
+                "이용하세요. 개인정보가 필요한 기능은 동의 화면이 이어서 열리고, "
+                "동의 후 원래 요청도 자동으로 계속됩니다."
             ),
             color=0x66CCFF,
         )
@@ -402,7 +534,10 @@ class HelpCog(commands.Cog):
         )
         embed.add_field(
             name="🎓 학교 공지",
-            value="등록 학교만 23시에 수집해 관련 공지가 있을 때 선택 시각에 알립니다.",
+            value=(
+                "첫 등록 직후 한 번 확인하고, 이후 등록 학교만 23시에 수집해 "
+                "새롭거나 수정된 관련 공지가 있을 때 선택 시각에 알립니다."
+            ),
             inline=False,
         )
         embed.add_field(
