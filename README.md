@@ -74,7 +74,7 @@ run in executor threads on first use, including their heavy import phase. A load
 failure enters a bounded cooldown instead of retrying on every message, so model
 startup cannot block the Discord heartbeat or create a tight reload loop.
 
-The earthquake monitor checks every 30 seconds, but it cannot precede KMA's
+The earthquake monitor checks every 60 seconds, but it cannot precede KMA's
 publication time. It shows both occurrence and KMA publication time. Its
 persistent watermark is advanced before delivery, and the first deployment
 records the newest already-published event without broadcasting it, so a restart

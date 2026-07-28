@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -156,11 +157,35 @@ class _Response:
     def __init__(self):
         self.sent = []
         self.edited = []
+        self.deferred = 0
 
     async def send_message(self, content, **kwargs):
         self.sent.append((content, kwargs))
 
     async def edit_message(self, **kwargs):
+        self.edited.append(kwargs)
+
+    async def defer(self, **_kwargs):
+        self.deferred += 1
+
+
+class _Followup:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, content, **kwargs):
+        self.sent.append((content, kwargs))
+
+
+class _Interaction:
+    def __init__(self, user_id=USER_ID):
+        self.user = SimpleNamespace(id=user_id)
+        self.guild = None
+        self.response = _Response()
+        self.followup = _Followup()
+        self.edited = []
+
+    async def edit_original_response(self, **kwargs):
         self.edited.append(kwargs)
 
 
@@ -230,16 +255,12 @@ async def test_agree_button_records_current_policy_for_initiating_user():
             user_id=USER_ID,
             scope=FORTUNE_SCOPE,
         )
-        response = _Response()
-        await view._grant(
-            SimpleNamespace(
-                user=SimpleNamespace(id=USER_ID),
-                response=response,
-            )
-        )
+        interaction = _Interaction()
+        await view._grant(interaction)
 
         assert await has_current_consent(db, USER_ID, FORTUNE_SCOPE)
-        assert response.edited
+        assert interaction.response.deferred == 1
+        assert interaction.edited
     finally:
         await db.close()
 
@@ -260,16 +281,98 @@ async def test_agree_button_continues_original_feature_exactly_once():
             scope=FORTUNE_SCOPE,
             on_granted=continue_feature,
         )
-        interaction = SimpleNamespace(
-            user=SimpleNamespace(id=USER_ID),
-            response=_Response(),
-        )
+        interaction = _Interaction()
 
         await view._grant(interaction)
 
         assert await has_current_consent(db, USER_ID, FORTUNE_SCOPE)
         assert continued == [interaction]
         assert view.is_finished()
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_agree_button_acknowledges_before_remote_db_work(monkeypatch):
+    """느린 TiDB보다 Discord의 3초 component acknowledgement가 항상 먼저다."""
+    db = await _db()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_grant(*_args, **_kwargs):
+        started.set()
+        await release.wait()
+
+    try:
+        monkeypatch.setattr("cogs.privacy_cog.grant_consent", slow_grant)
+        cog = PrivacyCog(SimpleNamespace(db=db))
+        view = ConsentDecisionView(
+            cog,
+            user_id=USER_ID,
+            scope=FORTUNE_SCOPE,
+        )
+        interaction = _Interaction()
+
+        task = asyncio.create_task(view._grant(interaction))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        assert interaction.response.deferred == 1
+        assert interaction.edited == []
+
+        release.set()
+        await asyncio.wait_for(task, timeout=1)
+        assert interaction.edited
+    finally:
+        await db.close()
+
+
+def test_privacy_cog_registers_persistent_fallback_for_expired_dm_buttons():
+    registered = []
+    bot = SimpleNamespace(
+        db=object(),
+        add_view=registered.append,
+    )
+
+    cog = PrivacyCog(bot)
+
+    assert len(registered) == 3
+    assert cog._persistent_consent_views == registered
+    assert all(view.is_persistent() for view in registered)
+    custom_ids = {
+        item.custom_id
+        for view in registered
+        for item in view.children
+    }
+    assert custom_ids == {
+        "privacy:grant:fortune",
+        "privacy:cancel:fortune",
+        "privacy:grant:school_notice",
+        "privacy:cancel:school_notice",
+        "privacy:grant:transfer_notice",
+        "privacy:cancel:transfer_notice",
+    }
+
+
+@pytest.mark.asyncio
+async def test_persistent_fallback_grants_clicking_dm_user_and_removes_only_message_buttons():
+    db = await _db()
+    try:
+        cog = PrivacyCog(SimpleNamespace(db=db))
+        view = ConsentDecisionView(
+            cog,
+            user_id=None,
+            scope=FORTUNE_SCOPE,
+            persistent_fallback=True,
+        )
+        interaction = _Interaction()
+
+        assert await view.interaction_check(interaction) is True
+        await view._grant(interaction)
+
+        assert await has_current_consent(db, USER_ID, FORTUNE_SCOPE)
+        assert interaction.response.deferred == 1
+        assert interaction.edited[-1]["view"] is None
+        assert not view.is_finished()
+        assert all(not item.disabled for item in view.children)
     finally:
         await db.close()
 
