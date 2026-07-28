@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from typing import Union
 
 import discord
@@ -20,6 +21,97 @@ from .constants import DISCORD_MESSAGE_LIMIT, SPLIT_MESSAGE_CHUNK_SIZE
 _MARKDOWN_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*$")
 _MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^:?-{3,}:?$")
 _HTML_BREAK_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+
+
+class DiscordProgress:
+    """긴 Discord 작업의 상태를 낮은 빈도로 갱신합니다.
+
+    단계가 빠르게 바뀌어도 매번 API를 호출하지 않고 최신 단계만 보존합니다.
+    작업이 오래 걸리면 heartbeat가 일정 간격으로 경과 시간을 보여줘 사용자가
+    멈춘 것으로 오해하지 않게 합니다. 상태 표시 실패는 본 작업을 실패시키지
+    않습니다.
+    """
+
+    def __init__(
+        self,
+        message: discord.Message,
+        *,
+        initial_text: str,
+        min_update_interval_seconds: float = 2.5,
+        heartbeat_seconds: float = 12.0,
+    ) -> None:
+        self.message = message
+        self.current_text = normalize_discord_text(initial_text)
+        self.min_update_interval_seconds = max(
+            0.5,
+            float(min_update_interval_seconds),
+        )
+        self.heartbeat_seconds = max(5.0, float(heartbeat_seconds))
+        self.started_at = time.monotonic()
+        self.last_edit_at = self.started_at
+        self._task: asyncio.Task | None = None
+        self._stopped = False
+        self._edit_lock = asyncio.Lock()
+
+    async def start(self) -> "DiscordProgress":
+        if self._task is None and not self._stopped:
+            self._task = asyncio.create_task(
+                self._heartbeat_loop(),
+                name="discord-progress-heartbeat",
+            )
+        return self
+
+    async def update(self, content: str, *, force: bool = False) -> bool:
+        """최신 단계를 저장하고 필요할 때만 실제 메시지를 수정합니다."""
+        if self._stopped:
+            return False
+        normalized = normalize_discord_text(content)
+        if not normalized:
+            return False
+        self.current_text = normalized
+        elapsed = time.monotonic() - self.last_edit_at
+        if not force and elapsed < self.min_update_interval_seconds:
+            return False
+        return await self._edit(normalized)
+
+    async def stop(self) -> None:
+        """heartbeat를 멈춥니다. 여러 번 호출해도 안전합니다."""
+        self._stopped = True
+        task, self._task = self._task, None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def _edit(self, content: str) -> bool:
+        async with self._edit_lock:
+            if self._stopped:
+                return False
+            try:
+                await self.message.edit(
+                    content=content[:1900],
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except Exception:
+                return False
+            self.last_edit_at = time.monotonic()
+            return True
+
+    async def _heartbeat_loop(self) -> None:
+        try:
+            while not self._stopped:
+                await asyncio.sleep(self.heartbeat_seconds)
+                if self._stopped:
+                    return
+                elapsed_seconds = max(1, int(time.monotonic() - self.started_at))
+                await self._edit(
+                    f"{self.current_text}\n⏱️ {elapsed_seconds}초째 안전하게 처리 중입니다."
+                )
+        except asyncio.CancelledError:
+            raise
 
 
 def _table_cells(line: str) -> list[str]:

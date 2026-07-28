@@ -5,8 +5,14 @@
 날짜 경계 회귀를 방지한다.
 """
 
+import pytest
+
 from utils.fortune import get_sign_from_date
-from utils.discord_helpers import normalize_discord_text, split_message_chunks
+from utils.discord_helpers import (
+    DiscordProgress,
+    normalize_discord_text,
+    split_message_chunks,
+)
 
 
 class TestZodiacBoundaries:
@@ -86,3 +92,30 @@ class TestSplitMessageChunks:
         assert all(len(chunk) <= 120 for chunk in chunks)
         assert all(chunk.count("```") % 2 == 0 for chunk in chunks)
         assert sum(chunk.count("# not a heading") for chunk in chunks) == 30
+
+
+@pytest.mark.asyncio
+async def test_discord_progress_coalesces_fast_updates_and_keeps_latest_phase():
+    class FakeMessage:
+        def __init__(self):
+            self.edits = []
+
+        async def edit(self, **kwargs):
+            self.edits.append(kwargs)
+
+    message = FakeMessage()
+    progress = DiscordProgress(
+        message,
+        initial_text="시작",
+        min_update_interval_seconds=0.5,
+        heartbeat_seconds=30,
+    )
+
+    assert await progress.update("빠른 1단계") is False
+    assert message.edits == []
+    assert progress.current_text == "빠른 1단계"
+
+    progress.last_edit_at -= 1
+    assert await progress.update("시간이 걸리는 2단계") is True
+    assert message.edits[-1]["content"] == "시간이 걸리는 2단계"
+    await progress.stop()

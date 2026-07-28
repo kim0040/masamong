@@ -363,6 +363,10 @@ SCHOOL_NOTICE_CATALOG_PATH=/srv/masamong/current/profiles/catalogs/school_notice
 SCHOOL_NOTICE_SOURCE_CONFIG=/srv/masamong/current/school_notice/sources.json
 SCHOOL_NOTICE_DELIVERY_HOUR=9
 SCHOOL_NOTICE_DELIVERY_MINUTE=0
+SCHOOL_NOTICE_INITIAL_CRAWL_ENABLED=true
+SCHOOL_NOTICE_INITIAL_CRAWL_TIMEOUT_SECONDS=660
+SCHOOL_NOTICE_INITIAL_CRAWL_MAX_ATTEMPTS=2
+SCHOOL_NOTICE_INITIAL_CRAWL_RETRY_SECONDS=20
 ```
 
 bot을 시작하기 전에 batch dry-run으로 대상 학교 집계만 확인한다.
@@ -383,6 +387,8 @@ dry-run은 SQLite일 때 `mode=ro`를 쓰고 profile/temp/digest 파일이나 DB
 검증할 항목:
 
 - 현재 동의가 있고 활성인 등록 프로필만 대상
+- 첫 등록 직후 child batch는 `--only-user-id`로 정확히 그 사용자 한 명만 DB에서 읽고,
+  해당 학교 source만 `--no-llm --low-resource`로 최대 2회 안에 처리
 - 카탈로그와 core 설정이 공통으로 가진 해당 학교 source만 `--source`로 전달
 - KST 날짜가 core에 명시
 - 사용자·날짜가 일치하는 검증된 digest와 최소 run report만 mode `0600`으로 원자적 공개

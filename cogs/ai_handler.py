@@ -53,7 +53,11 @@ from utils.llm_client import (
 )
 from utils.intent_analyzer import IntentAnalyzer
 from utils.rag_manager import RAGManager
-from utils.discord_helpers import normalize_discord_text, split_message_chunks
+from utils.discord_helpers import (
+    DiscordProgress,
+    normalize_discord_text,
+    split_message_chunks,
+)
 from utils.embeddings import (
     DiscordEmbeddingStore,
     KakaoEmbeddingStore,
@@ -2052,12 +2056,24 @@ Generate the optimized English image prompt:"""
         )
         self._debug(f"--- 에이전트 세션 시작 trace_id={trace_id}", log_extra)
 
-        # [Progress Update] 초기 상태 메시지 전송
-        status_msg = await message.channel.send("🤔 마사몽이 생각 중이야...")
+        # 초기 상태는 즉시 표시하고 이후 단계는 낮은 빈도로 합쳐 갱신한다.
+        # 오래 걸리는 도구/LLM 호출은 12초 heartbeat로 살아 있음을 알리되,
+        # 단계가 빠르게 바뀔 때 Discord edit 요청을 연속으로 보내지 않는다.
+        initial_progress_text = "🤔 질문을 확인하고 있어요..."
+        status_msg = await message.channel.send(
+            initial_progress_text,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        progress = await DiscordProgress(
+            status_msg,
+            initial_text=initial_progress_text,
+        ).start()
 
         try:
             # 1단계: 분석 및 도구 계획 수립
-            await status_msg.edit(content="🔎 질문 의도를 파악하고 필요한 자료를 검토 중이야...")
+            await progress.update(
+                "🔎 질문 의도를 파악하고 필요한 자료를 검토 중이에요..."
+            )
             
             # [NEW] 지역명 캐시 로드 (필요 시)
             await self._load_location_cache()
@@ -2133,14 +2149,22 @@ Generate the optimized English image prompt:"""
                 tool_names_kr = {"web_search": "웹 검색", "get_weather_forecast": "날씨 조회", "generate_image": "이미지 생성"}
                 first_tool = tool_plan[0].get('tool_to_use', '')
                 first_label = tool_names_kr.get(first_tool, first_tool)
-                await status_msg.edit(content=f"🔍 {first_label} 정보를 가져오는 중이야... {step_label}")
+                await progress.update(
+                    f"🔍 {first_label} 정보를 가져오는 중이에요... {step_label}"
+                )
                 logger.info(f"2단계: 도구 실행 시작. 총 {len(tool_plan)}단계.", extra=log_extra)
                 
                 for idx, tool_call in enumerate(tool_plan, start=1):
                     tool_name = tool_call.get('tool_to_use')
                     tool_label = tool_names_kr.get(tool_name, tool_name)
-                    progress = f"({idx}/{len(tool_plan)})" if len(tool_plan) > 1 else ""
-                    await status_msg.edit(content=f"🔍 {tool_label} 진행 중... {progress}")
+                    step_progress = (
+                        f"({idx}/{len(tool_plan)})"
+                        if len(tool_plan) > 1
+                        else ""
+                    )
+                    await progress.update(
+                        f"🔍 {tool_label} 진행 중이에요... {step_progress}"
+                    )
 
                     result = await self._execute_tool(
                         tool_call,
@@ -2162,7 +2186,9 @@ Generate the optimized English image prompt:"""
             # 도구 계획이 없을 때만 웹 검색 자동 판단 (중복 탐색/과호출 방지)
             if not tool_plan and await self._should_use_web_search(user_query, rag_top_score, history=history):
                 if self._can_run_auto_web_search(message, user_query, log_extra):
-                    await status_msg.edit(content="🌐 웹에서 최신 정보를 검색하고 요약 중이야...")
+                    await progress.update(
+                        "🌐 웹에서 최신 정보를 검색하고 요약 중이에요..."
+                    )
 
                     # [NEW] 히스토리를 바탕으로 검색 쿼리 정제
                     refined_query = user_query
@@ -2185,7 +2211,11 @@ Generate the optimized English image prompt:"""
                             if self.NEWS_SOURCE_FOOTER.strip() not in final_response_text:
                                 final_response_text += self.NEWS_SOURCE_FOOTER
 
-                        await self._edit_status_with_split_response(status_msg, final_response_text)
+                        await progress.stop()
+                        await self._edit_status_with_split_response(
+                            status_msg,
+                            final_response_text,
+                        )
                         if source_urls:
                             self._news_source_cache[status_msg.id] = source_urls
                             if len(self._news_source_cache) > 50:
@@ -2200,7 +2230,9 @@ Generate the optimized English image prompt:"""
                         return
 
             # 답변 작성 단계
-            await status_msg.edit(content="✍️ 수집한 정보를 바탕으로 답변을 작성 중이야...")
+            await progress.update(
+                "✍️ 수집한 정보를 바탕으로 답변을 작성 중이에요..."
+            )
 
             # 도구 결과에서 출처 URL 추출
             source_urls_to_cache = []
@@ -2283,6 +2315,7 @@ Generate the optimized English image prompt:"""
                     img_url = image_result["result"].get("image_url")
                     if img_data:
                         try:
+                            await progress.stop()
                             image_file = discord.File(io.BytesIO(img_data), filename="generated.png")
                             chunks = self._split_message_chunks(
                                 final_response_text
@@ -2326,7 +2359,11 @@ Generate the optimized English image prompt:"""
                     if self.NEWS_SOURCE_FOOTER.strip() not in final_response_text:
                         final_response_text += self.NEWS_SOURCE_FOOTER
 
-                await self._edit_status_with_split_response(status_msg, final_response_text)
+                await progress.stop()
+                await self._edit_status_with_split_response(
+                    status_msg,
+                    final_response_text,
+                )
 
                 # 출처 캐시 저장 및 리액션 추가
                 if source_urls_to_cache:
@@ -2352,15 +2389,18 @@ Generate the optimized English image prompt:"""
                     ),
                 )
             else:
+                await progress.stop()
                 await status_msg.edit(content="미안해, 답변을 생성하는 데 실패했어. 😢")
 
         except Exception as e:
             logger.error(f"에이전트 처리 중 최상위 오류: {e}", exc_info=True, extra=log_extra)
+            await progress.stop()
             try:
                 await status_msg.edit(content=config.MSG_AI_ERROR)
             except:
                 await message.channel.send(config.MSG_AI_ERROR)
         finally:
+            await progress.stop()
             self._debug(f"--- 에이전트 세션 종료 trace_id={trace_id}", log_extra)
     async def _get_recent_history(self, message: discord.Message, rag_prompt: str) -> list:
         """모델에 전달할 최근 대화 기록을 채널에서 가져옵니다."""

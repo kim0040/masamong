@@ -176,6 +176,20 @@ def build_item_embed(
             inline=False,
         )
 
+    if any(
+        warning.startswith("body_too_short:") or warning == "body_used_meta_description"
+        for warning in item.warnings
+    ):
+        embed.add_field(
+            name="본문 확인",
+            value=(
+                "학교 게시글의 본문이 이미지 중심이거나 공개 HTML 텍스트가 짧습니다. "
+                "제목·게시판 분류를 바탕으로 표시했으므로 원문 이미지와 첨부파일을 "
+                "직접 확인하세요."
+            ),
+            inline=False,
+        )
+
     if item.topics:
         embed.add_field(
             name="주제",

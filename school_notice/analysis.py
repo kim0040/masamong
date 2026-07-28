@@ -35,7 +35,10 @@ _URGENCY_VALUES = {"low", "normal", "high", "critical"}
 
 
 def analysis_input_text(notice: Notice, limit: int = 18_000) -> str:
-    sections = [f"제목: {notice.title}", f"본문:\n{notice.body_text}"]
+    sections = [f"제목: {notice.title}"]
+    if notice.candidate.category:
+        sections.append(f"게시판 분류: {notice.candidate.category}")
+    sections.append(f"본문:\n{notice.body_text}")
     for extraction in notice.attachment_extractions:
         if extraction.text:
             sections.append(

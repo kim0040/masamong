@@ -16,7 +16,9 @@ import os
 import re
 import shutil
 import sqlite3
+import sys
 import time
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -28,6 +30,7 @@ from discord.ext import commands, tasks
 import config
 from logger_config import logger
 from utils import db as db_utils
+from utils.discord_helpers import DiscordProgress
 from utils.school_notice_contract import (
     FEEDBACK_TYPES,
     Digest,
@@ -94,6 +97,14 @@ _FEEDBACK_BUTTONS = (
     ("not_interested", "관심 없음", discord.ButtonStyle.secondary),
     ("completed", "완료", discord.ButtonStyle.secondary),
 )
+
+
+@dataclass(frozen=True)
+class ProfileUpsertResult:
+    """프로필 저장 결과와 최초 수집 승계 여부."""
+
+    created: bool
+    needs_initial_collection: bool
 
 
 def user_key_for(user_id: int) -> str:
@@ -283,6 +294,8 @@ class SchoolNoticeDashboardView(discord.ui.View):
         self.enabled = bool(enabled)
         self.toggle.label = "알림 중지" if self.enabled else "알림 재개"
         self.latest.disabled = not self.has_profile
+        self.collection_status.disabled = not self.has_profile
+        self.profile_info.disabled = not self.has_profile
         self.delivery_time.disabled = not self.has_profile
         self.toggle.disabled = not self.has_profile
 
@@ -299,6 +312,7 @@ class SchoolNoticeDashboardView(discord.ui.View):
         label="설정·변경",
         style=discord.ButtonStyle.primary,
         emoji="🎓",
+        row=0,
     )
     async def setup_profile(
         self,
@@ -319,6 +333,7 @@ class SchoolNoticeDashboardView(discord.ui.View):
         label="최근 공지",
         style=discord.ButtonStyle.secondary,
         emoji="📬",
+        row=0,
     )
     async def latest(
         self,
@@ -332,9 +347,27 @@ class SchoolNoticeDashboardView(discord.ui.View):
         await SchoolNoticeCog.school_notice.callback(self.cog, self.ctx, 1)
 
     @discord.ui.button(
+        label="수집 상태",
+        style=discord.ButtonStyle.secondary,
+        emoji="🔎",
+        row=0,
+    )
+    async def collection_status(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.send_message(
+            "최근 공개 게시판 확인 상태를 아래에서 보여드릴게요.",
+            ephemeral=True,
+        )
+        await self.cog.send_collection_status(self.ctx)
+
+    @discord.ui.button(
         label="알림 시간",
         style=discord.ButtonStyle.secondary,
         emoji="⏰",
+        row=1,
     )
     async def delivery_time(
         self,
@@ -364,9 +397,27 @@ class SchoolNoticeDashboardView(discord.ui.View):
         )
 
     @discord.ui.button(
+        label="내 설정",
+        style=discord.ButtonStyle.secondary,
+        emoji="🧾",
+        row=1,
+    )
+    async def profile_info(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.send_message(
+            "저장된 최소 설정을 아래에서 보여드릴게요.",
+            ephemeral=True,
+        )
+        await SchoolNoticeCog.profile_info.callback(self.cog, self.ctx)
+
+    @discord.ui.button(
         label="알림 중지",
         style=discord.ButtonStyle.secondary,
         emoji="🔔",
+        row=1,
     )
     async def toggle(
         self,
@@ -439,6 +490,7 @@ class SchoolNoticeCog(commands.Cog):
         self._profile_llm_calls: dict[int, int] = {}
         self._profile_llm_lock = asyncio.Lock()
         self._delivery_tick_lock = asyncio.Lock()
+        self._initial_collection_tasks: dict[int, asyncio.Task] = {}
         self._catalog: SchoolCatalog | None = None
         if config.SCHOOL_NOTICE_ENABLED:
             self.delivery_task.start()
@@ -452,6 +504,9 @@ class SchoolNoticeCog(commands.Cog):
     def cog_unload(self) -> None:
         if self.delivery_task.is_running():
             self.delivery_task.cancel()
+        for task in self._initial_collection_tasks.values():
+            task.cancel()
+        self._initial_collection_tasks.clear()
         locked_users = getattr(self.bot, "locked_users", None)
         if isinstance(locked_users, set):
             locked_users.difference_update(self._profile_sessions)
@@ -508,6 +563,245 @@ class SchoolNoticeCog(commands.Cog):
             f"{message}\n`!개인정보 동의 "
             f"{consent_command_name(SCHOOL_NOTICE_SCOPE)}`를 실행한 뒤 다시 시도해주세요."
         )
+
+    async def _schedule_initial_collection(
+        self,
+        ctx: commands.Context,
+        *,
+        user_id: int,
+    ) -> bool:
+        """신규 프로필의 공개 게시판을 별도 저자원 프로세스로 한 번 확인합니다."""
+        if not (
+            config.SCHOOL_NOTICE_ENABLED
+            and getattr(config, "SCHOOL_NOTICE_INITIAL_CRAWL_ENABLED", True)
+        ):
+            return False
+        existing = self._initial_collection_tasks.get(int(user_id))
+        if existing is not None and not existing.done():
+            return True
+        status_message = await ctx.reply(
+            "🔎 처음 등록한 학교의 공개 게시판을 한 번 확인하고 있어요.\n"
+            "학교 사이트에는 Discord ID·학과·학년·관심사 등 사용자 정보를 "
+            "보내지 않습니다. 결과가 있으면 이 DM에서 이어서 알려드릴게요.",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        task = asyncio.create_task(
+            self._run_initial_collection(
+                user_id=int(user_id),
+                status_message=status_message,
+            ),
+            name=f"school-notice-initial-{int(user_id)}",
+        )
+        self._initial_collection_tasks[int(user_id)] = task
+        return True
+
+    async def _run_initial_collection(
+        self,
+        *,
+        user_id: int,
+        status_message: discord.Message,
+    ) -> None:
+        """신규 사용자 한 명만 읽는 유한 batch를 실행하고 결과를 즉시 안내합니다."""
+        progress_text = "🔎 등록 학교의 공개 공지를 처음 확인하는 중이에요..."
+        progress = await DiscordProgress(
+            status_message,
+            initial_text=progress_text,
+            min_update_interval_seconds=2.0,
+            heartbeat_seconds=15.0,
+        ).start()
+        process: asyncio.subprocess.Process | None = None
+        try:
+            project_root = Path(config.PROJECT_ROOT).resolve()
+            command = [
+                sys.executable,
+                str(project_root / "scripts" / "run_school_notice_batch.py"),
+                "--core-python",
+                sys.executable,
+                "--core-cwd",
+                str(project_root),
+                "--source-config",
+                str(Path(config.SCHOOL_NOTICE_SOURCE_CONFIG).expanduser()),
+                "--no-llm",
+                "--low-resource",
+                "--only-user-id",
+                str(int(user_id)),
+                "--max-profiles",
+                "1",
+            ]
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "OMP_NUM_THREADS": "1",
+                    "OPENBLAS_NUM_THREADS": "1",
+                    "MKL_NUM_THREADS": "1",
+                    "NUMEXPR_NUM_THREADS": "1",
+                    "TOKENIZERS_PARALLELISM": "false",
+                }
+            )
+            attempts = max(
+                1,
+                min(
+                    2,
+                    int(
+                        getattr(
+                            config,
+                            "SCHOOL_NOTICE_INITIAL_CRAWL_MAX_ATTEMPTS",
+                            2,
+                        )
+                    ),
+                ),
+            )
+            timeout_seconds = max(
+                30,
+                min(
+                    1_800,
+                    int(
+                        getattr(
+                            config,
+                            "SCHOOL_NOTICE_INITIAL_CRAWL_TIMEOUT_SECONDS",
+                            660,
+                        )
+                    ),
+                ),
+            )
+            retry_delay = max(
+                5,
+                min(
+                    60,
+                    int(
+                        getattr(
+                            config,
+                            "SCHOOL_NOTICE_INITIAL_CRAWL_RETRY_SECONDS",
+                            20,
+                        )
+                    ),
+                ),
+            )
+
+            return_code = 2
+            for attempt in range(1, attempts + 1):
+                if not await self._has_school_notice_consent(user_id):
+                    await progress.stop()
+                    await status_message.edit(
+                        content=(
+                            "학교 공지 동의가 철회되어 초기 확인을 중단했습니다. "
+                            "학교 사이트에는 사용자 정보를 보내지 않았습니다."
+                        ),
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                    return
+                await progress.update(
+                    "🔎 등록 학교의 공개 게시판만 확인하는 중이에요..."
+                    + (f" ({attempt}/{attempts})" if attempts > 1 else ""),
+                    force=True,
+                )
+                process = await asyncio.create_subprocess_exec(
+                    *command,
+                    cwd=str(project_root),
+                    env=environment,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                try:
+                    await asyncio.wait_for(
+                        process.communicate(),
+                        timeout=timeout_seconds,
+                    )
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+                    return_code = 2
+                else:
+                    return_code = int(process.returncode or 0)
+                finally:
+                    process = None
+
+                if return_code != 3 or attempt >= attempts:
+                    break
+                await progress.update(
+                    "🕒 정기 수집과 겹쳐 잠시 기다린 뒤 한 번만 다시 확인할게요.",
+                    force=True,
+                )
+                await asyncio.sleep(retry_delay)
+
+            await progress.stop()
+            if return_code == 0:
+                delivery_status = await self.deliver_to_user(
+                    int(user_id),
+                    user_key_for(user_id),
+                    _as_kst().date(),
+                    verify_batch_snapshot=True,
+                )
+                if delivery_status == "sent":
+                    final_message = (
+                        "✅ 첫 확인을 마쳤습니다. 현재 조건에 맞는 공지를 이 DM에 "
+                        "이어 보냈어요.\n앞으로는 등록 학교만 매일 23:00(한국 시간)에 "
+                        "확인하고, 새롭거나 수정된 관련 공지만 설정 시각에 알려드립니다."
+                    )
+                elif delivery_status == "nothing_to_send":
+                    final_message = (
+                        "✅ 첫 확인을 마쳤습니다. 현재 조건에 맞는 새 공지는 없어요.\n"
+                        "앞으로는 등록 학교만 매일 23:00(한국 시간)에 확인하며, "
+                        "관련 공지가 없으면 DM을 보내지 않습니다."
+                    )
+                elif delivery_status in {"consent_required", "profile_stale"}:
+                    final_message = (
+                        "설정 또는 동의 상태가 바뀌어 초기 결과를 보내지 않았습니다. "
+                        "`!공지 상태`에서 현재 상태를 확인해주세요."
+                    )
+                else:
+                    final_message = (
+                        "공개 게시판 첫 확인은 끝났지만 결과 전달을 완료하지 못했습니다. "
+                        "같은 공지를 중복 전송하지 않으며, `!공지 상태`에서 확인하거나 "
+                        "다음 23시 정기 수집을 기다려주세요."
+                    )
+            elif return_code == 3:
+                final_message = (
+                    "정기 수집과 겹쳐 첫 확인을 바로 끝내지 못했습니다. "
+                    "무한 재시도하지 않고 중단했으며, 다음 23시 정기 수집에서 "
+                    "등록 학교를 안전하게 확인합니다."
+                )
+            else:
+                final_message = (
+                    "⚠️ 등록은 정상적으로 저장했지만 첫 공개 게시판 확인을 완료하지 "
+                    "못했습니다. 사용자 정보는 학교 사이트에 보내지 않았고, "
+                    "다음 23시 정기 수집에서 다시 확인합니다."
+                )
+            await status_message.edit(
+                content=final_message,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except asyncio.CancelledError:
+            if process is not None and process.returncode is None:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+            raise
+        except Exception:
+            logger.error(
+                "학교 공지 등록 직후 초기 확인 실패: user_id=%s",
+                user_id,
+                exc_info=True,
+            )
+            await progress.stop()
+            try:
+                await status_message.edit(
+                    content=(
+                        "⚠️ 등록은 저장했지만 첫 공개 게시판 확인 중 오류가 발생했습니다. "
+                        "무한 재시도하지 않으며 다음 23시 정기 수집에서 확인합니다."
+                    ),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except Exception:
+                pass
+        finally:
+            await progress.stop()
+            current = self._initial_collection_tasks.get(int(user_id))
+            if current is asyncio.current_task():
+                self._initial_collection_tasks.pop(int(user_id), None)
 
     async def begin_profile_setup(
         self,
@@ -1318,6 +1612,93 @@ class SchoolNoticeCog(commands.Cog):
     # 명령
     # ------------------------------------------------------------------
 
+    async def send_collection_status(self, ctx: commands.Context) -> None:
+        """최근 수집 상태를 내부 식별자 없이 사용자 관점으로 설명합니다."""
+        profile_row = await self._require_profile(ctx)
+        if profile_row is None:
+            return
+        async with self.bot.db.execute(
+            """
+            SELECT run_date, status, collection_status, may_include_stale,
+                   item_count, finished_at
+            FROM school_notice_batch_runs
+            WHERE user_key = ?
+            ORDER BY finished_at DESC, run_date DESC
+            LIMIT 1
+            """,
+            (str(profile_row["user_key"]),),
+        ) as cursor:
+            run_row = await cursor.fetchone()
+        if not await self._has_school_notice_consent(ctx.author.id):
+            await self._send_school_notice_consent_prompt(ctx)
+            return
+        if run_row is None:
+            active_initial = int(ctx.author.id) in self._initial_collection_tasks
+            await ctx.reply(
+                (
+                    "🔎 첫 공개 게시판 확인을 진행 중입니다."
+                    if active_initial
+                    else "아직 완료된 공개 게시판 확인 기록이 없습니다."
+                )
+                + "\n등록 학교만 확인하며, 다음 정기 수집은 매일 23:00(한국 시간)입니다. "
+                "학교 사이트에는 사용자 프로필을 보내지 않습니다."
+            )
+            return
+        try:
+            run_date = date.fromisoformat(str(run_row[0]))
+        except ValueError:
+            await ctx.reply("⚠️ 최근 수집 상태의 날짜를 안전하게 읽지 못했습니다.")
+            return
+        status = str(run_row[1])
+        collection_status = str(run_row[2] or "unknown")
+        readiness = (
+            await self._batch_ready_for_profile(
+                int(ctx.author.id),
+                str(profile_row["user_key"]),
+                run_date,
+            )
+            if status in {"succeeded", "partial"}
+            else "not_ready"
+        )
+        status_label = {
+            "succeeded": "완료",
+            "partial": "일부 게시판 저하",
+            "failed": "실패",
+        }.get(status, "확인 필요")
+        health_label = {
+            "healthy": "정상",
+            "degraded": "일부 저하",
+            "failed": "수집 실패",
+        }.get(collection_status, "확인 필요")
+        lines = [
+            "🔎 **학교 공지 수집 상태**",
+            f"- 최근 기준일: {run_date.isoformat()}",
+            f"- 작업 상태: {status_label}",
+            f"- 공개 게시판 상태: {health_label}",
+            f"- 내 조건과 맞은 공지: {max(0, int(run_row[4] or 0))}건",
+            f"- 완료 시각: {str(run_row[5])}",
+        ]
+        if bool(run_row[3]):
+            lines.append(
+                "- 주의: 일부 게시판을 읽지 못해 이전 저장 공지가 포함될 수 있습니다."
+            )
+        if readiness == "profile_stale":
+            lines.append(
+                "- 현재 설정이 이 결과 뒤에 바뀌었습니다. 다음 23시 수집부터 새 조건을 적용합니다."
+            )
+        elif readiness != "ready" and status in {"succeeded", "partial"}:
+            lines.append("- 현재 설정과 결과의 일치 여부를 확인할 수 없어 전달하지 않습니다.")
+        lines.extend(
+            (
+                "- 다음 정기 수집: 매일 23:00 (한국 시간)",
+                "- 자동 DM: 새롭거나 수정된 관련 공지가 있을 때만 전송",
+            )
+        )
+        await ctx.reply(
+            "\n".join(lines),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
     async def send_dashboard(self, ctx: commands.Context) -> None:
         """설정 상태와 자주 쓰는 동작을 한 화면에 모아 보여준다."""
         if ctx.guild:
@@ -1338,9 +1719,10 @@ class SchoolNoticeCog(commands.Cog):
         embed = discord.Embed(
             title="🎓 학교 공지",
             description=(
-                "학교·학과·학년·관심사를 자연스럽게 말하면 내용을 확인한 뒤 저장합니다.\n"
-                "등록한 학교의 게시판만 23:00(한국 시간)에 수집하고, "
-                "내 조건에 맞는 공지가 있을 때만 알림을 보냅니다."
+                "학교·과정·학년만 필수이며, 캠퍼스·학과·관심사는 원하는 경우에만 "
+                "말하면 됩니다. 내용을 확인한 뒤에만 저장합니다.\n"
+                "첫 등록 직후 공개 게시판을 한 번 확인하고, 이후 등록한 학교만 "
+                "23:00(한국 시간)에 수집합니다."
             ),
             color=0x4F8EF7,
         )
@@ -1351,6 +1733,14 @@ class SchoolNoticeCog(commands.Cog):
             value=(
                 "`전북대 소프트웨어공학과 3학년이고 장학·인턴 공지를 "
                 "오전 9시에 알려줘`처럼 DM으로 말해보세요."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="개인정보 보호",
+            value=(
+                "학교 사이트에는 Discord ID·학과·학년·관심사를 보내지 않습니다. "
+                "관련 공지가 없으면 DM도 보내지 않습니다."
             ),
             inline=False,
         )
@@ -1884,13 +2274,39 @@ class SchoolNoticeCog(commands.Cog):
                         catalog=self._school_catalog(),
                         require_complete=True,
                     )
-                    await self.upsert_profile(user_id, final_profile)
+                    upsert_result = await self.upsert_profile(
+                        user_id,
+                        final_profile,
+                    )
+                    run_initial_now = bool(
+                        upsert_result.needs_initial_collection
+                        and getattr(
+                            config,
+                            "SCHOOL_NOTICE_INITIAL_CRAWL_ENABLED",
+                            True,
+                        )
+                    )
                     await ctx.reply(
                         "✅ 확인한 학교 공지 정보를 저장했습니다.\n"
-                        "등록한 학교의 공지만 전날 한국 시간 23시에 수집하고, "
-                        f"다음 날 {final_profile['delivery_time']}에 관련 공지가 있을 때만 "
-                        "알려드립니다."
+                        + (
+                            "아직 유효한 수집 기록이 없어 등록 학교의 공개 게시판을 "
+                            "지금 첫 확인합니다. "
+                            if run_initial_now
+                            else (
+                                "첫 수집은 다음 23:00(한국 시간)에 진행합니다. "
+                                if upsert_result.needs_initial_collection
+                                else ""
+                            )
+                        )
+                        + "이후에는 등록한 학교만 매일 23:00(한국 시간)에 확인하고, "
+                        f"새롭거나 수정된 관련 공지가 있을 때 {final_profile['delivery_time']}에 "
+                        "알려드립니다. 관련 공지가 없으면 DM을 보내지 않습니다."
                     )
+                    if run_initial_now:
+                        await self._schedule_initial_collection(
+                            ctx,
+                            user_id=user_id,
+                        )
                     return
 
                 if revisions >= max_revisions:
@@ -1922,10 +2338,30 @@ class SchoolNoticeCog(commands.Cog):
             self._profile_sessions.discard(user_id)
             self._profile_llm_calls.pop(user_id, None)
 
-    async def upsert_profile(self, user_id: int, profile: dict) -> None:
+    async def upsert_profile(
+        self,
+        user_id: int,
+        profile: dict,
+    ) -> ProfileUpsertResult:
+        """프로필을 저장하고 최초 수집이 필요한 기존 행도 안전하게 승계합니다."""
         if not await self._has_school_notice_consent(user_id):
             raise ConsentRequiredError(SCHOOL_NOTICE_SCOPE)
         user_key = user_key_for(user_id)
+        async with self.bot.db.execute(
+            "SELECT 1 FROM school_notice_profiles WHERE user_id = ?",
+            (int(user_id),),
+        ) as cursor:
+            created = await cursor.fetchone() is None
+        async with self.bot.db.execute(
+            """
+            SELECT 1
+            FROM school_notice_batch_runs
+            WHERE user_key = ? AND status IN ('succeeded', 'partial')
+            LIMIT 1
+            """,
+            (user_key,),
+        ) as cursor:
+            has_valid_collection = await cursor.fetchone() is not None
         extracted = {
             key: value
             for key, value in dict(profile).items()
@@ -1943,6 +2379,7 @@ class SchoolNoticeCog(commands.Cog):
         delivery_time = normalize_delivery_time(canonical["delivery_time"])
         stored_profile = dict(canonical)
         stored_profile["user_key"] = user_key
+        timestamp = _now_text()
         payload = json.dumps(
             stored_profile,
             ensure_ascii=False,
@@ -1953,8 +2390,8 @@ class SchoolNoticeCog(commands.Cog):
             query = """
                 INSERT INTO school_notice_profiles
                     (user_id, user_key, school_id, profile_json, delivery_time,
-                     enabled, updated_at)
-                VALUES (?, ?, ?, ?, ?, 1, ?)
+                     enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?)
                 ON DUPLICATE KEY UPDATE
                     school_id = VALUES(school_id),
                     profile_json = VALUES(profile_json),
@@ -1967,8 +2404,8 @@ class SchoolNoticeCog(commands.Cog):
             query = """
                 INSERT INTO school_notice_profiles
                     (user_id, user_key, school_id, profile_json, delivery_time,
-                     enabled, updated_at)
-                VALUES (?, ?, ?, ?, ?, 1, ?)
+                     enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     school_id = excluded.school_id,
                     profile_json = excluded.profile_json,
@@ -1985,10 +2422,15 @@ class SchoolNoticeCog(commands.Cog):
                 str(canonical["school_id"]),
                 payload,
                 delivery_time,
-                _now_text(),
+                timestamp,
+                timestamp,
             ),
         )
         await self.bot.db.commit()
+        return ProfileUpsertResult(
+            created=created,
+            needs_initial_collection=created or not has_valid_collection,
+        )
 
     @school_notice.command(name="정보")
     @commands.dm_only()
@@ -2011,12 +2453,19 @@ class SchoolNoticeCog(commands.Cog):
             ]
         lines.append("- 전달 상태: " + ("사용 중" if row["enabled"] else "중지됨"))
         lines.append(
-            "- 수집/전달: 등록 학교만 전날 23:00 수집 → 다음 날 선택 시각 전달"
+            "- 수집/전달: 첫 등록 때 즉시 1회 확인, 이후 등록 학교만 매일 "
+            "23:00 수집 → 다음 알림 시각 전달"
         )
         if not await self._has_school_notice_consent(ctx.author.id):
             await self._send_school_notice_consent_prompt(ctx)
             return
         await ctx.reply("\n".join(lines))
+
+    @school_notice.command(name="상태")
+    @commands.dm_only()
+    async def collection_status_command(self, ctx: commands.Context) -> None:
+        """최근 등록 학교 공개 게시판 수집 상태를 보여줍니다."""
+        await self.send_collection_status(ctx)
 
     async def update_delivery_time(self, user_id: int, value: str) -> str:
         """명령과 Modal이 공유하는 동의 보호 알림 시각 갱신."""

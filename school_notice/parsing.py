@@ -245,7 +245,17 @@ def parse_detail(
         ]
     )
     content_hash = hashlib.sha256(hash_input.encode("utf-8")).hexdigest()
-    signals = extract_signals(title, body_text)
+    # 이미지 중심 공지처럼 본문 텍스트가 짧아도 목록의 공개 카테고리는
+    # 유용한 분류 근거다. 카테고리는 사용자 정보가 아니며 해당 게시판 응답에서
+    # 직접 추출한 값만 사용한다.
+    signals = extract_signals(
+        title,
+        "\n".join(
+            value
+            for value in (body_text, candidate.category or "")
+            if value
+        ),
+    )
     return Notice(
         candidate=candidate,
         title=title,

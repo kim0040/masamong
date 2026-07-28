@@ -10,15 +10,19 @@
 - General: `SCHOOL_NOTICE_ENABLED=false`로 시작하고 Masamo 상태를 공유하지 않음
 - Discord bot: 자연어 등록·확인, 동의, profile/feedback, digest 계약 검증, Discord 전달
 - vendored `school_notice` core: 공개 학교 게시판 수집, 사실 분석, 개인화 점수, digest 생성
-- 수집 시각: 매일 `23:00` KST systemd one-shot
+- 수집 시각: 신규 프로필 확인 직후 해당 사용자만 1회, 이후 매일 `23:00` KST systemd one-shot
 - 전달 시각: 사용자별, 신규 기본 `09:00` KST
 - 전달 대상 날짜: 보통 전날 23:00 batch가 만든 digest를 다음 날 사용자 시각에 전달하고,
   장애 복구 때는 최근 3일 안의 가장 최신 유효 결과만 제한적으로 확인
 - 관련 공지가 없으면 자동 DM을 보내지 않음
 
 수집 core는 저장소의 `school_notice/`에 포함되어 봇과 같은 release SHA로 배포된다.
-다만 CPU·메모리와 실패 범위를 격리하기 위해 상주 봇 안에서 import해 돌리지 않고 별도
-systemd one-shot 프로세스로 실행한다.
+다만 CPU·메모리와 실패 범위를 격리하기 위해 상주 봇 event loop에서 import해 돌리지
+않고, 신규 1회 확인과 정기 수집 모두 별도 저자원 프로세스로 실행한다.
+
+학교 측 연동 방식은 API가 아니라 공개 HTML 순수 크롤링이다. 학교별 목록·상세 URL과 CSS
+selector를 `school_notice/sources.json`에 명시하고, robots·허용 host·redirect·응답 크기·
+요청 예산을 적용한다. 쿠키·Referer·환경 proxy는 사용하지 않는다.
 
 ## 사용자 시나리오
 
@@ -30,17 +34,17 @@ DM에서 `!메뉴` 또는 `!공지`의 설정 버튼을 누르거나 기능을 �
 !개인정보 동의 학교공지
 ```
 
-고지문에는 Discord 사용자 ID, 학교·과정·학년·학과·캠퍼스·학적·이수/성적·관심/알림
-설정과 피드백의 수집·이용, 보관·철회·삭제 범위가 나온다. 명령을 실행한 본인이
+고지문에는 필수 Discord 사용자 ID·학교·과정·학부 학년과, 사용자가 직접 제공했을 때만
+저장하는 캠퍼스·학과·입학/학적·관심·알림 설정·피드백의 수집·이용, 보관·철회·삭제
+범위가 나온다. 명령을 실행한 본인이
 `동의합니다` 버튼을 누르기 전에는 새 정보를 수집하거나 기존 프로필을 이용하지 않는다.
 기능 진입 도중 나온 동의 버튼을 누르면 원래 설정 흐름이 한 번만 자동으로 이어진다.
-현재 자연어 등록 UI는 아래의 최소 필드만 새로 저장하고, 이수/성적 등은 기존 core 호환
-profile에 이미 존재하는 경우까지 포함해 동의 범위로 보호한다.
 
 운영에서 프로필 추출 LLM을 켠 경우 사용자가 등록 명령에 입력한 제한된 자연어가 외부 LLM
-제공자에게 전달될 수 있다. 공지 분석 LLM을 켠 경우 공개 공지 본문이 전달될 수 있다.
-이때 개인화에 필요한 제한된 프로필 항목도 전달될 수 있다. 개인 프로필은 공지 개인화
-목적 이외에 사용하지 않는다.
+제공자 한 곳에 Discord ID 없이 전달될 수 있다. 기본 수집·분석은 LLM 없이 수행한다.
+공지 분석 LLM을 운영자가 명시적으로 켠 경우에도 공개 공지 내용만 전달하고 개인 프로필은
+전달하지 않는다. 학교 사이트 요청에도 Discord ID, 사용자 입력, 학과·학년·관심사 등
+개인 프로필을 넣지 않는다.
 
 ### 2. 자연어 등록
 
@@ -82,7 +86,14 @@ profile에 이미 존재하는 경우까지 포함해 동의 범위로 보호한
 신규 사용자의 전달 기본값은 `09:00` KST다. 사용자는 등록 대화 또는 별도 시간 명령으로
 바꿀 수 있다.
 
-### 4. 수집과 다음 날 전달
+### 4. 최초 수집, 정기 수집과 전달
+
+새 프로필을 처음 확인해 저장하면 `--only-user-id`로 그 사용자 한 명만 DB에서 읽고,
+그 학교 source만 대상으로 별도 1스레드·`--no-llm --low-resource` 프로세스를 즉시 한 번
+실행한다. 최대 실행 시간과 시도 수는 설정으로 제한하며, 정기 batch lock 충돌만 한 번
+기다렸다 재시도한다. 실패·timeout 뒤 무한 재실행하지 않고 다음 23시 수집으로 넘긴다.
+같은 notice/revision 전달 기록을 사용하므로 최초 결과가 뒤의 정기 수집에서 재전송되지
+않는다.
 
 23:00 KST batch는 다음 조건을 모두 만족하는 profile만 읽는다.
 
@@ -133,6 +144,7 @@ visible item이 0건이면 전달 run만 완료 상태로 기록하고 DM은 보
 | `!공지 등록 <자연어>` | 신규 등록 또는 확인 기반 갱신 |
 | `!공지 수정 <자연어>` | 기존 프로필 후보를 자연어로 보정하고 다시 확인 |
 | `!공지 정보` | 저장된 최소 프로필, 전달 시각과 활성 상태 확인 |
+| `!공지 상태` | 최근 등록 학교 공개 게시판의 수집 결과와 다음 수집 시각 확인 |
 | `!공지 시간 HH:MM` | 사용자별 KST 전달 시각 변경 |
 | `!공지 중지` | 수집·전달 대상에서 일시 제외, 데이터 보존 |
 | `!공지 재개` | 현재 동의 확인 뒤 다시 활성화 |
@@ -181,6 +193,10 @@ core source 설정, selector/host/robots 계약, fixture/live-check를 함께 �
 Discord DM
   └─ 동의 → 자연어 후보 → 사용자 확인 → Masamo DB profile
 
+신규 프로필 확인
+  └─ run_school_notice_batch.py --only-user-id <id> (one-shot, thread 1, no LLM)
+       └─ 해당 사용자와 등록 학교 source만 즉시 한 번 확인
+
 23:00 KST systemd timer
   └─ run_school_notice_batch.py (one-shot, thread 1)
        ├─ 동의·활성 profile 조회
@@ -198,8 +214,9 @@ Discord DM
        └─ 관련 item이 있을 때만 DM
 ```
 
-상주 봇은 크롤링하거나 공지 분석 LLM을 호출하지 않는다. CPU/RSS가 일시적으로 증가하는
-수집·HTML parsing·분석은 `Type=oneshot` 별도 프로세스에서 수행한다.
+상주 봇의 event loop는 크롤링하거나 공지 분석 LLM을 호출하지 않는다. CPU/RSS가
+일시적으로 증가하는 수집·HTML parsing·분석은 초기 child process 또는 `Type=oneshot`
+systemd 별도 프로세스에서 수행한다.
 
 저장소:
 
@@ -240,6 +257,7 @@ MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
 --profile-timeout-seconds N
 --feedback-timeout-seconds N
 --batch-deadline-seconds N
+--only-user-id DISCORD_USER_ID
 ```
 
 `--source-config`를 생략하면 `SCHOOL_NOTICE_SOURCE_CONFIG`, 그것도 없으면
@@ -339,8 +357,9 @@ duplicate_sources: array
 - 자동 digest 한 페이지의 공지 항목은 기본 최대 10개
 
 본문 전체 대신 `analysis.summary`를 표시하고 `score.reasons`를 “왜 추천됐는지” 근거로
-보여준다. `eligibility=UNKNOWN`과 추론 날짜는 원문 확인이 필요함을 표시한다. 공지 원문
-링크가 최종 판단 기준이다.
+보여준다. `eligibility=UNKNOWN`과 추론 날짜는 원문 확인이 필요함을 표시한다. 본문이
+이미지 중심이거나 공개 HTML 텍스트가 짧다는 parser 경고가 있으면 제목·게시판 분류만
+읽었을 수 있음을 별도 표시한다. 공지 원문 링크가 최종 판단 기준이다.
 
 ## 개인화와 알림 의미
 
@@ -405,6 +424,11 @@ SCHOOL_NOTICE_PROFILE_LLM_ENABLED=true
 SCHOOL_NOTICE_PROFILE_MAX_REVISIONS=3
 SCHOOL_NOTICE_PROFILE_INPUT_TIMEOUT_SECONDS=120
 SCHOOL_NOTICE_PROFILE_LLM_TIMEOUT_SECONDS=20
+
+SCHOOL_NOTICE_INITIAL_CRAWL_ENABLED=true
+SCHOOL_NOTICE_INITIAL_CRAWL_TIMEOUT_SECONDS=660
+SCHOOL_NOTICE_INITIAL_CRAWL_MAX_ATTEMPTS=2
+SCHOOL_NOTICE_INITIAL_CRAWL_RETRY_SECONDS=20
 
 SCHOOL_NOTICE_DELIVERY_BATCH_SIZE=10
 SCHOOL_NOTICE_DELIVERY_MAX_ATTEMPTS=3
@@ -502,6 +526,18 @@ DM을 만들지 않는다. 운영자가 true로 켜면 stale 경고의 의미와
   tests/school_notice_isolation_spec.py
 ```
 
+실제 공개 게시판 selector와 본문 품질은 네트워크 live-check로 별도 확인한다.
+
+```bash
+.venv/bin/python -m school_notice live-check \
+  --details-per-source 2 \
+  --max-requests 96 \
+  --output-dir /tmp/masamong-school-livecheck
+```
+
+`healthy/degraded/failed`, 목록 후보 수, 상세 성공 수와 body-quality를 source별로 확인한다.
+본문이 이미지뿐인 공지는 `degraded`일 수 있지만 목록·상세 selector 실패와 구분해야 한다.
+
 추가 확인:
 
 - vendored core 전체 테스트
@@ -509,7 +545,7 @@ DM을 만들지 않는다. 운영자가 true로 켜면 stale 경고의 의미와
 - 미동의·철회·정책 변경 fail-closed
 - 14개 학교 별칭과 지원하지 않는 학교 거부
 - 등록 profile source만 core 명령에 포함
-- KST 23:00 timer와 다음 날 09:00/사용자 시간
+- 신규 사용자 1명만 읽는 즉시 수집과 KST 23:00 timer, 다음 날 09:00/사용자 시간
 - 최근 3일 복구 범위에서 최신 유효 batch만 선택
 - 빈 digest 자동 무알림
 - revision 중복 방지, 수동 페이지 조회, 자동 페이지 연속 전달과 부분 전송 후 재시도
