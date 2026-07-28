@@ -186,6 +186,7 @@ data/
 
 # 일회성 검증 / 디버그 스크립트
 scripts/verify_*.py
+!scripts/verify_bang_commands.py
 scripts/check_*.py
 scripts/test_*.py
 scripts/deep_diag_*.py
