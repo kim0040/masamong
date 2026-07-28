@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "user_key": "discord-100000000000000001",
+  "date": "2026-07-27",
+  "summary": {
+    "action": 0,
+    "opportunity": 1,
+    "reference": 0
+  },
+  "collection_health": {
+    "status": "healthy",
+    "healthy": 2,
+    "degraded": 0,
+    "failed": 0,
+    "may_include_stale_notices": false,
+    "sources": {
+      "jbnu_software": {
+        "status": "healthy",
+        "list_candidates": 10,
+        "details_succeeded": 4,
+        "details_failed": 0,
+        "errors": []
+      },
+      "jbnu_campus": {
+        "status": "healthy",
+        "list_candidates": 10,
+        "details_succeeded": 4,
+        "details_failed": 0,
+        "errors": []
+      }
+    }
+  },
+  "items": [
+    {
+      "notice_id": 16,
+      "dedup_key": "368b4d339aca1d77a82c13dd",
+      "revision_count": 1,
+      "change": "unchanged",
+      "notice": {
+        "candidate": {
+          "source_id": "jbnu_software",
+          "external_id": "394145",
+          "title": "2026학년도 2학기 휴학 및 복학 신청 안내",
+          "url": "https://software.jbnu.ac.kr/bbs/software/527/394145/artclView.do",
+          "published_text": "2026.06.18",
+          "author": "소프트웨어공학과",
+          "category": null,
+          "pinned": true
+        },
+        "title": "[학부] 2026학년도 2학기 휴학 및 복학 신청 안내",
+        "body_text": "2026\n학년도\n2\n학기 휴학 및 복학 신청기간 등을 다음과 같이 알려드립니다.\n1.\n휴학\n·\n복학 신청 가능 기간\n구분\n등록여부\n신청 가능 기간\n비고\n휴학\n미등록자\n7.21.(\n화\n)\n~ 9.29.(\n화\n)\n[\n수업일수\n1/4\n선\n]\n임시공휴일 지정 등\n수업일수\n1/4, 3/4\n선\n은 변경될 수 있음\n등록자\n(\n등록금 납부 및 수강신청 완료\n)\n7.21.(\n화\n)\n~ 11.25.(\n수\n)\n[\n수업일수\n3/4\n선\n]\n복학\n미등록자\n,\n등록자\n7.21.(\n화\n)\n~ 9.29.(\n화\n)\n[\n수업일수\n1/4\n선\n]\n※\n창업휴학 대상자는 개강\n6\n주 전에 창업확인서 발급\n(\n창업교육센터\n)\n후 휴학할 수 있으며\n,\n개강일 이후 복학하는 경우 복학처리 완료전까지는 결석 처리됨에 유의\n2.\n휴학\n·\n복학 허가일\n:\n2",
+        "body_characters": 400,
+        "published_text": "2026.06.18",
+        "author": "소프트웨어공학과",
+        "attachments": [
+          {
+            "kind": "attachment",
+            "url": "https://software.jbnu.ac.kr/bbs/software/527/353100/download.do",
+            "name": "자주하는 문의사항(휴학 및 복학)v5.hwp"
+          }
+        ],
+        "inline_images": [],
+        "attachment_extractions": [],
+        "signals": {
+          "dates": [
+            "2026-09-01",
+            "07-21",
+            "09-29",
+            "01-04",
+            "03-04",
+            "11-25"
+          ],
+          "actions": [
+            "신청",
+            "등록",
+            "수강신청",
+            "납부"
+          ],
+          "audiences": [
+            "학부생"
+          ],
+          "topics": [
+            "등록금",
+            "수강",
+            "학적"
+          ]
+        },
+        "base_content_hash": "8f2b9a0a01b4a96e1eb79949ff3939e66cf1f68a76ea8a4ff72188b34ff17029",
+        "content_hash": "33d45ae6c86fd6600ac1bc83954b24a7a5bedd973b9d0ca0f47767c178b011a8",
+        "warnings": [
+          "list_detail_title_difference"
+        ]
+      },
+      "analysis": {
+        "schema_version": 1,
+        "summary": "학기 휴학 및 복학 신청기간 등을 다음과 같이 알려드립니다.",
+        "audiences": [
+          "학부생"
+        ],
+        "topics": [
+          "등록금",
+          "수강",
+          "학적"
+        ],
+        "actions": [
+          "신청",
+          "등록",
+          "수강신청",
+          "납부"
+        ],
+        "required": true,
+        "urgency": "high",
+        "dates": [
+          {
+            "date": "2026-09-29",
+            "kind": "deadline",
+            "evidence": "7.21.( 화 ) ~ 9.29.( 화 )",
+            "inferred_year": true
+          }
+        ],
+        "eligibility_rules": [],
+        "evidence": [
+          "학기 휴학 및 복학 신청기간 등을 다음과 같이 알려드립니다.",
+          "복학 신청 가능 기간"
+        ],
+        "confidence": 0.58,
+        "analysis_source": "rules",
+        "warnings": [
+          "list_detail_title_difference"
+        ]
+      },
+      "score": {
+        "score": 69.0,
+        "band": "opportunity",
+        "eligibility": "UNKNOWN",
+        "reasons": [
+          "확인되지 않은 자격 조건이 있어 우선순위 상한 적용"
+        ],
+        "topics": [
+          "등록금",
+          "수강",
+          "학적"
+        ],
+        "deadline": "2026-09-01",
+        "next_event": "2026-09-29",
+        "profile_version": 1,
+        "mandatory_protected": true
+      },
+      "duplicate_sources": []
+    }
+  ]
+}

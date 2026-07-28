@@ -191,3 +191,59 @@ CREATE TABLE IF NOT EXISTS kakao_chunks (
     UNIQUE KEY uq_kakao_chunks_room_chunk (room_key, chunk_id),
     KEY idx_kakao_chunks_room_date (room_key, start_date)
 );
+
+-- ============================================================
+-- 학교 공지 추적
+-- 수집 부산물은 batch가 소유한 별도 SQLite에 있고,
+-- 여기에는 Discord 사용자와 결합된 데이터만 둔다.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS school_notice_profiles (
+    user_id BIGINT PRIMARY KEY,
+    user_key VARCHAR(128) NOT NULL UNIQUE,
+    school_id VARCHAR(64) NOT NULL,
+    profile_json TEXT NOT NULL,
+    profile_version INT NOT NULL DEFAULT 1,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at VARCHAR(64),
+    updated_at VARCHAR(64)
+);
+
+CREATE TABLE IF NOT EXISTS school_notice_feedback (
+    id BIGINT PRIMARY KEY AUTO_RANDOM,
+    user_key VARCHAR(128) NOT NULL,
+    source_id VARCHAR(64) NOT NULL,
+    external_id VARCHAR(128) NOT NULL,
+    feedback_type VARCHAR(32) NOT NULL,
+    topic VARCHAR(128),
+    interaction_id VARCHAR(64) NOT NULL UNIQUE,
+    created_at VARCHAR(64) NOT NULL,
+    consumed_at VARCHAR(64),
+    KEY idx_school_notice_feedback_user (user_key, created_at)
+);
+
+CREATE TABLE IF NOT EXISTS school_notice_deliveries (
+    id BIGINT PRIMARY KEY AUTO_RANDOM,
+    user_key VARCHAR(128) NOT NULL,
+    digest_date VARCHAR(32) NOT NULL,
+    notice_id BIGINT NOT NULL,
+    status VARCHAR(16) NOT NULL,
+    failure_reason TEXT,
+    attempt_count INT NOT NULL DEFAULT 1,
+    delivered_at VARCHAR(64) NOT NULL,
+    UNIQUE KEY uk_school_notice_delivery (user_key, digest_date, notice_id)
+);
+
+CREATE TABLE IF NOT EXISTS school_notice_batch_runs (
+    id BIGINT PRIMARY KEY AUTO_RANDOM,
+    user_key VARCHAR(128) NOT NULL,
+    run_date VARCHAR(32) NOT NULL,
+    status VARCHAR(16) NOT NULL,
+    collection_status VARCHAR(16),
+    may_include_stale BOOLEAN NOT NULL DEFAULT FALSE,
+    item_count INT NOT NULL DEFAULT 0,
+    http_requests INT,
+    llm_calls INT,
+    finished_at VARCHAR(64) NOT NULL,
+    UNIQUE KEY uk_school_notice_run (user_key, run_date)
+);

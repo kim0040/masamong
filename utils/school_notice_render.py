@@ -1,0 +1,242 @@
+# -*- coding: utf-8 -*-
+"""검증된 digest를 Discord Embed로 변환합니다.
+
+이 모듈은 Discord API를 호출하지 않고 Embed 객체만 만듭니다. 덕분에 봇 연결
+없이 표현 규칙을 전부 테스트할 수 있습니다.
+
+표현 규칙은 기능 설계에서 나옵니다(docs/SCHOOL_NOTICE_INTEGRATION_PLAN.ko.md).
+
+- 점수는 확률이 아니라 설명 가능한 우선순위이므로 `reasons`를 반드시 노출한다.
+- 자격을 확정할 수 없으면(`UNKNOWN`) 원문 확인이 필요함을 밝힌다.
+- 연도를 추론한 마감은 그 사실을 함께 알린다.
+- 수집이 실패한 날은 "새 공지 없음"과 구분되게 경고한다.
+- 본문 전문 대신 분석 요약을 쓴다.
+"""
+
+from __future__ import annotations
+
+from datetime import date
+
+import discord
+
+from utils.school_notice_contract import BAND_ORDER, Digest, DigestItem
+
+# Discord 제한. 초과하면 API가 거절하므로 만들 때 자른다.
+_TITLE_LIMIT = 256
+_DESCRIPTION_LIMIT = 4096
+_FIELD_VALUE_LIMIT = 1024
+_EMBEDS_PER_MESSAGE = 10
+
+BAND_LABELS = {
+    "action": "지금 확인",
+    "opportunity": "기회",
+    "reference": "참고",
+}
+
+BAND_COLORS = {
+    "action": discord.Color.from_rgb(220, 76, 70),
+    "opportunity": discord.Color.from_rgb(64, 132, 214),
+    "reference": discord.Color.from_rgb(138, 146, 156),
+}
+
+URGENCY_LABELS = {
+    "critical": "매우 급함",
+    "high": "급함",
+    "normal": "보통",
+    "low": "낮음",
+}
+
+
+def _truncate(text: str, limit: int) -> str:
+    """Discord 제한에 맞춰 자르되 잘렸음을 드러냅니다."""
+    rendered = " ".join(str(text or "").split())
+    if len(rendered) <= limit:
+        return rendered
+    return rendered[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _deadline_line(item: DigestItem, today: date | None) -> str | None:
+    if item.deadline is None:
+        return None
+    parts = [f"마감 {item.deadline.isoformat()}"]
+    if today is not None:
+        remaining = (item.deadline - today).days
+        if remaining < 0:
+            parts.append(f"{abs(remaining)}일 지남")
+        elif remaining == 0:
+            parts.append("오늘")
+        else:
+            parts.append(f"{remaining}일 남음")
+    if item.has_inferred_deadline:
+        # 원문에 연도가 없어 코어가 추론한 값이다. 그대로 믿게 하면 안 된다.
+        parts.append("연도 추론값이라 원문 확인 필요")
+    return " · ".join(parts)
+
+
+def build_item_embed(
+    item: DigestItem,
+    *,
+    today: date | None = None,
+) -> discord.Embed:
+    """공지 한 건을 Embed로 만듭니다."""
+    title_prefix = "[필수] " if item.required else ""
+    embed = discord.Embed(
+        title=_truncate(f"{title_prefix}{item.title}", _TITLE_LIMIT),
+        url=item.url or None,
+        description=_truncate(item.summary or "(요약 없음)", _DESCRIPTION_LIMIT),
+        color=BAND_COLORS.get(item.band, discord.Color.light_grey()),
+    )
+
+    origin = " / ".join(part for part in (item.university, item.board) if part)
+    footer_bits = [BAND_LABELS.get(item.band, item.band), f"{item.score:.0f}점"]
+    if origin:
+        footer_bits.append(origin)
+    if item.change in {"new", "updated"}:
+        footer_bits.append("새 글" if item.change == "new" else "내용 변경됨")
+    embed.set_footer(text=_truncate(" · ".join(footer_bits), _FIELD_VALUE_LIMIT))
+
+    deadline = _deadline_line(item, today)
+    if deadline:
+        embed.add_field(name="일정", value=_truncate(deadline, _FIELD_VALUE_LIMIT), inline=False)
+    elif item.next_event is not None:
+        embed.add_field(
+            name="일정",
+            value=_truncate(f"예정 {item.next_event.isoformat()}", _FIELD_VALUE_LIMIT),
+            inline=False,
+        )
+
+    # 점수는 휴리스틱이므로 근거를 항상 보여준다.
+    if item.reasons:
+        reasons = "\n".join(f"· {reason}" for reason in item.reasons[:5])
+        embed.add_field(
+            name="왜 추천됐나",
+            value=_truncate(reasons, _FIELD_VALUE_LIMIT),
+            inline=False,
+        )
+
+    if item.needs_manual_check:
+        embed.add_field(
+            name="확인 필요",
+            value="자격 조건을 확정할 수 없었습니다. 신청 전에 원문을 직접 확인하세요.",
+            inline=False,
+        )
+
+    if item.topics:
+        embed.add_field(
+            name="주제",
+            value=_truncate(", ".join(item.topics), _FIELD_VALUE_LIMIT),
+            inline=True,
+        )
+    if item.urgency in URGENCY_LABELS and item.urgency != "normal":
+        embed.add_field(name="긴급도", value=URGENCY_LABELS[item.urgency], inline=True)
+
+    if item.attachments:
+        links = []
+        for attachment in item.attachments[:3]:
+            name = str(attachment.get("name") or "첨부")
+            url = str(attachment.get("url") or "")
+            links.append(f"[{_truncate(name, 60)}]({url})" if url else _truncate(name, 60))
+        embed.add_field(
+            name="첨부",
+            value=_truncate("\n".join(links), _FIELD_VALUE_LIMIT),
+            inline=False,
+        )
+
+    if item.duplicate_sources:
+        links = ", ".join(
+            f"[{entry['source_id']}]({entry['url']})"
+            for entry in item.duplicate_sources[:3]
+            if entry.get("url")
+        )
+        if links:
+            embed.add_field(
+                name="다른 게시판에도 게시됨",
+                value=_truncate(links, _FIELD_VALUE_LIMIT),
+                inline=False,
+            )
+
+    return embed
+
+
+def build_header_embed(digest: Digest, *, shown: int, total: int) -> discord.Embed:
+    """요약과 수집 상태 경고를 담은 첫 Embed."""
+    counts = digest.items_by_band()
+    if total == 0:
+        description = "오늘 조건에 맞는 새 공지가 없습니다."
+    else:
+        parts = [
+            f"{BAND_LABELS[band]} {len(counts[band])}건"
+            for band in BAND_ORDER
+            if counts[band]
+        ]
+        description = " · ".join(parts) if parts else "표시할 공지가 없습니다."
+        if shown < total:
+            description += f"\n(상위 {shown}건만 표시, 전체 {total}건)"
+
+    embed = discord.Embed(
+        title=f"학교 공지 {digest.digest_date.isoformat()}",
+        description=description,
+        color=discord.Color.from_rgb(88, 101, 242),
+    )
+
+    health = digest.collection_health
+    if health is not None and health.has_problem:
+        lines: list[str] = []
+        if health.may_include_stale_notices:
+            # 이것이 "새 공지 없음"과 "확인 실패"를 구분하는 유일한 신호다.
+            lines.append(
+                "일부 게시판을 오늘 확인하지 못했습니다. "
+                "아래 목록에 이전에 저장된 오래된 공지가 섞여 있을 수 있습니다."
+            )
+        failed = health.failed_sources()
+        if failed:
+            lines.append("수집 실패: " + ", ".join(item.source_id for item in failed))
+        degraded = health.degraded_sources()
+        if degraded:
+            lines.append(
+                "일부만 수집됨: " + ", ".join(item.source_id for item in degraded)
+                + " (새 글이 빠졌을 수 있음)"
+            )
+        if lines:
+            embed.add_field(
+                name="수집 상태 경고",
+                value=_truncate("\n".join(lines), _FIELD_VALUE_LIMIT),
+                inline=False,
+            )
+
+    return embed
+
+
+def render_digest(
+    digest: Digest,
+    *,
+    max_items: int = 10,
+    today: date | None = None,
+) -> list[discord.Embed]:
+    """digest 하나를 Embed 목록으로 변환합니다.
+
+    Args:
+        digest: 검증을 통과한 digest.
+        max_items: 표시할 공지 최대 개수. Discord 메시지 상한을 보호합니다.
+        today: 마감까지 남은 일수 계산 기준일. None이면 남은 일수를 쓰지 않습니다.
+
+    Returns:
+        첫 항목이 요약 Embed인 목록.
+    """
+    if max_items < 1:
+        raise ValueError("max_items는 1 이상이어야 합니다.")
+    visible = digest.visible_items()
+    shown = visible[:max_items]
+    embeds = [build_header_embed(digest, shown=len(shown), total=len(visible))]
+    embeds.extend(build_item_embed(item, today=today) for item in shown)
+    return embeds
+
+
+def chunk_embeds(
+    embeds: list[discord.Embed],
+    *,
+    per_message: int = _EMBEDS_PER_MESSAGE,
+) -> list[list[discord.Embed]]:
+    """Discord의 메시지당 Embed 개수 상한에 맞춰 나눕니다."""
+    size = max(1, min(per_message, _EMBEDS_PER_MESSAGE))
+    return [embeds[index : index + size] for index in range(0, len(embeds), size)]

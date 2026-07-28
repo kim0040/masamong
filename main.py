@@ -51,6 +51,16 @@ def _format_storage_target() -> str:
     return f"SQLite {config.DATABASE_FILE}"
 
 
+# 학교 공지 기능을 켠 인스턴스에서만 필요한 테이블.
+# SCHOOL_NOTICE_ENABLED=false인 인스턴스(masamo 포함)는 이 테이블 없이 기동한다.
+SCHOOL_NOTICE_TABLES = (
+    "school_notice_profiles",
+    "school_notice_feedback",
+    "school_notice_deliveries",
+    "school_notice_batch_runs",
+)
+
+
 def _missing_startup_cogs(
     loaded_cogs: set[str],
     attempted_cogs: set[str],
@@ -231,6 +241,10 @@ class ReMasamongBot(commands.Bot):
             # 경계가 스키마 수준에서도 성립한다.
             if config.KAKAO_MEMORY_ENABLED:
                 required_tables.add("kakao_chunks")
+        # 학교 공지는 기능을 켠 인스턴스에서만 요구한다. 무조건 요구하면
+        # MASAMONG_AUTO_MIGRATE=false인 masamo가 기동하지 못한다.
+        if config.SCHOOL_NOTICE_ENABLED:
+            required_tables.update(SCHOOL_NOTICE_TABLES)
         existing_tables = await self._existing_tables(required_tables)
         missing_tables = sorted(required_tables - existing_tables)
         if missing_tables:
@@ -372,6 +386,10 @@ class ReMasamongBot(commands.Bot):
                         ("kakao_chunks",)
                         if config.KAKAO_MEMORY_ENABLED
                         else ()
+                    ) + (
+                        SCHOOL_NOTICE_TABLES
+                        if config.SCHOOL_NOTICE_ENABLED
+                        else ()
                     )
                 else:
                     core_tables = (
@@ -389,6 +407,10 @@ class ReMasamongBot(commands.Bot):
                         "conversation_history_archive",
                         "user_preferences",
                         "dm_usage_logs",
+                    ) + (
+                        SCHOOL_NOTICE_TABLES
+                        if config.SCHOOL_NOTICE_ENABLED
+                        else ()
                     )
                 existing_tables = await self._existing_tables(core_tables)
                 missing_tables = [
@@ -625,6 +647,10 @@ class ReMasamongBot(commands.Bot):
             'fun_cog', 'activity_cog', 'poll_cog', 'settings_cog',
             'maintenance_cog', 'proactive_assistant', 'fortune_cog', 'help_cog'
         ]
+        # 학교 공지 Cog는 기능을 켠 인스턴스에서만 올린다. 끈 인스턴스에는
+        # 해당 테이블이 없으므로 Cog를 올려두면 명령이 DB 오류를 낸다.
+        if config.SCHOOL_NOTICE_ENABLED:
+            cog_list.append('school_notice_cog')
         cog_list = [name for name in cog_list if name not in config.DISABLED_COGS]
         if config.DISABLED_COGS:
             logger.info(
