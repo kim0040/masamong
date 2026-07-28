@@ -751,10 +751,13 @@ class WeatherCog(commands.Cog):
             )
             if message_id:
                 try:
-                    if hasattr(alert_channel, "fetch_message"):
-                        message = await alert_channel.fetch_message(message_id)
-                    else:
+                    # ID를 이미 영속화했으므로 GET으로 원문을 다시 가져오지 않고
+                    # Discord PATCH를 바로 보낸다. 지진마다 API 호출을 하나 줄이고
+                    # Read Message History 권한이 없어도 봇 자신의 글을 수정할 수 있다.
+                    if hasattr(alert_channel, "get_partial_message"):
                         message = alert_channel.get_partial_message(message_id)
+                    else:
+                        message = await alert_channel.fetch_message(message_id)
                     await message.edit(
                         content=payload,
                         allowed_mentions=discord.AllowedMentions.none(),

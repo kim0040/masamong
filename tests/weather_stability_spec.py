@@ -16,6 +16,7 @@ class _FakeChannel:
         self.fail = fail
         self.attempts = 0
         self.edits = 0
+        self.fetches = 0
         self.payloads: list[str] = []
         self.messages: dict[int, "_FakeSentMessage"] = {}
 
@@ -34,6 +35,10 @@ class _FakeChannel:
         return message
 
     async def fetch_message(self, message_id: int):
+        self.fetches += 1
+        return self.messages[int(message_id)]
+
+    def get_partial_message(self, message_id: int):
         return self.messages[int(message_id)]
 
 
@@ -316,6 +321,7 @@ async def test_earthquake_aftershock_edits_original_message(monkeypatch):
 
     assert channel.attempts == 1
     assert channel.edits == 1
+    assert channel.fetches == 0
     assert "**🚨 지진 연속 발생 현황**" in channel.payloads[0]
     assert "총 2건" in channel.payloads[0]
     assert "규모 **4.8**" in channel.payloads[0]
@@ -383,6 +389,7 @@ async def test_earthquake_restart_restores_message_id_and_edits(monkeypatch):
 
     assert channel.attempts == 1
     assert channel.edits == 1
+    assert channel.fetches == 0
     assert "총 2건" in channel.payloads[0]
     await bot.db.close()
 
