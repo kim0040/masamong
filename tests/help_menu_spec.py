@@ -27,12 +27,19 @@ def test_home_menu_exposes_buttons_and_diverse_quick_guides():
         for child in view.children
         if isinstance(child, discord.ui.Select)
     ]
-    assert buttons == {"학교 공지", "오늘 운세", "개인정보", "전체 도움말"}
+    assert buttons == {
+        "학교 공지",
+        "편입 공지",
+        "오늘 운세",
+        "개인정보",
+        "전체 도움말",
+    }
     assert len(selects) == 1
     assert {option.value for option in selects[0].options} == {
         "ai",
         "weather",
         "school",
+        "transfer",
         "fortune",
         "creative",
         "community",

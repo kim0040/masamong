@@ -291,3 +291,44 @@ CREATE TABLE IF NOT EXISTS school_notice_delivery_runs (
     PRIMARY KEY (user_key, digest_date),
     KEY idx_school_notice_delivery_due (status, next_attempt_at, updated_at)
 );
+
+CREATE TABLE IF NOT EXISTS privacy_consent_prompts (
+    user_id BIGINT NOT NULL,
+    scope VARCHAR(64) NOT NULL,
+    policy_version VARCHAR(64) NOT NULL,
+    notice_hash CHAR(64) NOT NULL,
+    status VARCHAR(16) NOT NULL,
+    attempt_count INT NOT NULL DEFAULT 0,
+    next_attempt_at VARCHAR(64),
+    sent_at VARCHAR(64),
+    last_error VARCHAR(64),
+    updated_at VARCHAR(64) NOT NULL,
+    PRIMARY KEY (user_id, scope, policy_version, notice_hash),
+    KEY idx_privacy_consent_prompts_due (status, next_attempt_at, updated_at)
+);
+
+CREATE TABLE IF NOT EXISTS transfer_notice_subscriptions (
+    user_id BIGINT PRIMARY KEY,
+    schools_json TEXT NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at VARCHAR(64) NOT NULL,
+    updated_at VARCHAR(64) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS transfer_notice_deliveries (
+    user_id BIGINT NOT NULL,
+    run_id VARCHAR(64) NOT NULL,
+    source_id VARCHAR(64) NOT NULL,
+    external_id VARCHAR(64) NOT NULL,
+    revision INT NOT NULL DEFAULT 1,
+    payload_json TEXT NOT NULL,
+    status VARCHAR(16) NOT NULL,
+    attempt_count INT NOT NULL DEFAULT 0,
+    next_attempt_at VARCHAR(64),
+    delivered_at VARCHAR(64),
+    last_error VARCHAR(64),
+    updated_at VARCHAR(64) NOT NULL,
+    PRIMARY KEY (user_id, source_id, external_id, revision),
+    KEY idx_transfer_notice_deliveries_due
+        (status, next_attempt_at, updated_at)
+);

@@ -51,7 +51,7 @@ async def _requested_tables(monkeypatch, *, enabled: bool) -> set[str]:
             "attempt_count", "delivered_at", "run_date", "profile_hash",
             "collection_status", "may_include_stale", "item_count",
             "http_requests", "llm_calls", "finished_at",
-            "next_attempt_at", "last_error",
+            "next_attempt_at", "sent_at", "last_error",
         ]
 
     monkeypatch.setattr(bot, "_existing_tables", _fake_existing)
@@ -128,6 +128,7 @@ def _boot(tmp_path: Path, extra_lines: list[str]):
         "EMBEDDING_ENABLED=false",
         "RERANK_ENABLED=false",
         "SCHOOL_NOTICE_ENABLED=false",
+        "TRANSFER_NOTICE_ENABLED=false",
         "DISCORD_BOT_TOKEN=general-token",
         "MASAMONG_EXPECTED_DISCORD_BOT_USER_ID=replace-with-current-masamo-bot-user-id",
         "COMETAPI_KEY=test-cometapi-key",

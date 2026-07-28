@@ -42,6 +42,7 @@ class MasamongHelpCommand(commands.HelpCommand):
                 "**예시**\n"
                 f"- `{prefix}도움 날씨`\n"
                 f"- `{prefix}도움 운세`\n"
+                f"- `{prefix}도움 편입`\n"
                 f"- `{prefix}도움 개인정보`\n\n"
                 "⚠️ 일부 명령어는 **서버 전용/DM 전용/권한 제한**이 있습니다."
             ),
@@ -73,6 +74,7 @@ class MasamongHelpCommand(commands.HelpCommand):
             elif cog_name == "FunCog": cog_name = "🎉 재미 기능"
             elif cog_name == "PrivacyCog": cog_name = "🔐 개인정보 동의"
             elif cog_name == "SchoolNoticeCog": cog_name = "🎓 학교 공지"
+            elif cog_name == "TransferNoticeCog": cog_name = "📚 편입 공지"
             
             # Cog 설명의 첫 줄만 가져오기
             cog_desc = (cog.description.split('\n')[0]) if cog and cog.description else "다양한 기능들이에요!"
@@ -190,7 +192,8 @@ class MasamongHelpCommand(commands.HelpCommand):
             examples = (
                 f"`{prefix}개인정보` (현재 동의 상태)\n"
                 f"`{prefix}개인정보 동의 운세`\n"
-                f"`{prefix}개인정보 동의 학교공지`"
+                f"`{prefix}개인정보 동의 학교공지`\n"
+                f"`{prefix}개인정보 동의 편입공지`"
             )
         elif command.name == '공지':
             examples = (
@@ -198,6 +201,13 @@ class MasamongHelpCommand(commands.HelpCommand):
                 f"`{prefix}공지 상태`\n"
                 f"`{prefix}공지 정보`\n"
                 f"`{prefix}공지 시간 09:00`"
+            )
+        elif command.name == '편입':
+            examples = (
+                f"`{prefix}편입` (대학 선택 메뉴)\n"
+                f"`{prefix}편입 최근`\n"
+                f"`{prefix}편입 상태`\n"
+                f"`{prefix}편입 구독취소` / `{prefix}편입 재개`"
             )
             
         if examples:
@@ -260,6 +270,7 @@ class MasamongHomeView(discord.ui.View):
         self.ctx = ctx
         self.user_id = int(ctx.author.id)
         self.school_notice.disabled = bot.get_cog("SchoolNoticeCog") is None
+        self.transfer_notice.disabled = bot.get_cog("TransferNoticeCog") is None
 
     @discord.ui.select(
         placeholder="기능별 빠른 사용법 보기",
@@ -284,6 +295,12 @@ class MasamongHomeView(discord.ui.View):
                 value="school",
                 emoji="🎓",
                 description="등록, 첫 확인, 상태, 알림",
+            ),
+            discord.SelectOption(
+                label="편입 공지",
+                value="transfer",
+                emoji="📚",
+                description="20개 대학 선택 구독과 새 공지 DM",
             ),
             discord.SelectOption(
                 label="운세",
@@ -345,6 +362,16 @@ class MasamongHomeView(discord.ui.View):
                 "- 첫 등록 직후 한 번 확인, 이후 매일 23시 수집\n"
                 f"- 상태 확인: `{prefix}공지 상태` · 저장 정보: `{prefix}공지 정보`"
             ),
+            "transfer": (
+                "📚 **TOEIC·공인영어 편입 공지**\n"
+                f"- DM에서 `{prefix}편입`을 실행하고 관심 대학 1~20곳 선택\n"
+                "- 매일 23:35에 선택한 대학의 공식 입학처 목록만 한 번 확인\n"
+                "- 새 글이나 제목 수정이 있을 때만 활성 구독자에게 DM\n"
+                f"- 최근 보기: `{prefix}편입 최근` · 취소: "
+                f"`{prefix}편입 구독취소` · 재개: `{prefix}편입 재개`\n"
+                "- TOEIC 인정·환산·모집단위는 매년 달라질 수 있어 공식 최종 "
+                "모집요강을 반드시 확인해야 합니다."
+            ),
             "fortune": (
                 "🔮 **운세**\n"
                 f"- 오늘: `{prefix}운세` · 상세: `{prefix}운세 상세`\n"
@@ -376,8 +403,10 @@ class MasamongHomeView(discord.ui.View):
                 "🔐 **개인정보 관리**\n"
                 f"- 상태: `{prefix}개인정보`\n"
                 f"- 철회: `{prefix}개인정보 철회 운세` / "
-                f"`{prefix}개인정보 철회 학교공지`\n"
-                f"- 기능 데이터 삭제: `{prefix}운세 삭제` / `{prefix}공지 삭제`\n"
+                f"`{prefix}개인정보 철회 학교공지` / "
+                f"`{prefix}개인정보 철회 편입공지`\n"
+                f"- 기능 데이터 삭제: `{prefix}운세 삭제` / `{prefix}공지 삭제` / "
+                f"`{prefix}편입 삭제`\n"
                 "- 철회와 삭제는 다르며, 일반 Discord 대화·서버 기록은 그대로 유지됩니다."
             ),
         }
@@ -422,6 +451,38 @@ class MasamongHomeView(discord.ui.View):
         if cog is None:
             await interaction.followup.send(
                 "이 인스턴스에서는 학교 공지를 사용할 수 없습니다.",
+                ephemeral=True,
+            )
+            return
+        await cog.send_dashboard(self.ctx)
+
+    @discord.ui.button(
+        label="편입 공지",
+        style=discord.ButtonStyle.primary,
+        emoji="📚",
+        row=0,
+    )
+    async def transfer_notice(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        if self.ctx.guild:
+            prefix = self.ctx.clean_prefix or config.COMMAND_PREFIX or "!"
+            await interaction.response.send_message(
+                "개인 편입 공지 구독은 DM에서 설정합니다. 마사몽에게 DM으로 "
+                f"`{prefix}편입`을 보내주세요.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            "편입 공지 구독 메뉴를 아래에 열었습니다.",
+            ephemeral=True,
+        )
+        cog = self.bot.get_cog("TransferNoticeCog")
+        if cog is None:
+            await interaction.followup.send(
+                "이 인스턴스에서는 편입 공지를 사용할 수 없습니다.",
                 ephemeral=True,
             )
             return
@@ -496,7 +557,7 @@ class MasamongHomeView(discord.ui.View):
         prefix = self.ctx.clean_prefix or config.COMMAND_PREFIX or "!"
         await interaction.response.send_message(
             f"`{prefix}도움`은 전체 기능, `{prefix}도움 <기능>`은 상세 사용법을 보여줍니다.\n"
-            f"예: `{prefix}도움 공지`, `{prefix}도움 운세`",
+            f"예: `{prefix}도움 공지`, `{prefix}도움 편입`, `{prefix}도움 운세`",
             ephemeral=True,
         )
 
@@ -545,6 +606,15 @@ class HelpCog(commands.Cog):
             value="프로필 등록·오늘 운세·알림 설정을 개인정보 동의와 함께 진행합니다.",
             inline=False,
         )
+        if self.bot.get_cog("TransferNoticeCog") is not None:
+            embed.add_field(
+                name="📚 편입 공지",
+                value=(
+                    "20개 대학 중 관심 학교만 구독하고, 매일 공식 입학처에 새 편입 "
+                    "공지나 제목 수정이 확인될 때만 DM으로 받습니다."
+                ),
+                inline=False,
+            )
         embed.add_field(
             name="🧰 서버 편의 기능",
             value=(

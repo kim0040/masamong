@@ -52,6 +52,7 @@ def _profile_env(tmp_path: Path, *, memory_sources: str = "discord") -> Path:
                 "EMBEDDING_ENABLED=false",
                 "RERANK_ENABLED=false",
                 "SCHOOL_NOTICE_ENABLED=false",
+                "TRANSFER_NOTICE_ENABLED=false",
                 "DISCORD_BOT_TOKEN=general-token",
                 "MASAMONG_EXPECTED_DISCORD_BOT_USER_ID=replace-with-current-masamo-bot-user-id",
                 # 명시적 프로필은 켜 둔 기능의 자격증명을 기동 시점에 요구한다.

@@ -31,7 +31,12 @@ if str(ROOT) not in sys.path:
 import config  # noqa: E402
 import pymysql  # noqa: E402
 from database.compat_db import TiDBSettings  # noqa: E402
-from utils.privacy_consent import FORTUNE_SCOPE, get_policy  # noqa: E402
+from utils.privacy_consent import (  # noqa: E402
+    FORTUNE_SCOPE,
+    SCHOOL_NOTICE_SCOPE,
+    TRANSFER_NOTICE_SCOPE,
+    get_policy,
+)
 
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -78,6 +83,13 @@ _SCHOOL_NOTICE_TABLES = frozenset(
         "school_notice_delivery_runs",
     }
 )
+_CONSENT_PROMPT_TABLES = frozenset({"privacy_consent_prompts"})
+_TRANSFER_NOTICE_TABLES = frozenset(
+    {
+        "transfer_notice_subscriptions",
+        "transfer_notice_deliveries",
+    }
+)
 
 # COUNT와 MAX를 한 문장으로 실행해 큰 테이블당 DB 왕복/스캔을 한 번으로 제한한다.
 _TABLE_TIMESTAMP_COLUMNS = {
@@ -105,6 +117,9 @@ _TABLE_TIMESTAMP_COLUMNS = {
     "school_notice_deliveries": "delivered_at",
     "school_notice_batch_runs": "finished_at",
     "school_notice_delivery_runs": "updated_at",
+    "privacy_consent_prompts": "updated_at",
+    "transfer_notice_subscriptions": "updated_at",
+    "transfer_notice_deliveries": "updated_at",
 }
 
 _CORE_EXPECTED_COLUMNS = {
@@ -244,6 +259,49 @@ _SCHOOL_NOTICE_EXPECTED_COLUMNS = {
             "next_attempt_at",
             "last_error",
             "finished_at",
+            "updated_at",
+        }
+    ),
+}
+_CONSENT_PROMPT_EXPECTED_COLUMNS = {
+    "privacy_consent_prompts": frozenset(
+        {
+            "user_id",
+            "scope",
+            "policy_version",
+            "notice_hash",
+            "status",
+            "attempt_count",
+            "next_attempt_at",
+            "sent_at",
+            "last_error",
+            "updated_at",
+        }
+    ),
+}
+_TRANSFER_NOTICE_EXPECTED_COLUMNS = {
+    "transfer_notice_subscriptions": frozenset(
+        {
+            "user_id",
+            "schools_json",
+            "enabled",
+            "created_at",
+            "updated_at",
+        }
+    ),
+    "transfer_notice_deliveries": frozenset(
+        {
+            "user_id",
+            "run_id",
+            "source_id",
+            "external_id",
+            "revision",
+            "payload_json",
+            "status",
+            "attempt_count",
+            "next_attempt_at",
+            "delivered_at",
+            "last_error",
             "updated_at",
         }
     ),
@@ -443,6 +501,17 @@ def _required_tables(backend: str) -> list[str]:
             tables.add("kakao_chunks")
     if bool(config.SCHOOL_NOTICE_ENABLED):
         tables.update(_SCHOOL_NOTICE_TABLES)
+    if (
+        (
+            bool(config.FORTUNE_MORNING_BRIEFING_ENABLED)
+            and "fortune_cog" not in config.DISABLED_COGS
+        )
+        or bool(config.SCHOOL_NOTICE_ENABLED)
+        or bool(config.TRANSFER_NOTICE_ENABLED)
+    ):
+        tables.update(_CONSENT_PROMPT_TABLES)
+    if bool(config.TRANSFER_NOTICE_ENABLED):
+        tables.update(_TRANSFER_NOTICE_TABLES)
     return sorted(tables)
 
 
@@ -461,6 +530,17 @@ def _expected_columns(backend: str) -> dict[str, frozenset[str]]:
                 expected["kakao_chunks"] = _TIDB_EXPECTED_COLUMNS["kakao_chunks"]
     if bool(config.SCHOOL_NOTICE_ENABLED):
         expected.update(_SCHOOL_NOTICE_EXPECTED_COLUMNS)
+    if (
+        (
+            bool(config.FORTUNE_MORNING_BRIEFING_ENABLED)
+            and "fortune_cog" not in config.DISABLED_COGS
+        )
+        or bool(config.SCHOOL_NOTICE_ENABLED)
+        or bool(config.TRANSFER_NOTICE_ENABLED)
+    ):
+        expected.update(_CONSENT_PROMPT_EXPECTED_COLUMNS)
+    if bool(config.TRANSFER_NOTICE_ENABLED):
+        expected.update(_TRANSFER_NOTICE_EXPECTED_COLUMNS)
     return expected
 
 
@@ -660,6 +740,86 @@ def _fortune_subscription_counts(
     }
 
 
+def _notice_subscription_counts(
+    session: _ReadOnlySession,
+    existing_tables: set[str],
+    columns: dict[str, list[str]],
+) -> dict[str, dict[str, int | None]]:
+    """학교·편입 구독은 사용자 식별자 없이 활성/동의 수만 집계한다."""
+    consent_columns = set(columns.get("privacy_consents", []))
+    consent_ready = (
+        "privacy_consents" in existing_tables
+        and {
+            "user_id",
+            "scope",
+            "policy_version",
+            "notice_hash",
+            "status",
+            "granted_at",
+            "withdrawn_at",
+        }.issubset(consent_columns)
+    )
+    result: dict[str, dict[str, int | None]] = {}
+    specs = (
+        ("school_notice", "school_notice_profiles", SCHOOL_NOTICE_SCOPE),
+        (
+            "transfer_notice",
+            "transfer_notice_subscriptions",
+            TRANSFER_NOTICE_SCOPE,
+        ),
+    )
+    for label, table, scope in specs:
+        table_columns = set(columns.get(table, []))
+        if (
+            table not in existing_tables
+            or not {"user_id", "enabled"}.issubset(table_columns)
+        ):
+            result[label] = {
+                "active": None,
+                "active_with_current_consent": None,
+                "active_without_current_consent": None,
+            }
+            continue
+        table_sql = _quote_identifier(table)
+        rows = session.read(
+            f"SELECT COUNT(*) AS active_count FROM {table_sql} "
+            "WHERE `enabled` = 1"
+        )
+        active = int(_row_value(rows[0], "active_count") or 0) if rows else 0
+        if not consent_ready:
+            result[label] = {
+                "active": active,
+                "active_with_current_consent": None,
+                "active_without_current_consent": None,
+            }
+            continue
+        policy = get_policy(scope)
+        placeholder = session.placeholder
+        rows = session.read(
+            "SELECT COUNT(*) AS eligible_count "
+            f"FROM {table_sql} AS source "
+            "JOIN `privacy_consents` AS pc "
+            "ON pc.`user_id` = source.`user_id` "
+            "WHERE source.`enabled` = 1 "
+            f"AND pc.`scope` = {placeholder} "
+            f"AND pc.`policy_version` = {placeholder} "
+            f"AND pc.`notice_hash` = {placeholder} "
+            f"AND pc.`status` = {placeholder} "
+            "AND pc.`granted_at` IS NOT NULL "
+            "AND pc.`withdrawn_at` IS NULL",
+            (policy.scope, policy.version, policy.notice_hash, "granted"),
+        )
+        eligible = (
+            int(_row_value(rows[0], "eligible_count") or 0) if rows else 0
+        )
+        result[label] = {
+            "active": active,
+            "active_with_current_consent": eligible,
+            "active_without_current_consent": max(0, active - eligible),
+        }
+    return result
+
+
 def inspect_runtime(*, expected_profile: str, expected_db: str) -> dict[str, Any]:
     """설정 정체성을 먼저 확인한 뒤 aggregate/schema fingerprint를 수집한다."""
     backend = _validate_expectations(expected_profile, expected_db)
@@ -693,6 +853,7 @@ def inspect_runtime(*, expected_profile: str, expected_db: str) -> dict[str, Any
 
         table_stats = _table_statistics(session, sorted(existing), columns)
         fortune_counts = _fortune_subscription_counts(session, existing, columns)
+        notice_counts = _notice_subscription_counts(session, existing, columns)
 
     healthy = not missing_tables and not missing_columns
     return {
@@ -710,6 +871,7 @@ def inspect_runtime(*, expected_profile: str, expected_db: str) -> dict[str, Any
             else False,
             "kakao_memory_enabled": bool(config.KAKAO_MEMORY_ENABLED),
             "school_notice_enabled": bool(config.SCHOOL_NOTICE_ENABLED),
+            "transfer_notice_enabled": bool(config.TRANSFER_NOTICE_ENABLED),
             "resource_limits": {
                 "cpu_threads": int(config.CPU_THREAD_LIMIT),
                 "executor_workers": int(config.EXECUTOR_WORKERS),
@@ -757,6 +919,7 @@ def inspect_runtime(*, expected_profile: str, expected_db: str) -> dict[str, Any
         },
         "table_stats": table_stats,
         "fortune_subscriptions": fortune_counts,
+        "notice_subscriptions": notice_counts,
     }
 
 

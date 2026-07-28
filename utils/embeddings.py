@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import time
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional
@@ -35,6 +36,7 @@ from logger_config import logger
 
 _MODEL: Any | None = None
 _MODEL_LOCK = asyncio.Lock()
+_MODEL_FAILURE_RETRY_AT = 0.0
 _ENCODE_SEMAPHORE = asyncio.Semaphore(
     max(1, int(getattr(config, "EMBEDDING_MAX_CONCURRENCY", 1)))
 )
@@ -153,24 +155,18 @@ async def _load_model() -> Any:
     if not getattr(config, "EMBEDDING_ENABLED", True):
         raise RuntimeError("로컬 임베딩 기능이 비활성화되어 있습니다.")
 
-    if _get_numpy() is None:
-        raise RuntimeError(
-            "numpy 패키지가 설치되어 있지 않습니다. AI 메모리 기능을 사용하려면 `pip install numpy`로 설치하세요."
-        )
-
-    global _MODEL
+    global _MODEL, _MODEL_FAILURE_RETRY_AT
     if _MODEL is not None:
         return _MODEL
+    if time.monotonic() < _MODEL_FAILURE_RETRY_AT:
+        raise RuntimeError("임베딩 모델 로드가 최근 실패해 잠시 재시도를 보류합니다.")
 
     async with _MODEL_LOCK:
         if _MODEL is not None:
             return _MODEL
-
-        transformer_class = _get_sentence_transformer_class()
-        if transformer_class is None:
+        if time.monotonic() < _MODEL_FAILURE_RETRY_AT:
             raise RuntimeError(
-                "sentence-transformers 패키지가 설치되어 있지 않습니다. "
-                "`pip install sentence-transformers`로 설치 후 다시 시도하세요."
+                "임베딩 모델 로드가 최근 실패해 잠시 재시도를 보류합니다."
             )
 
         loop = asyncio.get_running_loop()
@@ -179,6 +175,20 @@ async def _load_model() -> Any:
         local_files_only = bool(getattr(config, "LOCAL_EMBEDDING_LOCAL_FILES_ONLY", False))
 
         def _sync_load():
+            # numpy/sentence-transformers/torch import 자체도 저사양 서버에서
+            # 수십 초 걸릴 수 있다. 모델 생성뿐 아니라 선택적 ML import 전체를
+            # executor 안에서 실행해 Discord heartbeat를 막지 않는다.
+            if _get_numpy() is None:
+                raise RuntimeError(
+                    "numpy 패키지가 설치되어 있지 않습니다. AI 메모리 기능을 "
+                    "사용하려면 `pip install numpy`로 설치하세요."
+                )
+            transformer_class = _get_sentence_transformer_class()
+            if transformer_class is None:
+                raise RuntimeError(
+                    "sentence-transformers 패키지가 설치되어 있지 않습니다. "
+                    "`pip install sentence-transformers`로 설치 후 다시 시도하세요."
+                )
             thread_limit = int(getattr(config, "CPU_THREAD_LIMIT", 0) or 0)
             if thread_limit > 0:
                 try:
@@ -216,7 +226,30 @@ async def _load_model() -> Any:
                 return transformer_class(target_model, **load_kwargs)
 
         logger.info("로컬 임베딩 모델 로드 시작: %s", model_name)
-        _MODEL = await loop.run_in_executor(None, _sync_load)
+        try:
+            _MODEL = await loop.run_in_executor(None, _sync_load)
+        except Exception as exc:
+            retry_seconds = max(
+                60,
+                min(
+                    3600,
+                    int(
+                        getattr(
+                            config,
+                            "EMBEDDING_MODEL_LOAD_RETRY_SECONDS",
+                            300,
+                        )
+                    ),
+                ),
+            )
+            _MODEL_FAILURE_RETRY_AT = time.monotonic() + retry_seconds
+            logger.error(
+                "로컬 임베딩 모델 로드 실패. %s초 동안 재시도하지 않습니다: %s",
+                retry_seconds,
+                type(exc).__name__,
+            )
+            raise RuntimeError("로컬 임베딩 모델을 로드하지 못했습니다.") from exc
+        _MODEL_FAILURE_RETRY_AT = 0.0
         logger.info("로컬 임베딩 모델 로드 완료: %s", model_name)
         return _MODEL
 
@@ -342,13 +375,11 @@ async def get_embedding(text: str, prefix: str = "") -> np.ndarray | None:
     """
     if not text or not getattr(config, "EMBEDDING_ENABLED", True):
         return None
-    if _get_numpy() is None:
-        logger.warning("numpy가 설치되지 않아 임베딩을 생성할 수 없습니다. `AI_MEMORY_ENABLED` 값을 확인하세요.")
+    try:
+        model = await _load_model()
+    except RuntimeError as exc:
+        logger.warning("임베딩 모델을 사용할 수 없어 생성을 건너뜁니다: %s", exc)
         return None
-    if _get_sentence_transformer_class() is None:
-        logger.warning("sentence-transformers가 설치되지 않아 임베딩 생성을 건너뜁니다.")
-        return None
-    model = await _load_model()
     normalize = getattr(config, "LOCAL_EMBEDDING_NORMALIZE", True)
     loop = asyncio.get_running_loop()
 

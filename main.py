@@ -63,6 +63,25 @@ SCHOOL_NOTICE_TABLES = (
     "school_notice_delivery_runs",
 )
 
+PRIVACY_CONSENT_PROMPT_TABLES = ("privacy_consent_prompts",)
+
+TRANSFER_NOTICE_TABLES = (
+    "transfer_notice_subscriptions",
+    "transfer_notice_deliveries",
+)
+
+
+def _legacy_consent_prompts_enabled() -> bool:
+    """현재 인스턴스에 자동 알림 구독이 하나라도 활성화돼 있는지 반환."""
+    return bool(
+        (
+            config.FORTUNE_MORNING_BRIEFING_ENABLED
+            and "fortune_cog" not in config.DISABLED_COGS
+        )
+        or config.SCHOOL_NOTICE_ENABLED
+        or config.TRANSFER_NOTICE_ENABLED
+    )
+
 
 def _missing_startup_cogs(
     loaded_cogs: set[str],
@@ -250,6 +269,10 @@ class ReMasamongBot(commands.Bot):
         # MASAMONG_AUTO_MIGRATE=false인 masamo가 기동하지 못한다.
         if config.SCHOOL_NOTICE_ENABLED:
             required_tables.update(SCHOOL_NOTICE_TABLES)
+        if _legacy_consent_prompts_enabled():
+            required_tables.update(PRIVACY_CONSENT_PROMPT_TABLES)
+        if config.TRANSFER_NOTICE_ENABLED:
+            required_tables.update(TRANSFER_NOTICE_TABLES)
         existing_tables = await self._existing_tables(required_tables)
         missing_tables = sorted(required_tables - existing_tables)
         if missing_tables:
@@ -320,6 +343,19 @@ class ReMasamongBot(commands.Bot):
                     "created_at",
                 },
             }
+            if _legacy_consent_prompts_enabled():
+                required_privacy_columns["privacy_consent_prompts"] = {
+                    "user_id",
+                    "scope",
+                    "policy_version",
+                    "notice_hash",
+                    "status",
+                    "attempt_count",
+                    "next_attempt_at",
+                    "sent_at",
+                    "last_error",
+                    "updated_at",
+                }
             for table_name, expected_columns in required_privacy_columns.items():
                 actual_columns = set(
                     await get_table_columns(self.db, table_name)
@@ -404,6 +440,43 @@ class ReMasamongBot(commands.Bot):
                     raise RuntimeError(
                         f"{table_name} 필수 컬럼이 없습니다: "
                         + ", ".join(missing_school_notice_columns)
+                    )
+
+        if config.TRANSFER_NOTICE_ENABLED:
+            required_transfer_notice_columns = {
+                "transfer_notice_subscriptions": {
+                    "user_id",
+                    "schools_json",
+                    "enabled",
+                    "created_at",
+                    "updated_at",
+                },
+                "transfer_notice_deliveries": {
+                    "user_id",
+                    "run_id",
+                    "source_id",
+                    "external_id",
+                    "revision",
+                    "payload_json",
+                    "status",
+                    "attempt_count",
+                    "next_attempt_at",
+                    "delivered_at",
+                    "last_error",
+                    "updated_at",
+                },
+            }
+            for table_name, expected_columns in required_transfer_notice_columns.items():
+                actual_columns = set(
+                    await get_table_columns(self.db, table_name)
+                )
+                missing_transfer_notice_columns = sorted(
+                    expected_columns - actual_columns
+                )
+                if missing_transfer_notice_columns:
+                    raise RuntimeError(
+                        f"{table_name} 필수 컬럼이 없습니다: "
+                        + ", ".join(missing_transfer_notice_columns)
                     )
 
         if config.REQUIRE_EXPLICIT_PROFILE and config.DB_BACKEND == "tidb":
@@ -506,6 +579,14 @@ class ReMasamongBot(commands.Bot):
                         SCHOOL_NOTICE_TABLES
                         if config.SCHOOL_NOTICE_ENABLED
                         else ()
+                    ) + (
+                        PRIVACY_CONSENT_PROMPT_TABLES
+                        if _legacy_consent_prompts_enabled()
+                        else ()
+                    ) + (
+                        TRANSFER_NOTICE_TABLES
+                        if config.TRANSFER_NOTICE_ENABLED
+                        else ()
                     )
                 else:
                     core_tables = (
@@ -528,6 +609,14 @@ class ReMasamongBot(commands.Bot):
                     ) + (
                         SCHOOL_NOTICE_TABLES
                         if config.SCHOOL_NOTICE_ENABLED
+                        else ()
+                    ) + (
+                        PRIVACY_CONSENT_PROMPT_TABLES
+                        if _legacy_consent_prompts_enabled()
+                        else ()
+                    ) + (
+                        TRANSFER_NOTICE_TABLES
+                        if config.TRANSFER_NOTICE_ENABLED
                         else ()
                     )
                 existing_tables = await self._existing_tables(core_tables)
@@ -769,6 +858,8 @@ class ReMasamongBot(commands.Bot):
         # 해당 테이블이 없으므로 Cog를 올려두면 명령이 DB 오류를 낸다.
         if config.SCHOOL_NOTICE_ENABLED:
             cog_list.append('school_notice_cog')
+        if config.TRANSFER_NOTICE_ENABLED:
+            cog_list.append('transfer_notice_cog')
         cog_list = [name for name in cog_list if name not in config.DISABLED_COGS]
         if config.DISABLED_COGS:
             logger.info(

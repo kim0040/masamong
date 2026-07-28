@@ -3,15 +3,21 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timedelta, timezone
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 
+import config
 from logger_config import logger
 from utils.privacy_consent import (
     CONSENT_GRANTED,
     CONSENT_WITHDRAWN,
+    FORTUNE_SCOPE,
+    SCHOOL_NOTICE_SCOPE,
+    TRANSFER_NOTICE_SCOPE,
     all_policies,
     consent_command_name,
     format_policy_notice,
@@ -141,6 +147,356 @@ class PrivacyCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self._legacy_prompt_lock = asyncio.Lock()
+        # 테스트용 최소 bot 객체에는 Discord readiness API가 없다. 실제 Bot에서만
+        # 기존 활성 구독자 안내 worker를 시작해 import/단위 테스트 부작용을 막는다.
+        if hasattr(bot, "wait_until_ready"):
+            self.legacy_consent_prompt_task.start()
+
+    def cog_unload(self) -> None:
+        if self.legacy_consent_prompt_task.is_running():
+            self.legacy_consent_prompt_task.cancel()
+
+    @staticmethod
+    def _now_text() -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    def _prompt_scopes(self) -> tuple[str, ...]:
+        """현재 인스턴스에서 실제 자동 발송 기능이 켜진 목적만 반환한다."""
+        scopes: list[str] = []
+        if (
+            config.FORTUNE_MORNING_BRIEFING_ENABLED
+            and "fortune_cog" not in config.DISABLED_COGS
+        ):
+            scopes.append(FORTUNE_SCOPE)
+        if config.SCHOOL_NOTICE_ENABLED:
+            scopes.append(SCHOOL_NOTICE_SCOPE)
+        if config.TRANSFER_NOTICE_ENABLED:
+            scopes.append(TRANSFER_NOTICE_SCOPE)
+        return tuple(scopes)
+
+    @staticmethod
+    def _active_source(scope: str) -> tuple[str, str]:
+        """목적별 활성 구독 테이블과 조건.
+
+        사용자 프로필 내용은 읽지 않고 Discord 사용자 ID와 활성 여부만 조회한다.
+        """
+        if scope == FORTUNE_SCOPE:
+            return "user_profiles", "subscription_active = 1"
+        if scope == SCHOOL_NOTICE_SCOPE:
+            return "school_notice_profiles", "enabled = 1"
+        if scope == TRANSFER_NOTICE_SCOPE:
+            return "transfer_notice_subscriptions", "enabled = 1"
+        raise ValueError(f"지원하지 않는 개인정보 목적: {scope}")
+
+    async def _next_legacy_prompt_candidate(
+        self,
+    ) -> tuple[int, str] | None:
+        """활성 구독이지만 현재 동의가 없는 후보 한 명만 고른다.
+
+        명시적으로 철회한 사용자는 제외한다. 예전 정책에 동의한 사용자는 새 정책
+        재동의 대상이지만, 정책 버전당 이미 성공적으로 안내한 경우 다시 보내지 않는다.
+        """
+        now = self._now_text()
+        for scope in self._prompt_scopes():
+            policy = get_policy(scope)
+            table_name, active_clause = self._active_source(scope)
+            # table/column 이름은 내부 상수에서만 오며 사용자 입력을 받지 않는다.
+            query = f"""
+                SELECT source.user_id
+                FROM {table_name} AS source
+                LEFT JOIN privacy_consents AS pc
+                  ON pc.user_id = source.user_id
+                 AND pc.scope = ?
+                WHERE {active_clause}
+                  AND (
+                        pc.user_id IS NULL
+                        OR (
+                            pc.status = ?
+                            AND (
+                                pc.policy_version <> ?
+                                OR pc.notice_hash <> ?
+                            )
+                        )
+                  )
+                  AND NOT EXISTS (
+                        SELECT 1
+                        FROM privacy_consent_prompts AS prompt
+                        WHERE prompt.user_id = source.user_id
+                          AND prompt.scope = ?
+                          AND prompt.policy_version = ?
+                          AND prompt.notice_hash = ?
+                          AND (
+                                prompt.status IN ('sent', 'failed')
+                                OR (
+                                    prompt.status IN ('retry', 'processing')
+                                    AND COALESCE(prompt.next_attempt_at, ?) > ?
+                                )
+                          )
+                  )
+                ORDER BY source.user_id
+                LIMIT 1
+            """
+            async with self.bot.db.execute(
+                query,
+                (
+                    policy.scope,
+                    CONSENT_GRANTED,
+                    policy.version,
+                    policy.notice_hash,
+                    policy.scope,
+                    policy.version,
+                    policy.notice_hash,
+                    now,
+                    now,
+                ),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is not None:
+                return int(row[0]), policy.scope
+        return None
+
+    async def _is_active_without_current_consent(
+        self,
+        user_id: int,
+        scope: str,
+    ) -> bool:
+        """발송 직전 구독 취소·철회 경합을 다시 차단한다."""
+        policy = get_policy(scope)
+        table_name, active_clause = self._active_source(policy.scope)
+        query = f"""
+            SELECT 1
+            FROM {table_name} AS source
+            LEFT JOIN privacy_consents AS pc
+              ON pc.user_id = source.user_id
+             AND pc.scope = ?
+            WHERE source.user_id = ?
+              AND {active_clause}
+              AND (
+                    pc.user_id IS NULL
+                    OR (
+                        pc.status = ?
+                        AND (
+                            pc.policy_version <> ?
+                            OR pc.notice_hash <> ?
+                        )
+                    )
+              )
+            LIMIT 1
+        """
+        async with self.bot.db.execute(
+            query,
+            (
+                policy.scope,
+                int(user_id),
+                CONSENT_GRANTED,
+                policy.version,
+                policy.notice_hash,
+            ),
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def _prompt_row(self, user_id: int, scope: str):
+        policy = get_policy(scope)
+        async with self.bot.db.execute(
+            """
+            SELECT status, attempt_count, next_attempt_at
+            FROM privacy_consent_prompts
+            WHERE user_id = ? AND scope = ?
+              AND policy_version = ? AND notice_hash = ?
+            """,
+            (
+                int(user_id),
+                policy.scope,
+                policy.version,
+                policy.notice_hash,
+            ),
+        ) as cursor:
+            return await cursor.fetchone()
+
+    async def _reserve_prompt(self, user_id: int, scope: str) -> bool:
+        """동시/재시작 tick이 같은 동의 안내를 중복 발송하지 않게 예약한다."""
+        policy = get_policy(scope)
+        row = await self._prompt_row(user_id, policy.scope)
+        now = datetime.now(timezone.utc)
+        if row is not None:
+            status = str(row[0])
+            attempts = int(row[1] or 0)
+            if status in {"sent", "failed"} or attempts >= 3:
+                return False
+            if row[2]:
+                try:
+                    if datetime.fromisoformat(str(row[2])) > now:
+                        return False
+                except ValueError:
+                    pass
+        attempt_count = int(row[1] or 0) + 1 if row is not None else 1
+        # process가 발송 도중 종료돼도 즉시 중복 전송하지 않고 15분 뒤에만
+        # 최대 3회 복구한다. 실제 성공 발송은 sent 상태로 영구 dedupe된다.
+        next_attempt = (now + timedelta(minutes=15)).isoformat(timespec="seconds")
+        backend = str(getattr(self.bot.db, "backend", config.DB_BACKEND))
+        params = (
+            int(user_id),
+            policy.scope,
+            policy.version,
+            policy.notice_hash,
+            attempt_count,
+            next_attempt,
+            self._now_text(),
+        )
+        if backend == "tidb":
+            query = """
+                INSERT INTO privacy_consent_prompts (
+                    user_id, scope, policy_version, notice_hash, status,
+                    attempt_count, next_attempt_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'processing', ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    status = 'processing',
+                    attempt_count = VALUES(attempt_count),
+                    next_attempt_at = VALUES(next_attempt_at),
+                    updated_at = VALUES(updated_at)
+            """
+        else:
+            query = """
+                INSERT INTO privacy_consent_prompts (
+                    user_id, scope, policy_version, notice_hash, status,
+                    attempt_count, next_attempt_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'processing', ?, ?, ?)
+                ON CONFLICT(user_id, scope, policy_version, notice_hash)
+                DO UPDATE SET
+                    status = 'processing',
+                    attempt_count = excluded.attempt_count,
+                    next_attempt_at = excluded.next_attempt_at,
+                    updated_at = excluded.updated_at
+            """
+        await self.bot.db.execute(query, params)
+        await self.bot.db.commit()
+        return True
+
+    async def _finish_prompt(
+        self,
+        user_id: int,
+        scope: str,
+        *,
+        sent: bool,
+        error: str | None = None,
+    ) -> None:
+        policy = get_policy(scope)
+        row = await self._prompt_row(user_id, policy.scope)
+        attempts = int(row[1] or 1) if row is not None else 1
+        terminal = sent or error == "discord_forbidden" or attempts >= 3
+        status = "sent" if sent else "failed" if terminal else "retry"
+        next_attempt = None
+        if not terminal:
+            next_attempt = (
+                datetime.now(timezone.utc) + timedelta(hours=6)
+            ).isoformat(timespec="seconds")
+        await self.bot.db.execute(
+            """
+            UPDATE privacy_consent_prompts
+            SET status = ?, next_attempt_at = ?, sent_at = ?,
+                last_error = ?, updated_at = ?
+            WHERE user_id = ? AND scope = ?
+              AND policy_version = ? AND notice_hash = ?
+            """,
+            (
+                status,
+                next_attempt,
+                self._now_text() if sent else None,
+                error,
+                self._now_text(),
+                int(user_id),
+                policy.scope,
+                policy.version,
+                policy.notice_hash,
+            ),
+        )
+        await self.bot.db.commit()
+
+    async def _legacy_prompt_tick(self) -> str:
+        """활성 기존 구독자 한 명에게만 현재 정책 동의를 요청한다."""
+        candidate = await self._next_legacy_prompt_candidate()
+        if candidate is None:
+            return "idle"
+        user_id, scope = candidate
+        if not await self._is_active_without_current_consent(user_id, scope):
+            return "inactive"
+        if not await self._reserve_prompt(user_id, scope):
+            return "deduped"
+        # 예약 후 구독 취소나 명시 철회가 들어온 경우 발송하지 않는다.
+        if not await self._is_active_without_current_consent(user_id, scope):
+            await self._finish_prompt(
+                user_id,
+                scope,
+                sent=False,
+                error="inactive_before_send",
+            )
+            return "inactive"
+        user = self.bot.get_user(user_id)
+        if user is None:
+            try:
+                user = await asyncio.wait_for(
+                    self.bot.fetch_user(user_id),
+                    timeout=5,
+                )
+            except Exception as exc:
+                await self._finish_prompt(
+                    user_id,
+                    scope,
+                    sent=False,
+                    error=type(exc).__name__[:64],
+                )
+                return "fetch_failed"
+        policy = get_policy(scope)
+        prefix = (
+            f"🔐 기존 **{policy.display_name}** 자동 알림 구독은 그대로 보존되어 있습니다.\n"
+            "앞으로 개인정보를 이용하기 전에 명시적 동의가 필요해 현재 알림만 "
+            "일시 정지했습니다. 아래 내용을 확인하고 원할 때 직접 선택해주세요."
+        )
+        try:
+            await asyncio.wait_for(
+                self.send_consent_prompt(
+                    user,
+                    user_id=user_id,
+                    scope=scope,
+                    prefix=prefix,
+                ),
+                timeout=12,
+            )
+        except discord.Forbidden:
+            await self._finish_prompt(
+                user_id,
+                scope,
+                sent=False,
+                error="discord_forbidden",
+            )
+            return "forbidden"
+        except Exception as exc:
+            await self._finish_prompt(
+                user_id,
+                scope,
+                sent=False,
+                error=type(exc).__name__[:64],
+            )
+            return "retry"
+        await self._finish_prompt(user_id, scope, sent=True)
+        return "sent"
+
+    @tasks.loop(minutes=1)
+    async def legacy_consent_prompt_task(self) -> None:
+        if self._legacy_prompt_lock.locked():
+            return
+        async with self._legacy_prompt_lock:
+            try:
+                await asyncio.wait_for(self._legacy_prompt_tick(), timeout=35)
+            except asyncio.TimeoutError:
+                logger.error("기존 활성 구독자 동의 요청 tick이 35초를 초과했습니다.")
+            except Exception:
+                logger.error("기존 활성 구독자 동의 요청 tick 실패", exc_info=True)
+
+    @legacy_consent_prompt_task.before_loop
+    async def before_legacy_consent_prompt_task(self) -> None:
+        await self.bot.wait_until_ready()
 
     async def send_consent_prompt(
         self,
@@ -201,8 +557,9 @@ class PrivacyCog(commands.Cog):
                 "",
                 "기능을 시작하면 필요한 경우 동의 버튼이 바로 표시됩니다.",
                 "철회: `!개인정보 철회 운세` / `!개인정보 철회 학교공지`",
+                "편입 공지 철회: `!개인정보 철회 편입공지`",
                 "철회는 향후 이용만 중단합니다. 저장 데이터 삭제는 "
-                "`!운세 삭제` 또는 `!공지 삭제`를 별도로 실행해야 합니다. "
+                "`!운세 삭제`, `!공지 삭제`, `!편입 삭제`를 별도로 실행해야 합니다. "
                 "동의·철회 증빙용 감사 이력은 기능 데이터 삭제 후에도 별도 보관됩니다.",
             )
         )
@@ -269,11 +626,11 @@ class PrivacyCog(commands.Cog):
             )
             return
 
-        delete_command = (
-            "`!운세 삭제`"
-            if policy.scope == "fortune"
-            else "`!공지 삭제`"
-        )
+        delete_command = {
+            FORTUNE_SCOPE: "`!운세 삭제`",
+            SCHOOL_NOTICE_SCOPE: "`!공지 삭제`",
+            TRANSFER_NOTICE_SCOPE: "`!편입 삭제`",
+        }[policy.scope]
         await ctx.send(
             f"✅ **{policy.display_name}** 개인정보 동의를 철회했습니다.\n"
             "지금부터 기존 프로필 조회·개인화 처리·자동 발송을 중단합니다. "

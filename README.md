@@ -9,6 +9,7 @@ service.
 [General/Masamo separation](docs/INSTANCE_SEPARATION.ko.md) ·
 [Operations and deployment](DEPLOYMENT.md) ·
 [School-notice integration](docs/SCHOOL_NOTICE_INTEGRATION_PLAN.ko.md) ·
+[Transfer-notice subscriptions](docs/TRANSFER_NOTICE.ko.md) ·
 [Memory-index migration](docs/MEMORY_INDEX_MIGRATION.ko.md)
 
 ## Runtime model
@@ -31,6 +32,7 @@ The two production editions are not forks:
 | Configuration | Dedicated env/config/prompt/embedding files | Separate dedicated files |
 | Logs/service | Dedicated paths and service | Separate paths and service |
 | School notices | Owns the existing rollout, schema, state, and 23:00 timer | Disabled by default; may later use only General-owned paths and state |
+| Transfer notices | Owns its subscription tables, public snapshot, and 23:35 timer | Disabled by default; never shares Masamo state |
 
 Never point both profiles at the same token, database, DB account, writable path,
 prompt file, embedding store, log, or service. The existing Masamo database keeps
@@ -50,6 +52,8 @@ its current name and data; it is not renamed, copied into General, or rebuilt.
   settings
 - Optional school-notice personalization for registered users and supported
   schools
+- Optional DM-only subscription to 20 official transfer-admissions notice
+  sources, with TOEIC/public-English caveats and no LLM use
 
 Database personas are keyed and cached by `guild_id`; static deployments bind
 personas to Discord's globally unique `channel_id`. Normal chat, creative command
@@ -64,6 +68,11 @@ per-call timeout, provider rate limits, prompt/output caps, and finite
 primary/fallback attempts. A single AI turn can plan at most three tool calls.
 Fortune generation and school collection also use explicit finite attempt and
 runtime limits; neither scheduler retries indefinitely.
+
+Optional NumPy, SentenceTransformer, Transformers, Torch, and model construction
+run in executor threads on first use, including their heavy import phase. A load
+failure enters a bounded cooldown instead of retrying on every message, so model
+startup cannot block the Discord heartbeat or create a tight reload loop.
 
 The earthquake monitor checks every 30 seconds, but it cannot precede KMA's
 publication time. It shows both occurrence and KMA publication time. Its
@@ -89,6 +98,9 @@ purpose-specific consent:
 - `school_notice`: required Discord user ID, school, degree program, and
   undergraduate grade; only user-supplied campus/department/status/topics/time
   and notice feedback are optional
+- `transfer_notice`: Discord user ID, selected university IDs, and subscription
+  state only; no TOEIC score, education history, intended major, real name, or
+  contact details
 
 Consent is requested in DM and is recorded only after the same user presses the
 consent button. Current consent and append-only consent events are stored
@@ -98,8 +110,10 @@ separately.
 !개인정보
 !개인정보 동의 운세
 !개인정보 동의 학교공지
+!개인정보 동의 편입공지
 !개인정보 철회 운세
 !개인정보 철회 학교공지
+!개인정보 철회 편입공지
 ```
 
 Withdrawal stops future profile use, personalization, and automatic delivery but
@@ -109,6 +123,7 @@ deletion is separate:
 ```text
 !운세 삭제
 !공지 삭제
+!편입 삭제
 ```
 
 Those deletion commands remove the corresponding feature profile and derived
@@ -169,6 +184,34 @@ tables, core database, digests, or timer. The current wrapper guarantees
 “consented, enabled, registered profiles only”; it does not crawl all catalogued
 schools.
 
+## Transfer-admissions notices
+
+Transfer notices are a separate DM-only subscription service. A user opens
+`!편입`, explicitly consents, and selects one to twenty universities. The public
+collector checks one official list page per source at `23:35` KST. It never
+receives a Discord ID or subscriber profile and never calls an LLM. The bot reads
+the bounded JSON result and DMs only active subscribers whose selected source has
+a genuinely new or title-revised item.
+
+The first successful collection for every source is a non-delivery baseline.
+Per-user `(source, external ID, revision)` delivery records prevent replay after a
+restart. Failed DMs have finite attempts and a durable payload, while cancellation,
+selection changes, or consent withdrawal invalidate older retries. A malformed
+retry payload is terminal rather than looped forever.
+
+The catalog is exactly 20 official sources. “TOEIC/public English” means the
+school has a relevant year or recruiting unit where public-English evidence may
+matter; it does not mean every department uses TOEIC. Rules can change yearly, so
+every alert directs the user to the final official guide. Each batch records
+per-school `healthy`, `degraded`, or `failed` status. `robots.txt` restrictions,
+WAFs, and official maintenance are not bypassed, and the dashboard reports the
+latest healthy-source count instead of silently presenting an incomplete run as
+fully successful.
+
+School and transfer features are unavailable in guild channels, including their
+menu buttons and natural-language entry points. The guild path only explains how
+to continue in DM and performs no personal-profile read or write.
+
 ## Quick start
 
 ```bash
@@ -220,6 +263,10 @@ do not match.
 | `!공지 상태` | Show the latest registered-school collection status |
 | `!공지 시간 HH:MM` | Set a per-user delivery time |
 | `!공지 중지`, `!공지 재개` | Pause/resume school processing and delivery |
+| `!편입` | Open the DM-only 20-school selection dashboard |
+| `!편입 최근`, `!편입 상태` | Show recent official notices or subscription state |
+| `!편입 구독취소`, `!편입 재개` | Pause/resume without deleting university choices |
+| `!편입 삭제` | Delete choices and delivery state, then withdraw consent |
 | `!랭킹`, `!요약`, `!투표 ...` | Community utilities |
 | `/config`, `/persona` | Guild AI policy and persona |
 
@@ -257,6 +304,12 @@ enable only the features that fit the host.
 .venv/bin/python -m school_notice live-check \
   --details-per-source 2 --max-requests 96 \
   --output-dir /tmp/masamong-school-livecheck
+.venv/bin/python scripts/run_transfer_notice_batch.py \
+  --source-config transfer_notice/sources.json \
+  --database /tmp/masamong-transfer/core.db \
+  --output-dir /tmp/masamong-transfer/out \
+  --lock-file /tmp/masamong-transfer/batch.lock \
+  --max-retries 0
 ```
 
 The live check performs real public HTML requests, so it is an explicit operator
@@ -274,7 +327,7 @@ started:
 ```
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for read-only production fingerprints,
-additive privacy/school schema migrations, controlled restart, 23:00 timer
+additive privacy/school/transfer schema migrations, controlled restart, 23:00/23:35 timers,
 verification, post-deploy observation, and rollback. Memory provenance/vector
 changes follow the non-destructive shadow strategy in
 [docs/MEMORY_INDEX_MIGRATION.ko.md](docs/MEMORY_INDEX_MIGRATION.ko.md).
@@ -289,8 +342,9 @@ utils/                          LLM, RAG, privacy, weather, school contracts
 database/                       SQLite and TiDB schemas/adapters
 profiles/                       isolated profile examples and school catalog
 school_notice/                  vendored bounded collection/analysis core
+transfer_notice/                bounded 20-source public list collector
 scripts/                        read-only audits, additive migrations, one-shot jobs
-deploy/systemd/                 school batch service/timer templates
+deploy/systemd/                 school/transfer batch service and timer templates
 tests/                          functional, contract, safety, and resource tests
 docs/                           architecture and operations documentation
 ```

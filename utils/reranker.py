@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import time
 from typing import Any, Iterable, List
 
 from logger_config import logger
@@ -71,26 +72,29 @@ class Reranker:
         self._device = None
         self._lock = asyncio.Lock()
         self._dependency_warning_logged = False
+        self._model_retry_at = 0.0
 
     async def _ensure_model(self):
         """모델이 로드되지 않았다면 지연 로딩을 수행합니다."""
         if self._model is not None and self._tokenizer is not None:
             return
+        if time.monotonic() < self._model_retry_at:
+            raise RuntimeError("재순위화 모델 재시도 대기 중")
 
         async with self._lock:
             if self._model is not None and self._tokenizer is not None:
                 return
-            dependencies = _load_reranker_dependencies()
-            if dependencies is None:
-                if not self._dependency_warning_logged:
-                    logger.warning("transformers/torch 패키지가 없어 재순위화를 비활성화합니다.")
-                    self._dependency_warning_logged = True
-                raise RuntimeError("transformers 또는 torch 패키지가 필요합니다.")
-            tokenizer_class, model_class, torch_module = dependencies
+            if time.monotonic() < self._model_retry_at:
+                raise RuntimeError("재순위화 모델 재시도 대기 중")
             loop = asyncio.get_running_loop()
 
             def _load():
-                # 모델과 토크나이저는 CPU/GPU 여부에 따라 한 번만 로딩한다.
+                # transformers/torch import도 저사양 서버에서 heartbeat를 막을 수
+                # 있으므로 모델과 같은 worker thread에서 한 번만 실행한다.
+                dependencies = _load_reranker_dependencies()
+                if dependencies is None:
+                    raise RuntimeError("transformers 또는 torch 패키지가 필요합니다.")
+                tokenizer_class, model_class, torch_module = dependencies
                 tokenizer = tokenizer_class.from_pretrained(self.config.model_name)
                 model = model_class.from_pretrained(self.config.model_name)
                 device = self.config.device or ("cuda" if torch_module.cuda.is_available() else "cpu")
@@ -99,11 +103,19 @@ class Reranker:
                 return tokenizer, model, device
 
             logger.info("재순위화 모델 로드 시작: %s", self.config.model_name)
-            tokenizer, model, device = await loop.run_in_executor(None, _load)
+            try:
+                tokenizer, model, device = await loop.run_in_executor(None, _load)
+            except Exception as exc:
+                self._model_retry_at = time.monotonic() + 300
+                if not self._dependency_warning_logged:
+                    logger.warning("재순위화 모델을 사용할 수 없습니다: %s", exc)
+                    self._dependency_warning_logged = True
+                raise RuntimeError("재순위화 모델 로드 실패") from exc
             logger.info("재순위화 모델 로드 완료: %s (device=%s)", self.config.model_name, device)
             self._tokenizer = tokenizer
             self._model = model
             self._device = device
+            self._model_retry_at = 0.0
 
     async def rerank(
         self,

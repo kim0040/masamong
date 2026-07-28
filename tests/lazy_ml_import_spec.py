@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 
 import numpy as np
 import pytest
@@ -175,6 +176,149 @@ async def test_embedding_model_still_loads_on_first_real_request(monkeypatch):
     assert vector.dtype == np.float32
     assert vector.tolist() == [1.0, 2.0, 3.0]
     assert calls[1] == ("query: 본문", True)
+
+
+@pytest.mark.asyncio
+async def test_embedding_dependency_imports_run_outside_event_loop(monkeypatch):
+    """저사양 서버의 무거운 import도 Discord heartbeat thread를 막지 않는다."""
+    event_loop_thread = threading.get_ident()
+
+    class FakeSentenceTransformer:
+        def __init__(self, _model_name, **_kwargs):
+            assert threading.get_ident() != event_loop_thread
+
+    def _fake_numpy():
+        assert threading.get_ident() != event_loop_thread
+        return np
+
+    def _fake_transformer():
+        assert threading.get_ident() != event_loop_thread
+        return FakeSentenceTransformer
+
+    monkeypatch.setattr(embeddings, "_MODEL", None)
+    monkeypatch.setattr(embeddings, "_MODEL_FAILURE_RETRY_AT", 0.0)
+    monkeypatch.setattr(embeddings, "_get_numpy", _fake_numpy)
+    monkeypatch.setattr(
+        embeddings,
+        "_get_sentence_transformer_class",
+        _fake_transformer,
+    )
+    monkeypatch.setattr(embeddings.config, "EMBEDDING_ENABLED", True)
+    monkeypatch.setattr(embeddings.config, "CPU_THREAD_LIMIT", 0)
+    monkeypatch.setattr(
+        embeddings.config,
+        "LOCAL_EMBEDDING_LOCAL_FILES_ONLY",
+        False,
+    )
+
+    assert isinstance(await embeddings._load_model(), FakeSentenceTransformer)
+
+
+@pytest.mark.asyncio
+async def test_embedding_load_failure_has_finite_retry_cooldown(monkeypatch):
+    calls = 0
+
+    def _broken_numpy():
+        nonlocal calls
+        calls += 1
+        raise OSError("broken optional runtime")
+
+    monkeypatch.setattr(embeddings, "_MODEL", None)
+    monkeypatch.setattr(embeddings, "_MODEL_FAILURE_RETRY_AT", 0.0)
+    monkeypatch.setattr(embeddings, "_get_numpy", _broken_numpy)
+    monkeypatch.setattr(embeddings.config, "EMBEDDING_ENABLED", True)
+
+    with pytest.raises(RuntimeError):
+        await embeddings._load_model()
+    with pytest.raises(RuntimeError):
+        await embeddings._load_model()
+
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_query_rewriter_dependency_import_runs_outside_event_loop(
+    monkeypatch,
+):
+    event_loop_thread = threading.get_ident()
+
+    class FakeSentenceTransformer:
+        def __init__(self, _model_name, **_kwargs):
+            assert threading.get_ident() != event_loop_thread
+
+    def _fake_transformer():
+        assert threading.get_ident() != event_loop_thread
+        return FakeSentenceTransformer
+
+    monkeypatch.setattr(query_rewriter, "_MODEL_INSTANCE", None)
+    monkeypatch.setattr(query_rewriter, "_MODEL_RETRY_AT", 0.0)
+    monkeypatch.setattr(
+        query_rewriter,
+        "_get_sentence_transformer_class",
+        _fake_transformer,
+    )
+    monkeypatch.setattr(query_rewriter.config, "AI_MEMORY_ENABLED", True)
+    monkeypatch.setattr(query_rewriter.config, "EMBEDDING_ENABLED", True)
+    monkeypatch.setattr(
+        query_rewriter.config,
+        "RAG_QUERY_REWRITE_MODEL_NAME",
+        "test/model",
+    )
+    monkeypatch.setattr(
+        query_rewriter.config,
+        "RAG_QUERY_REWRITE_BACKEND",
+        None,
+    )
+
+    assert isinstance(
+        await query_rewriter._get_model(),
+        FakeSentenceTransformer,
+    )
+
+
+@pytest.mark.asyncio
+async def test_reranker_dependency_import_runs_outside_event_loop(monkeypatch):
+    event_loop_thread = threading.get_ident()
+
+    class FakeTokenizer:
+        @classmethod
+        def from_pretrained(cls, _model_name):
+            return cls()
+
+    class FakeModel:
+        @classmethod
+        def from_pretrained(cls, _model_name):
+            return cls()
+
+        def to(self, _device):
+            return self
+
+        def eval(self):
+            return self
+
+    class FakeCuda:
+        @staticmethod
+        def is_available():
+            return False
+
+    class FakeTorch:
+        cuda = FakeCuda()
+
+    def _fake_dependencies():
+        assert threading.get_ident() != event_loop_thread
+        return FakeTokenizer, FakeModel, FakeTorch
+
+    monkeypatch.setattr(
+        reranker_module,
+        "_load_reranker_dependencies",
+        _fake_dependencies,
+    )
+    reranker = reranker_module.Reranker()
+
+    await reranker._ensure_model()
+
+    assert isinstance(reranker._model, FakeModel)
+    assert isinstance(reranker._tokenizer, FakeTokenizer)
 
 
 @pytest.mark.asyncio

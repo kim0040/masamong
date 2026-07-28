@@ -2373,6 +2373,103 @@ if SCHOOL_NOTICE_ENABLED:
             + ", ".join(_school_notice_errors)
         )
 
+# ========== 공인영어(TOEIC 포함) 편입 공지 구독 ==========
+# 수집 snapshot은 인스턴스별 별도 SQLite/출력에 두고 Discord 구독만 메인
+# DB에 둔다. General/Masamo 어느 쪽도 다른 인스턴스 경로를 공유하지 않는다.
+TRANSFER_NOTICE_ENABLED = as_bool(
+    load_config_value("TRANSFER_NOTICE_ENABLED", "false")
+)
+if REQUIRE_EXPLICIT_PROFILE:
+    _transfer_enabled_raw = _EXPLICIT_ENV_VALUES.get("TRANSFER_NOTICE_ENABLED")
+    if (
+        _transfer_enabled_raw is None
+        or str(_transfer_enabled_raw).strip().lower()
+        not in {
+            "1", "true", "yes", "y", "on",
+            "0", "false", "no", "n", "off",
+        }
+    ):
+        raise RuntimeError(
+            "명시적 프로필 env에는 TRANSFER_NOTICE_ENABLED=true 또는 false를 "
+            "직접 명시해야 합니다."
+        )
+TRANSFER_NOTICE_SOURCE_CONFIG = as_str(
+    load_config_value(
+        "TRANSFER_NOTICE_SOURCE_CONFIG",
+        str(PROJECT_ROOT / "transfer_notice" / "sources.json"),
+    ),
+    str(PROJECT_ROOT / "transfer_notice" / "sources.json"),
+)
+TRANSFER_NOTICE_DATABASE = _resolve_project_storage_path(
+    load_config_value(
+        "TRANSFER_NOTICE_DATABASE",
+        f"data/{INSTANCE_NAME}/transfer_notice/core.db",
+    ),
+    f"data/{INSTANCE_NAME}/transfer_notice/core.db",
+)
+TRANSFER_NOTICE_OUTPUT_DIR = _resolve_project_storage_path(
+    load_config_value(
+        "TRANSFER_NOTICE_OUTPUT_DIR",
+        f"data/{INSTANCE_NAME}/transfer_notice/out",
+    ),
+    f"data/{INSTANCE_NAME}/transfer_notice/out",
+)
+TRANSFER_NOTICE_DELIVERY_MAX_ATTEMPTS = max(
+    1,
+    min(
+        5,
+        as_int(load_config_value("TRANSFER_NOTICE_DELIVERY_MAX_ATTEMPTS", 3), 3),
+    ),
+)
+TRANSFER_NOTICE_DELIVERY_RETRY_MINUTES = max(
+    5,
+    min(
+        1440,
+        as_int(
+            load_config_value("TRANSFER_NOTICE_DELIVERY_RETRY_MINUTES", 30),
+            30,
+        ),
+    ),
+)
+TRANSFER_NOTICE_MAX_ITEMS_PER_DM = max(
+    1,
+    min(
+        20,
+        as_int(load_config_value("TRANSFER_NOTICE_MAX_ITEMS_PER_DM", 10), 10),
+    ),
+)
+if TRANSFER_NOTICE_ENABLED:
+    _transfer_errors: list[str] = []
+    for _path_key, _path_value in (
+        ("TRANSFER_NOTICE_SOURCE_CONFIG", TRANSFER_NOTICE_SOURCE_CONFIG),
+        ("TRANSFER_NOTICE_DATABASE", TRANSFER_NOTICE_DATABASE),
+        ("TRANSFER_NOTICE_OUTPUT_DIR", TRANSFER_NOTICE_OUTPUT_DIR),
+    ):
+        _candidate = Path(str(_path_value)).expanduser()
+        if not _candidate.is_absolute():
+            _transfer_errors.append(f"{_path_key}는 절대 경로여야 함")
+        elif (
+            _path_key == "TRANSFER_NOTICE_SOURCE_CONFIG"
+            and not _candidate.is_file()
+        ):
+            _transfer_errors.append(f"{_path_key} 파일이 없음")
+        elif (
+            REQUIRE_EXPLICIT_PROFILE
+            and _path_key != "TRANSFER_NOTICE_SOURCE_CONFIG"
+            and INSTANCE_NAME not in _candidate.parts
+        ):
+            _transfer_errors.append(
+                f"{_path_key} 경로에 인스턴스 이름 '{INSTANCE_NAME}'이 "
+                "독립 경로 구성요소로 포함되어야 함"
+            )
+    if Path(TRANSFER_NOTICE_DATABASE) == Path(TRANSFER_NOTICE_OUTPUT_DIR):
+        _transfer_errors.append("database와 output 디렉터리는 달라야 함")
+    if _transfer_errors:
+        raise RuntimeError(
+            "TRANSFER_NOTICE_ENABLED=true인데 필수 경로 설정이 올바르지 않습니다: "
+            + ", ".join(_transfer_errors)
+        )
+
 DEFAULT_TSUNDERE_PERSONA = _extract_prompt_value("default_persona", FALLBACK_PERSONA)
 DEFAULT_TSUNDERE_RULES = _extract_prompt_value("default_rules", FALLBACK_RULES)
 

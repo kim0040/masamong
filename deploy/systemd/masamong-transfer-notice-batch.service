@@ -1,0 +1,33 @@
+[Unit]
+Description=Masamong transfer admissions notice batch
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/masamong/masamo.env
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/srv/masamong/current
+Environment=MASAMONG_ENV_FILE=/etc/masamong/masamo.env
+Environment=OMP_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Environment=NUMEXPR_NUM_THREADS=1
+Environment=TOKENIZERS_PARALLELISM=false
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/srv/masamong/venv/bin/python /srv/masamong/current/scripts/run_transfer_notice_batch.py --source-config /srv/masamong/current/transfer_notice/sources.json --database /var/lib/masamong/masamo/transfer_notice/core.db --output-dir /var/lib/masamong/masamo/transfer_notice/out --lock-file /var/lib/masamong/masamo/transfer_notice/batch.lock --timeout-seconds 900 --request-timeout-seconds 20 --max-retries 1
+TimeoutStartSec=960
+TimeoutStopSec=30
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=25%
+CPUWeight=20
+IOWeight=20
+MemoryMax=256M
+TasksMax=64
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
