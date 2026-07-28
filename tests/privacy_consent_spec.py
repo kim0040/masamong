@@ -4,12 +4,14 @@ from types import SimpleNamespace
 import aiosqlite
 import pytest
 
+import config
 from cogs.privacy_cog import ConsentDecisionView, PrivacyCog
 from utils.privacy_consent import (
     CONSENT_GRANTED,
     CONSENT_WITHDRAWN,
     FORTUNE_SCOPE,
     SCHOOL_NOTICE_SCOPE,
+    TRANSFER_NOTICE_SCOPE,
     get_consent_state,
     get_policy,
     grant_consent,
@@ -135,6 +137,19 @@ class _Destination:
     async def send(self, content, **kwargs):
         self.sent.append((content, kwargs))
         return SimpleNamespace()
+
+
+class _LegacyPromptBot:
+    def __init__(self, db, destination):
+        self.db = db
+        self.destination = destination
+
+    def get_user(self, user_id):
+        return self.destination if int(user_id) == USER_ID else None
+
+    async def fetch_user(self, user_id):
+        assert int(user_id) == USER_ID
+        return self.destination
 
 
 class _Response:
@@ -284,5 +299,94 @@ async def test_reject_button_never_continues_original_feature():
 
         assert continued == []
         assert not await has_current_consent(db, USER_ID, FORTUNE_SCOPE)
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_prompt_selects_only_active_uncanceled_subscriber(
+    monkeypatch,
+):
+    db = await _db()
+    try:
+        canceled_id = USER_ID + 1
+        await db.executemany(
+            """
+            INSERT INTO user_profiles (user_id, subscription_active)
+            VALUES (?, ?)
+            """,
+            [(USER_ID, 1), (canceled_id, 0)],
+        )
+        await db.commit()
+        monkeypatch.setattr(config, "FORTUNE_MORNING_BRIEFING_ENABLED", True)
+        monkeypatch.setattr(config, "SCHOOL_NOTICE_ENABLED", False)
+        monkeypatch.setattr(config, "TRANSFER_NOTICE_ENABLED", False)
+        monkeypatch.setattr(config, "DISABLED_COGS", set())
+        cog = PrivacyCog(SimpleNamespace(db=db))
+
+        candidate = await cog._next_legacy_prompt_candidate()
+
+        assert candidate == (USER_ID, FORTUNE_SCOPE)
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_explicitly_withdrawn_active_subscriber_is_not_prompted(
+    monkeypatch,
+):
+    db = await _db()
+    try:
+        await db.execute(
+            """
+            INSERT INTO transfer_notice_subscriptions (
+                user_id, schools_json, enabled, created_at, updated_at
+            ) VALUES (?, '["kangwon"]', 1, '2026-01-01', '2026-01-01')
+            """,
+            (USER_ID,),
+        )
+        await db.commit()
+        await grant_consent(db, USER_ID, TRANSFER_NOTICE_SCOPE)
+        await withdraw_consent(db, USER_ID, TRANSFER_NOTICE_SCOPE)
+        monkeypatch.setattr(config, "FORTUNE_MORNING_BRIEFING_ENABLED", False)
+        monkeypatch.setattr(config, "SCHOOL_NOTICE_ENABLED", False)
+        monkeypatch.setattr(config, "TRANSFER_NOTICE_ENABLED", True)
+        monkeypatch.setattr(config, "DISABLED_COGS", set())
+        cog = PrivacyCog(SimpleNamespace(db=db))
+
+        assert await cog._next_legacy_prompt_candidate() is None
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_successful_legacy_consent_prompt_is_sent_once_per_policy(
+    monkeypatch,
+):
+    db = await _db()
+    try:
+        await db.execute(
+            """
+            INSERT INTO user_profiles (user_id, subscription_active)
+            VALUES (?, 1)
+            """,
+            (USER_ID,),
+        )
+        await db.commit()
+        monkeypatch.setattr(config, "FORTUNE_MORNING_BRIEFING_ENABLED", True)
+        monkeypatch.setattr(config, "SCHOOL_NOTICE_ENABLED", False)
+        monkeypatch.setattr(config, "TRANSFER_NOTICE_ENABLED", False)
+        monkeypatch.setattr(config, "DISABLED_COGS", set())
+        destination = _Destination()
+        cog = PrivacyCog(_LegacyPromptBot(db, destination))
+
+        first = await cog._legacy_prompt_tick()
+        second = await cog._legacy_prompt_tick()
+
+        assert first == "sent"
+        assert second == "idle"
+        assert len(destination.sent) == 1
+        assert "기존 **운세** 자동 알림 구독" in destination.sent[0][0]
+        assert destination.sent[0][1]["view"] is not None
     finally:
         await db.close()

@@ -132,10 +132,15 @@ class EventListeners(commands.Cog):
         # 2. 사용자에게 안내가 필요한 오류 (잘못된 사용)
         if isinstance(error, commands.MissingRequiredArgument):
             # 필수 인자 누락
+            prefix = ctx.clean_prefix or config.COMMAND_PREFIX or "!"
             cmd_name = ctx.command.qualified_name if ctx.command else "명령어"
             signature = ctx.command.signature if ctx.command else ""
-            usage = f"!{cmd_name} {signature}"
-            await ctx.send(f"⚠️ 명령어를 완성하지 못했어요!\n**올바른 사용법**: `{usage}`\n(도움말이 필요하면 `!도움 {cmd_name}`을 입력해보세요)")
+            usage = f"{prefix}{cmd_name} {signature}"
+            await ctx.send(
+                "⚠️ 명령어를 완성하지 못했어요!\n"
+                f"**올바른 사용법**: `{usage}`\n"
+                f"(도움말이 필요하면 `{prefix}도움 {cmd_name}`을 입력해보세요)"
+            )
             return
 
         if isinstance(error, commands.BadArgument):

@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Masamong transfer admissions notice batch daily
+
+[Timer]
+# 학교 공지(23:00 KST)와 겹치지 않게 23:35에 한 번 실행한다.
+OnCalendar=*-*-* 23:35:00 Asia/Seoul
+Persistent=true
+RandomizedDelaySec=120
+AccuracySec=30s
+Unit=masamong-transfer-notice-batch.service
+
+[Install]
+WantedBy=timers.target

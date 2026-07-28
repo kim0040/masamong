@@ -40,6 +40,7 @@ def _write_env(path: Path, *, profile: str, token: str, database: str, db_user: 
                 "MASAMONG_REQUIRED_COGS=tools_cog,events,ai_handler",
                 "MASAMONG_AUTO_MIGRATE=false",
                 "SCHOOL_NOTICE_ENABLED=false",
+                "TRANSFER_NOTICE_ENABLED=false",
                 (
                     "MASAMONG_GUILD_SETTINGS_MODE=static"
                     if profile == "masamo"
@@ -447,6 +448,91 @@ def test_masamo_school_notice_rejects_general_owned_paths(tmp_path):
     )
     assert any(
         "SCHOOL_NOTICE_CORE_DB" in error and "'masamo'" in error
+        for error in errors
+    )
+
+
+def test_masamo_transfer_notice_enablement_accepts_owned_paths(tmp_path):
+    masamo = tmp_path / "masamo.env"
+    general = tmp_path / "general.env"
+    _write_env(
+        masamo,
+        profile="masamo",
+        token="real-masamo-token",
+        database="masamong",
+        db_user="masamo_user",
+    )
+    _write_env(
+        general,
+        profile="general",
+        token="real-general-token",
+        database="masamong_general",
+        db_user="general_user",
+    )
+    sources = tmp_path / "transfer_sources.json"
+    sources.write_text('{"sources":[]}', encoding="utf-8")
+    masamo.write_text(
+        masamo.read_text(encoding="utf-8").replace(
+            "TRANSFER_NOTICE_ENABLED=false",
+            "\n".join(
+                [
+                    "TRANSFER_NOTICE_ENABLED=true",
+                    f"TRANSFER_NOTICE_SOURCE_CONFIG={sources}",
+                    f"TRANSFER_NOTICE_DATABASE={tmp_path / 'masamo' / 'transfer' / 'core.db'}",
+                    f"TRANSFER_NOTICE_OUTPUT_DIR={tmp_path / 'masamo' / 'transfer' / 'out'}",
+                ]
+            ),
+        ),
+        encoding="utf-8",
+    )
+
+    errors, _ = validate(masamo, general)
+
+    assert not any("TRANSFER_NOTICE_" in error for error in errors)
+
+
+def test_masamo_transfer_notice_rejects_general_owned_paths(tmp_path):
+    masamo = tmp_path / "masamo.env"
+    general = tmp_path / "general.env"
+    _write_env(
+        masamo,
+        profile="masamo",
+        token="real-masamo-token",
+        database="masamong",
+        db_user="masamo_user",
+    )
+    _write_env(
+        general,
+        profile="general",
+        token="real-general-token",
+        database="masamong_general",
+        db_user="general_user",
+    )
+    sources = tmp_path / "transfer_sources.json"
+    sources.write_text('{"sources":[]}', encoding="utf-8")
+    masamo.write_text(
+        masamo.read_text(encoding="utf-8").replace(
+            "TRANSFER_NOTICE_ENABLED=false",
+            "\n".join(
+                [
+                    "TRANSFER_NOTICE_ENABLED=true",
+                    f"TRANSFER_NOTICE_SOURCE_CONFIG={sources}",
+                    f"TRANSFER_NOTICE_DATABASE={tmp_path / 'general' / 'transfer' / 'core.db'}",
+                    f"TRANSFER_NOTICE_OUTPUT_DIR={tmp_path / 'general' / 'transfer' / 'out'}",
+                ]
+            ),
+        ),
+        encoding="utf-8",
+    )
+
+    errors, _ = validate(masamo, general)
+
+    assert any(
+        "TRANSFER_NOTICE_DATABASE" in error and "'masamo'" in error
+        for error in errors
+    )
+    assert any(
+        "TRANSFER_NOTICE_OUTPUT_DIR" in error and "'masamo'" in error
         for error in errors
     )
 

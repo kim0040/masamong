@@ -2,7 +2,7 @@
 """사용자가 직접 제공하는 개인정보의 목적별 동의 상태를 관리한다.
 
 Discord 대화 기록이나 Discord 서버가 제공하는 정보는 이 모듈의 대상이 아니다.
-운세 프로필과 학교 공지 개인화 프로필처럼 봇이 별도로 수집·저장·재사용하는
+운세 프로필과 학교·편입 공지 개인화 설정처럼 봇이 별도로 수집·저장·재사용하는
 정보만 명시적인 목적별 동의로 보호한다.
 """
 
@@ -20,6 +20,7 @@ CONSENT_WITHDRAWN = "withdrawn"
 
 FORTUNE_SCOPE = "fortune"
 SCHOOL_NOTICE_SCOPE = "school_notice"
+TRANSFER_NOTICE_SCOPE = "transfer_notice"
 
 _CONSENT_WRITE_LOCKS: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
 
@@ -103,6 +104,28 @@ _POLICIES = {
             "- 동의를 거부하거나 철회해도 일반 Discord 대화와 서버 기능 이용에는 영향이 없음"
         ),
     ),
+    TRANSFER_NOTICE_SCOPE: ConsentPolicy(
+        scope=TRANSFER_NOTICE_SCOPE,
+        display_name="편입공지",
+        version="2026-07-28.v1",
+        notice=(
+            "편입 공지 구독 개인정보 처리 동의\n"
+            "- 수집 항목: Discord 사용자 ID, 사용자가 선택한 대학, 구독 활성 상태\n"
+            "- 이용 목적: 선택한 대학의 공식 편입 공지 중 새 글·수정 글을 개인 DM으로 발송\n"
+            "- 수집하지 않는 정보: TOEIC 점수, 학력, 지원 학과, 생년월일, 실명, 연락처는 "
+            "받거나 저장하지 않음\n"
+            "- 학교 사이트 전송 금지: 대학 입학처에는 고정된 공개 목록 URL만 요청하며 "
+            "Discord ID와 대학 선택 등 구독자 정보를 전송하지 않음\n"
+            "- 외부 AI 처리 없음: 공지 감지·중복 제거·DM 작성에는 LLM을 호출하지 않음\n"
+            "- 보관: 사용자가 `!편입 삭제`를 실행할 때까지 보관\n"
+            "- 철회: `!개인정보 철회 편입공지`로 기존 구독을 보존한 채 향후 확인과 "
+            "발송을 즉시 중단할 수 있음. 재동의하면 기존 선택으로 재개됨\n"
+            "- 삭제: `!편입 삭제`는 대학 선택·구독·전달 기록을 삭제함\n"
+            "- 동의 이력: 동의·철회 증빙을 위한 Discord 사용자 ID, 목적, 정책 버전, "
+            "고지문 해시와 처리 시각은 기능 데이터 삭제 후에도 감사 이력으로 별도 보관\n"
+            "- 동의를 거부하거나 철회해도 일반 Discord 대화와 다른 기능에는 영향이 없음"
+        ),
+    ),
 }
 
 _SCOPE_ALIASES = {
@@ -113,6 +136,10 @@ _SCOPE_ALIASES = {
     "학교공지": SCHOOL_NOTICE_SCOPE,
     "학교": SCHOOL_NOTICE_SCOPE,
     "공지": SCHOOL_NOTICE_SCOPE,
+    TRANSFER_NOTICE_SCOPE: TRANSFER_NOTICE_SCOPE,
+    "transfer-notice": TRANSFER_NOTICE_SCOPE,
+    "편입공지": TRANSFER_NOTICE_SCOPE,
+    "편입": TRANSFER_NOTICE_SCOPE,
 }
 
 
@@ -131,7 +158,9 @@ def normalize_scope(scope: str) -> str:
     try:
         return _SCOPE_ALIASES[normalized]
     except KeyError as exc:
-        raise ValueError("지원하는 동의 목적은 `운세`, `학교공지`입니다.") from exc
+        raise ValueError(
+            "지원하는 동의 목적은 `운세`, `학교공지`, `편입공지`입니다."
+        ) from exc
 
 
 def get_policy(scope: str) -> ConsentPolicy:
@@ -141,7 +170,14 @@ def get_policy(scope: str) -> ConsentPolicy:
 
 def all_policies() -> tuple[ConsentPolicy, ...]:
     """표시 순서가 안정적인 전체 정책 목록."""
-    return tuple(_POLICIES[scope] for scope in (FORTUNE_SCOPE, SCHOOL_NOTICE_SCOPE))
+    return tuple(
+        _POLICIES[scope]
+        for scope in (
+            FORTUNE_SCOPE,
+            SCHOOL_NOTICE_SCOPE,
+            TRANSFER_NOTICE_SCOPE,
+        )
+    )
 
 
 def format_policy_notice(scope: str) -> str:
@@ -157,7 +193,12 @@ def format_policy_notice(scope: str) -> str:
 
 def consent_command_name(scope: str) -> str:
     """재동의 안내에 사용할 명령어 인자를 반환한다."""
-    return "운세" if normalize_scope(scope) == FORTUNE_SCOPE else "학교공지"
+    normalized = normalize_scope(scope)
+    if normalized == FORTUNE_SCOPE:
+        return "운세"
+    if normalized == SCHOOL_NOTICE_SCOPE:
+        return "학교공지"
+    return "편입공지"
 
 
 def _utc_now_text() -> str:

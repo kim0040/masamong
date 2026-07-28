@@ -1,7 +1,7 @@
 # 마사몽 제품·사용 설명서
 
 마사몽은 Discord에서 AI 대화, 선택적 기억/RAG, 날씨·금융·웹 검색, 이미지 생성,
-개인 운세, 커뮤니티 기능과 선택적 학교 공지 개인화를 제공하는 한국어 중심 봇이다.
+개인 운세, 커뮤니티 기능과 선택적 학교·편입 공지 개인화를 제공하는 한국어 중심 봇이다.
 운영판은 하나의 공통 코드를 사용하되 `masamo`와 `general` 두 프로필의 데이터와
 실행 경계를 완전히 분리한다.
 
@@ -13,7 +13,8 @@
 
 운영 절차는 [배포 가이드](../DEPLOYMENT.md), 두 판의 경계는
 [인스턴스 분리 가이드](INSTANCE_SEPARATION.ko.md), 학교 공지의 세부 계약은
-[학교 공지 통합 설명서](SCHOOL_NOTICE_INTEGRATION_PLAN.ko.md)를 따른다.
+[학교 공지 통합 설명서](SCHOOL_NOTICE_INTEGRATION_PLAN.ko.md), 편입 공지는
+[편입 공지 구독 설명서](TRANSFER_NOTICE.ko.md)를 따른다.
 
 ## 제품 구성
 
@@ -42,6 +43,9 @@
 - General은 Masamo의 Kakao mapping이나 누적 데이터를 복사·조회하지 않는다.
 - 로컬 벡터는 메모리 매핑과 제한된 배치 검색을 사용하고, 백그라운드 작업과 추적
   윈도 수를 제한한다.
+- NumPy·SentenceTransformer·Transformers·Torch의 무거운 최초 import와 모델 생성은
+  worker thread에서 실행해 Discord heartbeat를 막지 않는다. 로드 실패 뒤에는 유한
+  cooldown을 적용해 메시지마다 같은 모델 로드를 반복하지 않는다.
 
 ### 일반 기능
 
@@ -74,6 +78,7 @@
 | env/config/prompt/embedding | Masamo 전용 절대 경로 | General 전용 절대 경로 |
 | 로그와 service | 별도 | 별도 |
 | 학교 공지 | 현재 운영 기능·DB·digest·23시 timer 소유 | 기본 비활성, 나중에 켤 때도 General 전용 경로만 사용 |
+| 편입 공지 | 20개 공식 공지원·snapshot·23:35 timer 소유 | 기본 비활성, Masamo 구독·파일·timer 공유 금지 |
 
 기존 `masamong` DB의 이름을 바꾸거나 새 General에 복사하지 않는다. 두 프로세스가 같은
 DB를 공유하면 운세 프로필, DM/LLM 사용량, 사용자 선호, 메시지·기억 키가 섞이므로 완전
@@ -85,12 +90,13 @@ DB를 공유하면 운세 프로필, DM/LLM 사용량, 사용자 선호, 메시�
 ### 동의가 필요한 정보
 
 일반 Discord 대화와 Discord 서버가 제공하는 정보는 아래 목적별 동의의 대상이 아니다.
-봇이 별도로 질문해 저장하고 이후 재사용하는 두 종류의 프로필만 명시 동의를 받는다.
+봇이 별도로 질문해 저장하고 이후 재사용하는 세 종류의 프로필만 명시 동의를 받는다.
 
 | 목적 | 수집·이용 정보 | 주된 이용 |
 |---|---|---|
 | 운세 | Discord 사용자 ID, 필수 생년월일, 사용자가 선택한 출생 시각·성별·출생지 | 운세 생성, 구독 DM, 동의한 운세 문맥 |
 | 학교공지 | 필수 Discord 사용자 ID·학교·학위 과정·학부 학년, 사용자가 직접 말한 경우만 캠퍼스·학과·입학/학적·관심·알림 설정과 피드백 | 관련 공지 판정, digest, DM |
+| 편입공지 | Discord 사용자 ID, 선택한 대학 ID, 구독 활성·전달 상태 | 선택한 대학의 새 공식 편입 공지 DM |
 
 운세 문장 생성에는 실제 등록한 항목과 Discord 표시 이름이 외부 LLM에 전달될 수 있다.
 학교 자연어 등록은 먼저 로컬에서 해석한다. 해결되지 않은 등록·수정 문장만 Discord ID를
@@ -106,6 +112,7 @@ DM에서 실행한다.
 !개인정보
 !개인정보 동의 운세
 !개인정보 동의 학교공지
+!개인정보 동의 편입공지
 ```
 
 정책 본문과 버전을 표시한 뒤 명령을 실행한 본인이 `동의합니다` 버튼을 눌러야 저장된다.
@@ -120,6 +127,7 @@ DM에서 실행한다.
 ```text
 !개인정보 철회 운세
 !개인정보 철회 학교공지
+!개인정보 철회 편입공지
 ```
 
 철회는 즉시 향후 프로필 조회, 개인화, LLM 처리, 피드백 수집과 자동 발송을 중단한다.
@@ -129,6 +137,7 @@ DM에서 실행한다.
 ```text
 !운세 삭제
 !공지 삭제
+!편입 삭제
 ```
 
 삭제는 해당 기능의 프로필과 구독/대기 상태, 피드백, 전달·실행 기록 및 사용자별 파생
@@ -303,6 +312,26 @@ DM에서 `!메뉴`의 `학교 공지` 버튼 또는 `!공지`의 `설정·변경
 `school_notice/sources.json`이다. 현재 구조는 동의하고 활성화한 등록 프로필만 대상으로
 삼으며 모든 학교를 일괄 수집하지 않는다.
 
+## 편입 공지
+
+편입 공지는 Masamo DM에서 `!편입`을 실행해 명시적으로 동의하고 20개 대학 중 원하는
+곳만 선택하는 구독 기능이다. 학교 공지와 마찬가지로 서버 명령·메뉴 진입은 DM 사용법만
+안내하며, 서버에서 개인 설정이나 결과를 읽거나 출력하지 않는다.
+
+- 23:35 KST 저자원 one-shot이 공식 입학처 목록을 하루 한 번 확인한다.
+- 첫 성공 수집은 기준선으로만 저장해 과거 공지를 재전송하지 않는다.
+- 새 글 또는 제목 revision이 생겼을 때 선택 대학과 일치하는 활성 구독자에게만 DM한다.
+- 구독 취소, 동의 철회 또는 선택 변경 뒤에는 이전 실패 payload를 되살리지 않는다.
+- TOEIC 점수·학력·지원 학과·실명·연락처는 수집하지 않는다.
+- 공개 snapshot SQLite에는 Discord 사용자 정보가 전혀 들어가지 않는다.
+- 20개 전체를 지원 가능 대학이라고 판정하지 않는다. 공인영어 반영 범위는 연도·학과별로
+  달라질 수 있으므로 알림의 당해 모집요강 원문을 확인해야 한다.
+
+수집은 LLM 없이 순차 실행하고, 전체 제한 시간·source당 요청 수·응답 크기·재시도 횟수에
+상한이 있다. robots 금지 source는 우회하지 않고 실패 상태를 공개한다. 상세한 20개
+공지원, 개인정보 경계와 운영 절차는 [편입 공지 구독 설명서](TRANSFER_NOTICE.ko.md)에
+있다.
+
 ## 기상청 날씨와 재난 알림
 
 `!날씨 전주`, `!날씨 내일 부산`, `!날씨 이번주 제주`처럼 사용한다. 현재 조회는 다음을
@@ -380,9 +409,9 @@ TOKENIZERS_PARALLELISM=false
 
 Masamo 전환에서는 예제 숫자로 덮어쓰지 말고 현재 서비스의 실제 제한을 보존한다.
 General은 처음에 로컬 memory와 반복 scheduler를 끈 뒤 두 프로세스의 합산 CPU, RSS,
-thread, load average를 측정해 기능을 단계적으로 켠다. 학교 수집은 봇 프로세스가 아닌
-`Type=oneshot` 프로세스에서 CPU thread 1개, low nice/IO, profile/전체 deadline으로
-실행한다.
+thread, load average를 측정해 기능을 단계적으로 켠다. 학교·편입 수집은 봇 프로세스가
+아닌 `Type=oneshot` 프로세스에서 CPU thread 1개, low nice/IO와 systemd
+`TimeoutStartSec`을 포함한 전체 deadline으로 실행한다.
 
 ## 설치와 실행
 
@@ -434,6 +463,7 @@ MASAMONG_ENV_FILE=/absolute/path/to/profile.env \
 | [INSTANCE_SEPARATION.ko.md](INSTANCE_SEPARATION.ko.md) | General/Masamo 경계와 전환 |
 | [../DEPLOYMENT.md](../DEPLOYMENT.md) | 백업, 읽기 전용 preflight, migration, 재시작, rollback |
 | [SCHOOL_NOTICE_INTEGRATION_PLAN.ko.md](SCHOOL_NOTICE_INTEGRATION_PLAN.ko.md) | 수집 core와 학교 공지 계약 |
+| [TRANSFER_NOTICE.ko.md](TRANSFER_NOTICE.ko.md) | 20개 대학 편입 공지 구독·개인정보·운영 계약 |
 | [MEMORY_INDEX_MIGRATION.ko.md](MEMORY_INDEX_MIGRATION.ko.md) | 운영 기억 품질 감사와 무삭제 shadow vector migration |
 | [ARCHITECTURE.ko.md](ARCHITECTURE.ko.md) | 전체 아키텍처 |
 | [SETTINGS_GUIDE.md](SETTINGS_GUIDE.md) | 일반 설정 |

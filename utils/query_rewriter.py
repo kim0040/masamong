@@ -6,12 +6,14 @@ from __future__ import annotations
 import asyncio
 from typing import Any, List
 import inspect
+import time
 
 import config
 from logger_config import logger
 
 _MODEL_LOCK = asyncio.Lock()
 _MODEL_INSTANCE: Any | None = None
+_MODEL_RETRY_AT = 0.0
 SentenceTransformer: Any | None = None
 _SENTENCE_TRANSFORMER_IMPORT_ATTEMPTED = False
 
@@ -78,18 +80,16 @@ async def _async_encode(model: Any, sentences: List[str]) -> Any:
 
 async def _get_model() -> Any | None:
     """쿼리 재작성용 SentenceTransformer 모델을 지연 로딩합니다."""
-    global _MODEL_INSTANCE
+    global _MODEL_INSTANCE, _MODEL_RETRY_AT
     if not (
         getattr(config, "AI_MEMORY_ENABLED", True)
         and getattr(config, "EMBEDDING_ENABLED", True)
     ):
         return None
-    transformer_class = _get_sentence_transformer_class()
-    if transformer_class is None:
-        logger.warning("sentence-transformers 패키지를 찾을 수 없어 쿼리 재작성을 비활성화합니다.")
-        return None
     if _MODEL_INSTANCE is not None:
         return _MODEL_INSTANCE
+    if time.monotonic() < _MODEL_RETRY_AT:
+        return None
 
     model_name = config.RAG_QUERY_REWRITE_MODEL_NAME or "upskyy/e5-small-korean"
     backend = getattr(config, "RAG_QUERY_REWRITE_BACKEND", None)
@@ -97,7 +97,10 @@ async def _get_model() -> Any | None:
     loop = asyncio.get_running_loop()
 
     def _build_model() -> Any:
-        """SentenceTransformer를 동기적으로 생성한다(수 초 소요될 수 있는 블로킹 작업)."""
+        """무거운 import와 모델 생성을 모두 worker thread에서 실행한다."""
+        transformer_class = _get_sentence_transformer_class()
+        if transformer_class is None:
+            raise RuntimeError("sentence-transformers 패키지를 찾을 수 없습니다.")
         if backend:
             ctor_params = set(inspect.signature(transformer_class.__init__).parameters)
             if "backend" in ctor_params:
@@ -109,6 +112,8 @@ async def _get_model() -> Any | None:
     async with _MODEL_LOCK:
         if _MODEL_INSTANCE is not None:
             return _MODEL_INSTANCE
+        if time.monotonic() < _MODEL_RETRY_AT:
+            return None
         try:
             # 모델 로드는 가중치 역직렬화로 수 초간 블로킹된다. 이벤트 루프를 멈추지
             # 않도록 executor에서 로드한다(embeddings._load_model과 동일한 패턴).
@@ -117,6 +122,9 @@ async def _get_model() -> Any | None:
         except Exception as exc:  # pragma: no cover - 외부 모델 로드 실패 대비
             logger.warning("쿼리 재작성 모델 로드 실패(%s): %s", model_name, exc)
             _MODEL_INSTANCE = None
+            _MODEL_RETRY_AT = time.monotonic() + 300
+        else:
+            _MODEL_RETRY_AT = 0.0
         return _MODEL_INSTANCE
 
 

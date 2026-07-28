@@ -514,7 +514,7 @@ def test_systemd_timer_and_service_keep_23_kst_low_resource_contract():
     assert "OnCalendar=*-*-* 23:00:00 Asia/Seoul" in timer
     assert "Persistent=true" in timer
     assert "RandomizedDelaySec=0" in timer
-    assert "RuntimeMaxSec=7800" in service
+    assert "TimeoutStartSec=7800" in service
     assert "OMP_NUM_THREADS=1" in service
     assert "--no-llm --low-resource" in service
     # 날짜는 wrapper가 실행 시점의 KST 날짜로 고정해 코어 --date에 전달한다.

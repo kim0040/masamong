@@ -1761,6 +1761,7 @@ class SchoolNoticeCog(commands.Cog):
         )
 
     @commands.group(name="공지", invoke_without_command=True)
+    @commands.dm_only()
     async def school_notice(self, ctx: commands.Context, page: int = 0) -> None:
         """가장 최근 성공/부분 성공 digest의 요청 페이지를 보여줍니다."""
         if not config.SCHOOL_NOTICE_ENABLED:
@@ -1872,6 +1873,7 @@ class SchoolNoticeCog(commands.Cog):
                 await ctx.send(embeds=group)
 
     @school_notice.command(name="등록")
+    @commands.dm_only()
     async def register(
         self,
         ctx: commands.Context,
@@ -1886,6 +1888,7 @@ class SchoolNoticeCog(commands.Cog):
         )
 
     @school_notice.command(name="수정")
+    @commands.dm_only()
     async def modify_profile(
         self,
         ctx: commands.Context,

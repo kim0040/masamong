@@ -257,3 +257,50 @@ CREATE TABLE IF NOT EXISTS school_notice_delivery_runs (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (user_key, digest_date)
 );
+
+-- 활성 구독이 있으나 현 정책 동의가 없는 기존 사용자에게 동의 버튼을
+-- 한 정책 버전당 한 번만 안내한다. 취소/비활성 구독자는 후보가 아니다.
+CREATE TABLE IF NOT EXISTS privacy_consent_prompts (
+    user_id INTEGER NOT NULL,
+    scope TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    notice_hash TEXT NOT NULL,
+    status TEXT NOT NULL, -- sent | retry | failed
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
+    sent_at TEXT,
+    last_error TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, scope, policy_version, notice_hash)
+);
+
+-- ============================================================
+-- 공인영어(TOEIC 포함) 편입 공지 구독
+-- 공개 공지 snapshot은 별도 SQLite에 있고 여기에는 구독 설정만 둔다.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS transfer_notice_subscriptions (
+    user_id INTEGER PRIMARY KEY,
+    schools_json TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS transfer_notice_deliveries (
+    user_id INTEGER NOT NULL,
+    run_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL, -- processing | retry | sent | failed
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
+    delivered_at TEXT,
+    last_error TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, source_id, external_id, revision)
+);
+
+CREATE INDEX IF NOT EXISTS idx_transfer_notice_deliveries_due
+    ON transfer_notice_deliveries (status, next_attempt_at, updated_at);

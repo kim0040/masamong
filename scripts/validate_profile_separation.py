@@ -363,6 +363,37 @@ def _check_profile(
                 and not configured_path.is_file()
             ):
                 errors.append(f"{label}: {path_key} 파일을 찾을 수 없습니다.")
+    transfer_notice_enabled = env.get("TRANSFER_NOTICE_ENABLED", "").lower()
+    if transfer_notice_enabled not in TRUE_VALUES | FALSE_VALUES:
+        errors.append(
+            f"{label}: TRANSFER_NOTICE_ENABLED=true 또는 false를 직접 명시해야 합니다."
+        )
+    elif transfer_notice_enabled in TRUE_VALUES:
+        for path_key in (
+            "TRANSFER_NOTICE_SOURCE_CONFIG",
+            "TRANSFER_NOTICE_DATABASE",
+            "TRANSFER_NOTICE_OUTPUT_DIR",
+        ):
+            configured_path = Path(env.get(path_key, "")).expanduser()
+            if not configured_path.is_absolute():
+                errors.append(
+                    f"{label}: {path_key}는 절대 경로여야 합니다."
+                )
+                continue
+            if (
+                path_key
+                in {"TRANSFER_NOTICE_DATABASE", "TRANSFER_NOTICE_OUTPUT_DIR"}
+                and profile not in configured_path.parts
+            ):
+                errors.append(
+                    f"{label}: {path_key} 경로에는 인스턴스 이름 "
+                    f"{profile!r}이 독립 구성요소로 포함되어야 합니다."
+                )
+            if (
+                path_key == "TRANSFER_NOTICE_SOURCE_CONFIG"
+                and not configured_path.is_file()
+            ):
+                errors.append(f"{label}: {path_key} 파일을 찾을 수 없습니다.")
     if profile in {"masamo", "general"}:
         for limit_key in LOW_SPEC_POSITIVE_LIMIT_KEYS:
             parsed_limit = _positive_int(env.get(limit_key, ""))
