@@ -197,8 +197,6 @@ class FastLLMQuotaManager:
                 conn = self._open_connection()
                 try:
                     cur = conn.cursor()
-                    cur.execute(self._sql("DELETE FROM api_call_log WHERE called_at < ?"), self._params(one_day_ago))
-
                     cur.execute(
                         self._sql("SELECT COUNT(*) FROM api_call_log WHERE api_type = ? AND called_at >= ?"),
                         self._params("cometapi", one_day_ago),

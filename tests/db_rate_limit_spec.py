@@ -29,9 +29,7 @@ async def api_log_db():
 @pytest.mark.asyncio
 async def test_api_rate_limit_allows_usage_below_both_windows(
     api_log_db,
-    monkeypatch,
 ):
-    monkeypatch.setattr(db_utils, "_last_api_log_cleanup", datetime.now(timezone.utc))
     now = datetime.now(timezone.utc)
     await api_log_db.executemany(
         "INSERT INTO api_call_log (api_type, called_at) VALUES (?, ?)",
@@ -56,9 +54,7 @@ async def test_api_rate_limit_allows_usage_below_both_windows(
 @pytest.mark.asyncio
 async def test_api_rate_limit_blocks_minute_limit(
     api_log_db,
-    monkeypatch,
 ):
-    monkeypatch.setattr(db_utils, "_last_api_log_cleanup", datetime.now(timezone.utc))
     now = datetime.now(timezone.utc)
     await api_log_db.executemany(
         "INSERT INTO api_call_log (api_type, called_at) VALUES (?, ?)",
@@ -82,9 +78,7 @@ async def test_api_rate_limit_blocks_minute_limit(
 @pytest.mark.asyncio
 async def test_api_rate_limit_blocks_daily_limit_even_outside_minute(
     api_log_db,
-    monkeypatch,
 ):
-    monkeypatch.setattr(db_utils, "_last_api_log_cleanup", datetime.now(timezone.utc))
     now = datetime.now(timezone.utc)
     await api_log_db.executemany(
         "INSERT INTO api_call_log (api_type, called_at) VALUES (?, ?)",
@@ -103,3 +97,27 @@ async def test_api_rate_limit_blocks_daily_limit_even_outside_minute(
     )
 
     assert limited is True
+
+
+@pytest.mark.asyncio
+async def test_api_rate_limit_preserves_rows_older_than_daily_window(api_log_db):
+    old_timestamp = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    await api_log_db.execute(
+        "INSERT INTO api_call_log (api_type, called_at) VALUES (?, ?)",
+        ("historical", old_timestamp),
+    )
+    await api_log_db.commit()
+
+    limited = await db_utils.check_api_rate_limit(
+        api_log_db,
+        "weather",
+        rpm_limit=100,
+        rpd_limit=100,
+    )
+    async with api_log_db.execute(
+        "SELECT COUNT(*) FROM api_call_log WHERE api_type = 'historical'"
+    ) as cursor:
+        preserved = int((await cursor.fetchone())[0])
+
+    assert limited is False
+    assert preserved == 1
