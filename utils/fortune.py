@@ -5,7 +5,7 @@
 """
 
 import logging
-from datetime import datetime, time
+from datetime import date, datetime, time
 import pytz
 import math
 from typing import Dict, Any, Optional
@@ -125,20 +125,35 @@ class FortuneCalculator:
             logger.error(f"점성술 차트 계산 중 오류: {e}")
             return "천체 배치 정보 산출 실패"
 
-    def get_comprehensive_info(self, birth_date: str, birth_time: str = "12:00") -> str:
+    def get_comprehensive_info(
+        self,
+        birth_date: str,
+        birth_time: str | None = None,
+        *,
+        target_date: date | None = None,
+    ) -> str:
         """
         AI 프롬프트에 주입할 Raw Data를 생성합니다.
         
         Args:
             birth_date: "YYYY-MM-DD"
-            birth_time: "HH:MM"
+            birth_time: "HH:MM". 사용자가 제공하지 않았으면 None
+            target_date: 자동 브리핑처럼 특정 날짜의 운세를 만들 때의 기준일
             
         Returns:
             str: 분석용 텍스트 데이터
         """
         try:
             # 현재 시각 (KST)
-            now_kst = datetime.now(pytz.timezone('Asia/Seoul'))
+            kst = pytz.timezone("Asia/Seoul")
+            if target_date is None:
+                now_kst = datetime.now(kst)
+            else:
+                # 자정 직전 다음 날 브리핑을 미리 만들 때 현재 날짜의 일진을
+                # 섞지 않는다. 자동 브리핑 기준 시각은 해당 날짜 08:00 KST다.
+                now_kst = kst.localize(
+                    datetime.combine(target_date, time(hour=8))
+                )
             
             # 1. 오늘의 사주 (일진)
             saju_info = self._get_saju_palja(now_kst.year, now_kst.month, now_kst.day)
@@ -152,7 +167,8 @@ class FortuneCalculator:
             raw_data = (
                 f"[Feature: Fortune]\n"
                 f"Time: {now_kst.strftime('%Y-%m-%d %H:%M')}\n"
-                f"UserBirth: {birth_date} {birth_time}\n"
+                f"UserBirth: {birth_date} "
+                f"{birth_time if birth_time else '[time not provided]'}\n"
                 f"Saju: {saju_info}\n"
                 f"Astro: {astro_info}\n"
             )

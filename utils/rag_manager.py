@@ -108,7 +108,7 @@ class RAGManager:
 
     async def _generate_local_embedding(self, content: str, log_extra: dict, prefix: str = "") -> Any | None:
         """SentenceTransformer 기반 임베딩을 생성합니다."""
-        if not config.AI_MEMORY_ENABLED:
+        if not (config.AI_MEMORY_ENABLED and config.EMBEDDING_ENABLED):
             return None
 
         embedding = await get_embedding(content, prefix=prefix)
@@ -139,7 +139,11 @@ class RAGManager:
         Notes:
             메시지가 충분히 길면 임베딩 생성을 비동기 태스크로 예약합니다.
         """
-        if self.db is None or not config.AI_MEMORY_ENABLED:
+        if (
+            self.db is None
+            or not config.AI_MEMORY_ENABLED
+            or not config.EMBEDDING_ENABLED
+        ):
             return
 
         guild_id = message.guild.id if message.guild else 0

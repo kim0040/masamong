@@ -26,11 +26,31 @@ TRUE_VALUES = {"1", "true", "yes", "y", "on"}
 FALSE_VALUES = {"0", "false", "no", "n", "off"}
 LOW_SPEC_POSITIVE_LIMIT_KEYS = (
     "MASAMONG_CPU_THREADS",
+    "MASAMONG_EXECUTOR_WORKERS",
     "AI_MAX_CONCURRENT_PROCESSING",
+    "AI_QUEUE_WAIT_TIMEOUT_SECONDS",
+    "LLM_MAX_CONCURRENT_CALLS",
+    "LLM_ACQUIRE_TIMEOUT_SECONDS",
+    "LLM_CALL_TIMEOUT_SECONDS",
     "EMBEDDING_MAX_CONCURRENCY",
     "RAG_MAX_BACKGROUND_TASKS",
     "RAG_MAX_TRACKED_WINDOWS",
+    "MASAMONG_DISCORD_MAX_MESSAGES",
 )
+LOW_SPEC_LIMIT_MAXIMUMS = {
+    "MASAMONG_CPU_THREADS": 64,
+    "MASAMONG_EXECUTOR_WORKERS": 16,
+    "AI_MAX_CONCURRENT_PROCESSING": 16,
+    "AI_QUEUE_WAIT_TIMEOUT_SECONDS": 30,
+    "LLM_MAX_CONCURRENT_CALLS": 16,
+    "LLM_ACQUIRE_TIMEOUT_SECONDS": 60,
+    "LLM_CALL_TIMEOUT_SECONDS": 300,
+    "EMBEDDING_MAX_CONCURRENCY": 8,
+    "RAG_MAX_BACKGROUND_TASKS": 64,
+    "RAG_MAX_TRACKED_WINDOWS": 4_096,
+    "KAKAO_API_MAX_CONCURRENCY": 16,
+    "MASAMONG_DISCORD_MAX_MESSAGES": 1_000,
+}
 ENV_REFERENCE_PATTERN = re.compile(
     r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}"
 )
@@ -66,7 +86,13 @@ def _load_env(path: Path) -> dict[str, str]:
                 )
                 if referenced_value or default is None:
                     return referenced_value
-            return default or ""
+                return default or ""
+            if default is not None:
+                return default
+            raise ValueError(
+                f"{path.name}: env 파일 내부에 정의되지 않은 변수 참조입니다: "
+                f"{referenced_key}"
+            )
 
         expanded = ENV_REFERENCE_PATTERN.sub(replace_reference, value)
         resolved[key] = expanded
@@ -96,6 +122,16 @@ def _positive_int(value: str) -> int | None:
 
 def _resolved_path(value: str) -> str:
     return str(Path(value).expanduser().resolve())
+
+
+def _path_has_profile_marker(path: Path, profile: str) -> bool:
+    return bool(
+        profile
+        and re.search(
+            rf"(^|[^a-z0-9]){re.escape(profile)}([^a-z0-9]|$)",
+            path.as_posix().lower(),
+        )
+    )
 
 
 def _load_json_object(path_value: str, *, label: str, errors: list[str]) -> dict:
@@ -203,7 +239,24 @@ def _check_profile(
                 errors.append(
                     f"{label}: {key}는 {expected_value}여야 합니다."
                 )
-    elif backend != "sqlite":
+    elif backend == "sqlite":
+        database_file = env.get("MASAMONG_DATABASE_FILE", "").strip()
+        database_path = Path(database_file).expanduser()
+        if (
+            not database_file
+            or database_file == ":memory:"
+            or not database_path.is_absolute()
+        ):
+            errors.append(
+                f"{label}: 명시적 SQLite의 MASAMONG_DATABASE_FILE은 "
+                "프로필별 절대 파일 경로여야 합니다."
+            )
+        elif not _path_has_profile_marker(database_path, profile):
+            errors.append(
+                f"{label}: SQLite DB 경로에는 인스턴스 이름 "
+                f"{profile!r}이 포함되어야 합니다."
+            )
+    else:
         errors.append(f"{label}: 지원하지 않는 DB backend입니다.")
 
     memory_sources = {
@@ -216,8 +269,16 @@ def _check_profile(
             errors.append(
                 "general: Kakao 기억 소스는 허용되지 않으며 기억 소스는 정확히 discord여야 합니다."
             )
-        if env.get("AI_MEMORY_ENABLED", "").lower() not in {"0", "false", "no", "off"}:
-            warnings.append("general: 저사양 초기 배포인데 AI_MEMORY_ENABLED가 명시적으로 false가 아닙니다.")
+        for disabled_feature_key in (
+            "AI_MEMORY_ENABLED",
+            "EMBEDDING_ENABLED",
+            "RERANK_ENABLED",
+        ):
+            if env.get(disabled_feature_key, "").lower() not in FALSE_VALUES:
+                errors.append(
+                    "general: 저사양 steady-state 보호를 위해 "
+                    f"{disabled_feature_key}=false를 명시해야 합니다."
+                )
     elif profile == "masamo" and memory_sources != {"discord", "kakao"}:
         errors.append("masamo: 기존 기억 보존을 위해 기억 소스는 discord,kakao여야 합니다.")
 
@@ -269,11 +330,42 @@ def _check_profile(
                 errors.append(
                     f"general: 첫 배포에서는 {scheduler_key}=false를 명시해야 합니다."
                 )
+    if (
+        profile == "masamo"
+        and env.get("SCHOOL_NOTICE_ENABLED", "").lower()
+        not in FALSE_VALUES
+    ):
+        errors.append(
+            "masamo: 학교 공지 수집·개인화는 general 소유이므로 "
+            "SCHOOL_NOTICE_ENABLED=false여야 합니다."
+        )
     if profile in {"masamo", "general"}:
         for limit_key in LOW_SPEC_POSITIVE_LIMIT_KEYS:
-            if _positive_int(env.get(limit_key, "")) is None:
+            parsed_limit = _positive_int(env.get(limit_key, ""))
+            if parsed_limit is None:
                 errors.append(
                     f"{label}: {limit_key}는 env 파일에 양의 정수로 명시해야 합니다."
+                )
+            elif parsed_limit > LOW_SPEC_LIMIT_MAXIMUMS[limit_key]:
+                errors.append(
+                    f"{label}: {limit_key}={parsed_limit}은 안전 상한 "
+                    f"{LOW_SPEC_LIMIT_MAXIMUMS[limit_key]}를 넘습니다."
+                )
+        if profile == "masamo":
+            kakao_limit = _positive_int(
+                env.get("KAKAO_API_MAX_CONCURRENCY", "")
+            )
+            if kakao_limit is None:
+                errors.append(
+                    f"{label}: KAKAO_API_MAX_CONCURRENCY는 env 파일에 "
+                    "양의 정수로 명시해야 합니다."
+                )
+            elif kakao_limit > LOW_SPEC_LIMIT_MAXIMUMS[
+                "KAKAO_API_MAX_CONCURRENCY"
+            ]:
+                errors.append(
+                    f"{label}: KAKAO_API_MAX_CONCURRENCY={kakao_limit}은 "
+                    "안전 상한 16을 넘습니다."
                 )
         if env.get("TOKENIZERS_PARALLELISM", "").lower() not in FALSE_VALUES:
             errors.append(

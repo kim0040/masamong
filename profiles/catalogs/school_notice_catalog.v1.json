@@ -1,0 +1,500 @@
+{
+  "schema_version": 1,
+  "schools": [
+    {
+      "id": "jbnu",
+      "name_ko": "전북대학교",
+      "name_en": "Jeonbuk National University",
+      "aliases": [
+        "전북대학교",
+        "전북대",
+        "JBNU",
+        "Jeonbuk National University",
+        "Chonbuk National University"
+      ],
+      "source_ids": [
+        "jbnu_campus",
+        "jbnu_software"
+      ],
+      "campuses": [
+        {
+          "value": "전주",
+          "aliases": [
+            "전주",
+            "전주캠퍼스"
+          ]
+        },
+        {
+          "value": "익산",
+          "aliases": [
+            "익산",
+            "익산캠퍼스",
+            "특성화캠퍼스"
+          ]
+        }
+      ],
+      "departments": [
+        {
+          "value": "소프트웨어공학과",
+          "aliases": [
+            "소프트웨어공학과",
+            "소프트웨어공학",
+            "소프트웨어과",
+            "SW공학과"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "snu",
+      "name_ko": "서울대학교",
+      "name_en": "Seoul National University",
+      "aliases": [
+        "서울대학교",
+        "서울대",
+        "SNU",
+        "Seoul National University"
+      ],
+      "source_ids": [
+        "snu_general"
+      ],
+      "campuses": [
+        {
+          "value": "관악",
+          "aliases": [
+            "관악",
+            "관악캠퍼스"
+          ]
+        },
+        {
+          "value": "연건",
+          "aliases": [
+            "연건",
+            "연건캠퍼스"
+          ]
+        },
+        {
+          "value": "평창",
+          "aliases": [
+            "평창",
+            "평창캠퍼스"
+          ]
+        }
+      ],
+      "departments": [
+        {
+          "value": "컴퓨터공학부",
+          "aliases": [
+            "컴퓨터공학부",
+            "컴퓨터공학",
+            "컴공",
+            "컴공과",
+            "Computer Science and Engineering",
+            "CSE"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "pnu",
+      "name_ko": "부산대학교",
+      "name_en": "Pusan National University",
+      "aliases": [
+        "부산대학교",
+        "부산대",
+        "PNU",
+        "Pusan National University",
+        "Busan National University"
+      ],
+      "source_ids": [
+        "pnu_general"
+      ],
+      "campuses": [
+        {
+          "value": "부산",
+          "aliases": [
+            "부산",
+            "부산캠퍼스",
+            "장전캠퍼스"
+          ]
+        },
+        {
+          "value": "밀양",
+          "aliases": [
+            "밀양",
+            "밀양캠퍼스"
+          ]
+        },
+        {
+          "value": "양산",
+          "aliases": [
+            "양산",
+            "양산캠퍼스"
+          ]
+        },
+        {
+          "value": "아미",
+          "aliases": [
+            "아미",
+            "아미캠퍼스"
+          ]
+        }
+      ],
+      "departments": []
+    },
+    {
+      "id": "korea",
+      "name_ko": "고려대학교",
+      "name_en": "Korea University",
+      "aliases": [
+        "고려대학교",
+        "고려대",
+        "Korea University"
+      ],
+      "source_ids": [
+        "korea_cs_undergrad"
+      ],
+      "campuses": [
+        {
+          "value": "서울",
+          "aliases": [
+            "서울",
+            "서울캠퍼스"
+          ]
+        },
+        {
+          "value": "세종",
+          "aliases": [
+            "세종",
+            "세종캠퍼스"
+          ]
+        }
+      ],
+      "departments": [
+        {
+          "value": "컴퓨터학과",
+          "aliases": [
+            "컴퓨터학과",
+            "컴퓨터학",
+            "컴공",
+            "Computer Science",
+            "CS"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "jj",
+      "name_ko": "전주대학교",
+      "name_en": "Jeonju University",
+      "aliases": [
+        "전주대학교",
+        "전주대",
+        "JJU",
+        "Jeonju University"
+      ],
+      "source_ids": [
+        "jj_academic"
+      ],
+      "campuses": [],
+      "departments": []
+    },
+    {
+      "id": "skku",
+      "name_ko": "성균관대학교",
+      "name_en": "Sungkyunkwan University",
+      "aliases": [
+        "성균관대학교",
+        "성균관대",
+        "SKKU",
+        "Sungkyunkwan University"
+      ],
+      "source_ids": [
+        "skku_general"
+      ],
+      "campuses": [
+        {
+          "value": "인문사회과학캠퍼스",
+          "aliases": [
+            "인문사회과학캠퍼스",
+            "인문사회캠퍼스",
+            "명륜",
+            "서울캠퍼스"
+          ]
+        },
+        {
+          "value": "자연과학캠퍼스",
+          "aliases": [
+            "자연과학캠퍼스",
+            "자과캠",
+            "수원캠퍼스"
+          ]
+        }
+      ],
+      "departments": []
+    },
+    {
+      "id": "gachon",
+      "name_ko": "가천대학교",
+      "name_en": "Gachon University",
+      "aliases": [
+        "가천대학교",
+        "가천대",
+        "Gachon University"
+      ],
+      "source_ids": [
+        "gachon_general"
+      ],
+      "campuses": [
+        {
+          "value": "글로벌캠퍼스",
+          "aliases": [
+            "글로벌캠퍼스",
+            "글로벌",
+            "성남캠퍼스"
+          ]
+        },
+        {
+          "value": "메디컬캠퍼스",
+          "aliases": [
+            "메디컬캠퍼스",
+            "메디컬",
+            "인천캠퍼스"
+          ]
+        }
+      ],
+      "departments": []
+    },
+    {
+      "id": "ssu",
+      "name_ko": "숭실대학교",
+      "name_en": "Soongsil University",
+      "aliases": [
+        "숭실대학교",
+        "숭실대",
+        "SSU",
+        "Soongsil University"
+      ],
+      "source_ids": [
+        "ssu_general"
+      ],
+      "campuses": [
+        {
+          "value": "서울",
+          "aliases": [
+            "서울",
+            "서울캠퍼스"
+          ]
+        }
+      ],
+      "departments": []
+    },
+    {
+      "id": "jnu",
+      "name_ko": "전남대학교",
+      "name_en": "Chonnam National University",
+      "aliases": [
+        "전남대학교",
+        "전남대",
+        "JNU",
+        "Chonnam National University"
+      ],
+      "source_ids": [
+        "jnu_software"
+      ],
+      "campuses": [
+        {
+          "value": "광주",
+          "aliases": [
+            "광주",
+            "광주캠퍼스",
+            "용봉캠퍼스"
+          ]
+        },
+        {
+          "value": "여수",
+          "aliases": [
+            "여수",
+            "여수캠퍼스"
+          ]
+        }
+      ],
+      "departments": [
+        {
+          "value": "소프트웨어공학과",
+          "aliases": [
+            "소프트웨어공학과",
+            "소프트웨어공학",
+            "소프트웨어과",
+            "SW공학과"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "scnu",
+      "name_ko": "국립순천대학교",
+      "name_en": "Sunchon National University",
+      "aliases": [
+        "국립순천대학교",
+        "순천대학교",
+        "국립순천대",
+        "순천대",
+        "SCNU",
+        "Sunchon National University"
+      ],
+      "source_ids": [
+        "scnu_academic"
+      ],
+      "campuses": [
+        {
+          "value": "순천",
+          "aliases": [
+            "순천",
+            "순천캠퍼스"
+          ]
+        }
+      ],
+      "departments": []
+    },
+    {
+      "id": "mju",
+      "name_ko": "명지대학교",
+      "name_en": "Myongji University",
+      "aliases": [
+        "명지대학교",
+        "명지대",
+        "MJU",
+        "Myongji University"
+      ],
+      "source_ids": [
+        "mju_general"
+      ],
+      "campuses": [
+        {
+          "value": "인문캠퍼스",
+          "aliases": [
+            "인문캠퍼스",
+            "서울캠퍼스"
+          ]
+        },
+        {
+          "value": "자연캠퍼스",
+          "aliases": [
+            "자연캠퍼스",
+            "용인캠퍼스"
+          ]
+        }
+      ],
+      "departments": []
+    },
+    {
+      "id": "konkuk",
+      "name_ko": "건국대학교",
+      "name_en": "Konkuk University",
+      "aliases": [
+        "건국대학교",
+        "건국대",
+        "Konkuk University"
+      ],
+      "source_ids": [
+        "konkuk_academic"
+      ],
+      "campuses": [
+        {
+          "value": "서울",
+          "aliases": [
+            "서울",
+            "서울캠퍼스"
+          ]
+        },
+        {
+          "value": "GLOCAL",
+          "aliases": [
+            "GLOCAL",
+            "글로컬",
+            "글로컬캠퍼스",
+            "충주캠퍼스"
+          ]
+        }
+      ],
+      "departments": []
+    },
+    {
+      "id": "kookmin",
+      "name_ko": "국민대학교",
+      "name_en": "Kookmin University",
+      "aliases": [
+        "국민대학교",
+        "국민대",
+        "Kookmin University",
+        "KMU"
+      ],
+      "source_ids": [
+        "kookmin_academic"
+      ],
+      "campuses": [
+        {
+          "value": "서울",
+          "aliases": [
+            "서울",
+            "서울캠퍼스"
+          ]
+        }
+      ],
+      "departments": []
+    },
+    {
+      "id": "hanyang",
+      "name_ko": "한양대학교",
+      "name_en": "Hanyang University",
+      "aliases": [
+        "한양대학교",
+        "한양대",
+        "Hanyang University",
+        "HYU"
+      ],
+      "source_ids": [
+        "hanyang_seoul",
+        "hanyang_erica"
+      ],
+      "campuses": [
+        {
+          "value": "서울",
+          "aliases": [
+            "서울",
+            "서울캠퍼스",
+            "본교"
+          ]
+        },
+        {
+          "value": "ERICA",
+          "aliases": [
+            "ERICA",
+            "에리카",
+            "에리카캠퍼스",
+            "안산캠퍼스"
+          ]
+        }
+      ],
+      "departments": [
+        {
+          "value": "컴퓨터소프트웨어학부",
+          "aliases": [
+            "컴퓨터소프트웨어학부",
+            "컴퓨터소프트웨어",
+            "컴소"
+          ]
+        },
+        {
+          "value": "컴퓨터학부",
+          "aliases": [
+            "컴퓨터학부",
+            "컴퓨터전공",
+            "컴공"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -39,6 +39,7 @@ def _write_env(path: Path, *, profile: str, token: str, database: str, db_user: 
                 f"MASAMONG_CONFIG_FILE={config_path}",
                 "MASAMONG_REQUIRED_COGS=tools_cog,events,ai_handler",
                 "MASAMONG_AUTO_MIGRATE=false",
+                "SCHOOL_NOTICE_ENABLED=false",
                 (
                     "MASAMONG_GUILD_SETTINGS_MODE=static"
                     if profile == "masamo"
@@ -76,8 +77,15 @@ def _write_env(path: Path, *, profile: str, token: str, database: str, db_user: 
                 f"EMB_CONFIG_PATH={emb_path}",
                 f"PROMPT_CONFIG_PATH={prompt_path}",
                 "AI_MEMORY_ENABLED=true" if profile == "masamo" else "AI_MEMORY_ENABLED=false",
+                "EMBEDDING_ENABLED=true" if profile == "masamo" else "EMBEDDING_ENABLED=false",
+                "RERANK_ENABLED=true" if profile == "masamo" else "RERANK_ENABLED=false",
                 "MASAMONG_CPU_THREADS=1",
+                "MASAMONG_EXECUTOR_WORKERS=1",
                 "AI_MAX_CONCURRENT_PROCESSING=1",
+                "AI_QUEUE_WAIT_TIMEOUT_SECONDS=5",
+                "LLM_MAX_CONCURRENT_CALLS=1",
+                "LLM_ACQUIRE_TIMEOUT_SECONDS=10",
+                "LLM_CALL_TIMEOUT_SECONDS=120",
                 "EMBEDDING_MAX_CONCURRENCY=1",
                 (
                     "RAG_MAX_BACKGROUND_TASKS=8"
@@ -88,6 +96,16 @@ def _write_env(path: Path, *, profile: str, token: str, database: str, db_user: 
                     "RAG_MAX_TRACKED_WINDOWS=256"
                     if profile == "masamo"
                     else "RAG_MAX_TRACKED_WINDOWS=64"
+                ),
+                (
+                    "KAKAO_API_MAX_CONCURRENCY=1"
+                    if profile == "masamo"
+                    else ""
+                ),
+                (
+                    "MASAMONG_DISCORD_MAX_MESSAGES=200"
+                    if profile == "masamo"
+                    else "MASAMONG_DISCORD_MAX_MESSAGES=100"
                 ),
                 "TOKENIZERS_PARALLELISM=false",
                 # 명시적 프로필은 상속 환경을 쓰지 않으므로 켜 둔 기능의
@@ -114,6 +132,17 @@ def _write_env(path: Path, *, profile: str, token: str, database: str, db_user: 
     )
 
 
+def _use_sqlite_database(env_path: Path, database_path: str) -> None:
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8").replace(
+            "MASAMONG_DB_BACKEND=tidb",
+            "MASAMONG_DB_BACKEND=sqlite",
+        )
+        + f"\nMASAMONG_DATABASE_FILE={database_path}\n",
+        encoding="utf-8",
+    )
+
+
 def test_distinct_masamo_and_general_profiles_pass(tmp_path):
     masamo = tmp_path / "masamo.env"
     general = tmp_path / "general.env"
@@ -136,6 +165,104 @@ def test_distinct_masamo_and_general_profiles_pass(tmp_path):
 
     assert errors == []
     assert warnings == []
+
+
+def test_distinct_profile_owned_sqlite_paths_pass(tmp_path):
+    masamo = tmp_path / "masamo.env"
+    general = tmp_path / "general.env"
+    _write_env(
+        masamo,
+        profile="masamo",
+        token="real-masamo-token",
+        database="masamong",
+        db_user="masamo_user",
+    )
+    _write_env(
+        general,
+        profile="general",
+        token="real-general-token",
+        database="masamong_general",
+        db_user="general_user",
+    )
+    _use_sqlite_database(
+        masamo,
+        str(tmp_path / "masamo" / "main.db"),
+    )
+    _use_sqlite_database(
+        general,
+        str(tmp_path / "general" / "main.db"),
+    )
+
+    errors, warnings = validate(masamo, general)
+
+    assert errors == []
+    assert warnings == []
+
+
+@pytest.mark.parametrize(
+    ("database_path", "expected_error"),
+    [
+        ("database/general.db", "절대 파일 경로"),
+        (":memory:", "절대 파일 경로"),
+        ("/var/lib/masamong/shared.db", "인스턴스 이름"),
+    ],
+)
+def test_sqlite_profile_rejects_non_owned_database_path(
+    tmp_path,
+    database_path,
+    expected_error,
+):
+    masamo = tmp_path / "masamo.env"
+    general = tmp_path / "general.env"
+    _write_env(
+        masamo,
+        profile="masamo",
+        token="real-masamo-token",
+        database="masamong",
+        db_user="masamo_user",
+    )
+    _write_env(
+        general,
+        profile="general",
+        token="real-general-token",
+        database="masamong_general",
+        db_user="general_user",
+    )
+    _use_sqlite_database(
+        masamo,
+        str(tmp_path / "masamo" / "main.db"),
+    )
+    _use_sqlite_database(general, database_path)
+
+    errors, _ = validate(masamo, general)
+
+    assert any(expected_error in error for error in errors)
+
+
+def test_sqlite_pair_rejects_same_resolved_database_path(tmp_path):
+    masamo = tmp_path / "masamo.env"
+    general = tmp_path / "general.env"
+    _write_env(
+        masamo,
+        profile="masamo",
+        token="real-masamo-token",
+        database="masamong",
+        db_user="masamo_user",
+    )
+    _write_env(
+        general,
+        profile="general",
+        token="real-general-token",
+        database="masamong_general",
+        db_user="general_user",
+    )
+    shared_path = tmp_path / "masamo-general" / "shared.db"
+    _use_sqlite_database(masamo, str(shared_path))
+    _use_sqlite_database(general, str(shared_path))
+
+    errors, _ = validate(masamo, general)
+
+    assert any("DB 쓰기 대상이 같습니다" in error for error in errors)
 
 
 def test_general_bootstrap_auto_migrate_true_is_allowed_with_warning(tmp_path):
@@ -233,6 +360,39 @@ def test_masamo_auto_migrate_true_is_rejected(tmp_path):
     )
 
 
+def test_masamo_school_notice_enablement_is_rejected(tmp_path):
+    masamo = tmp_path / "masamo.env"
+    general = tmp_path / "general.env"
+    _write_env(
+        masamo,
+        profile="masamo",
+        token="real-masamo-token",
+        database="masamong",
+        db_user="masamo_user",
+    )
+    _write_env(
+        general,
+        profile="general",
+        token="real-general-token",
+        database="masamong_general",
+        db_user="general_user",
+    )
+    masamo.write_text(
+        masamo.read_text(encoding="utf-8").replace(
+            "SCHOOL_NOTICE_ENABLED=false",
+            "SCHOOL_NOTICE_ENABLED=true",
+        ),
+        encoding="utf-8",
+    )
+
+    errors, _ = validate(masamo, general)
+
+    assert any(
+        "general 소유" in error and "SCHOOL_NOTICE_ENABLED=false" in error
+        for error in errors
+    )
+
+
 def test_shared_writable_targets_are_rejected(tmp_path):
     masamo = tmp_path / "masamo.env"
     general = tmp_path / "general.env"
@@ -319,6 +479,62 @@ def test_general_cannot_enable_kakao_memory(tmp_path):
     assert any("Kakao 기억 소스" in error for error in errors)
 
 
+@pytest.mark.parametrize(
+    ("feature_key", "mode"),
+    [
+        ("AI_MEMORY_ENABLED", "missing"),
+        ("EMBEDDING_ENABLED", "missing"),
+        ("RERANK_ENABLED", "missing"),
+        ("AI_MEMORY_ENABLED", "enabled"),
+        ("EMBEDDING_ENABLED", "enabled"),
+        ("RERANK_ENABLED", "enabled"),
+    ],
+)
+def test_general_low_spec_memory_features_must_be_explicitly_disabled(
+    tmp_path,
+    feature_key,
+    mode,
+):
+    masamo = tmp_path / "masamo.env"
+    general = tmp_path / "general.env"
+    _write_env(
+        masamo,
+        profile="masamo",
+        token="real-masamo-token",
+        database="masamong",
+        db_user="masamo_user",
+    )
+    _write_env(
+        general,
+        profile="general",
+        token="real-general-token",
+        database="masamong_general",
+        db_user="general_user",
+    )
+    general.write_text(
+        "\n".join(
+            (
+                f"{feature_key}=true"
+                if mode == "enabled" and line.startswith(f"{feature_key}=")
+                else line
+            )
+            for line in general.read_text(encoding="utf-8").splitlines()
+            if not (
+                mode == "missing"
+                and line.startswith(f"{feature_key}=")
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    errors, _ = validate(masamo, general)
+
+    assert any(
+        feature_key in error and "steady-state" in error
+        for error in errors
+    )
+
+
 def test_missing_low_spec_limit_is_rejected(tmp_path):
     masamo = tmp_path / "masamo.env"
     general = tmp_path / "general.env"
@@ -377,9 +593,12 @@ def test_env_alias_does_not_fall_back_to_inherited_process_value(
     env_path.write_text("SECRET=${INHERITED_SECRET}", encoding="utf-8")
     monkeypatch.setenv("INHERITED_SECRET", "must-not-be-used")
 
-    loaded = _load_env(env_path)
+    with pytest.raises(ValueError) as exc_info:
+        _load_env(env_path)
 
-    assert loaded["SECRET"] == ""
+    rendered_error = str(exc_info.value)
+    assert "INHERITED_SECRET" in rendered_error
+    assert "must-not-be-used" not in rendered_error
 
 
 def test_env_alias_supports_file_local_default_values(tmp_path):

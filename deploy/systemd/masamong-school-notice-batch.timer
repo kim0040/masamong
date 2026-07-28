@@ -1,0 +1,12 @@
+[Unit]
+Description=Collect registered-school notices at 23:00 KST
+
+[Timer]
+OnCalendar=*-*-* 23:00:00 Asia/Seoul
+Persistent=true
+RandomizedDelaySec=0
+AccuracySec=1min
+Unit=masamong-school-notice-batch.service
+
+[Install]
+WantedBy=timers.target

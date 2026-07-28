@@ -93,6 +93,55 @@ async def test_explicit_profile_rejects_stale_fortune_schema():
 
 
 @pytest.mark.asyncio
+async def test_runtime_rejects_missing_privacy_consent_table():
+    schema_sql = (ROOT / "database" / "schema.sql").read_text(encoding="utf-8")
+    bot = await _bot_with_schema(schema_sql)
+    try:
+        await bot.db.execute("DROP TABLE privacy_consents")
+        await bot.db.commit()
+        with pytest.raises(RuntimeError, match="privacy_consents"):
+            await bot._verify_runtime_schema()
+    finally:
+        await bot.db.close()
+
+
+@pytest.mark.asyncio
+async def test_explicit_profile_rejects_stale_privacy_consent_schema(monkeypatch):
+    schema_sql = (ROOT / "database" / "schema.sql").read_text(encoding="utf-8")
+    schema_sql = schema_sql.replace(
+        "    notice_hash TEXT NOT NULL,\n",
+        "",
+        1,
+    )
+    monkeypatch.setattr(config, "REQUIRE_EXPLICIT_PROFILE", True)
+    bot = await _bot_with_schema(schema_sql)
+    try:
+        with pytest.raises(RuntimeError, match="notice_hash"):
+            await bot._verify_runtime_schema()
+    finally:
+        await bot.db.close()
+
+
+@pytest.mark.asyncio
+async def test_school_notice_rejects_batch_schema_without_profile_snapshot(
+    monkeypatch,
+):
+    schema_sql = (ROOT / "database" / "schema.sql").read_text(encoding="utf-8")
+    schema_sql = schema_sql.replace(
+        "    profile_hash TEXT NOT NULL DEFAULT '',\n",
+        "",
+        1,
+    )
+    monkeypatch.setattr(config, "SCHOOL_NOTICE_ENABLED", True)
+    bot = await _bot_with_schema(schema_sql)
+    try:
+        with pytest.raises(RuntimeError, match="profile_hash"):
+            await bot._verify_runtime_schema()
+    finally:
+        await bot.db.close()
+
+
+@pytest.mark.asyncio
 async def test_legacy_profile_keeps_deferred_table_compatibility(monkeypatch):
     schema_sql = (ROOT / "database" / "schema.sql").read_text(encoding="utf-8")
     bot = await _bot_with_schema(schema_sql)
@@ -191,6 +240,8 @@ async def test_kakao_storage_is_required_only_for_kakao_profiles(monkeypatch):
                 "source_message_ids", "speaker_names", "keyword_json",
                 "room_key", "source_room_label", "chunk_id", "session_id",
                 "start_date", "message_count", "summary", "text_long",
+                "scope", "policy_version", "notice_hash", "status",
+                "granted_at", "withdrawn_at", "updated_at",
             ]
 
         monkeypatch.setattr(bot, "_existing_tables", _fake_existing_tables)

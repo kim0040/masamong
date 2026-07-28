@@ -358,14 +358,13 @@ async def get_mid_term_forecast(db: aiosqlite.Connection, location_name: str, da
     else:
         base_time = now.strftime("%Y%m%d") + "1800"
         
-    # 3. Fetch Land & Temp
-    # getMidLandFcst
+    # 3. Fetch Land & Temp. 두 응답은 서로 독립적이라 함께 요청한다.
     land_params = {"regId": land_code, "tmFc": base_time}
-    land_res = await _fetch_kma_api(db, "getMidLandFcst", land_params, api_type='mid')
-    
-    # getMidTa
     temp_params = {"regId": temp_code, "tmFc": base_time}
-    temp_res = await _fetch_kma_api(db, "getMidTa", temp_params, api_type='mid')
+    land_res, temp_res = await asyncio.gather(
+        _fetch_kma_api(db, "getMidLandFcst", land_params, api_type='mid'),
+        _fetch_kma_api(db, "getMidTa", temp_params, api_type='mid'),
+    )
     
     return format_mid_term_forecast(land_res, temp_res, day_offset, location_name)
 
@@ -374,7 +373,7 @@ def format_weather_alerts(raw_data: str) -> str | None:
     if not raw_data or raw_data.startswith("#"): # 데이터 없음 또는 헤더만 있음
         return None
 
-    lines = raw_data.strip().split('\r\n')
+    lines = raw_data.strip().splitlines()
     alerts = []
     
     # 첫 줄은 헤더이므로 건너뜁니다.
@@ -488,9 +487,18 @@ def format_short_term_forecast(items: dict | None, day_name: str, target_day_off
         noon_sky_item = next((i for i in day_items if i['category'] == 'SKY' and i['fcstTime'] == '1200'), None)
         sky_map = {"1": "맑음☀️", "3": "구름많음☁️", "4": "흐림🌥️"}
         sky = sky_map.get(noon_sky_item['fcstValue']) if noon_sky_item else "정보없음"
-        max_pop = max(int(i['fcstValue']) for i in day_items if i['category'] == 'POP')
+        pop_values = [
+            int(i["fcstValue"])
+            for i in day_items
+            if i.get("category") == "POP" and i.get("fcstValue") is not None
+        ]
+        max_pop = max(pop_values) if pop_values else 0
 
-        temp_range = f"🌡️기온: {min_temp:.1f}°C ~ {max_temp:.1f}°C" if min_temp and max_temp else "기온 정보 없음"
+        temp_range = (
+            f"🌡️기온: {min_temp:.1f}°C ~ {max_temp:.1f}°C"
+            if min_temp is not None and max_temp is not None
+            else "기온 정보 없음"
+        )
         return f"{day_name} 날씨: {temp_range}, 하늘: {sky}, 강수확률: ~{max_pop}%"
     except Exception: return config.MSG_WEATHER_NO_DATA
 
@@ -690,12 +698,32 @@ async def get_weather_overview(db: aiosqlite.Connection, timeout: float | None =
     if isinstance(res, dict) and res.get("error"): return None
     
     try:
-        items = res.get('response', {}).get('body', {}).get('items', {}).get('item', [])
-        if not items: return None
-        # item could be list or dict
-        item = items[0] if isinstance(items, list) else items
-        return item.get('wfSv1') # Weather Situation Overview
-    except Exception: return None
+        # _fetch_kma_api의 정상 JSON 계약은 body.items이며 보통
+        # {"item": [...]} 형태다. 원본 response 구조도 하위 호환으로 수용한다.
+        if isinstance(res, list):
+            items = res
+        elif isinstance(res, dict) and "item" in res:
+            items = res.get("item") or []
+        elif isinstance(res, dict):
+            item_container = (
+                res.get("response", {})
+                .get("body", {})
+                .get("items", {})
+            )
+            items = (
+                item_container.get("item", [])
+                if isinstance(item_container, dict)
+                else item_container
+            )
+        else:
+            return None
+
+        item = items[0] if isinstance(items, list) and items else items
+        if not isinstance(item, dict):
+            return None
+        return item.get("wfSv1")
+    except (AttributeError, IndexError, TypeError):
+        return None
 
 async def get_typhoons(db: aiosqlite.Connection, timeout: float | None = None) -> str | None:
     """진행 중인 태풍 정보를 조회합니다."""
@@ -822,9 +850,7 @@ async def get_impact_forecast(db: aiosqlite.Connection, timeout: float | None = 
     """폭염/한파 영향예보 조회"""
     # ifs_fct_pstt.php
     # Check Heat Wave (hw) and Cold Wave (cw)
-    reports = []
-    
-    for impact_type, name in [('hw', '폭염'), ('cw', '한파')]:
+    async def _fetch_impact(impact_type: str, name: str) -> str | None:
         params = {"ifpar": impact_type}
         res = await _fetch_kma_api(db, "", params, api_type='impact', timeout=timeout)
         if res and "#START" in res:
@@ -836,6 +862,12 @@ async def get_impact_forecast(db: aiosqlite.Connection, timeout: float | None = 
                 if not line.strip(): continue
                 count += 1
             if count > 0:
-                reports.append(f"{name} 영향예보가 발표되었습니다.")
-                
+                return f"{name} 영향예보가 발표되었습니다."
+        return None
+
+    results = await asyncio.gather(
+        _fetch_impact("hw", "폭염"),
+        _fetch_impact("cw", "한파"),
+    )
+    reports = [result for result in results if result]
     return ", ".join(reports) if reports else None

@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""운영 환경의 DB/RAG/적재 경로를 한 번에 검증하는 통합 헬스체크."""
+"""운영 환경의 DB/RAG 경로를 검증하는 통합 헬스체크.
+
+기본 실행은 연결 계층까지 read-only이다. 운영 데이터 변경 검사는 위험성을
+명시한 CLI 플래그를 직접 지정한 경우에만 실행한다.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +17,12 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import sys
 from typing import Any, Iterable
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import aiosqlite
 import numpy as np
@@ -30,6 +39,10 @@ from utils.memory_units import build_structured_memory_units, extract_keywords
 
 
 _NUMERIC_ONLY_RE = re.compile(r"^\d+$")
+_TIDB_READ_ONLY_TRANSACTION_SQL = (
+    "START TRANSACTION READ ONLY AS OF TIMESTAMP "
+    "NOW() - INTERVAL 5 SECOND"
+)
 
 
 @dataclass
@@ -40,17 +53,24 @@ class CheckResult:
     metrics: dict[str, Any]
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """헬스체크 CLI 옵션(백엔드, 임베딩 타임아웃, 검색 질의 수 등)을 파싱합니다."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--write-check", action="store_true", help="합성 데이터 적재/검색/정리까지 검증")
+    parser.add_argument(
+        "--allow-production-data-mutations",
+        action="store_true",
+        help=(
+            "위험: 운영 DB의 아카이브 이동 및 합성 데이터 INSERT/DELETE를 "
+            "실제로 실행합니다. 기본 실행은 read-only입니다."
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="JSON 결과만 출력")
     parser.add_argument("--strict", action="store_true", help="하나라도 실패하면 exit code 1")
     parser.add_argument("--backend", choices=["auto", "sqlite", "tidb"], default="auto", help="DB 백엔드 강제 지정")
     parser.add_argument("--embedding-timeout", type=int, default=90, help="임베딩 생성 타임아웃(초)")
     parser.add_argument("--discord-probes", type=int, default=4, help="Discord 검색 질의 개수")
     parser.add_argument("--kakao-probes", type=int, default=3, help="Kakao 검색 질의 개수")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _print_text(results: list[CheckResult]) -> None:
@@ -85,6 +105,62 @@ def _current_timestamp_sql(db: Any) -> str:
     """백엔드에 맞는 CURRENT_TIMESTAMP SQL 표현식을 반환합니다."""
     backend = getattr(db, "backend", "sqlite")
     return "CURRENT_TIMESTAMP(6)" if backend == "tidb" else "CURRENT_TIMESTAMP"
+
+
+async def _connect_health_db(
+    selected_backend: str,
+    *,
+    allow_production_data_mutations: bool,
+) -> Any:
+    """헬스체크용 메인 DB를 연다.
+
+    기본 모드는 연결 계층에서도 쓰기를 막는다. SQLite는 ``mode=ro`` URI를
+    사용하고, TiDB는 쓰기를 실제로 거부하는 stale-read transaction을 시작한다.
+    TiDB가 이 transaction을 지원하지 않으면 일반 연결로 강등하지 않고
+    fail-closed 한다.
+    """
+    settings = TiDBSettings(
+        host=config.TIDB_HOST or "",
+        port=config.TIDB_PORT,
+        user=config.TIDB_USER or "",
+        password=config.TIDB_PASSWORD or "",
+        database=config.TIDB_NAME,
+        ssl_ca=config.TIDB_SSL_CA,
+        ssl_verify_identity=config.TIDB_SSL_VERIFY_IDENTITY,
+        require_tls=config.REQUIRE_DB_TLS,
+    )
+    if allow_production_data_mutations:
+        return await connect_main_db(
+            selected_backend,
+            sqlite_path=config.DATABASE_FILE,
+            tidb_settings=settings,
+        )
+
+    if selected_backend == "sqlite":
+        database_path = Path(config.DATABASE_FILE).expanduser().resolve()
+        if not database_path.is_file():
+            raise SystemExit(
+                f"read-only health check 대상 SQLite 파일이 없습니다: {database_path}"
+            )
+        uri = database_path.as_uri() + "?mode=ro"
+        db = await aiosqlite.connect(uri, uri=True)
+        db.row_factory = aiosqlite.Row
+        return db
+
+    db = await connect_main_db(
+        selected_backend,
+        sqlite_path=config.DATABASE_FILE,
+        tidb_settings=settings,
+    )
+    try:
+        await db.execute(_TIDB_READ_ONLY_TRANSACTION_SQL)
+    except Exception as exc:
+        await db.close()
+        raise RuntimeError(
+            "TiDB가 강제 read-only transaction을 시작하지 못해 "
+            "헬스체크를 중단했습니다."
+        ) from exc
+    return db
 
 
 async def _discover_discord_scope(store: DiscordEmbeddingStore) -> tuple[str, str] | None:
@@ -438,6 +514,47 @@ async def _run_archive_cycle_check(db: Any) -> CheckResult:
         )
 
 
+async def _run_opt_in_mutation_checks(
+    db: Any,
+    discord_store: DiscordEmbeddingStore,
+    *,
+    allow_production_data_mutations: bool,
+    memory_enabled: bool,
+    embedding_ready: bool,
+) -> list[CheckResult]:
+    """명시적으로 허용된 경우에만 모든 데이터 변경 검사를 실행한다.
+
+    아카이브/정리/재구축/합성 쓰기처럼 현재 또는 향후 추가되는 모든 mutator는
+    이 함수 안에 두어야 한다. 호출자가 실수로 이 함수를 호출하더라도 명시적
+    허용값이 없으면 어떤 mutator에도 도달하지 않는다.
+    """
+    if not allow_production_data_mutations:
+        return []
+
+    results = [await _run_archive_cycle_check(db)]
+    if not memory_enabled:
+        results.append(
+            CheckResult(
+                name="write_pipeline",
+                ok=True,
+                details="현재 프로필에서 RAG 쓰기 경로가 비활성화되어 검사를 건너뜁니다.",
+                metrics={"skipped": True},
+            )
+        )
+    elif embedding_ready:
+        results.append(await _run_write_pipeline_check(db, discord_store))
+    else:
+        results.append(
+            CheckResult(
+                name="write_pipeline",
+                ok=False,
+                details="임베딩 사전검사 실패로 데이터 변경 검사를 건너뜁니다.",
+                metrics={"reason": "embedding_preflight_failed"},
+            )
+        )
+    return results
+
+
 async def _run_prompt_injection_check(channel_id: int = 0) -> CheckResult:
     """AIHandler의 프롬프트 합성이 필수 섹션을 모두 포함하는지 검증합니다."""
     class _DummyBot:
@@ -548,33 +665,14 @@ async def main() -> int:
     args = parse_args()
     results: list[CheckResult] = []
     selected_backend = config.DB_BACKEND if args.backend == "auto" else args.backend
-    if (
-        selected_backend == "sqlite"
-        and not args.write_check
-        and not Path(config.DATABASE_FILE).is_file()
-    ):
-        raise SystemExit(
-            f"read-only health check 대상 SQLite 파일이 없습니다: {config.DATABASE_FILE}"
-        )
-
-    db = await connect_main_db(
+    db = await _connect_health_db(
         selected_backend,
-        sqlite_path=config.DATABASE_FILE,
-        tidb_settings=TiDBSettings(
-            host=config.TIDB_HOST or "",
-            port=config.TIDB_PORT,
-            user=config.TIDB_USER or "",
-            password=config.TIDB_PASSWORD or "",
-            database=config.TIDB_NAME,
-            ssl_ca=config.TIDB_SSL_CA,
-            ssl_verify_identity=config.TIDB_SSL_VERIFY_IDENTITY,
-            require_tls=config.REQUIRE_DB_TLS,
-        ),
+        allow_production_data_mutations=args.allow_production_data_mutations,
     )
 
     discord_store = DiscordEmbeddingStore(
         config.DISCORD_EMBEDDING_DB_PATH,
-        read_only=not args.write_check,
+        read_only=not args.allow_production_data_mutations,
     )
     memory_enabled = bool(config.AI_MEMORY_ENABLED and config.EMBEDDING_ENABLED)
     kakao_store = (
@@ -614,10 +712,6 @@ async def main() -> int:
             counts=table_counts,
             coords=coords,
         )
-        # 아카이빙은 live history에서 행을 이동시키는 쓰기 작업이다. 이름이
-        # "health"인 기본 실행은 반드시 읽기 전용이어야 하므로 명시적 opt-in에서만 수행한다.
-        if args.write_check:
-            results.append(await _run_archive_cycle_check(db))
         if memory_enabled:
             embedding_preflight = await _run_embedding_preflight(
                 args.embedding_timeout
@@ -804,25 +898,17 @@ async def main() -> int:
         prompt_channel_id = int(discord_scope[1]) if 'discord_scope' in locals() and discord_scope else 0
         results.append(await _run_prompt_injection_check(prompt_channel_id))
 
-        if args.write_check:
-            if not memory_enabled:
-                _append(
-                    results,
-                    "write_pipeline",
-                    True,
-                    "현재 프로필에서 RAG 쓰기 경로가 비활성화되어 검사를 건너뜁니다.",
-                    skipped=True,
-                )
-            elif embedding_ready:
-                results.append(await _run_write_pipeline_check(db, discord_store))
-            else:
-                _append(
-                    results,
-                    "write_pipeline",
-                    False,
-                    "임베딩 사전검사 실패로 write_check를 건너뜁니다.",
-                    reason="embedding_preflight_failed",
-                )
+        results.extend(
+            await _run_opt_in_mutation_checks(
+                db,
+                discord_store,
+                allow_production_data_mutations=(
+                    args.allow_production_data_mutations
+                ),
+                memory_enabled=memory_enabled,
+                embedding_ready=embedding_ready,
+            )
+        )
 
     finally:
         await db.close()

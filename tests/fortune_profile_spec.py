@@ -76,8 +76,8 @@ async def test_profile_reregistration_preserves_subscription_state(tmp_path):
             1,
             "08:30",
             "2026-07-26",
-            "pending",
-            "previous fortune",
+            None,
+            None,
         )
     finally:
         await db.close()

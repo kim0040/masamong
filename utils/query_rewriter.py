@@ -79,6 +79,11 @@ async def _async_encode(model: Any, sentences: List[str]) -> Any:
 async def _get_model() -> Any | None:
     """쿼리 재작성용 SentenceTransformer 모델을 지연 로딩합니다."""
     global _MODEL_INSTANCE
+    if not (
+        getattr(config, "AI_MEMORY_ENABLED", True)
+        and getattr(config, "EMBEDDING_ENABLED", True)
+    ):
+        return None
     transformer_class = _get_sentence_transformer_class()
     if transformer_class is None:
         logger.warning("sentence-transformers 패키지를 찾을 수 없어 쿼리 재작성을 비활성화합니다.")

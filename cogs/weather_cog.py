@@ -15,14 +15,23 @@ from discord.ext import commands, tasks
 import asyncio
 from datetime import datetime, timedelta, time as dt_time
 import json
-import pytz
+from zoneinfo import ZoneInfo
 
 import config
 from logger_config import logger
-from utils import db as db_utils, weather as weather_utils, coords as coords_utils
+from utils import (
+    db as db_utils,
+    weather as weather_utils,
+    coords as coords_utils,
+    kma_codes,
+)
 from .ai_handler import AIHandler
 
-KST = pytz.timezone('Asia/Seoul')
+KST = ZoneInfo("Asia/Seoul")
+_RAIN_EVENT_DEDUPE_MAX = max(
+    16,
+    int(getattr(config, "RAIN_NOTIFICATION_DEDUPE_MAX", 256)),
+)
 
 class WeatherCog(commands.Cog):
     """날씨 조회와 알림 전송을 전담하는 Cog입니다.
@@ -81,29 +90,14 @@ class WeatherCog(commands.Cog):
         """중기예보를 조회합니다. (V2 실패 시 V1 Fallback)"""
         try:
             # 1. Try V2 (Flat file)
-            # Simple mapping for V2
-            v2_code = "11B00000" # Seoul/Incheon/Gyeonggi
-            if "광양" in location_name or "전남" in location_name or "광주" in location_name:
-                 v2_code = "11F20000" # Jeonnam
-            elif "부산" in location_name or "경남" in location_name:
-                 v2_code = "11H20000" # Busan/Gyeongnam
-            elif "대구" in location_name or "경북" in location_name:
-                 v2_code = "11H10000" # Daegu/Gyeongbuk
+            # V1과 같은 중앙 매핑을 사용해야 제주/강원/충청/전북 등이
+            # 서울 예보로 조용히 잘못 표시되지 않는다.
+            v2_code = kma_codes.get_land_code(location_name)
             
             res = await weather_utils.get_mid_term_forecast_v2(self.bot.db, v2_code)
             if res: return res
 
             # 2. Fallback to V1 (API)
-            # Mappings for V1 (Land, Temp)
-            # Land: Wide area code (same as V2 usually)
-            # Temp: Specific city code
-            v1_land_code = v2_code 
-            v1_temp_code = "11B10101" # Seoul Default
-            
-            # [Fix] utils/weather.py handles code lookup internally.
-            # Passing redundant args caused TypeError.
-            # Removed manual code lookup block (lines 90-100).
-            
             res_v1 = await weather_utils.get_mid_term_forecast(self.bot.db, location_name, day_offset)
             return res_v1 if res_v1 else "중기예보 데이터를 불러올 수 없습니다."
             
@@ -128,11 +122,13 @@ class WeatherCog(commands.Cog):
             day_names = ["오늘", "내일", "모레"]
             day_name = day_names[day_offset] if 0 <= day_offset < len(day_names) else f"{day_offset}일 후"
             if day_offset == 0:
-                current_weather_data = await weather_utils.get_current_weather_from_kma(self.bot.db, nx, ny)
+                current_weather_data, short_term_data = await asyncio.gather(
+                    weather_utils.get_current_weather_from_kma(self.bot.db, nx, ny),
+                    weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny),
+                )
                 if isinstance(current_weather_data, dict) and current_weather_data.get("error"): return None, current_weather_data.get("message", config.MSG_WEATHER_FETCH_ERROR)
                 if current_weather_data is None: return None, config.MSG_WEATHER_FETCH_ERROR
                 current_weather_str = weather_utils.format_current_weather(current_weather_data)
-                short_term_data = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
                 formatted_forecast = weather_utils.format_short_term_forecast(short_term_data, day_name, target_day_offset=0)
                 
                 # Extended Info (Overview & Typhoon & Warnings & Impact)
@@ -211,14 +207,16 @@ class WeatherCog(commands.Cog):
             return
 
         async with original_message.channel.typing():
-            # 1. 기상 특보 조회
-            alerts_data = await weather_utils.get_weather_alerts_from_kma(self.bot.db)
+            # 특보와 본 날씨 조회는 서로 독립적이므로 함께 시작한다.
+            alerts_data, weather_result = await asyncio.gather(
+                weather_utils.get_weather_alerts_from_kma(self.bot.db),
+                self.get_formatted_weather_string(day_offset, location_name, nx, ny),
+            )
             formatted_alerts = None
             if isinstance(alerts_data, str):
                 formatted_alerts = weather_utils.format_weather_alerts(alerts_data)
             
-            # 2. 날씨 정보 조회
-            weather_data_str, error_message = await self.get_formatted_weather_string(day_offset, location_name, nx, ny)
+            weather_data_str, error_message = weather_result
             if error_message:
                 if status_msg: await status_msg.edit(content=error_message)
                 else: await original_message.channel.send(error_message)
@@ -276,16 +274,16 @@ class WeatherCog(commands.Cog):
         
         # [NEW] Weekly Weather Logic (Short-term + Mid-term)
         if "이번주" in user_original_query or "주간" in user_original_query:
-            # 1. Short-term (+1, +2 days)
-            short_term_data = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny)
+            # 단기/중기 예보는 독립 API이므로 병렬 조회한다.
+            short_term_data, mid_term_data = await asyncio.gather(
+                weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny),
+                self.get_mid_term_weather(3, location_name),
+            )
             short_term_summary = ""
             if short_term_data and not short_term_data.get("error"):
                  tomorrow_summary = weather_utils.format_short_term_forecast(short_term_data, "내일", 1)
                  dayafter_summary = weather_utils.format_short_term_forecast(short_term_data, "모레", 2)
                  short_term_summary = f"{tomorrow_summary}\n{dayafter_summary}"
-            
-            # 2. Mid-term (+3 ~ +10 days)
-            mid_term_data = await self.get_mid_term_weather(3, location_name)
             
             full_weekly_data = f"--- [단기 예보 (내일/모레)] ---\n{short_term_summary}\n\n--- [중기 예보 (3일 후 ~ 10일 후)] ---\n{mid_term_data}"
 
@@ -344,7 +342,10 @@ class WeatherCog(commands.Cog):
             is_raining = pty_code != "0" and pop_value >= config.RAIN_NOTIFICATION_THRESHOLD_POP
 
             try:
-                current_dt = KST.localize(datetime.strptime(f"{key_time[0]}{key_time[1].zfill(4)}", "%Y%m%d%H%M"))
+                current_dt = datetime.strptime(
+                    f"{key_time[0]}{key_time[1].zfill(4)}",
+                    "%Y%m%d%H%M",
+                ).replace(tzinfo=KST)
             except (ValueError, TypeError):
                 continue
 
@@ -372,6 +373,111 @@ class WeatherCog(commands.Cog):
 
         return precipitation_periods
 
+    @staticmethod
+    def _rain_event_datetime(event_key: tuple[str, str]) -> datetime | None:
+        """강수 이벤트 키를 KST 시각으로 변환합니다."""
+        try:
+            date_part, time_part = event_key
+            return datetime.strptime(
+                f"{date_part}{str(time_part).zfill(4)}",
+                "%Y%m%d%H%M",
+            ).replace(tzinfo=KST)
+        except (TypeError, ValueError):
+            return None
+
+    def _prune_rain_event_dedupe(self, now_kst: datetime | None = None) -> None:
+        """오래되거나 과도하게 쌓인 강수 dedupe 키를 제거합니다."""
+        now_kst = now_kst or datetime.now(KST)
+        cutoff = now_kst - timedelta(days=1)
+        retained: list[tuple[datetime, tuple[str, str]]] = []
+        for event_key in self.notified_rain_event_starts:
+            event_dt = self._rain_event_datetime(event_key)
+            if event_dt is not None and event_dt >= cutoff:
+                retained.append((event_dt, event_key))
+
+        # KMA 단기예보 범위를 훨씬 웃도는 상한이지만, 비정상 응답에도
+        # 프로세스 수명 동안 set이 무한히 커지지 않게 한다.
+        retained.sort(key=lambda item: item[0], reverse=True)
+        self.notified_rain_event_starts = {
+            event_key for _, event_key in retained[:_RAIN_EVENT_DEDUPE_MAX]
+        }
+
+    def _remember_rain_event(
+        self,
+        event_key: tuple[str, str],
+        *,
+        now_kst: datetime | None = None,
+    ) -> None:
+        """외부 호출 전에 강수 이벤트를 소비 처리하여 반복 과금을 막습니다."""
+        self.notified_rain_event_starts.add(event_key)
+        self._prune_rain_event_dedupe(now_kst)
+
+    async def _generate_system_alert_safely(
+        self,
+        channel_id: int,
+        context: str,
+        alert_type: str,
+    ) -> str | None:
+        """알림용 LLM 실패를 폴백 메시지 전송과 분리합니다."""
+        self.ai_handler = self.bot.get_cog("AIHandler")
+        if not self.ai_handler or not self.ai_handler.is_ready:
+            return None
+        try:
+            return await self.ai_handler.generate_system_alert_message(
+                channel_id,
+                context,
+                alert_type,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(
+                "%s LLM 메시지 생성 실패(고정 문구로 계속 전송): %s",
+                alert_type,
+                exc,
+                exc_info=True,
+            )
+            return None
+
+    async def _send_alert_to_channels(
+        self,
+        channel_ids: set[int],
+        payload: str,
+        *,
+        alert_type: str,
+    ) -> tuple[int, int]:
+        """각 채널 전송을 격리하고 성공/실패 수를 반환합니다."""
+        sent_count = 0
+        failed_count = 0
+        for channel_id in sorted(channel_ids):
+            alert_channel = self.bot.get_channel(channel_id)
+            if not alert_channel:
+                failed_count += 1
+                logger.warning(
+                    "%s 채널을 찾을 수 없어 건너뜁니다. channel_id=%s",
+                    alert_type,
+                    channel_id,
+                )
+                continue
+            try:
+                await alert_channel.send(
+                    payload,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                sent_count += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                failed_count += 1
+                logger.error(
+                    "%s 채널 전송 실패(다른 채널은 계속 처리): channel_id=%s error=%s",
+                    alert_type,
+                    channel_id,
+                    exc,
+                    exc_info=True,
+                )
+        return sent_count, failed_count
+
     @tasks.loop(minutes=config.WEATHER_CHECK_INTERVAL_MINUTES)
     async def rain_notification_loop(self):
         """정해진 주기로 강수 예보를 조회하고 필요 시 서버에 알립니다.
@@ -388,14 +494,14 @@ class WeatherCog(commands.Cog):
                 return
             forecast = await weather_utils.get_short_term_forecast_from_kma(self.bot.db, config.DEFAULT_NX, config.DEFAULT_NY)
             if not forecast or isinstance(forecast, dict) and forecast.get("error"): return
-            self.notified_rain_event_starts = {k for k in self.notified_rain_event_starts if KST.localize(datetime.strptime(f"{k[0]}{k[1]}","%Y%m%d%H%M")) >= datetime.now(KST) - timedelta(days=1)}
+            now_kst = datetime.now(KST)
+            self._prune_rain_event_dedupe(now_kst)
             for period in self._parse_rain_periods(forecast):
-                if period["start_dt"] >= datetime.now(KST) and period["key"] not in self.notified_rain_event_starts:
+                if period["start_dt"] >= now_kst and period["key"] not in self.notified_rain_event_starts:
                     start_display = period["start_dt"].strftime("%m월 %d일 %H시"); end_display = (period["end_dt"] + timedelta(hours=1)).strftime("%H시")
                     if period["start_dt"].date() != period["end_dt"].date(): end_display = (period["end_dt"] + timedelta(hours=1)).strftime("%m월 %d일 %H시")
                     precip_type = "눈❄️" if period["type"] == "눈" else "비☔"
                     alert_info = f"{config.DEFAULT_LOCATION_NAME}에 '{start_display}'부터 '{end_display}'까지 {precip_type}가 올 것으로 예상됩니다. 최대 확률은 {period['max_pop']}%입니다."
-                    self.ai_handler = self.bot.get_cog('AIHandler')
                     channel_ids = set()
                     if rain_channel_id:
                         channel_ids.add(rain_channel_id)
@@ -404,15 +510,27 @@ class WeatherCog(commands.Cog):
                     if not channel_ids:
                         continue
 
+                    # LLM 또는 Discord가 실패해도 같은 이벤트를 매 주기마다 다시
+                    # 과금/전송하지 않도록 첫 외부 await 전에 소비 처리한다.
+                    self._remember_rain_event(period["key"], now_kst=now_kst)
                     primary_channel_id = sorted(channel_ids)[0]
-                    ai_msg = await self.ai_handler.generate_system_alert_message(primary_channel_id, alert_info, f"{precip_type} 예보") if self.ai_handler and self.ai_handler.is_ready else None
+                    ai_msg = await self._generate_system_alert_safely(
+                        primary_channel_id,
+                        alert_info,
+                        f"{precip_type} 예보",
+                    )
                     fallback_msg = f"{precip_type} **{config.DEFAULT_LOCATION_NAME} {precip_type} 예보** {precip_type}\n{alert_info}"
-                    for channel_id in channel_ids:
-                        alert_channel = self.bot.get_channel(channel_id)
-                        if not alert_channel:
-                            continue
-                        await alert_channel.send(ai_msg or fallback_msg, allowed_mentions=discord.AllowedMentions.none())
-                    self.notified_rain_event_starts.add(period["key"])
+                    sent_count, failed_count = await self._send_alert_to_channels(
+                        channel_ids,
+                        ai_msg or fallback_msg,
+                        alert_type=f"{precip_type} 예보",
+                    )
+                    logger.info(
+                        "강수 알림 이벤트 처리 완료: key=%s sent=%d failed=%d",
+                        period["key"],
+                        sent_count,
+                        failed_count,
+                    )
         except Exception as e:
             # 일시적 오류(네트워크/KMA/파싱)로 루프가 영구 정지되지 않도록 방어한다.
             logger.error(f"강수 알림 루프 처리 중 오류(무시하고 다음 주기 진행): {e}", exc_info=True)
@@ -433,8 +551,11 @@ class WeatherCog(commands.Cog):
             summary = weather_utils.format_short_term_forecast(forecast, "오늘", 0) if forecast and not forecast.get("error") else f"오늘 {config.DEFAULT_LOCATION_NAME} 날씨 정보를 가져오는 데 실패했어. 😥"
             if greeting_type == "아침": alert_context = f"좋은 아침! ☀️ 오늘 {config.DEFAULT_LOCATION_NAME} 날씨는 이렇대.\n\n> {summary}\n\n오늘 하루도 활기차게 시작해보자고! 💪"
             else: alert_context = f"오늘 하루도 수고했어! 참고로 오늘 {config.DEFAULT_LOCATION_NAME} 날씨는 이랬어.\n\n> {summary}\n\n이제 편안한 밤 보내고, 내일 또 보자! 잘 자! 🌙"
-            self.ai_handler = self.bot.get_cog('AIHandler')
-            ai_msg = await self.ai_handler.generate_system_alert_message(channel_id, alert_context, f"{greeting_type} 인사") if self.ai_handler and self.ai_handler.is_ready else None
+            ai_msg = await self._generate_system_alert_safely(
+                channel_id,
+                alert_context,
+                f"{greeting_type} 인사",
+            )
             await alert_channel.send(ai_msg or alert_context, allowed_mentions=discord.AllowedMentions.none())
         except Exception as e:
             # 일시적 오류(네트워크/KMA/Discord)로 루프가 영구 정지되지 않도록 방어한다.
@@ -501,44 +622,41 @@ class WeatherCog(commands.Cog):
         except Exception as e:
             logger.debug(f"지진 데이터 정렬 실패: {e}")
         
-        new_last_time = self.last_earthquake_time
-        
         for eqk in earthquakes:
             try:
                 tm_str = str(eqk.get('tmEqk'))
                 eqk_dt = datetime.strptime(tm_str, "%Y%m%d%H%M%S") if len(tm_str) == 14 else datetime.strptime(tm_str, "%Y%m%d%H%M")
-                eqk_dt = KST.localize(eqk_dt) if eqk_dt.tzinfo is None else eqk_dt
+                eqk_dt = eqk_dt.replace(tzinfo=KST) if eqk_dt.tzinfo is None else eqk_dt.astimezone(KST)
                 
                 # If newer than last checked time
                 if eqk_dt > self.last_earthquake_time:
-                    # Alert!
+                    # LLM/Discord 실패 시 같은 지진을 매 분 재처리하지 않도록 외부
+                    # await 전에 watermark를 전진시킨다. 채널별 실패는 아래에서 격리한다.
+                    self.last_earthquake_time = eqk_dt
                     formatted_msg = weather_utils.format_earthquake_alert(eqk)
                     
                     # AI 메시지는 채널 루프 밖에서 한 번만 생성 (대표 채널 ID 사용)
                     primary_id = sorted(channel_ids)[0]
-                    self.ai_handler = self.bot.get_cog('AIHandler')
-                    ai_msg = await self.ai_handler.generate_system_alert_message(
-                        primary_id, 
-                        formatted_msg, 
-                        "지진 발생 알림"
-                    ) if self.ai_handler and self.ai_handler.is_ready else None
+                    ai_msg = await self._generate_system_alert_safely(
+                        primary_id,
+                        formatted_msg,
+                        "지진 발생 알림",
+                    )
                     
                     payload = ai_msg or f"🚨 **긴급: 지진 발생**\n{formatted_msg}"
-                    for channel_id in channel_ids:
-                        alert_channel = self.bot.get_channel(channel_id)
-                        if not alert_channel:
-                            continue
-                        await alert_channel.send(
-                            payload,
-                            allowed_mentions=discord.AllowedMentions.none(),
-                        )
-                    
-                    if eqk_dt > new_last_time:
-                        new_last_time = eqk_dt
+                    sent_count, failed_count = await self._send_alert_to_channels(
+                        channel_ids,
+                        payload,
+                        alert_type="지진 발생 알림",
+                    )
+                    logger.info(
+                        "지진 알림 이벤트 처리 완료: occurred_at=%s sent=%d failed=%d",
+                        eqk_dt.isoformat(),
+                        sent_count,
+                        failed_count,
+                    )
             except Exception as e:
                 logger.error(f"지진 정보 처리 오류: {e}", exc_info=True)
-                
-        self.last_earthquake_time = new_last_time
 
 async def setup(bot: commands.Bot):
     """Cog를 봇에 등록하는 함수입니다."""

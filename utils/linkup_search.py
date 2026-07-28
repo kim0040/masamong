@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -101,13 +102,81 @@ _pipeline_cache_lock = asyncio.Lock()
 _linkup_budget_lock = asyncio.Lock()
 
 
+class LinkupRequestError(RuntimeError):
+    """Linkup 물리 호출 실패와 폴백 안전 여부를 함께 전달합니다."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        fallback_safe: bool,
+        failure_kind: str,
+        status: int | None = None,
+    ):
+        super().__init__(message)
+        self.fallback_safe = bool(fallback_safe)
+        self.failure_kind = str(failure_kind)
+        self.status = status
+
+
+class LinkupReservationError(RuntimeError):
+    """provider 호출 전 비용 예약을 안전하게 완료하지 못했습니다."""
+
+
+class LinkupBudgetExceededError(RuntimeError):
+    """월 예산 검사에서 호출이 명확히 차단되었습니다."""
+
+
+def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        parsed = default
+    return min(maximum, max(minimum, parsed))
+
+
+def _bounded_float(
+    value: Any,
+    default: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        parsed = default
+    if not math.isfinite(parsed):
+        parsed = default
+    return min(maximum, max(minimum, parsed))
+
+
+def _error_result(
+    message: str,
+    *,
+    fallback_safe: bool,
+    failure_kind: str,
+) -> dict[str, Any]:
+    return {
+        "status": "error",
+        "message": str(message),
+        "provider": "linkup",
+        "fallback_safe": bool(fallback_safe),
+        "failure_kind": str(failure_kind),
+    }
+
+
 def _cache_key(query: str) -> str:
     base = (query or "").strip().lower()
     return hashlib.sha256(base.encode("utf-8")).hexdigest()
 
 
 async def _load_cache(query: str) -> dict[str, Any] | None:
-    ttl = max(0, int(getattr(config, "WEB_RAG_CACHE_TTL_SECONDS", 300)))
+    ttl = _bounded_int(
+        getattr(config, "WEB_RAG_CACHE_TTL_SECONDS", 300),
+        300,
+        0,
+        3600,
+    )
     if ttl <= 0:
         return None
 
@@ -125,11 +194,21 @@ async def _load_cache(query: str) -> dict[str, Any] | None:
 
 
 async def _save_cache(query: str, payload: dict[str, Any]) -> None:
-    ttl = max(0, int(getattr(config, "WEB_RAG_CACHE_TTL_SECONDS", 300)))
+    ttl = _bounded_int(
+        getattr(config, "WEB_RAG_CACHE_TTL_SECONDS", 300),
+        300,
+        0,
+        3600,
+    )
     if ttl <= 0:
         return
 
-    max_entries = max(1, int(getattr(config, "WEB_RAG_CACHE_MAX_ENTRIES", 128)))
+    max_entries = _bounded_int(
+        getattr(config, "WEB_RAG_CACHE_MAX_ENTRIES", 128),
+        128,
+        1,
+        1024,
+    )
     key = _cache_key(query)
     now = time.time()
     expire_at = now + ttl
@@ -217,9 +296,15 @@ def _build_search_prompt(user_query: str, depth: str) -> str:
 
 def _build_search_payload(user_query: str, depth: str) -> dict[str, Any]:
     max_results_default = {
-        "fast": max(1, int(getattr(config, "LINKUP_FAST_MAX_RESULTS", 5))),
-        "standard": max(1, int(getattr(config, "LINKUP_STANDARD_MAX_RESULTS", 8))),
-        "deep": max(1, int(getattr(config, "LINKUP_DEEP_MAX_RESULTS", 10))),
+        "fast": _bounded_int(
+            getattr(config, "LINKUP_FAST_MAX_RESULTS", 5), 5, 1, 20
+        ),
+        "standard": _bounded_int(
+            getattr(config, "LINKUP_STANDARD_MAX_RESULTS", 8), 8, 1, 20
+        ),
+        "deep": _bounded_int(
+            getattr(config, "LINKUP_DEEP_MAX_RESULTS", 10), 10, 1, 20
+        ),
     }
     output_type = str(getattr(config, "LINKUP_OUTPUT_TYPE", "searchResults") or "searchResults")
     if output_type not in {"searchResults", "sourcedAnswer", "structured"}:
@@ -234,7 +319,12 @@ def _build_search_payload(user_query: str, depth: str) -> dict[str, Any]:
     }
 
     if _contains_realtime_hint(user_query):
-        lookback_days = max(1, int(getattr(config, "LINKUP_REALTIME_LOOKBACK_DAYS", 30)))
+        lookback_days = _bounded_int(
+            getattr(config, "LINKUP_REALTIME_LOOKBACK_DAYS", 30),
+            30,
+            1,
+            365,
+        )
         now_kst = datetime.now(KST).date()
         payload["fromDate"] = (now_kst - timedelta(days=lookback_days)).isoformat()
         payload["toDate"] = now_kst.isoformat()
@@ -293,8 +383,15 @@ def _build_context(answer: str, sources: list[dict[str, str]]) -> str:
     if answer_clean:
         blocks.append(f"[검색 요약]\n{answer_clean}")
 
-    max_source_blocks = max(1, int(getattr(config, "LINKUP_CONTEXT_SOURCE_BLOCKS", 4)))
-    snippet_limit = max(120, int(getattr(config, "LINKUP_CONTEXT_SNIPPET_MAX_CHARS", 300)))
+    max_source_blocks = _bounded_int(
+        getattr(config, "LINKUP_CONTEXT_SOURCE_BLOCKS", 4), 4, 1, 10
+    )
+    snippet_limit = _bounded_int(
+        getattr(config, "LINKUP_CONTEXT_SNIPPET_MAX_CHARS", 300),
+        300,
+        120,
+        2000,
+    )
     for idx, source in enumerate(sources[:max_source_blocks], start=1):
         url = source.get("url") or ""
         if not url:
@@ -307,13 +404,22 @@ def _build_context(answer: str, sources: list[dict[str, str]]) -> str:
         blocks.append(block)
 
     context = "\n\n".join(blocks).strip()
-    limit = max(800, int(getattr(config, "LINKUP_CONTEXT_MAX_CHARS", 3200)))
+    limit = _bounded_int(
+        getattr(config, "LINKUP_CONTEXT_MAX_CHARS", 3200),
+        3200,
+        800,
+        16000,
+    )
     return _clip(context, limit)
 
 
 def _is_low_quality(answer: str, source_urls: list[str]) -> bool:
-    min_sources = max(1, int(getattr(config, "LINKUP_DEEP_RETRY_MIN_SOURCES", 2)))
-    min_answer_chars = max(40, int(getattr(config, "LINKUP_MIN_ANSWER_CHARS", 120)))
+    min_sources = _bounded_int(
+        getattr(config, "LINKUP_DEEP_RETRY_MIN_SOURCES", 2), 2, 1, 10
+    )
+    min_answer_chars = _bounded_int(
+        getattr(config, "LINKUP_MIN_ANSWER_CHARS", 120), 120, 40, 2000
+    )
     if len(source_urls) < min_sources:
         return True
     return len((answer or "").strip()) < min_answer_chars
@@ -329,7 +435,9 @@ def _is_low_quality_for_output(
     if output_type == "sourcedAnswer":
         return _is_low_quality(answer, source_urls)
 
-    min_sources = max(1, int(getattr(config, "LINKUP_DEEP_RETRY_MIN_SOURCES", 2)))
+    min_sources = _bounded_int(
+        getattr(config, "LINKUP_DEEP_RETRY_MIN_SOURCES", 2), 2, 1, 10
+    )
     if len(source_urls) < min_sources:
         return True
 
@@ -396,7 +504,12 @@ async def _linkup_post_json(endpoint: str, payload: dict[str, Any]) -> dict[str,
     if not api_key:
         raise RuntimeError("LINKUP_API_KEY가 설정되지 않았습니다.")
 
-    timeout_seconds = max(5, int(getattr(config, "LINKUP_TIMEOUT_SECONDS", 40)))
+    timeout_seconds = _bounded_int(
+        getattr(config, "LINKUP_TIMEOUT_SECONDS", 40),
+        40,
+        5,
+        120,
+    )
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -404,15 +517,36 @@ async def _linkup_post_json(endpoint: str, payload: dict[str, Any]) -> dict[str,
     url = f"{base_url}/{endpoint.lstrip('/')}"
     timeout = aiohttp.ClientTimeout(total=timeout_seconds)
 
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(url, headers=headers, json=payload) as response:
-            body_text = await response.text()
-            if response.status >= 400:
-                raise RuntimeError(_format_linkup_error(response.status, body_text))
-            try:
-                return json.loads(body_text) if body_text else {}
-            except Exception:
-                return {}
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, headers=headers, json=payload) as response:
+                body_text = await response.text()
+                if response.status >= 400:
+                    # 명시적인 4xx 거절은 provider가 처리하지 않은 것으로 보아
+                    # 레거시 폴백을 허용한다. 5xx는 처리/과금 여부를 알 수 없다.
+                    fallback_safe = 400 <= response.status < 500
+                    raise LinkupRequestError(
+                        _format_linkup_error(response.status, body_text),
+                        fallback_safe=fallback_safe,
+                        failure_kind=(
+                            "provider_rejected"
+                            if fallback_safe
+                            else "provider_outcome_unknown"
+                        ),
+                        status=response.status,
+                    )
+                try:
+                    return json.loads(body_text) if body_text else {}
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    return {}
+    except LinkupRequestError:
+        raise
+    except (asyncio.TimeoutError, aiohttp.ClientError, ConnectionError, OSError) as exc:
+        raise LinkupRequestError(
+            f"Linkup provider 응답을 확인하지 못했습니다: {exc}",
+            fallback_safe=False,
+            failure_kind="provider_outcome_unknown",
+        ) from exc
 
 
 async def _execute_billed_linkup_call(
@@ -423,44 +557,55 @@ async def _execute_billed_linkup_call(
     depth: str | None = None,
     render_js: bool | None = None,
 ) -> dict[str, Any]:
-    """
-    Linkup API 호출 전 월 예산을 확인하고, 성공 호출은 비용을 기록합니다.
-    """
+    """비용 check→reservation→provider call을 프로세스 lock 안에서 수행합니다."""
     estimated_cost = _estimate_linkup_cost(endpoint, depth=depth, render_js=render_js)
     enforce_budget = bool(getattr(config, "LINKUP_MONTHLY_BUDGET_ENFORCED", True))
-    budget_limit = float(getattr(config, "LINKUP_MONTHLY_BUDGET_EUR", 4.5))
+    budget_limit = _bounded_float(
+        getattr(config, "LINKUP_MONTHLY_BUDGET_EUR", 4.5),
+        4.5,
+        0.0,
+        1000.0,
+    )
 
-    if db_conn is None or not enforce_budget:
-        data = await _linkup_post_json(endpoint, payload)
-        if db_conn is not None and estimated_cost > 0:
-            await db_utils.log_linkup_usage(
-                db_conn,
-                endpoint=endpoint,
-                depth=depth,
-                render_js=render_js,
-                cost_eur=estimated_cost,
-            )
-        return data
+    if estimated_cost <= 0:
+        raise LinkupReservationError("알 수 없는 Linkup 요청 비용이라 호출을 중단했습니다.")
 
     async with _linkup_budget_lock:
-        allowed, used, limit = await db_utils.can_spend_linkup_budget(
-            db_conn,
-            estimated_cost,
-            budget_limit_eur=budget_limit,
-        )
-        if not allowed:
-            raise RuntimeError(_build_budget_exceeded_message(used, limit, estimated_cost))
-
-        data = await _linkup_post_json(endpoint, payload)
-        if estimated_cost > 0:
-            await db_utils.log_linkup_usage(
-                db_conn,
-                endpoint=endpoint,
-                depth=depth,
-                render_js=render_js,
-                cost_eur=estimated_cost,
+        if db_conn is None:
+            raise LinkupReservationError(
+                "Linkup 사용량 저장소가 없어 비용을 예약할 수 없습니다."
             )
-        return data
+
+        if enforce_budget:
+            allowed, used, limit = await db_utils.can_spend_linkup_budget(
+                db_conn,
+                estimated_cost,
+                budget_limit_eur=budget_limit,
+            )
+            if used == float("inf"):
+                raise LinkupReservationError(
+                    "Linkup 월 사용량을 확인하지 못해 호출을 중단했습니다."
+                )
+            if not allowed:
+                raise LinkupBudgetExceededError(
+                    _build_budget_exceeded_message(used, limit, estimated_cost)
+                )
+
+        # 성공/4xx/5xx/timeout 여부와 무관하게 물리 호출 시도 자체의
+        # 예상 비용을 먼저 commit한다. 기록 실패 시 provider는 호출하지 않는다.
+        reserved = await db_utils.log_linkup_usage(
+            db_conn,
+            endpoint=endpoint,
+            depth=depth,
+            render_js=render_js,
+            cost_eur=estimated_cost,
+        )
+        if not reserved:
+            raise LinkupReservationError(
+                "Linkup 예상 비용을 저장하지 못해 호출을 중단했습니다."
+            )
+
+        return await _linkup_post_json(endpoint, payload)
 
 
 async def _run_fetch_pipeline(url: str, db_conn=None) -> dict[str, Any]:
@@ -478,9 +623,18 @@ async def _run_fetch_pipeline(url: str, db_conn=None) -> dict[str, Any]:
     )
     markdown = str(data.get("markdown") or "").strip()
     if not markdown:
-        return {"status": "error", "message": "Linkup /fetch 응답에 markdown이 없습니다."}
+        return _error_result(
+            "Linkup /fetch 응답에 markdown이 없습니다.",
+            fallback_safe=True,
+            failure_kind="empty_result",
+        )
 
-    context_limit = max(800, int(getattr(config, "LINKUP_CONTEXT_MAX_CHARS", 3200)))
+    context_limit = _bounded_int(
+        getattr(config, "LINKUP_CONTEXT_MAX_CHARS", 3200),
+        3200,
+        800,
+        16000,
+    )
     context = _clip(f"[직접 링크 분석]\n{markdown}", context_limit)
     return {
         "status": "success",
@@ -527,11 +681,19 @@ async def _run_search_pipeline(user_query: str, depth: str, db_conn=None) -> dic
             answer, sources, source_urls, depth = retry_answer, retry_sources, retry_urls, "deep"
 
     if not answer and not source_urls:
-        return {"status": "error", "message": "Linkup 검색 결과가 비어 있습니다."}
+        return _error_result(
+            "Linkup 검색 결과가 비어 있습니다.",
+            fallback_safe=True,
+            failure_kind="empty_result",
+        )
 
     context = _build_context(answer, sources)
     if not context:
-        return {"status": "error", "message": "Linkup 검색 컨텍스트 생성에 실패했습니다."}
+        return _error_result(
+            "Linkup 검색 컨텍스트 생성에 실패했습니다.",
+            fallback_safe=True,
+            failure_kind="empty_result",
+        )
 
     return {
         "status": "success",
@@ -554,14 +716,26 @@ async def run_linkup_search_pipeline(user_query: str, db_conn=None) -> dict[str,
     반환 형식은 tools_cog.web_search_rag() 계약을 따릅니다.
     """
     if not bool(getattr(config, "LINKUP_ENABLED", True)):
-        return {"status": "error", "message": "LINKUP_ENABLED=false 로 비활성화되어 있습니다."}
+        return _error_result(
+            "LINKUP_ENABLED=false 로 비활성화되어 있습니다.",
+            fallback_safe=True,
+            failure_kind="disabled",
+        )
 
     if not str(getattr(config, "LINKUP_API_KEY", "") or "").strip():
-        return {"status": "error", "message": "LINKUP_API_KEY가 설정되지 않았습니다."}
+        return _error_result(
+            "LINKUP_API_KEY가 설정되지 않았습니다.",
+            fallback_safe=True,
+            failure_kind="configuration",
+        )
 
     query = (user_query or "").strip()
     if not query:
-        return {"status": "error", "message": "검색어가 비어 있습니다."}
+        return _error_result(
+            "검색어가 비어 있습니다.",
+            fallback_safe=True,
+            failure_kind="invalid_input",
+        )
 
     cached = await _load_cache(query)
     if cached:
@@ -588,6 +762,38 @@ async def run_linkup_search_pipeline(user_query: str, db_conn=None) -> dict[str,
         if result.get("status") == "success":
             await _save_cache(query, result)
         return result
-    except Exception as exc:
+    except LinkupRequestError as exc:
         logger.warning("[web_search] Linkup 파이프라인 실패: %s", exc)
-        return {"status": "error", "message": f"Linkup 검색 실패: {exc}"}
+        return _error_result(
+            f"Linkup 검색 실패: {exc}",
+            fallback_safe=exc.fallback_safe,
+            failure_kind=exc.failure_kind,
+        )
+    except LinkupBudgetExceededError as exc:
+        logger.info("[web_search] Linkup 예산으로 호출 차단: %s", exc)
+        return _error_result(
+            str(exc),
+            fallback_safe=True,
+            failure_kind="budget_exceeded",
+        )
+    except LinkupReservationError as exc:
+        logger.error("[web_search] Linkup 비용 예약 실패: %s", exc)
+        return _error_result(
+            str(exc),
+            fallback_safe=False,
+            failure_kind="reservation_failed",
+        )
+    except (asyncio.TimeoutError, aiohttp.ClientError, ConnectionError, OSError) as exc:
+        logger.warning("[web_search] Linkup 결과 불명 실패: %s", exc)
+        return _error_result(
+            f"Linkup 검색 결과를 확인하지 못했습니다: {exc}",
+            fallback_safe=False,
+            failure_kind="provider_outcome_unknown",
+        )
+    except Exception as exc:
+        logger.exception("[web_search] Linkup 파이프라인 예기치 않은 실패")
+        return _error_result(
+            f"Linkup 검색 실패: {exc}",
+            fallback_safe=False,
+            failure_kind="unexpected_error",
+        )

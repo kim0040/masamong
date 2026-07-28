@@ -125,11 +125,36 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     is_lunar BOOLEAN DEFAULT 0,
     subscription_active BOOLEAN DEFAULT 0,
     subscription_time VARCHAR(16) DEFAULT '07:30',
-    pending_payload LONGTEXT,
+    pending_payload LONGTEXT, -- 모닝 브리핑의 날짜/단계/시도수/backoff/생성물 JSON 상태
     last_fortune_sent VARCHAR(32),
     last_fortune_content LONGTEXT,
     birth_place VARCHAR(255),
     created_at VARCHAR(64) DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS privacy_consents (
+    user_id BIGINT NOT NULL,
+    scope VARCHAR(64) NOT NULL,
+    policy_version VARCHAR(64) NOT NULL,
+    notice_hash CHAR(64) NOT NULL,
+    status VARCHAR(16) NOT NULL,
+    granted_at VARCHAR(64),
+    withdrawn_at VARCHAR(64),
+    updated_at VARCHAR(64) NOT NULL,
+    PRIMARY KEY (user_id, scope)
+);
+
+CREATE TABLE IF NOT EXISTS privacy_consent_events (
+    id BIGINT PRIMARY KEY AUTO_RANDOM,
+    user_id BIGINT NOT NULL,
+    scope VARCHAR(64) NOT NULL,
+    policy_version VARCHAR(64) NOT NULL,
+    notice_hash CHAR(64) NOT NULL,
+    status VARCHAR(16) NOT NULL,
+    granted_at VARCHAR(64),
+    withdrawn_at VARCHAR(64),
+    created_at VARCHAR(64) NOT NULL,
+    KEY idx_privacy_consent_events_user_scope (user_id, scope, created_at)
 );
 
 CREATE TABLE IF NOT EXISTS dm_usage_logs (
@@ -205,6 +230,7 @@ CREATE TABLE IF NOT EXISTS school_notice_profiles (
     profile_json TEXT NOT NULL,
     profile_version INT NOT NULL DEFAULT 1,
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    delivery_time VARCHAR(5) NOT NULL DEFAULT '09:00',
     created_at VARCHAR(64),
     updated_at VARCHAR(64)
 );
@@ -227,17 +253,21 @@ CREATE TABLE IF NOT EXISTS school_notice_deliveries (
     user_key VARCHAR(128) NOT NULL,
     digest_date VARCHAR(32) NOT NULL,
     notice_id BIGINT NOT NULL,
+    revision_count INT NOT NULL DEFAULT 1,
     status VARCHAR(16) NOT NULL,
     failure_reason TEXT,
     attempt_count INT NOT NULL DEFAULT 1,
     delivered_at VARCHAR(64) NOT NULL,
-    UNIQUE KEY uk_school_notice_delivery (user_key, digest_date, notice_id)
+    UNIQUE KEY uk_school_notice_delivery_revision
+        (user_key, notice_id, revision_count)
 );
 
 CREATE TABLE IF NOT EXISTS school_notice_batch_runs (
     id BIGINT PRIMARY KEY AUTO_RANDOM,
     user_key VARCHAR(128) NOT NULL,
     run_date VARCHAR(32) NOT NULL,
+    profile_version INT NOT NULL DEFAULT 0,
+    profile_hash VARCHAR(64) NOT NULL DEFAULT '',
     status VARCHAR(16) NOT NULL,
     collection_status VARCHAR(16),
     may_include_stale BOOLEAN NOT NULL DEFAULT FALSE,
@@ -246,4 +276,16 @@ CREATE TABLE IF NOT EXISTS school_notice_batch_runs (
     llm_calls INT,
     finished_at VARCHAR(64) NOT NULL,
     UNIQUE KEY uk_school_notice_run (user_key, run_date)
+);
+
+CREATE TABLE IF NOT EXISTS school_notice_delivery_runs (
+    user_key VARCHAR(128) NOT NULL,
+    digest_date VARCHAR(32) NOT NULL,
+    status VARCHAR(16) NOT NULL,
+    attempt_count INT NOT NULL DEFAULT 0,
+    next_attempt_at VARCHAR(64),
+    last_error VARCHAR(64),
+    finished_at VARCHAR(64),
+    updated_at VARCHAR(64) NOT NULL,
+    PRIMARY KEY (user_key, digest_date)
 );
