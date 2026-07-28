@@ -119,7 +119,7 @@ MASAMONG_SUPERADMIN_USER_IDS=replace-with-current-masamo-superadmin-user-id
 | repository 루트 `config.json` | 프로필 전용 `config.json`으로 경로가 바뀜 |
 
 ```bash
-systemctl cat masamong.service | grep -E "Environment|EnvironmentFile|ExecStart"
+systemctl cat masamong-masamo.service | grep -E "Environment|EnvironmentFile|ExecStart"
 ls -la /srv/masamong/current/config.json
 ```
 
@@ -169,7 +169,7 @@ Python이 어느 파일을 열지 선택할 수는 없다. 서비스 관리자�
 User=<service-user>
 WorkingDirectory=/srv/masamong/current
 Environment=MASAMONG_ENV_FILE=/etc/masamong/masamo.env
-ExecStart=/srv/masamong/current/venv/bin/python /srv/masamong/current/main.py
+ExecStart=/srv/masamong/venv/bin/python /srv/masamong/current/main.py
 Restart=on-failure
 ```
 
@@ -179,7 +179,7 @@ Restart=on-failure
 User=<service-user>
 WorkingDirectory=/srv/masamong/current
 Environment=MASAMONG_ENV_FILE=/etc/masamong/general.env
-ExecStart=/srv/masamong/current/venv/bin/python /srv/masamong/current/main.py
+ExecStart=/srv/masamong/venv/bin/python /srv/masamong/current/main.py
 Restart=on-failure
 ```
 
@@ -250,7 +250,7 @@ transaction과 허용된 고정 SELECT만 사용한다.
 
 ```bash
 MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
-  /srv/masamong/current/venv/bin/python scripts/inspect_runtime_readonly.py \
+  /srv/masamong/venv/bin/python scripts/inspect_runtime_readonly.py \
   --expected-profile masamo \
   --expected-db masamong
 ```
@@ -270,7 +270,7 @@ additive one-shot을 사용한다.
 
 ```bash
 MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
-  /srv/masamong/current/venv/bin/python scripts/apply_privacy_consent_schema.py \
+  /srv/masamong/venv/bin/python scripts/apply_privacy_consent_schema.py \
   --expected-profile masamo \
   --expected-db masamong
 ```
@@ -279,7 +279,7 @@ MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
 
 ```bash
 MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
-  /srv/masamong/current/venv/bin/python scripts/apply_privacy_consent_schema.py \
+  /srv/masamong/venv/bin/python scripts/apply_privacy_consent_schema.py \
   --expected-profile masamo \
   --expected-db masamong \
   --apply \
@@ -305,12 +305,12 @@ SQL은 두 table의 `CREATE TABLE IF NOT EXISTS` 두 문장뿐이다. 기존 행
 
 ```bash
 MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
-  /srv/masamong/current/venv/bin/python scripts/apply_transfer_notice_schema.py \
+  /srv/masamong/venv/bin/python scripts/apply_transfer_notice_schema.py \
   --expected-profile masamo \
   --expected-db masamong
 
 MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
-  /srv/masamong/current/venv/bin/python scripts/apply_transfer_notice_schema.py \
+  /srv/masamong/venv/bin/python scripts/apply_transfer_notice_schema.py \
   --expected-profile masamo \
   --expected-db masamong \
   --apply \
@@ -408,6 +408,9 @@ General RAG는 두 프로세스 합산 RSS, thread 수, load average를 측정�
 - 정기 운세·기상·지진·maintenance 작업의 소유자가 명확하고 중복 발송이 없다.
 - Masamo의 학교 공지 flag와 23:00 timer가 현재 batch를 소유하고 General은 비활성이다.
 - Masamo의 편입 공지 flag와 23:35 timer가 전용 snapshot을 소유하고 General은 비활성이다.
+- 운영 timer의 정확한 unit 이름은 `masamong-school-notice-batch.timer`와
+  `masamong-transfer-notice-batch.timer`이며 `systemctl list-timers --all`에서 다음
+  실행 시각을 확인한다. one-shot service가 평소 `inactive (dead)`인 것은 정상이다.
 - 미동의·철회 사용자의 운세/학교 프로필 조회와 자동 발송이 중단되고 일반 대화는 유지된다.
 - 학교·편입 설정과 결과는 DM에서만 접근 가능하고 서버에서는 개인정보를 조회·표시하지 않는다.
 - 학교 batch가 전체 학교가 아니라 동의·활성·등록 프로필의 source만 선택한다.
