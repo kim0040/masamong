@@ -156,3 +156,50 @@ async def test_on_message_routes_static_prefix_without_prefix_lookup():
         bot.get_prefix.assert_not_awaited()
     finally:
         await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_kakao_storage_is_required_only_for_kakao_profiles(monkeypatch):
+    # general은 Kakao 기억을 쓰지 않으므로 그 저장소를 요구하면
+    # "General에는 Kakao가 없다"는 경계가 스키마에서 깨진다.
+    schema_sql = (ROOT / "database" / "schema.sql").read_text(encoding="utf-8")
+    monkeypatch.setattr(config, "REQUIRE_EXPLICIT_PROFILE", True)
+    monkeypatch.setattr(config, "DB_BACKEND", "tidb")
+
+    async def _run_with(kakao_enabled: bool) -> set[str]:
+        monkeypatch.setattr(config, "KAKAO_MEMORY_ENABLED", kakao_enabled)
+        bot = await _bot_with_schema(schema_sql)
+        requested: set[str] = set()
+
+        async def _fake_existing_tables(table_names):
+            requested.update(str(name) for name in table_names)
+            return set(requested)
+
+        # 컬럼 검증은 이 테스트의 관심사가 아니므로 항상 충족시킨다.
+        # 그래야 아래 호출이 조용히 실패하지 않고, 요구된 테이블 집합만 남는다.
+        async def _fake_get_table_columns(db, table_name):
+            return [
+                "id", "guild_id", "ai_enabled", "ai_allowed_channels",
+                "persona_text", "language", "user_id", "birth_date",
+                "birth_time", "gender", "birth_place", "subscription_active",
+                "subscription_time", "pending_payload", "last_fortune_sent",
+                "last_fortune_content", "created_at", "message_id",
+                "server_id", "channel_id", "user_name", "message", "timestamp",
+                "embedding", "memory_id", "anchor_message_id", "owner_user_id",
+                "owner_user_name", "memory_scope", "memory_type",
+                "summary_text", "memory_text", "raw_context",
+                "source_message_ids", "speaker_names", "keyword_json",
+                "room_key", "source_room_label", "chunk_id", "session_id",
+                "start_date", "message_count", "summary", "text_long",
+            ]
+
+        monkeypatch.setattr(bot, "_existing_tables", _fake_existing_tables)
+        monkeypatch.setattr("main.get_table_columns", _fake_get_table_columns)
+        try:
+            await bot._verify_runtime_schema()
+        finally:
+            await bot.db.close()
+        return requested
+
+    assert "kakao_chunks" in await _run_with(True)
+    assert "kakao_chunks" not in await _run_with(False)

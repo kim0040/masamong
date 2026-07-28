@@ -94,10 +94,33 @@ MASAMONG_MEMORY_SOURCES=discord,kakao
 현재 저사양 서비스의 `MASAMONG_CPU_THREADS`, `AI_MAX_CONCURRENT_PROCESSING`,
 `EMBEDDING_MAX_CONCURRENCY`, `RAG_MAX_BACKGROUND_TASKS`,
 `RAG_MAX_TRACKED_WINDOWS`, `TOKENIZERS_PARALLELISM`도 실제 Masamo env 파일에
-명시한다. 명시적 프로필은 다른 인스턴스의 환경값 유입을 막기 위해 env 파일에 없는
-`MASAMONG_*` 상속값을 제거하므로, systemd `Environment=`에만 있던 값을 파일로 옮기지
-않으면 기존 CPU/동시성 제한이 보존되지 않는다. 숫자는 예제값을 그대로 추정해 쓰지 말고
-전환 전 인벤토리에서 확인한 현재 값을 복사한다.
+명시한다. 숫자는 예제값을 그대로 추정해 쓰지 말고 전환 전 인벤토리에서 확인한
+현재 값을 복사한다.
+
+### 선택한 env 파일이 유일한 설정 출처다
+
+명시적 프로필에서 `load_config_value`는 `os.environ`을 조회하지 않는다. 즉 접두사와
+무관하게 **선택한 env 파일에 없는 키는 전부 무시**되고 `config.json` 또는 코드
+기본값으로 떨어진다. 추가로 `MASAMONG_*` 상속값은 os.environ에서 아예 제거된다.
+
+따라서 지금 돌아가는 프로세스에 값을 공급하는 세 경로를 전환 전에 모두 확인한다.
+
+| 지금 값을 공급하는 위치 | 전환 후 |
+|---|---|
+| 현재 `.env` | 그대로 복사하면 보존 |
+| systemd `Environment=` / shell export | **무시됨** — 파일로 옮겨야 보존 |
+| repository 루트 `config.json` | 프로필 전용 `config.json`으로 경로가 바뀜 |
+
+```bash
+systemctl cat masamong.service | grep -E "Environment|EnvironmentFile|ExecStart"
+ls -la /opt/masamong/current/config.json
+```
+
+경계 키(토큰·DB·TLS)와 저사양 제한값은 기동 시점에 fail-closed로 막힌다. 기능
+자격증명(`COMETAPI_KEY`/`LLM_*_API_KEY`, `KMA_API_KEY`, 활성 상태의
+`LINKUP_API_KEY`)도 켜 둔 기능에 한해 기동 시점에 검증하므로, 값이 빠지면 사용자가
+봇을 부를 때가 아니라 배포 순간에 실패한다. key가 없는 인스턴스는
+`MASAMONG_DISABLED_COGS`로 해당 Cog를 빼는 것이 정직한 표현이다.
 
 ### General 파일
 

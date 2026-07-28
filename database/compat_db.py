@@ -175,12 +175,22 @@ class TiDBSettings:
                 "strict remote 모드에서는 TLS hostname 검증을 끌 수 없습니다."
             )
 
+        # 예전에는 미설정 시 "masamong"으로 폴백했다. 그 이름은 운영 중인 Masamo
+        # 인스턴스의 실제 DB라서, 프로필 없이 실행된 코드가 조용히 운영 데이터를
+        # 대상으로 삼을 수 있었다. 대상 DB는 항상 명시하게 한다.
+        database = os.environ.get("MASAMONG_DB_NAME", "").strip()
+        if not database:
+            raise ValueError(
+                "MASAMONG_DB_NAME이 없어 TiDB 대상 DB를 결정할 수 없습니다. "
+                "운영 DB로 암묵적으로 폴백하지 않으므로 대상 DB를 명시하세요."
+            )
+
         return cls(
             host=os.environ.get("MASAMONG_DB_HOST", "").strip(),
             port=int(os.environ.get("MASAMONG_DB_PORT", "4000")),
             user=os.environ.get("MASAMONG_DB_USER", "").strip(),
             password=os.environ.get("MASAMONG_DB_PASSWORD", ""),
-            database=os.environ.get("MASAMONG_DB_NAME", "masamong").strip() or "masamong",
+            database=database,
             ssl_ca=ssl_ca,
             ssl_verify_identity=ssl_verify_identity,
             require_tls=require_tls,

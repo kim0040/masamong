@@ -224,9 +224,13 @@ class ReMasamongBot(commands.Bot):
                 {
                     "discord_chat_embeddings",
                     "discord_memory_entries",
-                    "kakao_chunks",
                 }
             )
+            # Kakao 기억을 쓰지 않는 프로필(general)에는 이 저장소가 존재할
+            # 이유가 없다. 요구하지 않아야 "General에는 Kakao가 없다"는
+            # 경계가 스키마 수준에서도 성립한다.
+            if config.KAKAO_MEMORY_ENABLED:
+                required_tables.add("kakao_chunks")
         existing_tables = await self._existing_tables(required_tables)
         missing_tables = sorted(required_tables - existing_tables)
         if missing_tables:
@@ -306,7 +310,10 @@ class ReMasamongBot(commands.Bot):
                     "timestamp",
                     "embedding",
                 },
-                "kakao_chunks": {
+            }
+            # Kakao 저장소는 그 기억 소스를 쓰는 프로필에서만 검증한다.
+            if config.KAKAO_MEMORY_ENABLED:
+                required_embedding_columns["kakao_chunks"] = {
                     "id",
                     "room_key",
                     "source_room_label",
@@ -317,8 +324,7 @@ class ReMasamongBot(commands.Bot):
                     "summary",
                     "text_long",
                     "embedding",
-                },
-            }
+                }
             for table_name, expected_columns in required_embedding_columns.items():
                 actual_columns = set(
                     await get_table_columns(self.db, table_name)
@@ -362,7 +368,10 @@ class ReMasamongBot(commands.Bot):
                         "dm_usage_logs",
                         "discord_chat_embeddings",
                         "discord_memory_entries",
-                        "kakao_chunks",
+                    ) + (
+                        ("kakao_chunks",)
+                        if config.KAKAO_MEMORY_ENABLED
+                        else ()
                     )
                 else:
                     core_tables = (

@@ -279,6 +279,36 @@ def _check_profile(
             errors.append(
                 f"{label}: TOKENIZERS_PARALLELISM=false를 env 파일에 명시해야 합니다."
             )
+    # 명시적 프로필은 systemd/shell 상속값을 무시하므로, 지금 운영 중인 값이
+    # env 파일 밖(예: systemd Environment=)에만 있으면 전환 후 조용히 사라진다.
+    # 기동 시점에도 config가 같은 검사를 하지만, 배포 전에 먼저 드러내는 편이 낫다.
+    if profile in {"masamo", "general"}:
+        lane_key = "LLM_MAIN_PRIMARY_API_KEY"
+        if not env.get(lane_key, "") and not env.get("COMETAPI_KEY", ""):
+            errors.append(
+                f"{label}: {lane_key} 또는 COMETAPI_KEY를 env 파일에 적어야 "
+                "합니다. 명시적 프로필은 상속 환경을 사용하지 않습니다."
+            )
+        for credential_key in (lane_key, "COMETAPI_KEY", "KMA_API_KEY"):
+            value = env.get(credential_key, "")
+            if value and _is_placeholder(value):
+                errors.append(
+                    f"{label}: {credential_key}에 예제 placeholder가 남아 있습니다."
+                )
+        if "weather_cog" not in disabled_cogs and not env.get("KMA_API_KEY", ""):
+            errors.append(
+                f"{label}: weather_cog를 올리려면 KMA_API_KEY가 필요합니다. "
+                "key가 없으면 MASAMONG_DISABLED_COGS에 weather_cog를 넣으세요."
+            )
+        linkup_active = (
+            env.get("MASAMONG_WEB_SEARCH_PROVIDER", env.get("WEB_SEARCH_PROVIDER", "")).lower()
+            == "linkup"
+            and env.get("LINKUP_ENABLED", "true").lower() in TRUE_VALUES
+        )
+        if linkup_active and not env.get("LINKUP_API_KEY", ""):
+            errors.append(
+                f"{label}: WEB_SEARCH_PROVIDER=linkup인데 LINKUP_API_KEY가 없습니다."
+            )
     if profile == "masamo" and env.get(
         "MASAMONG_GUILD_SETTINGS_MODE", ""
     ).lower() != "static":

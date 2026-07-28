@@ -91,6 +91,7 @@ def test_strict_remote_env_implies_tls_and_rejects_disabled_hostname_check(
     monkeypatch.delenv("MASAMONG_DB_REQUIRE_TLS", raising=False)
     monkeypatch.setenv("MASAMONG_DB_SSL_CA", str(ca_path))
     monkeypatch.setenv("MASAMONG_DB_SSL_VERIFY_IDENTITY", "true")
+    monkeypatch.setenv("MASAMONG_DB_NAME", "masamong_general")
 
     settings = TiDBSettings.from_env()
 
@@ -134,6 +135,7 @@ def test_tidb_env_connection_limits_reach_driver_kwargs(monkeypatch):
     monkeypatch.setenv("MASAMONG_DB_READ_TIMEOUT", "19")
     monkeypatch.setenv("MASAMONG_DB_WRITE_TIMEOUT", "23")
     monkeypatch.setenv("MASAMONG_DB_CONN_MAX_LIFETIME_SECONDS", "180")
+    monkeypatch.setenv("MASAMONG_DB_NAME", "masamong_general")
 
     settings = TiDBSettings.from_env()
     kwargs = settings.to_connect_kwargs()
@@ -142,3 +144,19 @@ def test_tidb_env_connection_limits_reach_driver_kwargs(monkeypatch):
     assert kwargs["connect_timeout"] == 7
     assert kwargs["read_timeout"] == 19
     assert kwargs["write_timeout"] == 23
+
+
+def test_from_env_refuses_to_default_to_production_database(monkeypatch):
+    # 예전 폴백은 미설정 시 운영 Masamo DB인 "masamong"을 대상으로 삼았다.
+    # 프로필 없이 실행된 코드가 운영 데이터를 건드리지 않도록 명시를 요구한다.
+    monkeypatch.delenv("MASAMONG_DB_NAME", raising=False)
+    monkeypatch.setenv("MASAMONG_DB_STRICT_REMOTE_ONLY", "false")
+    monkeypatch.setenv("MASAMONG_DB_REQUIRE_TLS", "false")
+    monkeypatch.setenv("MASAMONG_DB_SSL_CA", "")
+
+    with pytest.raises(ValueError, match="MASAMONG_DB_NAME"):
+        TiDBSettings.from_env()
+
+    monkeypatch.setenv("MASAMONG_DB_NAME", "   ")
+    with pytest.raises(ValueError, match="MASAMONG_DB_NAME"):
+        TiDBSettings.from_env()

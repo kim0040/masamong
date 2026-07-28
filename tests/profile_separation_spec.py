@@ -90,6 +90,10 @@ def _write_env(path: Path, *, profile: str, token: str, database: str, db_user: 
                     else "RAG_MAX_TRACKED_WINDOWS=64"
                 ),
                 "TOKENIZERS_PARALLELISM=false",
+                # 명시적 프로필은 상속 환경을 쓰지 않으므로 켜 둔 기능의
+                # 자격증명이 env 파일 안에 있어야 한다.
+                f"COMETAPI_KEY={profile}-real-cometapi-key",
+                f"KMA_API_KEY={profile}-real-kma-key",
                 (
                     ""
                     if profile == "masamo"
@@ -400,3 +404,85 @@ def test_env_alias_cycle_is_rejected_without_printing_values(tmp_path):
 
     with pytest.raises(ValueError, match="FIRST -> SECOND -> FIRST"):
         _load_env(env_path)
+
+
+def _valid_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """경계 검사를 통과하는 masamo/general env 쌍을 만듭니다."""
+    masamo = tmp_path / "masamo.env"
+    general = tmp_path / "general.env"
+    _write_env(
+        masamo,
+        profile="masamo",
+        token="real-masamo-token",
+        database="masamong",
+        db_user="masamo_user",
+    )
+    _write_env(
+        general,
+        profile="general",
+        token="real-general-token",
+        database="masamong_general",
+        db_user="general_user",
+    )
+    return masamo, general
+
+
+def _drop_line(path: Path, prefix: str) -> None:
+    path.write_text(
+        "\n".join(
+            line
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if not line.startswith(prefix)
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_validator_flags_credentials_missing_from_the_selected_file(tmp_path):
+    # 명시적 프로필은 systemd/shell 상속값을 쓰지 않으므로, 파일에 없는 key는
+    # 배포 후 런타임이 아니라 이 검사에서 드러나야 한다.
+    masamo, general = _valid_pair(tmp_path)
+    assert validate(masamo, general)[0] == []
+
+    _drop_line(masamo, "COMETAPI_KEY=")
+
+    errors, _ = validate(masamo, general)
+
+    assert any("COMETAPI_KEY" in error for error in errors)
+
+
+def test_validator_flags_placeholder_credentials(tmp_path):
+    masamo, general = _valid_pair(tmp_path)
+    _drop_line(masamo, "KMA_API_KEY=")
+    with masamo.open("a", encoding="utf-8") as handle:
+        handle.write("\nKMA_API_KEY=replace-with-key\n")
+
+    errors, _ = validate(masamo, general)
+
+    assert any("KMA_API_KEY" in error and "placeholder" in error for error in errors)
+
+
+def test_validator_accepts_missing_weather_key_when_cog_is_disabled(tmp_path):
+    masamo, general = _valid_pair(tmp_path)
+    _drop_line(masamo, "KMA_API_KEY=")
+    with masamo.open("a", encoding="utf-8") as handle:
+        handle.write("\nMASAMONG_DISABLED_COGS=weather_cog\n")
+
+    errors, _ = validate(masamo, general)
+
+    assert errors == []
+
+
+def test_validator_requires_linkup_key_only_for_the_active_provider(tmp_path):
+    masamo, general = _valid_pair(tmp_path)
+    with masamo.open("a", encoding="utf-8") as handle:
+        handle.write("\nLINKUP_ENABLED=true\nWEB_SEARCH_PROVIDER=legacy\n")
+    assert validate(masamo, general)[0] == []
+
+    _drop_line(masamo, "WEB_SEARCH_PROVIDER=")
+    with masamo.open("a", encoding="utf-8") as handle:
+        handle.write("\nWEB_SEARCH_PROVIDER=linkup\n")
+
+    errors, _ = validate(masamo, general)
+
+    assert any("LINKUP_API_KEY" in error for error in errors)
