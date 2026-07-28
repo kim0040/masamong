@@ -23,8 +23,8 @@ from utils import (
     db as db_utils,
     weather as weather_utils,
     coords as coords_utils,
-    kma_codes,
 )
+from utils.discord_helpers import send_split_message, split_message_chunks
 from .ai_handler import AIHandler
 
 KST = ZoneInfo("Asia/Seoul")
@@ -32,6 +32,7 @@ _RAIN_EVENT_DEDUPE_MAX = max(
     16,
     int(getattr(config, "RAIN_NOTIFICATION_DEDUPE_MAX", 256)),
 )
+_EARTHQUAKE_WATERMARK_KEY = "earthquake_alert_last_occurred_epoch_v1"
 
 class WeatherCog(commands.Cog):
     """날씨 조회와 알림 전송을 전담하는 Cog입니다.
@@ -46,7 +47,9 @@ class WeatherCog(commands.Cog):
         self.bot = bot
         self.ai_handler: AIHandler | None = None
         self.notified_rain_event_starts = set()
-        self.last_earthquake_time = datetime.now(KST) - timedelta(hours=1) # Only alert recent ones
+        self.last_earthquake_time = datetime.now(KST) - timedelta(hours=1)
+        self._earthquake_watermark_loaded = False
+        self._earthquake_watermark_exists = False
         logger.info("WeatherCog가 성공적으로 초기화되었습니다.")
 
     def setup_and_start_loops(self):
@@ -74,8 +77,8 @@ class WeatherCog(commands.Cog):
         if getattr(config, "ENABLE_EARTHQUAKE_ALERT", True) and (has_fallback_channel or has_ai_channels):
             if not self.earthquake_alert_loop.is_running():
                 logger.info(
-                    "지진 알림 모니터링 루프를 시작합니다. 주기: %d분",
-                    getattr(config, "EARTHQUAKE_CHECK_INTERVAL_MINUTES", 1),
+                    "지진 알림 모니터링 루프를 시작합니다. 주기: %d초",
+                    getattr(config, "EARTHQUAKE_CHECK_INTERVAL_SECONDS", 60),
                 )
                 self.earthquake_alert_loop.start()
 
@@ -86,26 +89,40 @@ class WeatherCog(commands.Cog):
         self.evening_greeting_loop.cancel()
         self.earthquake_alert_loop.cancel()
 
-    async def get_mid_term_weather(self, day_offset: int, location_name: str) -> str:
-        """중기예보를 조회합니다. (V2 실패 시 V1 Fallback)"""
-        try:
-            # 1. Try V2 (Flat file)
-            # V1과 같은 중앙 매핑을 사용해야 제주/강원/충청/전북 등이
-            # 서울 예보로 조용히 잘못 표시되지 않는다.
-            v2_code = kma_codes.get_land_code(location_name)
-            
-            res = await weather_utils.get_mid_term_forecast_v2(self.bot.db, v2_code)
-            if res: return res
+    def _is_ai_enabled_for_channel(self, channel: discord.abc.Messageable) -> bool:
+        """DB 서버 정책을 우선해 해당 서버/채널의 AI 활성 여부를 판정합니다."""
+        guild = getattr(channel, "guild", None)
+        channel_id = getattr(channel, "id", None)
+        if guild is None or channel_id is None:
+            return False
+        policy_check = getattr(self.bot, "is_ai_channel_allowed", None)
+        if callable(policy_check):
+            return bool(policy_check(int(guild.id), int(channel_id)))
+        return bool(
+            config.CHANNEL_AI_CONFIG.get(int(channel_id), {}).get("allowed", False)
+        )
 
-            # 2. Fallback to V1 (API)
-            res_v1 = await weather_utils.get_mid_term_forecast(self.bot.db, location_name, day_offset)
-            return res_v1 if res_v1 else "중기예보 데이터를 불러올 수 없습니다."
-            
+    async def get_mid_term_weather(self, day_offset: int, location_name: str) -> str:
+        """공식 JSON 중기예보에서 지정 날짜를 조회합니다."""
+        try:
+            result = await weather_utils.get_mid_term_forecast(
+                self.bot.db,
+                location_name,
+                day_offset,
+            )
+            return result or "중기예보 데이터를 불러올 수 없습니다."
         except Exception as e:
             logger.error(f"중기예보 조회 실패: {e}", exc_info=True)
             return config.MSG_WEATHER_FETCH_ERROR
 
-    async def get_formatted_weather_string(self, day_offset: int, location_name: str, nx: str, ny: str) -> tuple[str | None, str | None]:
+    async def get_formatted_weather_string(
+        self,
+        day_offset: int,
+        location_name: str,
+        nx: str,
+        ny: str,
+        user_query: str = "",
+    ) -> tuple[str | None, str | None]:
         """기상청 자료를 조회해 사용자에게 보여줄 문자열을 생성합니다.
 
         Args:
@@ -122,56 +139,88 @@ class WeatherCog(commands.Cog):
             day_names = ["오늘", "내일", "모레"]
             day_name = day_names[day_offset] if 0 <= day_offset < len(day_names) else f"{day_offset}일 후"
             if day_offset == 0:
-                current_weather_data, short_term_data = await asyncio.gather(
+                current_weather_data, ultra_short_data, short_term_data = await asyncio.gather(
                     weather_utils.get_current_weather_from_kma(self.bot.db, nx, ny),
+                    weather_utils.get_ultra_short_forecast_from_kma(
+                        self.bot.db,
+                        nx,
+                        ny,
+                    ),
                     weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny),
                 )
                 if isinstance(current_weather_data, dict) and current_weather_data.get("error"): return None, current_weather_data.get("message", config.MSG_WEATHER_FETCH_ERROR)
                 if current_weather_data is None: return None, config.MSG_WEATHER_FETCH_ERROR
                 current_weather_str = weather_utils.format_current_weather(current_weather_data)
+                ultra_short_str = weather_utils.format_ultra_short_forecast(
+                    ultra_short_data
+                )
                 formatted_forecast = weather_utils.format_short_term_forecast(short_term_data, day_name, target_day_offset=0)
-                
-                # Extended Info (Overview & Typhoon & Warnings & Impact)
-                # "Smart Decision": Fetch urgently in parallel to avoid blocking core weather.
-                
-                async def fetch_optional(coro, name):
+
+                async def fetch_optional(coro):
                     try:
-                        return await coro
-                    except Exception as e:
-                        # logger.warning(f"Optional weather fetch failed ({name}): {e}")
+                        return await asyncio.wait_for(coro, timeout=8)
+                    except Exception:
                         return None
 
-                # Parallel execution with short timeout for optional data
-                overview_task = fetch_optional(weather_utils.get_weather_overview(self.bot.db, timeout=5.0), "overview")
-                warnings_task = fetch_optional(weather_utils.get_active_warnings(self.bot.db, timeout=5.0), "warnings")
-                impact_task = fetch_optional(weather_utils.get_impact_forecast(self.bot.db, timeout=5.0), "impact")
-                typhoons_task = fetch_optional(weather_utils.get_typhoons(self.bot.db, timeout=5.0), "typhoons")
-                
-                results = await asyncio.gather(overview_task, warnings_task, impact_task, typhoons_task)
-                overview, warnings, impact, typhoons = results
-                
+                # 국가 개황·영향예보·태풍은 모든 일상 조회에 필요한 자료가 아니다.
+                # 질문이 명시한 경우에만 호출하고 응답 캐시는 다른 사용자와 공유한다.
+                normalized_query = str(user_query or "").lower()
+                optional_names: list[str] = []
+                optional_calls: list = []
+                if any(
+                    token in normalized_query
+                    for token in ("개황", "전망", "기상 상황")
+                ):
+                    optional_names.append("overview")
+                    optional_calls.append(
+                        fetch_optional(
+                            weather_utils.get_weather_overview(
+                                self.bot.db,
+                                timeout=5.0,
+                            )
+                        )
+                    )
+                if any(
+                    token in normalized_query
+                    for token in ("폭염", "한파", "영향예보", "영향 예보")
+                ):
+                    optional_names.append("impact")
+                    optional_calls.append(
+                        fetch_optional(
+                            weather_utils.get_impact_forecast(
+                                self.bot.db,
+                                timeout=5.0,
+                            )
+                        )
+                    )
+                if "태풍" in normalized_query:
+                    optional_names.append("typhoon")
+                    optional_calls.append(
+                        fetch_optional(
+                            weather_utils.get_typhoons(
+                                self.bot.db,
+                                timeout=5.0,
+                            )
+                        )
+                    )
+                optional_values = (
+                    await asyncio.gather(*optional_calls)
+                    if optional_calls
+                    else []
+                )
+                optional = dict(zip(optional_names, optional_values))
                 parts = [f"[{location_name} 상세 날씨 정보 Context]"]
-                
-                if overview: parts.append(f"📢 **기상 개황**: {overview}")
-                if warnings: parts.append(f"🚨 **기상 특보**: {warnings}")
-                if impact: parts.append(f"⚠️ **영향 예보**: {impact}")
-                if typhoons: parts.append(f"🌀 **태풍 정보**: {typhoons}")
-                
-                # 5. Core Weather (Current + Short-term)
-                parts.append(f"🌡️ **현재 날씨**: {current_weather_str}")
-                parts.append(f"📅 **단기 예보**: {formatted_forecast}")
-                
-                # 6. Mid-term (If explicitly relevant, or just append distinct note)
-                # Since day_offset is 0 here (default logic), mid-term might be redundant unless user asked "future".
-                # But providing it as context for "outlook" queries helps.
-                if day_offset >= 3:
-                     # Fetch V2 Mid-term (Land Code needed... e.g., 11B00000)
-                     # Mapping logic needed. For now use default Seoul area 11B00000 or derive from coords?
-                     # Simplified: Just fetch context if available key allows it.
-                     pass 
-                
+                if optional.get("overview"):
+                    parts.append(f"📢 **기상 개황:** {optional['overview']}")
+                if optional.get("impact"):
+                    parts.append(f"⚠️ **영향 예보:** {optional['impact']}")
+                if optional.get("typhoon"):
+                    parts.append(f"🌀 **태풍 정보:** {optional['typhoon']}")
+                parts.append(current_weather_str)
+                if ultra_short_str:
+                    parts.append(ultra_short_str)
+                parts.append(formatted_forecast)
                 final_context = "\n".join(parts)
-                # Show user what Masamong sees (as requested)
                 logger.info(
                     "☀️ Weather context prepared. context_chars=%d",
                     len(final_context),
@@ -210,11 +259,20 @@ class WeatherCog(commands.Cog):
             # 특보와 본 날씨 조회는 서로 독립적이므로 함께 시작한다.
             alerts_data, weather_result = await asyncio.gather(
                 weather_utils.get_weather_alerts_from_kma(self.bot.db),
-                self.get_formatted_weather_string(day_offset, location_name, nx, ny),
+                self.get_formatted_weather_string(
+                    day_offset,
+                    location_name,
+                    nx,
+                    ny,
+                    user_original_query,
+                ),
             )
             formatted_alerts = None
             if isinstance(alerts_data, str):
-                formatted_alerts = weather_utils.format_weather_alerts(alerts_data)
+                formatted_alerts = weather_utils.format_weather_alerts(
+                    alerts_data,
+                    location_name,
+                )
             
             weather_data_str, error_message = weather_result
             if error_message:
@@ -234,14 +292,32 @@ class WeatherCog(commands.Cog):
             # 4. AI 또는 일반 응답 생성
             # 4. AI 또는 일반 응답 생성
             self.ai_handler = self.bot.get_cog('AIHandler')
-            is_ai_channel_and_enabled = self.ai_handler and self.ai_handler.is_ready and config.CHANNEL_AI_CONFIG.get(original_message.channel.id, {}).get("allowed", False)
+            is_ai_channel_and_enabled = (
+                self.ai_handler
+                and self.ai_handler.is_ready
+                and self._is_ai_enabled_for_channel(original_message.channel)
+            )
             
             # [Refactor] Data First, then AI Briefing
+            rendered_data = f"📍 **{location_name}**\n{final_response_str}"
             if status_msg:
-                await status_msg.edit(content=f"📍 **{location_name}**\n{final_response_str}")
+                chunks = split_message_chunks(rendered_data) or [rendered_data]
+                await status_msg.edit(
+                    content=chunks[0],
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                for chunk in chunks[1:]:
+                    await status_msg.channel.send(
+                        chunk,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
                 data_msg = status_msg
             else:
-                data_msg = await original_message.channel.send(f"📍 **{location_name}**\n{final_response_str}")
+                sent = await send_split_message(
+                    original_message.channel,
+                    rendered_data,
+                )
+                data_msg = sent[0] if sent else original_message
 
             if is_ai_channel_and_enabled:
                 context = {"location_name": location_name, "weather_data": final_response_str}
@@ -249,7 +325,7 @@ class WeatherCog(commands.Cog):
                 async with original_message.channel.typing():
                     ai_response = await self.ai_handler.generate_creative_text(original_message.channel, original_message.author, "answer_weather", context)
                     if ai_response and ai_response != config.MSG_AI_ERROR:
-                        await data_msg.channel.send(ai_response)
+                        await send_split_message(data_msg.channel, ai_response)
 
     @commands.command(name="날씨", aliases=["weather", "현재날씨", "오늘날씨"])
     async def weather_command(self, ctx: commands.Context, *, location_query: str = ""):
@@ -277,7 +353,10 @@ class WeatherCog(commands.Cog):
             # 단기/중기 예보는 독립 API이므로 병렬 조회한다.
             short_term_data, mid_term_data = await asyncio.gather(
                 weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny),
-                self.get_mid_term_weather(3, location_name),
+                weather_utils.get_mid_term_weekly_forecast(
+                    self.bot.db,
+                    location_name,
+                ),
             )
             short_term_summary = ""
             if short_term_data and not short_term_data.get("error"):
@@ -288,18 +367,37 @@ class WeatherCog(commands.Cog):
             full_weekly_data = f"--- [단기 예보 (내일/모레)] ---\n{short_term_summary}\n\n--- [중기 예보 (3일 후 ~ 10일 후)] ---\n{mid_term_data}"
 
             # [Refactor] Data First, then AI Briefing
-            await status_msg.edit(content=f"📅 **{location_name} 이번 주 날씨 종합**\n{full_weekly_data}")
+            weekly_rendered = (
+                f"📅 **{location_name} 이번 주 날씨 종합**\n"
+                f"{full_weekly_data}"
+            )
+            weekly_chunks = split_message_chunks(weekly_rendered) or [
+                weekly_rendered
+            ]
+            await status_msg.edit(
+                content=weekly_chunks[0],
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            for chunk in weekly_chunks[1:]:
+                await status_msg.channel.send(
+                    chunk,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
 
             # Send via AI for summarization
             self.ai_handler = self.bot.get_cog('AIHandler')
-            is_ai_channel = self.ai_handler and self.ai_handler.is_ready and config.CHANNEL_AI_CONFIG.get(ctx.channel.id, {}).get("allowed", False)
+            is_ai_channel = (
+                self.ai_handler
+                and self.ai_handler.is_ready
+                and self._is_ai_enabled_for_channel(ctx.channel)
+            )
             
             if is_ai_channel:
                  context = {"location_name": location_name, "weather_data": full_weekly_data}
                  async with ctx.channel.typing():
                      ai_response = await self.ai_handler.generate_creative_text(ctx.channel, ctx.author, "answer_weather_weekly", context)
                      if ai_response and ai_response != config.MSG_AI_ERROR:
-                         await status_msg.channel.send(ai_response)
+                         await send_split_message(status_msg.channel, ai_response)
             return
 
         day_offset = 1 if "내일" in user_original_query else 2 if "모레" in user_original_query else 0
@@ -478,6 +576,64 @@ class WeatherCog(commands.Cog):
                 )
         return sent_count, failed_count
 
+    async def _load_earthquake_watermark(self) -> bool:
+        """재기동 뒤 같은 지진을 다시 보내지 않도록 마지막 발생시각을 복원합니다."""
+        if self._earthquake_watermark_loaded:
+            return self._earthquake_watermark_exists
+        # 조회 실패가 반복되어 매분 같은 예외를 남기지 않도록 이번 프로세스에서는
+        # 한 번만 시도한다. 인메모리 watermark는 계속 동작한다.
+        self._earthquake_watermark_loaded = True
+        try:
+            async with self.bot.db.execute(
+                """
+                SELECT counter_value
+                FROM system_counters
+                WHERE counter_name = ?
+                """,
+                (_EARTHQUAKE_WATERMARK_KEY,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if not row:
+                return False
+            stored = datetime.fromtimestamp(int(row[0]), tz=KST)
+            if stored > self.last_earthquake_time:
+                self.last_earthquake_time = stored
+            self._earthquake_watermark_exists = True
+        except Exception as exc:
+            logger.warning(
+                "지진 중복 방지 시각 복원 실패(인메모리 방식으로 계속): %s",
+                exc,
+            )
+        return self._earthquake_watermark_exists
+
+    async def _persist_earthquake_watermark(
+        self,
+        occurred_at: datetime,
+    ) -> None:
+        """Discord 전송 전에 지진 발생시각을 저장해 재기동 중복 전송을 막습니다."""
+        try:
+            await self.bot.db.execute(
+                """
+                INSERT OR REPLACE INTO system_counters
+                    (counter_name, counter_value, last_reset_at)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    _EARTHQUAKE_WATERMARK_KEY,
+                    int(occurred_at.timestamp()),
+                    discord.utils.utcnow().isoformat(),
+                ),
+            )
+            await self.bot.db.commit()
+        except Exception as exc:
+            # 전송 자체를 막으면 실제 경보를 놓치므로, 저장 실패 시에는 현재
+            # 프로세스의 watermark만 유지하고 정직하게 운영 로그를 남긴다.
+            logger.error(
+                "지진 중복 방지 시각 저장 실패(알림 전송은 계속): %s",
+                exc,
+                exc_info=True,
+            )
+
     @tasks.loop(minutes=config.WEATHER_CHECK_INTERVAL_MINUTES)
     async def rain_notification_loop(self):
         """정해진 주기로 강수 예보를 조회하고 필요 시 서버에 알립니다.
@@ -571,11 +727,12 @@ class WeatherCog(commands.Cog):
         """매일 저녁 지정된 시간에 날씨 정보와 함께 인사말을 보냅니다."""
         await self._send_greeting_notification("저녁")
 
-    @tasks.loop(minutes=config.EARTHQUAKE_CHECK_INTERVAL_MINUTES)
+    @tasks.loop(seconds=config.EARTHQUAKE_CHECK_INTERVAL_SECONDS)
     async def earthquake_alert_loop(self):
         """설정된 주기마다 최근 지진 정보를 확인하고 새로운 지진 발생 시 알립니다."""
         await self.bot.wait_until_ready()
         if not weather_utils.get_kma_api_key(): return
+        await self._load_earthquake_watermark()
 
         channel_ids: set[int] = set()
         try:
@@ -614,14 +771,56 @@ class WeatherCog(commands.Cog):
             # 일시적 오류로 루프가 영구 정지되지 않도록 방어한다.
             logger.error(f"지진 정보 조회 중 오류(무시하고 다음 주기 진행): {e}", exc_info=True)
             return
-        if not earthquakes: return
+        if earthquakes is None:
+            return
+        if not earthquakes:
+            if not self._earthquake_watermark_exists:
+                # 정상적인 빈 응답이라면 기동 시각을 기준점으로 남긴다. 이 처리가
+                # 없으면 며칠간 지진이 없던 신규 설치에서 첫 실제 지진을
+                # "기존 사건"으로 오인해 건너뛸 수 있다.
+                baseline = datetime.now(KST)
+                self.last_earthquake_time = baseline
+                self._earthquake_watermark_exists = True
+                await self._persist_earthquake_watermark(baseline)
+                logger.info(
+                    "지진 알림 최초 빈 기준점 설정: occurred_at=%s",
+                    baseline.isoformat(),
+                )
+            return
         
         # Sort by time ascending
         try:
            earthquakes.sort(key=lambda x: str(x.get('tmEqk')))
         except Exception as e:
             logger.debug(f"지진 데이터 정렬 실패: {e}")
-        
+
+        if not self._earthquake_watermark_exists:
+            # 이 중복 방지 키가 처음 도입되었거나 DB 조회가 실패한 기동에서는,
+            # 이미 KMA에 게시된 최신 사건을 기준점으로만 기록한다. 배포·재기동
+            # 직후 과거 지진/여진을 다시 방송하지 않고 다음 신규 사건부터 알린다.
+            latest_existing: datetime | None = None
+            for eqk in earthquakes:
+                try:
+                    tm_str = str(eqk.get("tmEqk") or "")
+                    parsed = datetime.strptime(
+                        tm_str,
+                        "%Y%m%d%H%M%S" if len(tm_str) == 14 else "%Y%m%d%H%M",
+                    )
+                    parsed = parsed.replace(tzinfo=KST)
+                except (TypeError, ValueError):
+                    continue
+                if latest_existing is None or parsed > latest_existing:
+                    latest_existing = parsed
+            if latest_existing is not None:
+                self.last_earthquake_time = latest_existing
+                self._earthquake_watermark_exists = True
+                await self._persist_earthquake_watermark(latest_existing)
+                logger.info(
+                    "지진 알림 최초 기준점 설정(기존 사건 미전송): occurred_at=%s",
+                    latest_existing.isoformat(),
+                )
+            return
+
         for eqk in earthquakes:
             try:
                 tm_str = str(eqk.get('tmEqk'))
@@ -630,23 +829,15 @@ class WeatherCog(commands.Cog):
                 
                 # If newer than last checked time
                 if eqk_dt > self.last_earthquake_time:
-                    # LLM/Discord 실패 시 같은 지진을 매 분 재처리하지 않도록 외부
-                    # await 전에 watermark를 전진시킨다. 채널별 실패는 아래에서 격리한다.
+                    # LLM은 사용하지 않는다. 재난 정보가 서버별 캐릭터 말투로
+                    # 바뀌거나 모델 호출만큼 늦어지지 않도록 기상청 자료를 고정
+                    # 형식으로 즉시 보낸다.
                     self.last_earthquake_time = eqk_dt
+                    await self._persist_earthquake_watermark(eqk_dt)
                     formatted_msg = weather_utils.format_earthquake_alert(eqk)
-                    
-                    # AI 메시지는 채널 루프 밖에서 한 번만 생성 (대표 채널 ID 사용)
-                    primary_id = sorted(channel_ids)[0]
-                    ai_msg = await self._generate_system_alert_safely(
-                        primary_id,
-                        formatted_msg,
-                        "지진 발생 알림",
-                    )
-                    
-                    payload = ai_msg or f"🚨 **긴급: 지진 발생**\n{formatted_msg}"
                     sent_count, failed_count = await self._send_alert_to_channels(
                         channel_ids,
-                        payload,
+                        formatted_msg,
                         alert_type="지진 발생 알림",
                     )
                     logger.info(

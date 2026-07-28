@@ -9,9 +9,11 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 import fcntl
 import json
 import os
+import re
 import shutil
 import sqlite3
 import time
@@ -77,6 +79,12 @@ _CANCEL_WORDS = frozenset({"취소", "그만", "중단"})
 # 상한은 별도로 지킨다. 더 오래된 결과는 이미 시의성이 낮아 자동 DM하지 않는다.
 _DELIVERY_BACKLOG_DAYS = 3
 _PROFILE_SESSION_COOLDOWN_SECONDS = 60
+_NATURAL_NOTICE_SUBJECT_RE = re.compile(r"(?:학교\s*)?공지")
+_NATURAL_NOTICE_ACTION_RE = re.compile(
+    r"(?:알려|알림|받아|받고|받을|설정|등록|추가|변경|수정|"
+    r"바꿔|고쳐|보내|보고\s*싶|제외|빼)"
+)
+_NATURAL_CHANGE_WORDS = ("수정", "변경", "바꿔", "고쳐", "추가", "빼줘", "제외")
 
 # 버튼에 노출할 피드백. 코어의 전체 타입 중 일상적으로 쓰는 것만 둔다.
 # `not_interested`는 영구 차단이 아니라 90일 반감기로 감쇠하는 완만한 신호다.
@@ -256,6 +264,170 @@ class _FeedbackButton(discord.ui.Button):
         await self._parent.submit(interaction, self._feedback_type)
 
 
+class SchoolNoticeDashboardView(discord.ui.View):
+    """학교 공지의 주요 동작을 한 화면에서 시작하는 사용자 전용 메뉴."""
+
+    def __init__(
+        self,
+        cog: "SchoolNoticeCog",
+        ctx: commands.Context,
+        *,
+        has_profile: bool,
+        enabled: bool,
+    ) -> None:
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.ctx = ctx
+        self.user_id = int(ctx.author.id)
+        self.has_profile = bool(has_profile)
+        self.enabled = bool(enabled)
+        self.toggle.label = "알림 중지" if self.enabled else "알림 재개"
+        self.latest.disabled = not self.has_profile
+        self.delivery_time.disabled = not self.has_profile
+        self.toggle.disabled = not self.has_profile
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if int(interaction.user.id) == self.user_id:
+            return True
+        await interaction.response.send_message(
+            "이 메뉴는 명령을 실행한 사용자만 사용할 수 있습니다.",
+            ephemeral=True,
+        )
+        return False
+
+    @discord.ui.button(
+        label="설정·변경",
+        style=discord.ButtonStyle.primary,
+        emoji="🎓",
+    )
+    async def setup_profile(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.send_message(
+            "학교 공지 설정 대화를 아래에서 시작합니다.",
+            ephemeral=True,
+        )
+        await self.cog.begin_profile_setup(
+            self.ctx,
+            initial_text="",
+            prefer_existing=True,
+        )
+
+    @discord.ui.button(
+        label="최근 공지",
+        style=discord.ButtonStyle.secondary,
+        emoji="📬",
+    )
+    async def latest(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.send_message(
+            "최근 맞춤 공지를 아래에서 확인합니다.",
+            ephemeral=True,
+        )
+        await SchoolNoticeCog.school_notice.callback(self.cog, self.ctx, 1)
+
+    @discord.ui.button(
+        label="알림 시간",
+        style=discord.ButtonStyle.secondary,
+        emoji="⏰",
+    )
+    async def delivery_time(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        if not await self.cog._has_school_notice_consent(self.user_id):
+            await interaction.response.send_message(
+                "개인정보 동의 화면을 아래에 열었습니다.",
+                ephemeral=True,
+            )
+            await self.cog._send_school_notice_consent_prompt(self.ctx)
+            return
+        row = await self.cog._profile_row(self.user_id)
+        if row is None:
+            await interaction.response.send_message(
+                "먼저 학교 공지 정보를 설정해주세요.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(
+            SchoolNoticeTimeModal(
+                self.cog,
+                self.user_id,
+                current_time=str(row["delivery_time"]),
+            )
+        )
+
+    @discord.ui.button(
+        label="알림 중지",
+        style=discord.ButtonStyle.secondary,
+        emoji="🔔",
+    )
+    async def toggle(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.send_message(
+            "학교 공지 알림 상태를 변경합니다.",
+            ephemeral=True,
+        )
+        command = SchoolNoticeCog.disable if self.enabled else SchoolNoticeCog.enable
+        await command.callback(self.cog, self.ctx)
+
+
+class SchoolNoticeTimeModal(discord.ui.Modal, title="학교 공지 알림 시간"):
+    """24시간제 또는 자연어 시간을 한 번에 받는 간단한 입력창."""
+
+    delivery_time = discord.ui.TextInput(
+        label="알림 받을 시각 (한국 시간)",
+        placeholder="예: 09:00 또는 오전 9시",
+        max_length=20,
+    )
+
+    def __init__(
+        self,
+        cog: "SchoolNoticeCog",
+        user_id: int,
+        *,
+        current_time: str,
+    ) -> None:
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.user_id = int(user_id)
+        self.delivery_time.default = current_time
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            normalized = await self.cog.update_delivery_time(
+                self.user_id,
+                str(self.delivery_time.value),
+            )
+        except ConsentRequiredError:
+            await interaction.response.send_message(
+                "개인정보 동의가 철회되었거나 재동의가 필요합니다. "
+                "`!메뉴`에서 다시 시작해주세요.",
+                ephemeral=True,
+            )
+            return
+        except SchoolProfileError as exc:
+            await interaction.response.send_message(
+                f"알림 시각을 이해하지 못했습니다: {exc}",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            f"✅ 학교 공지 알림을 매일 `{normalized}`(한국 시간)로 설정했습니다. "
+            "관련 공지가 없으면 DM을 보내지 않습니다.",
+            ephemeral=True,
+        )
+
+
 class SchoolNoticeCog(commands.Cog):
     """digest 전달·프로필 관리·피드백 수집."""
 
@@ -314,6 +486,8 @@ class SchoolNoticeCog(commands.Cog):
     async def _send_school_notice_consent_prompt(
         self,
         ctx: commands.Context,
+        *,
+        on_granted: Callable[[discord.Interaction], Awaitable[None]] | None = None,
     ) -> None:
         message = (
             "🔐 학교 공지 프로필을 수집하거나 기존 개인화 결과를 이용하려면 "
@@ -327,12 +501,85 @@ class SchoolNoticeCog(commands.Cog):
                 user_id=ctx.author.id,
                 scope=SCHOOL_NOTICE_SCOPE,
                 prefix=message,
+                on_granted=on_granted,
             )
             return
         await ctx.send(
             f"{message}\n`!개인정보 동의 "
             f"{consent_command_name(SCHOOL_NOTICE_SCOPE)}`를 실행한 뒤 다시 시도해주세요."
         )
+
+    async def begin_profile_setup(
+        self,
+        ctx: commands.Context,
+        *,
+        initial_text: str,
+        prefer_existing: bool,
+    ) -> None:
+        """명령·버튼·자연어 진입이 공유하는 단일 프로필 설정 흐름."""
+        if not config.SCHOOL_NOTICE_ENABLED:
+            await ctx.reply("ℹ️ 이 인스턴스에서는 학교 공지 기능을 운영하지 않습니다.")
+            return
+        if ctx.guild:
+            await ctx.reply("⚠️ 개인화 학교 공지 설정은 DM에서 진행해주세요.")
+            return
+        if not await self._has_school_notice_consent(ctx.author.id):
+            await self._send_school_notice_consent_prompt(
+                ctx,
+                on_granted=lambda _interaction: self.begin_profile_setup(
+                    ctx,
+                    initial_text=initial_text,
+                    prefer_existing=prefer_existing,
+                ),
+            )
+            return
+        current_profile = None
+        if prefer_existing:
+            row = await self._profile_row(int(ctx.author.id))
+            current_profile = row["profile"] if row is not None else None
+        await self._run_profile_session(
+            ctx,
+            initial_text=initial_text,
+            current_profile=current_profile,
+        )
+
+    async def try_handle_natural_message(self, message: discord.Message) -> bool:
+        """DM의 명확한 학교 공지 설정 문장을 명령어 없이 설정 흐름으로 연결."""
+        if (
+            not config.SCHOOL_NOTICE_ENABLED
+            or message.guild is not None
+            or getattr(message.author, "bot", False)
+            or int(message.author.id) in getattr(self.bot, "locked_users", set())
+        ):
+            return False
+        text = str(message.content or "").strip()
+        lowered = text.casefold()
+        if not text or not _NATURAL_NOTICE_SUBJECT_RE.search(lowered):
+            return False
+        try:
+            school_matches = self._school_catalog().matching_schools(text)
+        except SchoolProfileError:
+            return False
+        explicit_setup = lowered in {
+            "학교 공지",
+            "학교공지",
+            "학교 공지 설정",
+            "학교공지 설정",
+            "공지 설정",
+            "공지설정",
+        }
+        if not explicit_setup and not _NATURAL_NOTICE_ACTION_RE.search(lowered):
+            return False
+        if not school_matches and not explicit_setup:
+            return False
+
+        ctx = await self.bot.get_context(message)
+        await self.begin_profile_setup(
+            ctx,
+            initial_text="" if explicit_setup else text,
+            prefer_existing=any(word in lowered for word in _NATURAL_CHANGE_WORDS),
+        )
+        return True
 
     # ------------------------------------------------------------------
     # 저장소 접근
@@ -1071,11 +1318,64 @@ class SchoolNoticeCog(commands.Cog):
     # 명령
     # ------------------------------------------------------------------
 
+    async def send_dashboard(self, ctx: commands.Context) -> None:
+        """설정 상태와 자주 쓰는 동작을 한 화면에 모아 보여준다."""
+        if ctx.guild:
+            await ctx.reply(
+                "🎓 학교 공지는 개인정보가 포함될 수 있어 DM에서 설정합니다. "
+                "마사몽에게 DM으로 `학교 공지 설정`이라고 보내주세요."
+            )
+            return
+        consented = await self._has_school_notice_consent(ctx.author.id)
+        row = await self._profile_row(int(ctx.author.id)) if consented else None
+        has_profile = row is not None
+        state = (
+            ("사용 중" if row["enabled"] else "중지됨")
+            if has_profile
+            else "설정 전"
+        )
+        delivery_time = str(row["delivery_time"]) if has_profile else "기본 09:00"
+        embed = discord.Embed(
+            title="🎓 학교 공지",
+            description=(
+                "학교·학과·학년·관심사를 자연스럽게 말하면 내용을 확인한 뒤 저장합니다.\n"
+                "등록한 학교의 게시판만 23:00(한국 시간)에 수집하고, "
+                "내 조건에 맞는 공지가 있을 때만 알림을 보냅니다."
+            ),
+            color=0x4F8EF7,
+        )
+        embed.add_field(name="현재 상태", value=state, inline=True)
+        embed.add_field(name="알림 시각", value=delivery_time, inline=True)
+        embed.add_field(
+            name="가장 쉬운 사용법",
+            value=(
+                "`전북대 소프트웨어공학과 3학년이고 장학·인턴 공지를 "
+                "오전 9시에 알려줘`처럼 DM으로 말해보세요."
+            ),
+            inline=False,
+        )
+        embed.set_footer(
+            text="세부 명령은 !도움 공지 · 삭제는 !공지 삭제"
+        )
+        await ctx.reply(
+            embed=embed,
+            view=SchoolNoticeDashboardView(
+                self,
+                ctx,
+                has_profile=has_profile,
+                enabled=bool(row["enabled"]) if has_profile else False,
+            ),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
     @commands.group(name="공지", invoke_without_command=True)
-    async def school_notice(self, ctx: commands.Context, page: int = 1) -> None:
+    async def school_notice(self, ctx: commands.Context, page: int = 0) -> None:
         """가장 최근 성공/부분 성공 digest의 요청 페이지를 보여줍니다."""
         if not config.SCHOOL_NOTICE_ENABLED:
             await ctx.reply("ℹ️ 이 마사몽 인스턴스에서는 학교 공지 기능을 운영하지 않습니다.")
+            return
+        if page == 0:
+            await self.send_dashboard(ctx)
             return
         if ctx.guild:
             await ctx.reply("⚠️ 개인화 학교 공지는 DM에서만 확인할 수 있습니다.")
@@ -1187,19 +1487,10 @@ class SchoolNoticeCog(commands.Cog):
         profile_text: str = "",
     ) -> None:
         """학교·과정·관심사·알림 시각을 자연어로 확인 후 등록합니다."""
-        if not config.SCHOOL_NOTICE_ENABLED:
-            await ctx.reply("ℹ️ 이 인스턴스에서는 학교 공지 기능을 운영하지 않습니다.")
-            return
-        if ctx.guild:
-            await ctx.reply("⚠️ 프로필 등록은 DM에서만 가능합니다.")
-            return
-        if not await self._has_school_notice_consent(ctx.author.id):
-            await self._send_school_notice_consent_prompt(ctx)
-            return
-        await self._run_profile_session(
+        await self.begin_profile_setup(
             ctx,
             initial_text=profile_text,
-            current_profile=None,
+            prefer_existing=False,
         )
 
     @school_notice.command(name="수정")
@@ -1210,19 +1501,10 @@ class SchoolNoticeCog(commands.Cog):
         correction_text: str = "",
     ) -> None:
         """현재 학교 공지 정보를 자연어로 고치고 확인 후 저장합니다."""
-        if not config.SCHOOL_NOTICE_ENABLED:
-            await ctx.reply("ℹ️ 이 인스턴스에서는 학교 공지 기능을 운영하지 않습니다.")
-            return
-        if ctx.guild:
-            await ctx.reply("⚠️ 프로필 수정은 DM에서만 가능합니다.")
-            return
-        profile_row = await self._require_profile(ctx)
-        if profile_row is None:
-            return
-        await self._run_profile_session(
+        await self.begin_profile_setup(
             ctx,
             initial_text=correction_text,
-            current_profile=profile_row["profile"],
+            prefer_existing=True,
         )
 
     async def _call_profile_llm(self, prompt: str, *, user_id: int) -> str | None:
@@ -1736,45 +2018,27 @@ class SchoolNoticeCog(commands.Cog):
             return
         await ctx.reply("\n".join(lines))
 
-    @school_notice.command(name="시간")
-    @commands.dm_only()
-    async def set_delivery_time(
-        self,
-        ctx: commands.Context,
-        value: str = "",
-    ) -> None:
-        """사용자별 KST 알림 시각을 HH:MM으로 변경합니다."""
-        row = await self._require_profile(ctx)
+    async def update_delivery_time(self, user_id: int, value: str) -> str:
+        """명령과 Modal이 공유하는 동의 보호 알림 시각 갱신."""
+        if not await self._has_school_notice_consent(user_id):
+            raise ConsentRequiredError(SCHOOL_NOTICE_SCOPE)
+        row = await self._profile_row(user_id)
         if row is None:
-            return
-        if not value.strip():
-            if not await self._has_school_notice_consent(ctx.author.id):
-                await self._send_school_notice_consent_prompt(ctx)
-                return
-            await ctx.reply(
-                f"현재 알림 시각은 `{row['delivery_time']}`입니다. "
-                "`!공지 시간 09:00`처럼 입력해주세요."
-            )
-            return
-        try:
-            delivery_time = normalize_delivery_time(value)
-            profile = self._canonical_existing_profile(row["profile"])
-            profile["delivery_time"] = delivery_time
-            profile = canonicalize_profile(
-                {
-                    key: item
-                    for key, item in profile.items()
-                    if key in EXTRACTION_FIELDS
-                },
-                catalog=self._school_catalog(),
-                require_complete=True,
-            )
-        except SchoolProfileError as exc:
-            await ctx.reply(f"❌ 알림 시각이 올바르지 않습니다: {exc}")
-            return
-        if not await self._has_school_notice_consent(ctx.author.id):
-            await self._send_school_notice_consent_prompt(ctx)
-            return
+            raise SchoolProfileError("먼저 학교 공지 정보를 설정해주세요.")
+        delivery_time = normalize_delivery_time(value)
+        profile = self._canonical_existing_profile(row["profile"])
+        profile["delivery_time"] = delivery_time
+        profile = canonicalize_profile(
+            {
+                key: item
+                for key, item in profile.items()
+                if key in EXTRACTION_FIELDS
+            },
+            catalog=self._school_catalog(),
+            require_complete=True,
+        )
+        if not await self._has_school_notice_consent(user_id):
+            raise ConsentRequiredError(SCHOOL_NOTICE_SCOPE)
         stored = dict(profile)
         stored["user_key"] = row["user_key"]
         await self.bot.db.execute(
@@ -1782,6 +2046,17 @@ class SchoolNoticeCog(commands.Cog):
             UPDATE school_notice_profiles
             SET profile_json = ?, delivery_time = ?
             WHERE user_id = ?
+              AND EXISTS (
+                  SELECT 1
+                  FROM privacy_consents AS pc
+                  WHERE pc.user_id = school_notice_profiles.user_id
+                    AND pc.scope = ?
+                    AND pc.policy_version = ?
+                    AND pc.notice_hash = ?
+                    AND pc.status = ?
+                    AND pc.granted_at IS NOT NULL
+                    AND pc.withdrawn_at IS NULL
+              )
             """,
             (
                 json.dumps(
@@ -1791,10 +2066,52 @@ class SchoolNoticeCog(commands.Cog):
                     sort_keys=True,
                 ),
                 delivery_time,
-                int(ctx.author.id),
+                int(user_id),
+                SCHOOL_NOTICE_CONSENT_POLICY.scope,
+                SCHOOL_NOTICE_CONSENT_POLICY.version,
+                SCHOOL_NOTICE_CONSENT_POLICY.notice_hash,
+                CONSENT_GRANTED,
             ),
         )
         await self.bot.db.commit()
+        return delivery_time
+
+    @school_notice.command(name="시간")
+    @commands.dm_only()
+    async def set_delivery_time(
+        self,
+        ctx: commands.Context,
+        value: str = "",
+    ) -> None:
+        """사용자별 KST 알림 시각을 HH:MM으로 변경합니다."""
+        if not value.strip():
+            row = await self._require_profile(ctx)
+            if row is None:
+                return
+            await ctx.reply(
+                f"현재 알림 시각은 `{row['delivery_time']}`입니다. "
+                "`!공지 시간 09:00`처럼 입력하거나 `!공지` 메뉴의 "
+                "**알림 시간** 버튼을 눌러주세요."
+            )
+            return
+        try:
+            delivery_time = await self.update_delivery_time(
+                int(ctx.author.id),
+                value,
+            )
+        except ConsentRequiredError:
+            await self._send_school_notice_consent_prompt(
+                ctx,
+                on_granted=lambda _interaction: SchoolNoticeCog.set_delivery_time.callback(
+                    self,
+                    ctx,
+                    value,
+                ),
+            )
+            return
+        except SchoolProfileError as exc:
+            await ctx.reply(f"❌ 알림 시각이 올바르지 않습니다: {exc}")
+            return
         await ctx.reply(
             f"✅ 학교 공지 알림을 매일 `{delivery_time}`(한국 시간)로 설정했습니다. "
             "관련 공지가 없으면 DM을 보내지 않습니다."

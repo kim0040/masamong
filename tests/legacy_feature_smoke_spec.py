@@ -147,7 +147,7 @@ async def test_fun_summary_reuses_unchanged_cache_without_llm(monkeypatch):
     )
     status_updates: list[str] = []
 
-    async def edit_status(*, content):
+    async def edit_status(*, content, **_kwargs):
         status_updates.append(content)
 
     class _AI:

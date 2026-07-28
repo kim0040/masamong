@@ -8,7 +8,8 @@ service.
 [한국어 제품·사용 설명서](docs/README.ko.md) ·
 [General/Masamo separation](docs/INSTANCE_SEPARATION.ko.md) ·
 [Operations and deployment](DEPLOYMENT.md) ·
-[School-notice integration](docs/SCHOOL_NOTICE_INTEGRATION_PLAN.ko.md)
+[School-notice integration](docs/SCHOOL_NOTICE_INTEGRATION_PLAN.ko.md) ·
+[Memory-index migration](docs/MEMORY_INDEX_MIGRATION.ko.md)
 
 ## Runtime model
 
@@ -29,7 +30,7 @@ The two production editions are not forks:
 | Memory | Existing Discord and Kakao data | Discord only; no Masamo data |
 | Configuration | Dedicated env/config/prompt/embedding files | Separate dedicated files |
 | Logs/service | Dedicated paths and service | Separate paths and service |
-| School notices | Kept disabled | Enabled only after the external core is installed and validated |
+| School notices | Owns the existing rollout, schema, state, and 23:00 timer | Disabled by default; may later use only General-owned paths and state |
 
 Never point both profiles at the same token, database, DB account, writable path,
 prompt file, embedding store, log, or service. The existing Masamo database keeps
@@ -40,7 +41,9 @@ its current name and data; it is not renamed, copied into General, or rebuilt.
 - AI conversation in configured guild channels and DMs
 - Fast local routing for obvious small talk/tool requests; optional LLM intent
   routing for ambiguous requests
-- Weather, earthquake, finance, exchange-rate, web/news, and image tools
+- KMA observation, six-hour nowcast, short/mid-range forecast, active warning,
+  earthquake, typhoon/impact outlook, finance, exchange-rate, web/news, and
+  image tools
 - Discord and optional Kakao memory with hybrid retrieval
 - Daily/monthly/yearly fortune, zodiac, and persistent morning briefing
 - Activity ranking, conversation summary, polls, localization, and guild persona
@@ -48,11 +51,25 @@ its current name and data; it is not renamed, copied into General, or rebuilt.
 - Optional school-notice personalization for registered users and supported
   schools
 
+Database personas are keyed and cached by `guild_id`; static deployments bind
+personas to Discord's globally unique `channel_id`. Normal chat, creative command
+responses, and routine AI-written notices resolve only the destination
+guild/channel persona. Conversation and RAG reads additionally require the same
+guild and channel. Shared emergency notices such as earthquake alerts never use
+a guild persona or an LLM: every destination receives the same fixed, formal
+KMA-based message.
+
 All external LLM calls share bounded concurrency, queue-acquisition timeout,
 per-call timeout, provider rate limits, prompt/output caps, and finite
 primary/fallback attempts. A single AI turn can plan at most three tool calls.
 Fortune generation and school collection also use explicit finite attempt and
 runtime limits; neither scheduler retries indefinitely.
+
+The earthquake monitor checks every 30 seconds, but it cannot precede KMA's
+publication time. It shows both occurrence and KMA publication time. Its
+persistent watermark is advanced before delivery, and the first deployment
+records the newest already-published event without broadcasting it, so a restart
+does not replay an earlier earthquake or aftershock.
 
 ## Privacy boundary
 
@@ -93,13 +110,15 @@ history.
 
 ## School-notice behavior
 
-The Discord bot does not crawl websites. A separate, externally installed
-`school_notice` core runs as a bounded one-shot batch and publishes validated JSON
-digests; the bot only handles onboarding, delivery, and feedback.
+The Discord bot process does not crawl websites. The vendored `school_notice`
+package runs in a separate bounded one-shot systemd process and publishes
+validated JSON digests; the always-on bot handles onboarding, delivery, and
+feedback.
 
 The user flow is:
 
-1. In DM, the user gives school information naturally with `!공지 등록 ...`.
+1. In DM, the user opens `!메뉴`/`!공지`, presses the setup button, or simply says
+   “전북대 소프트웨어공학과 3학년 공지를 오전 9시에 알려줘.”
 2. Masamong first uses its bounded local parser. Clear input makes no profile-LLM
    call. Only unresolved input may call the routing primary once for that
    interpretation attempt, with no provider fallback or retry; the whole session is
@@ -124,14 +143,12 @@ Soongsil, Chonnam National, Sunchon National, Myongji, Konkuk, Kookmin, and
 Hanyang. A school is usable only when the separately deployed core has matching,
 validated source definitions.
 
-The external core is not vendored or release-pinned by this repository, and its
-current per-profile job may crawl the same school more than once when several users
-register it. The implementation guarantees “registered profiles only,” not
-“exactly once per school.”
-
-Masamo production must keep `SCHOOL_NOTICE_ENABLED=false`. General may enable it
-only after its own schema, catalog, core DB, digest directory, source config,
-one-shot batch, and 23:00 KST timer pass validation.
+The collection core is vendored in `school_notice/` and released with the bot.
+Masamo owns the current school-notice rollout and its isolated writable paths.
+General starts with the feature disabled and must never point at Masamo's school
+tables, core database, digests, or timer. The current wrapper guarantees
+“consented, enabled, registered profiles only”; it does not crawl all catalogued
+schools.
 
 ## Quick start
 
@@ -169,14 +186,15 @@ do not match.
 |---|---|
 | `@Masamong <message>` | AI conversation in an allowed guild channel |
 | DM message | Private AI conversation, subject to DM and LLM limits |
-| `!날씨 [지역] [날짜]` | Weather lookup |
+| `!메뉴`, `!도움` | Unified feature dashboard and detailed help |
+| `!날씨 [지역] [날짜]` | KMA observation, six-hour outlook, forecast, and active warnings |
 | `!이미지 <prompt>` | Image generation with user/global quota guards |
 | `!운세`, `!운세 상세` | Daily summary or detailed fortune |
 | `!운세 등록` | Consent-gated DM registration |
 | `!운세 구독 HH:MM` | Persistent morning briefing |
 | `!이번달운세`, `!올해운세` | Detailed monthly/yearly readings |
 | `!별자리` | Zodiac information/ranking |
-| `!공지 [page]` | View a page of the available school digest in DM |
+| `!공지` | Open the school dashboard; `!공지 1` views digest page 1 |
 | `!공지 등록 <natural language>` | Confirm-before-save school onboarding |
 | `!공지 수정 <natural language>` | Confirm-before-save profile correction |
 | `!공지 정보` | Show the saved profile and delivery state |
@@ -227,9 +245,11 @@ started:
   /etc/masamong/general.env
 ```
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for the read-only production fingerprint,
-additive privacy-consent migration, controlled restart, post-deploy observation,
-and rollback procedure.
+See [DEPLOYMENT.md](DEPLOYMENT.md) for read-only production fingerprints,
+additive privacy/school schema migrations, controlled restart, 23:00 timer
+verification, post-deploy observation, and rollback. Memory provenance/vector
+changes follow the non-destructive shadow strategy in
+[docs/MEMORY_INDEX_MIGRATION.ko.md](docs/MEMORY_INDEX_MIGRATION.ko.md).
 
 ## Repository map
 
@@ -240,7 +260,8 @@ cogs/                           Discord features
 utils/                          LLM, RAG, privacy, weather, school contracts
 database/                       SQLite and TiDB schemas/adapters
 profiles/                       isolated profile examples and school catalog
-scripts/                        read-only inspection and bounded one-shot jobs
+school_notice/                  vendored bounded collection/analysis core
+scripts/                        read-only audits, additive migrations, one-shot jobs
 deploy/systemd/                 school batch service/timer templates
 tests/                          functional, contract, safety, and resource tests
 docs/                           architecture and operations documentation

@@ -360,7 +360,7 @@ def test_masamo_auto_migrate_true_is_rejected(tmp_path):
     )
 
 
-def test_masamo_school_notice_enablement_is_rejected(tmp_path):
+def test_masamo_school_notice_enablement_accepts_owned_paths(tmp_path):
     masamo = tmp_path / "masamo.env"
     general = tmp_path / "general.env"
     _write_env(
@@ -377,10 +377,64 @@ def test_masamo_school_notice_enablement_is_rejected(tmp_path):
         database="masamong_general",
         db_user="general_user",
     )
+    catalog = tmp_path / "school_catalog.json"
+    sources = tmp_path / "sources.json"
+    catalog.write_text("{}", encoding="utf-8")
+    sources.write_text("{}", encoding="utf-8")
     masamo.write_text(
         masamo.read_text(encoding="utf-8").replace(
             "SCHOOL_NOTICE_ENABLED=false",
-            "SCHOOL_NOTICE_ENABLED=true",
+            "\n".join(
+                [
+                    "SCHOOL_NOTICE_ENABLED=true",
+                    f"SCHOOL_NOTICE_DIGEST_DIR={tmp_path / 'masamo' / 'notice' / 'out'}",
+                    f"SCHOOL_NOTICE_CORE_DB={tmp_path / 'masamo' / 'notice' / 'core.db'}",
+                    f"SCHOOL_NOTICE_CATALOG_PATH={catalog}",
+                    f"SCHOOL_NOTICE_SOURCE_CONFIG={sources}",
+                ]
+            ),
+        ),
+        encoding="utf-8",
+    )
+
+    errors, _ = validate(masamo, general)
+
+    assert not any("SCHOOL_NOTICE_" in error for error in errors)
+
+
+def test_masamo_school_notice_rejects_general_owned_paths(tmp_path):
+    masamo = tmp_path / "masamo.env"
+    general = tmp_path / "general.env"
+    _write_env(
+        masamo,
+        profile="masamo",
+        token="real-masamo-token",
+        database="masamong",
+        db_user="masamo_user",
+    )
+    _write_env(
+        general,
+        profile="general",
+        token="real-general-token",
+        database="masamong_general",
+        db_user="general_user",
+    )
+    catalog = tmp_path / "school_catalog.json"
+    sources = tmp_path / "sources.json"
+    catalog.write_text("{}", encoding="utf-8")
+    sources.write_text("{}", encoding="utf-8")
+    masamo.write_text(
+        masamo.read_text(encoding="utf-8").replace(
+            "SCHOOL_NOTICE_ENABLED=false",
+            "\n".join(
+                [
+                    "SCHOOL_NOTICE_ENABLED=true",
+                    f"SCHOOL_NOTICE_DIGEST_DIR={tmp_path / 'general' / 'notice' / 'out'}",
+                    f"SCHOOL_NOTICE_CORE_DB={tmp_path / 'general' / 'notice' / 'core.db'}",
+                    f"SCHOOL_NOTICE_CATALOG_PATH={catalog}",
+                    f"SCHOOL_NOTICE_SOURCE_CONFIG={sources}",
+                ]
+            ),
         ),
         encoding="utf-8",
     )
@@ -388,7 +442,11 @@ def test_masamo_school_notice_enablement_is_rejected(tmp_path):
     errors, _ = validate(masamo, general)
 
     assert any(
-        "general 소유" in error and "SCHOOL_NOTICE_ENABLED=false" in error
+        "SCHOOL_NOTICE_DIGEST_DIR" in error and "'masamo'" in error
+        for error in errors
+    )
+    assert any(
+        "SCHOOL_NOTICE_CORE_DB" in error and "'masamo'" in error
         for error in errors
     )
 

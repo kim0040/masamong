@@ -211,8 +211,8 @@ CREATE TABLE IF NOT EXISTS school_notice_feedback (
     consumed_at TEXT -- batch가 코어로 반영한 시각
 );
 
-CREATE INDEX IF NOT EXISTS idx_school_notice_feedback_user
-    ON school_notice_feedback (user_key, created_at);
+CREATE INDEX IF NOT EXISTS idx_school_notice_feedback_pending
+    ON school_notice_feedback (user_key, consumed_at, created_at);
 
 CREATE TABLE IF NOT EXISTS school_notice_deliveries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

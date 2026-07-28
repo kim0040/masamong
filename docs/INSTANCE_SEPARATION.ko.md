@@ -31,8 +31,8 @@
 | 기억 소스 | 정확히 `discord,kakao` | 정확히 `discord` |
 | 로그 | `masamo*.log` | `general*.log` |
 | 서비스 unit | `masamong-masamo.service` | `masamong-general.service` |
-| 정기 작업 | 기존 소유권 보존, 학교 공지는 끔 | 첫 부트스트랩에는 전부 끄고 검증 뒤 필요한 작업만 소유 |
-| 학교 공지 | `SCHOOL_NOTICE_ENABLED=false` 유지 | 외부 core·전용 schema·timer 준비 뒤에만 활성화 |
+| 정기 작업 | 기존 작업과 학교 23:00 timer 소유 | 첫 부트스트랩에는 전부 끄고 검증 뒤 필요한 작업만 소유 |
+| 학교 공지 | 현재 schema/core DB/digest/timer 소유 | `SCHOOL_NOTICE_ENABLED=false`, Masamo 상태 공유 금지 |
 
 토큰과 DB 이름만 다르게 두는 것으로는 충분하지 않다. DB 계정, 설정 및 prompt/embedding
 경로, 실제 embedding DB 경로, 로그, bot user ID까지 모두 달라야 한다.
@@ -142,12 +142,10 @@ General의 첫 빈 DB 생성 때만 `MASAMONG_AUTO_MIGRATE=true`를 사용한다
 `MASAMONG_AUTO_MIGRATE=false`로 바꾸고 정상 운영한다. 이후 schema 변경은 검증한 one-shot
 절차로 적용하며, 운영 봇 재시작에 DDL 권한을 묶지 않는다.
 
-학교 공지는 General의 빈 DB와 개인정보 동의 schema가 준비된 뒤 별도 단계로 켠다.
-`profiles/general.env.example`의 학교 경로는 예시이므로 실제 절대 경로로 바꿔야 한다.
-이 저장소에는 외부 `school_notice` 코어가 포함되지 않으므로, 코어 가상환경·core DB·
-`sources.json`·digest 디렉터리·카탈로그·23:00 KST timer를 모두 설치하고 dry-run과
-제한된 수동 batch를 통과하기 전에는 `SCHOOL_NOTICE_ENABLED=false`를 유지한다.
-Masamo에는 이 core와 timer를 연결하지 않는다.
+General은 학교 공지를 끈 상태로 시작하며 Masamo의 학교 table, core DB, digest, timer를
+절대 공유하지 않는다. 나중에 General에서도 필요하다면 General DB에 additive schema를
+별도로 적용하고 `/var/lib/masamong/general/...` 경로와 General 전용 timer를 새로 검증해야
+한다. 현재 운영 school timer는 Masamo 하나만 소유한다.
 
 ## `MASAMONG_ENV_FILE` 선택 방식
 
@@ -315,11 +313,10 @@ General은 아래 순서로 Masamo와 독립적으로 준비한다.
 5. General DB에만 새 테스트 데이터가 생기고 Masamo DB row count는 변하지 않는지 확인한다.
 6. `MASAMONG_AUTO_MIGRATE=false`로 바꾸고 읽기 전용 schema 검증으로 재기동한다.
 7. 예상 CPU/RSS 범위 안일 때만 제한된 기능을 하나씩 활성화한다.
-8. 학교 공지가 필요하면 외부 core를 별도 설치하고 `run_school_notice_batch.py --dry-run`,
-   제한된 수동 batch, digest 계약 검증과 DM 테스트를 통과한다.
-9. 그 뒤에만 General의 `SCHOOL_NOTICE_ENABLED=true`와
-   `masamong-school-notice-batch.timer`를 활성화한다. timer는 23:00 KST이고 Masamo에는
-   설치·활성화하지 않는다.
+8. 학교 공지는 계속 끄고 Masamo의 school table/core DB/digest/timer에 접근이 없는지
+   확인한다.
+9. General용 학교 기능을 별도로 승인하는 시점에만 General 전용 additive schema, writable
+   path와 timer를 새로 준비한다.
 
 첫 배포 권장값:
 
@@ -357,9 +354,13 @@ General RAG는 두 프로세스 합산 RSS, thread 수, load average를 측정�
 - 기존 운세 구독, DM 제한, 대화, Discord/Kakao RAG가 그대로 작동한다.
 - General에서 Kakao 저장소 객체/쿼리가 생성되지 않고 Masamo 기억이 검색되지 않는다.
 - 같은 사용자/guild/message ID를 넣어도 양쪽 DB에서 교차 조회되지 않는다.
+- 같은 프로세스 안의 여러 Discord 서버도 페르소나 캐시를 `guild_id`로 구분하고,
+  일반 응답·창의형 명령·일상 알림이 목적지 서버의 말투만 사용한다.
+- 공통 지진 경보에는 어떤 서버 페르소나나 LLM도 적용되지 않고, 최초 기준점 생성이나
+  재기동으로 기존 지진·여진이 재전송되지 않는다.
 - General 첫 배포 중 Masamo DB에는 쓰기가 0건이다.
 - 정기 운세·기상·지진·maintenance 작업의 소유자가 명확하고 중복 발송이 없다.
-- Masamo의 학교 공지 flag는 false이고 General의 23:00 timer만 학교 batch를 소유한다.
+- Masamo의 학교 공지 flag와 23:00 timer가 현재 batch를 소유하고 General은 비활성이다.
 - 미동의·철회 사용자의 운세/학교 프로필 조회와 자동 발송이 중단되고 일반 대화는 유지된다.
 - 학교 batch가 전체 학교가 아니라 동의·활성·등록 프로필의 source만 선택한다.
 - 두 프로세스 합산 CPU/RSS가 기존 Masamo 안정성을 해치지 않는다.
@@ -371,7 +372,7 @@ General RAG는 두 프로세스 합산 RSS, thread 수, load average를 측정�
 
 - 정기 알림의 DB lease/claim 및 idempotency key
 - API/이미지/DM quota의 원자적 예약
-- 학교 공지 외부 core의 사용자별 파생 데이터 삭제를 운영 환경에서 끝까지 검증하는 작업
+- 학교 공지 수집 core의 사용자별 파생 데이터 삭제를 운영 환경에서 끝까지 검증하는 작업
 - 버전형 `schema_migrations`와 staging restore 기반 migration 테스트
 - 실제 원격 service unit, grant, CPU 제한과 백업 복원 가능성의 읽기 전용 감사
 

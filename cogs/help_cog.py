@@ -4,7 +4,9 @@
 """
 import discord
 from discord.ext import commands
+import config
 from logger_config import logger
+from utils.discord_helpers import clip_discord_text
 
 class MasamongHelpCommand(commands.HelpCommand):
     """
@@ -22,15 +24,17 @@ class MasamongHelpCommand(commands.HelpCommand):
     async def send_bot_help(self, mapping):
         """!도움 입력 시 전체 명령어 목록 출력"""
         prefix = self.context.clean_prefix or "!"
-        embed = discord.Embed(
+        first_embed = discord.Embed(
             title="📖 친절한 마사몽의 사용 설명서",
             description=(
                 f"안녕하세요! 여러분의 AI 친구이자 비서, **{self.context.bot.user.display_name}**입니다. 🤖\n"
                 f"이 인스턴스의 명령어는 **`{prefix}`로 시작**합니다.\n\n"
+                f"처음이라면 `{prefix}메뉴`에서 버튼으로 기능을 골라보세요.\n\n"
                 "**💬 AI 대화**\n"
                 "- 서버: `@마사몽 할 말` (멘션으로 호출)\n"
                 "- DM: 그냥 메시지를 보내면 1:1 대화 가능\n"
-                "- 자연어로 날씨, 뉴스, 이미지 생성, 운세 등 요청 가능\n\n"
+                "- 자연어로 날씨, 뉴스, 이미지 생성 등을 요청 가능\n"
+                "- 학교 공지는 DM에서 `학교 공지 설정`이라고 말하면 시작\n\n"
                 "**📋 명령어 목록**\n"
                 f"- 전체 목록: `{prefix}도움`\n"
                 f"- 자세한 설명: `{prefix}도움 <명령어>`\n"
@@ -43,7 +47,15 @@ class MasamongHelpCommand(commands.HelpCommand):
             ),
             color=0x66ccff # Sky Blue
         )
-        embed.set_thumbnail(url=self.context.bot.user.avatar.url if self.context.bot.user.avatar else None)
+        first_embed.set_thumbnail(
+            url=(
+                self.context.bot.user.avatar.url
+                if self.context.bot.user.avatar
+                else None
+            )
+        )
+        embeds = [first_embed]
+        embed = first_embed
         
         for cog, cmds in mapping.items():
             # Cog가 없거나(No Category), 숨겨진 명령어만 있는 경우 스킵
@@ -66,32 +78,67 @@ class MasamongHelpCommand(commands.HelpCommand):
             cog_desc = (cog.description.split('\n')[0]) if cog and cog.description else "다양한 기능들이에요!"
 
             cmd_list = [f"`{prefix}{c.name}`" for c in filtered_cmds]
+            field_name = clip_discord_text(f"**{cog_name}**", 256)
+            field_value = clip_discord_text(
+                ", ".join(cmd_list) + f"\n*{cog_desc}*",
+                1024,
+            )
+            if len(embed.fields) >= 25 or len(embed) + len(field_name) + len(
+                field_value
+            ) > 5800:
+                embed = discord.Embed(
+                    title="📖 사용 설명서 · 계속",
+                    description=(
+                        f"명령어는 `{prefix}`로 시작합니다. "
+                        f"처음이라면 `{prefix}메뉴`를 이용하세요."
+                    ),
+                    color=0x66ccff,
+                )
+                embeds.append(embed)
             embed.add_field(
-                name=f"**{cog_name}**",
-                value=", ".join(cmd_list) + f"\n*{cog_desc}*",
+                name=field_name,
+                value=field_value,
                 inline=False
             )
 
         destination = self.get_destination()
-        await destination.send(embed=embed)
+        for help_embed in embeds:
+            await destination.send(embed=help_embed)
 
     async def send_command_help(self, command):
         """개별 명령어에 대한 상세 도움말을 Embed로 출력합니다."""
         prefix = self.context.clean_prefix or "!"
         embed = discord.Embed(
-            title=f"📘 명령어 가이드: {prefix}{command.name}",
-            description=command.help or "상세 설명이 준비되어 있지 않아요.",
+            title=clip_discord_text(
+                f"📘 명령어 가이드: {prefix}{command.name}",
+                256,
+            ),
+            description=clip_discord_text(
+                command.help or "상세 설명이 준비되어 있지 않아요.",
+                4096,
+            ),
             color=0x00ff00 # Green
         )
         
         # 별칭(Alias) 표시
         if command.aliases:
-            embed.add_field(name="✨ 다른 이름 (별칭)", value=", ".join([f"`!{alias}`" for alias in command.aliases]), inline=False)
+            embed.add_field(
+                name="✨ 다른 이름 (별칭)",
+                value=clip_discord_text(
+                    ", ".join([f"`{prefix}{alias}`" for alias in command.aliases]),
+                    1024,
+                ),
+                inline=False,
+            )
             
         # 사용법(Usage) 표시
         signature = command.signature if command.signature else ""
         usage = f"{prefix}{command.name} {signature}".rstrip()
-        embed.add_field(name="📝 사용법", value=f"`{usage}`", inline=False)
+        embed.add_field(
+            name="📝 사용법",
+            value=clip_discord_text(f"`{usage}`", 1024),
+            inline=False,
+        )
         
         # 예시 (자동 생성은 어렵지만 힌트 제공)
         examples = None
@@ -153,7 +200,11 @@ class MasamongHelpCommand(commands.HelpCommand):
             )
             
         if examples:
-             embed.add_field(name="💡 예시", value=examples, inline=False)
+             embed.add_field(
+                 name="💡 예시",
+                 value=clip_discord_text(examples, 1024),
+                 inline=False,
+             )
 
         destination = self.get_destination()
         await destination.send(embed=embed)
@@ -162,8 +213,14 @@ class MasamongHelpCommand(commands.HelpCommand):
         """그룹 명령어(예: !debug)의 하위 명령어 목록을 Embed로 출력합니다."""
         prefix = self.context.clean_prefix or "!"
         embed = discord.Embed(
-            title=f"🔧 그룹 명령어: {prefix}{group.name}",
-            description=group.help or "설명이 없습니다.",
+            title=clip_discord_text(
+                f"🔧 그룹 명령어: {prefix}{group.name}",
+                256,
+            ),
+            description=clip_discord_text(
+                group.help or "설명이 없습니다.",
+                4096,
+            ),
             color=0xffaa00
         )
         
@@ -176,7 +233,14 @@ class MasamongHelpCommand(commands.HelpCommand):
             for c in filtered_cmds
         ]
         
-        embed.add_field(name="하위 명령어", value="\n".join(cmd_list) if cmd_list else "없음", inline=False)
+        embed.add_field(
+            name="하위 명령어",
+            value=clip_discord_text(
+                "\n".join(cmd_list) if cmd_list else "없음",
+                1024,
+            ),
+            inline=False,
+        )
         destination = self.get_destination()
         await destination.send(embed=embed)
 
@@ -184,6 +248,127 @@ class MasamongHelpCommand(commands.HelpCommand):
         """존재하지 않는 명령어 입력 시 오류 메시지를 출력합니다."""
         destination = self.get_destination()
         await destination.send(f"❌ {error}")
+
+
+class MasamongHomeView(discord.ui.View):
+    """통합 메뉴를 연 사용자만 조작할 수 있는 짧은 수명의 홈 화면."""
+
+    def __init__(self, bot: commands.Bot, ctx: commands.Context) -> None:
+        super().__init__(timeout=300)
+        self.bot = bot
+        self.ctx = ctx
+        self.user_id = int(ctx.author.id)
+        self.school_notice.disabled = bot.get_cog("SchoolNoticeCog") is None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if int(interaction.user.id) == self.user_id:
+            return True
+        await interaction.response.send_message(
+            "이 메뉴는 연 사용자만 사용할 수 있습니다.",
+            ephemeral=True,
+        )
+        return False
+
+    @discord.ui.button(
+        label="학교 공지",
+        style=discord.ButtonStyle.primary,
+        emoji="🎓",
+    )
+    async def school_notice(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        if self.ctx.guild:
+            await interaction.response.send_message(
+                "개인화 학교 공지는 DM에서 설정합니다. 마사몽에게 DM으로 "
+                "`학교 공지 설정`이라고 보내주세요.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            "학교 공지 메뉴를 아래에 열었습니다.",
+            ephemeral=True,
+        )
+        cog = self.bot.get_cog("SchoolNoticeCog")
+        if cog is None:
+            await interaction.followup.send(
+                "이 인스턴스에서는 학교 공지를 사용할 수 없습니다.",
+                ephemeral=True,
+            )
+            return
+        await cog.send_dashboard(self.ctx)
+
+    @discord.ui.button(
+        label="오늘 운세",
+        style=discord.ButtonStyle.primary,
+        emoji="🔮",
+    )
+    async def fortune(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        if self.ctx.guild:
+            await interaction.response.send_message(
+                "개인 운세는 DM에서 이용합니다. 마사몽에게 DM으로 `!메뉴`를 "
+                "보내고 **오늘 운세**를 눌러주세요.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            "오늘 운세를 아래에서 이어서 확인합니다.",
+            ephemeral=True,
+        )
+        cog = self.bot.get_cog("FortuneCog")
+        if cog is None:
+            await interaction.followup.send(
+                "이 인스턴스에서는 운세를 사용할 수 없습니다.",
+                ephemeral=True,
+            )
+            return
+        await type(cog).fortune.callback(cog, self.ctx, option=None)
+
+    @discord.ui.button(
+        label="개인정보",
+        style=discord.ButtonStyle.secondary,
+        emoji="🔐",
+    )
+    async def privacy(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        cog = self.bot.get_cog("PrivacyCog")
+        if cog is None:
+            await interaction.response.send_message(
+                "개인정보 상태 기능을 불러오지 못했습니다.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            await cog.status_text(self.user_id),
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @discord.ui.button(
+        label="전체 도움말",
+        style=discord.ButtonStyle.secondary,
+        emoji="📖",
+    )
+    async def help(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        prefix = self.ctx.clean_prefix or config.COMMAND_PREFIX or "!"
+        await interaction.response.send_message(
+            f"`{prefix}도움`은 전체 기능, `{prefix}도움 <기능>`은 상세 사용법을 보여줍니다.\n"
+            f"예: `{prefix}도움 공지`, `{prefix}도움 운세`",
+            ephemeral=True,
+        )
+
 
 class HelpCog(commands.Cog):
     """도움말 기능을 담당하는 Cog입니다."""
@@ -194,6 +379,52 @@ class HelpCog(commands.Cog):
         bot.help_command = MasamongHelpCommand()
         bot.help_command.cog = self
         logger.info("Custom HelpCog initialized and HelpCommand replaced.")
+
+    @commands.command(name="메뉴", aliases=["시작", "기능", "홈"])
+    async def menu(self, ctx: commands.Context) -> None:
+        """자주 쓰는 기능을 버튼으로 시작하는 통합 메뉴를 엽니다."""
+        prefix = ctx.clean_prefix or config.COMMAND_PREFIX or "!"
+        embed = discord.Embed(
+            title="🤖 마사몽 메뉴",
+            description=(
+                "원하는 기능을 버튼으로 선택하세요. 개인정보가 필요한 기능은 "
+                "동의 화면이 이어서 열리고, 동의 후 원래 요청도 자동으로 계속됩니다."
+            ),
+            color=0x66CCFF,
+        )
+        embed.add_field(
+            name="💬 대화",
+            value=(
+                "DM에서는 그냥 말하고, 서버에서는 마사몽을 멘션하세요. "
+                "날씨·뉴스·검색·이미지도 자연어로 요청할 수 있습니다."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🎓 학교 공지",
+            value="등록 학교만 23시에 수집해 관련 공지가 있을 때 선택 시각에 알립니다.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🔮 운세",
+            value="프로필 등록·오늘 운세·알림 설정을 개인정보 동의와 함께 진행합니다.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🧰 서버 편의 기능",
+            value=(
+                f"`{prefix}날씨`, `{prefix}랭킹`, `{prefix}투표`, "
+                f"`{prefix}요약`, `{prefix}이미지` · 자세한 예시는 "
+                f"`{prefix}도움 <기능>`"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text=f"전체 명령과 상세 설명: {prefix}도움")
+        await ctx.send(
+            embed=embed,
+            view=MasamongHomeView(self.bot, ctx),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     def cog_unload(self):
         """Cog 언로드 시 원래 도움말 커맨드로 복구"""

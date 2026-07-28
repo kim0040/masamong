@@ -7,6 +7,7 @@ import discord
 from discord.ext import commands
 
 from logger_config import logger
+from utils.discord_helpers import clip_discord_text
 
 class PollCog(commands.Cog):
     """간단한 투표 기능을 제공하는 클래스입니다."""
@@ -41,7 +42,7 @@ class PollCog(commands.Cog):
         # 선택지가 없으면 자동으로 찬반 투표 생성
         if not choices:
             embed = discord.Embed(
-                title=f"🗳️ {question}",
+                title=clip_discord_text(f"🗳️ {question}", 256),
                 description="찬성(⭕) 혹은 반대(❌)를 눌러주세요!",
                 color=discord.Color.green()
             )
@@ -60,12 +61,14 @@ class PollCog(commands.Cog):
 
         description = []
         for i, choice in enumerate(choices):
-            description.append(f"{number_emojis[i]} {choice}")
+            description.append(
+                f"{number_emojis[i]} {clip_discord_text(choice, 360)}"
+            )
 
         # 투표 내용을 담을 임베드를 생성합니다.
         embed = discord.Embed(
-            title=f"🗳️ {question}",
-            description="\n\n".join(description),
+            title=clip_discord_text(f"🗳️ {question}", 256),
+            description=clip_discord_text("\n\n".join(description), 4096),
             color=discord.Color.blue()
         )
         embed.set_footer(text=f"{ctx.author.display_name}님이 주최함")

@@ -127,6 +127,7 @@ def _boot(tmp_path: Path, extra_lines: list[str]):
         "AI_MEMORY_ENABLED=false",
         "EMBEDDING_ENABLED=false",
         "RERANK_ENABLED=false",
+        "SCHOOL_NOTICE_ENABLED=false",
         "DISCORD_BOT_TOKEN=general-token",
         "MASAMONG_EXPECTED_DISCORD_BOT_USER_ID=replace-with-current-masamo-bot-user-id",
         "COMETAPI_KEY=test-cometapi-key",
@@ -182,8 +183,8 @@ def test_enabling_with_absolute_paths_boots(tmp_path):
         tmp_path,
         [
             "SCHOOL_NOTICE_ENABLED=true",
-            f"SCHOOL_NOTICE_DIGEST_DIR={tmp_path / 'digests'}",
-            f"SCHOOL_NOTICE_CORE_DB={tmp_path / 'core.db'}",
+            f"SCHOOL_NOTICE_DIGEST_DIR={tmp_path / 'general' / 'digests'}",
+            f"SCHOOL_NOTICE_CORE_DB={tmp_path / 'general' / 'core.db'}",
             f"SCHOOL_NOTICE_SOURCE_CONFIG={source_config_path}",
         ],
     )

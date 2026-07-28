@@ -330,15 +330,39 @@ def _check_profile(
                 errors.append(
                     f"general: 첫 배포에서는 {scheduler_key}=false를 명시해야 합니다."
                 )
-    if (
-        profile == "masamo"
-        and env.get("SCHOOL_NOTICE_ENABLED", "").lower()
-        not in FALSE_VALUES
-    ):
+    school_notice_enabled = env.get("SCHOOL_NOTICE_ENABLED", "").lower()
+    if school_notice_enabled not in TRUE_VALUES | FALSE_VALUES:
         errors.append(
-            "masamo: 학교 공지 수집·개인화는 general 소유이므로 "
-            "SCHOOL_NOTICE_ENABLED=false여야 합니다."
+            f"{label}: SCHOOL_NOTICE_ENABLED=true 또는 false를 직접 명시해야 합니다."
         )
+    elif school_notice_enabled in TRUE_VALUES:
+        for path_key in (
+            "SCHOOL_NOTICE_DIGEST_DIR",
+            "SCHOOL_NOTICE_CORE_DB",
+            "SCHOOL_NOTICE_CATALOG_PATH",
+            "SCHOOL_NOTICE_SOURCE_CONFIG",
+        ):
+            configured_path = Path(env.get(path_key, "")).expanduser()
+            if not configured_path.is_absolute():
+                errors.append(
+                    f"{label}: {path_key}는 절대 경로여야 합니다."
+                )
+                continue
+            if (
+                path_key
+                in {"SCHOOL_NOTICE_DIGEST_DIR", "SCHOOL_NOTICE_CORE_DB"}
+                and profile not in configured_path.parts
+            ):
+                errors.append(
+                    f"{label}: {path_key} 경로에는 인스턴스 이름 "
+                    f"{profile!r}이 독립 구성요소로 포함되어야 합니다."
+                )
+            if (
+                path_key
+                in {"SCHOOL_NOTICE_CATALOG_PATH", "SCHOOL_NOTICE_SOURCE_CONFIG"}
+                and not configured_path.is_file()
+            ):
+                errors.append(f"{label}: {path_key} 파일을 찾을 수 없습니다.")
     if profile in {"masamo", "general"}:
         for limit_key in LOW_SPEC_POSITIVE_LIMIT_KEYS:
             parsed_limit = _positive_int(env.get(limit_key, ""))

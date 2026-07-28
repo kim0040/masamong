@@ -1,0 +1,525 @@
+{
+  "sources": [
+    {
+      "id": "jbnu_campus",
+      "school_id": "jbnu",
+      "university": "전북대학교",
+      "board_name": "교내공지",
+      "adapter": "jbnu_central",
+      "list_url": "https://www.jbnu.ac.kr/web/news/notice/sub01.do",
+      "allowed_hosts": ["www.jbnu.ac.kr"],
+      "list": {
+        "row_selector": "form#Form table tbody tr",
+        "link_selector": "td.td-title a.title",
+        "id_attribute": "onclick",
+        "id_regex": "pf_DetailMove\\(['\\\"]?(\\d+)['\\\"]?\\)",
+        "date_selector": "td.td-title ul.etc-list li",
+        "author_selector": "p.brd-writer",
+        "category_selector": ".tag-type-01",
+        "detail_url_template": "https://www.jbnu.ac.kr/web/Board/{id}/detailView.do",
+        "pinned_classes": ["tr-noticed"]
+      },
+      "detail": {
+        "title_selectors": [".com-post-hd-01 h2.title", "meta[property='og:title']"],
+        "body_selectors": [".com-post-content-01", "meta[name='description']"],
+        "date_selectors": [".com-post-hd-01 ul.etc-list li:nth-of-type(2)"],
+        "author_selectors": [".com-post-hd-01 ul.etc-list li:nth-of-type(1)"],
+        "attachment_selectors": [
+          ".com-post-files-01 button[onclick*='cf_download']"
+        ],
+        "attachment_attribute": "onclick",
+        "attachment_regex": "cf_download\\('([^']+)'\\)",
+        "attachment_url_template": "https://www.jbnu.ac.kr/async/MultiFile/download.do?file={id}",
+        "inline_image_selectors": [".com-post-content-01 img[src]"]
+      },
+      "validation": {
+        "min_list_items": 5,
+        "min_body_characters": 50
+      }
+    },
+    {
+      "id": "jbnu_software",
+      "school_id": "jbnu",
+      "university": "전북대학교",
+      "board_name": "소프트웨어공학과 공지",
+      "profile_tags": ["department:소프트웨어공학과"],
+      "adapter": "k2web",
+      "list_url": "https://software.jbnu.ac.kr/bbs/software/527/artclList.do",
+      "allowed_hosts": ["software.jbnu.ac.kr", "www.jbnu.ac.kr"],
+      "list": {
+        "row_selector": "._articleTable table tbody tr",
+        "link_selector": "td._artclTdTitle a.artclLinkView",
+        "id_attribute": "href",
+        "id_regex": "/(\\d+)/artclView",
+        "title_selector": "strong",
+        "date_selector": "td._artclTdRdate",
+        "author_selector": "td._artclTdWriter",
+        "category_selector": null,
+        "pinned_classes": ["headline"]
+      },
+      "detail": {
+        "title_selectors": [".artclViewTitle"],
+        "body_selectors": [".artclView"],
+        "date_selectors": [".artclViewHead .right dl:nth-of-type(1) dd"],
+        "author_selectors": [".artclViewHead .right dl:nth-of-type(3) dd"],
+        "attachment_selectors": [
+          ".artclItem.viewForm a[href]",
+          "a[href*='download.do']"
+        ],
+        "inline_image_selectors": [".artclView img[src]"]
+      },
+      "validation": {
+        "min_list_items": 5,
+        "min_body_characters": 30
+      }
+    },
+    {
+      "id": "snu_general",
+      "school_id": "snu",
+      "university": "서울대학교",
+      "board_name": "일반공지",
+      "adapter": "snu_board",
+      "list_url": "https://www.snu.ac.kr/snunow/notice/genernal",
+      "allowed_hosts": ["www.snu.ac.kr", "snu.ac.kr"],
+      "list": {
+        "row_selector": ".board-list tbody tr",
+        "link_selector": "td.col-title a[href]",
+        "id_attribute": "href",
+        "id_regex": "[?&]bbsidx=(\\d+)",
+        "title_selector": ".txt",
+        "date_selector": "td.col-date"
+      },
+      "detail": {
+        "title_selectors": [".board-view header.header h3.title"],
+        "body_selectors": [".board-view .content-wrap .content"],
+        "date_selectors": [".board-view header.header p.date"],
+        "attachment_selectors": [".board-view .download a[href]"],
+        "inline_image_selectors": [".board-view .content-wrap .content img[src]"]
+      },
+      "validation": {
+        "min_list_items": 5,
+        "min_body_characters": 50
+      }
+    },
+    {
+      "id": "pnu_general",
+      "school_id": "pnu",
+      "university": "부산대학교",
+      "board_name": "공지사항",
+      "adapter": "pnu_cms_board",
+      "list_url": "https://www.pusan.ac.kr/kor/CMS/Board/Board.do?mCode=MN095&mgr_seq=3",
+      "allowed_hosts": ["www.pusan.ac.kr", "pusan.ac.kr"],
+      "list": {
+        "row_selector": ".board-list-table tbody tr",
+        "link_selector": "td.subject a[href]",
+        "id_attribute": "href",
+        "id_regex": "[?&]board_seq=(\\d+)",
+        "date_selector": "td.date",
+        "author_selector": "td.writer",
+        "pinned_classes": ["isnotice"]
+      },
+      "detail": {
+        "title_selectors": [".board-view-title h4.vtitle"],
+        "body_selectors": ["#boardContents", ".board-view-contents"],
+        "date_selectors": [],
+        "author_selectors": [],
+        "attachment_selectors": [
+          ".board-view-files a[href]"
+        ],
+        "inline_image_selectors": ["#boardContents img[src]"]
+      },
+      "validation": {
+        "min_list_items": 5,
+        "min_body_characters": 50
+      }
+    },
+    {
+      "id": "korea_cs_undergrad",
+      "school_id": "korea",
+      "university": "고려대학교",
+      "board_name": "컴퓨터학과 학부 공지",
+      "profile_tags": ["department:컴퓨터학과", "degree:undergraduate"],
+      "adapter": "korea_article_board",
+      "list_url": "https://cs.korea.ac.kr/cs/board/notice_under.do",
+      "allowed_hosts": ["cs.korea.ac.kr"],
+      "list": {
+        "row_selector": ".common_notice table tbody tr",
+        "link_selector": "a.article-title[href]",
+        "id_attribute": "href",
+        "id_regex": "[?&]articleNo=(\\d+)",
+        "date_selector": "td:last-of-type",
+        "author_selector": "td:nth-of-type(3)",
+        "pinned_classes": ["top-notice-bg"]
+      },
+      "detail": {
+        "title_selectors": [".t_view tr:nth-of-type(1) td", ".t_view caption"],
+        "body_selectors": [".t_view .article-text .fr-view", ".t_view .article-text"],
+        "attachment_selectors": [".t_view a.down[href]"],
+        "inline_image_selectors": [".t_view .article-text img[src]"]
+      },
+      "validation": {
+        "min_list_items": 5,
+        "min_body_characters": 20
+      }
+    },
+    {
+      "id": "jj_academic",
+      "school_id": "jj",
+      "university": "전주대학교",
+      "board_name": "학사공지",
+      "adapter": "jj_article_board",
+      "list_url": "https://www.jj.ac.kr/jj/community/notice02.do",
+      "allowed_hosts": ["www.jj.ac.kr", "jj.ac.kr"],
+      "list": {
+        "row_selector": "table.board-table tbody tr",
+        "link_selector": ".b-title-box a[data-article-no]",
+        "id_attribute": "data-article-no",
+        "id_regex": "(\\d+)",
+        "date_selector": ".b-date",
+        "author_selector": ".b-writer",
+        "pinned_classes": ["b-noti-box"]
+      },
+      "detail": {
+        "title_selectors": [".b-main-box .b-title-box > span:last-child"],
+        "body_selectors": [".b-content-box .fr-view", ".b-content-box"],
+        "date_selectors": [".b-date-box span:last-child"],
+        "author_selectors": [".b-writer-box span:last-child"],
+        "attachment_selectors": [".b-file-box a.file-down-btn[href]"],
+        "inline_image_selectors": [".b-content-box img[src]"]
+      },
+      "validation": {
+        "min_list_items": 5,
+        "min_body_characters": 30
+      }
+    },
+    {
+      "id": "skku_general",
+      "school_id": "skku",
+      "university": "성균관대학교",
+      "board_name": "공지사항",
+      "adapter": "skku_article_board",
+      "list_url": "https://www.skku.edu/skku/campus/skk_comm/notice01.do",
+      "allowed_hosts": ["www.skku.edu", "skku.edu"],
+      "list": {
+        "row_selector": "ul.board-list-wrap > li",
+        "link_selector": "dt.board-list-content-title a[href*='articleNo=']",
+        "id_attribute": "href",
+        "id_regex": "[?&]articleNo=(\\d+)",
+        "date_selector": "dd.board-list-content-info li:nth-of-type(3)",
+        "author_selector": "dd.board-list-content-info li:nth-of-type(2)",
+        "category_selector": ".c-board-list-category"
+      },
+      "detail": {
+        "title_selectors": [".board_view thead em.ellipsis"],
+        "body_selectors": [".board_view .board-write-box dd"],
+        "date_selectors": [".board_view thead span.date"],
+        "author_selectors": [".boardView_txtWrap .flL .boardView_txtList li"],
+        "attachment_selectors": [".filedown_list a[href]"],
+        "inline_image_selectors": [".board-write-box img[src]"]
+      },
+      "validation": {
+        "min_list_items": 5,
+        "min_body_characters": 20
+      }
+    },
+    {
+      "id": "gachon_general",
+      "school_id": "gachon",
+      "university": "가천대학교",
+      "board_name": "공지사항",
+      "adapter": "gachon_common_notice",
+      "list_url": "https://www.gachon.ac.kr/kor/7986/subview.do",
+      "allowed_hosts": ["www.gachon.ac.kr", "gachon.ac.kr"],
+      "list": {
+        "row_selector": "table.board-table tbody tr",
+        "link_selector": "td.td-subject a[href*='jf_viewArtcl']",
+        "id_attribute": "href",
+        "id_regex": "jf_viewArtcl\\('kor',\\s*'(\\d+)'\\)",
+        "title_selector": "strong",
+        "date_selector": "td.td-date",
+        "author_selector": "td.td-write",
+        "detail_url_template": "https://www.gachon.ac.kr/commonNotice/kor/{id}/artclView.do"
+      },
+      "detail": {
+        "title_selectors": [".board-view-info .view-title"],
+        "body_selectors": [".view-con"],
+        "date_selectors": [".view-util dl.write dd"],
+        "author_selectors": [".view-util dl.writer dd"],
+        "attachment_selectors": [".view-file a[href*='download.do']"],
+        "inline_image_selectors": [".view-con img[src]"]
+      },
+      "validation": {
+        "min_list_items": 5,
+        "min_body_characters": 30
+      }
+    },
+    {
+      "id": "ssu_general",
+      "school_id": "ssu",
+      "university": "숭실대학교",
+      "board_name": "공지사항",
+      "adapter": "ssu_scatch",
+      "list_url": "https://scatch.ssu.ac.kr/%EA%B3%B5%EC%A7%80%EC%82%AC%ED%95%AD/",
+      "allowed_hosts": ["scatch.ssu.ac.kr"],
+      "list": {
+        "row_selector": "ul.notice-lists > li:not(.notice_head)",
+        "link_selector": ".notice_col3 a[href*='slug=']",
+        "id_attribute": "href",
+        "id_regex": "[?&]slug=([^&]+)",
+        "title_selector": "span.d-inline-blcok.m-pt-5",
+        "date_selector": ".notice_col1 .h2",
+        "author_selector": ".notice_col4",
+        "category_selector": ".notice_col3 span.label",
+        "pinned_classes": ["start"]
+      },
+      "detail": {
+        "title_selectors": [".bg-white.p-4.mb-5 > h1"],
+        "body_selectors": [".bg-white.p-4.mb-5 > div:last-child"],
+        "date_selectors": [".bg-white.p-4.mb-5 > .clearfix .float-left:first-child"],
+        "author_selectors": [],
+        "attachment_selectors": [
+          ".bg-white.p-4.mb-5 .download-list a[download]"
+        ],
+        "inline_image_selectors": [
+          ".bg-white.p-4.mb-5 > div:last-child img[src]"
+        ]
+      },
+      "validation": {
+        "min_list_items": 5,
+        "min_body_characters": 30
+      }
+    },
+    {
+      "id": "jnu_software",
+      "school_id": "jnu",
+      "university": "전남대학교",
+      "board_name": "소프트웨어공학과 공지사항",
+      "profile_tags": ["department:소프트웨어공학과"],
+      "adapter": "jnu_k2_board",
+      "list_url": "https://sw.jnu.ac.kr/bbs/sw/1038/artclList.do",
+      "allowed_hosts": ["sw.jnu.ac.kr"],
+      "list": {
+        "row_selector": "table.board-table tbody tr",
+        "link_selector": "td.td-subject a[href*='artclView.do']",
+        "id_attribute": "href",
+        "id_regex": "/(\\d+)/artclView",
+        "title_selector": "strong",
+        "date_selector": "td.td-date",
+        "author_selector": "td.td-write",
+        "category_selector": "td.td-num span",
+        "pinned_classes": ["notice"]
+      },
+      "detail": {
+        "title_selectors": [".board-view-info .view-title"],
+        "body_selectors": [".view-con"],
+        "date_selectors": [".view-util dl.write dd"],
+        "author_selectors": [".view-util dl.writer dd"],
+        "attachment_selectors": [".view-file a[href*='download.do']"],
+        "inline_image_selectors": [".view-con img[src]"]
+      },
+      "validation": {
+        "min_list_items": 5,
+        "min_body_characters": 30
+      }
+    },
+    {
+      "id": "scnu_academic",
+      "school_id": "scnu",
+      "university": "국립순천대학교",
+      "board_name": "학사공지",
+      "adapter": "scnu_ntt_board",
+      "list_url": "https://www.scnu.ac.kr/SCNU/na/ntt/selectNttList.do?mi=1132&bbsId=1041",
+      "allowed_hosts": ["www.scnu.ac.kr", "scnu.ac.kr"],
+      "list": {
+        "row_selector": ".BD_list table tbody tr",
+        "link_selector": "td.ta_l a[href*='nttSn=']",
+        "id_attribute": "href",
+        "id_regex": "[?&]nttSn=(\\d+)",
+        "date_selector": "td:nth-of-type(4)",
+        "author_selector": "td.BD_listUser"
+      },
+      "detail": {
+        "title_selectors": [".BD_table th.title"],
+        "body_selectors": [".BD_table td.dragable"],
+        "date_selectors": [".BD_table tbody tr:nth-of-type(2) td:nth-of-type(2)"],
+        "author_selectors": [".BD_table tbody tr:nth-of-type(2) td:nth-of-type(1)"],
+        "attachment_selectors": [".BD_table ul.file a[href*='nttFileDownload.do']"],
+        "inline_image_selectors": [".BD_table td.dragable img[src]"]
+      },
+      "validation": {
+        "min_list_items": 5,
+        "min_body_characters": 30
+      }
+    },
+    {
+      "id": "mju_general",
+      "school_id": "mju",
+      "university": "명지대학교",
+      "board_name": "일반공지",
+      "adapter": "k2web",
+      "list_url": "https://www.mju.ac.kr/bbs/mjukr/143/artclList.do",
+      "allowed_hosts": ["www.mju.ac.kr", "mju.ac.kr"],
+      "list": {
+        "row_selector": "._articleTable table tbody tr",
+        "link_selector": "td._artclTdTitle a.artclLinkView",
+        "id_attribute": "href",
+        "id_regex": "/(\\d+)/artclView",
+        "title_selector": "strong",
+        "date_selector": "td._artclTdRdate",
+        "author_selector": "td._artclTdWriter",
+        "pinned_classes": ["headline"]
+      },
+      "detail": {
+        "title_selectors": [".artclViewTitle"],
+        "body_selectors": [".artclView"],
+        "date_selectors": [".head_info li:nth-of-type(1)"],
+        "author_selectors": [".head_info li:nth-of-type(3)"],
+        "attachment_selectors": [
+          ".artclItem.attfile a[href]",
+          ".artclItem.viewForm a[href*='download.do']"
+        ],
+        "inline_image_selectors": [".artclView img[src]"]
+      },
+      "validation": {
+        "min_list_items": 5,
+        "min_body_characters": 30
+      }
+    },
+    {
+      "id": "konkuk_academic",
+      "school_id": "konkuk",
+      "university": "건국대학교",
+      "board_name": "학사공지",
+      "adapter": "konkuk_k2_board",
+      "list_url": "https://www.konkuk.ac.kr/bbs/konkuk/234/artclList.do",
+      "allowed_hosts": ["www.konkuk.ac.kr", "konkuk.ac.kr"],
+      "list": {
+        "row_selector": "table.board-table tbody tr",
+        "link_selector": "td.td-subject a[href*='artclView.do']",
+        "id_attribute": "href",
+        "id_regex": "/(\\d+)/artclView",
+        "title_selector": "strong",
+        "date_selector": "td.td-date",
+        "author_selector": "td.td-write",
+        "category_selector": "td.td-num span",
+        "pinned_classes": ["notice"]
+      },
+      "detail": {
+        "title_selectors": [".board-view-info .view-title"],
+        "body_selectors": [".view-con"],
+        "date_selectors": [".view-util dl.write dd"],
+        "author_selectors": [".view-util dl.writer dd"],
+        "attachment_selectors": [".view-file a[href*='download.do']"],
+        "inline_image_selectors": [".view-con img[src]"]
+      },
+      "validation": {
+        "min_list_items": 5,
+        "min_body_characters": 30
+      }
+    },
+    {
+      "id": "kookmin_academic",
+      "school_id": "kookmin",
+      "university": "국민대학교",
+      "board_name": "학사공지",
+      "adapter": "kookmin_notice",
+      "list_url": "https://www.kookmin.ac.kr/user/kmuNews/notice/4/index.do",
+      "allowed_hosts": [
+        "www.kookmin.ac.kr",
+        "kookmin.ac.kr",
+        "portal.kookmin.ac.kr",
+        "kep.kookmin.ac.kr"
+      ],
+      "list": {
+        "row_selector": ".list_type .board_list > ul > li",
+        "link_selector": "a[href*='/notice/4/'][href*='/view.do']",
+        "id_attribute": "href",
+        "id_regex": "/notice/4/(\\d+)/view\\.do",
+        "title_selector": "p.title",
+        "pinned_classes": ["notice"]
+      },
+      "detail": {
+        "title_selectors": [".board_view .view_tit"],
+        "body_selectors": [".board_view .view_inner"],
+        "date_selectors": [".board_view .board_etc span:nth-of-type(1)"],
+        "author_selectors": [".board_view .board_etc span:nth-of-type(2)"],
+        "attachment_selectors": [".board_view .board_atc.file a[href]"],
+        "inline_image_selectors": [".board_view .view_inner img[src]"]
+      },
+      "validation": {
+        "min_list_items": 5,
+        "min_body_characters": 30
+      }
+    },
+    {
+      "id": "hanyang_seoul",
+      "school_id": "hanyang",
+      "university": "한양대학교",
+      "board_name": "서울캠퍼스 전체공지",
+      "profile_tags": ["campus:서울"],
+      "adapter": "hanyang_liferay",
+      "list_url": "https://www.hanyang.ac.kr/web/www/notice_all",
+      "allowed_hosts": ["www.hanyang.ac.kr", "hanyang.ac.kr", "site.hanyang.ac.kr"],
+      "list": {
+        "row_selector": ".noticeBoard-view .hyu-list-body-inner[role='list'] > .hyu-list-body-item",
+        "link_selector": "h4 a[href*='entryId=']",
+        "id_attribute": "href",
+        "id_regex": "[?&]_[^&]*entryId=(\\d+)",
+        "date_selector": ".hyu-list-body-item-col:last-child > span",
+        "category_selector": "p .hyu-badge[data-itemvalue]:not(.custom-bg)",
+        "include_selector": "p .hyu-badge.custom-bg[data-itemvalue]",
+        "include_regex": "^서울$",
+        "detail_url_template": "https://www.hanyang.ac.kr/notice_all?p_p_id=kr_ac_hanyang_noticeBoard_web_portlet_NoticeBoardPortlet&p_p_lifecycle=0&p_p_state=normal&p_p_mode=view&_kr_ac_hanyang_noticeBoard_web_portlet_NoticeBoardPortlet_action=view_message&_kr_ac_hanyang_noticeBoard_web_portlet_NoticeBoardPortlet_entryId={id}"
+      },
+      "detail": {
+        "title_selectors": [".noticeBoard-view-message .hyu-list-body-inner[role='article'] h4"],
+        "body_selectors": [".noticeBoard-view-message .entry-content"],
+        "date_selectors": [".noticeBoard-view-message .hyu-meta-item:nth-of-type(2) span:last-child"],
+        "author_selectors": [".noticeBoard-view-message .hyu-meta-item:nth-of-type(1) span:last-child"],
+        "attachment_selectors": [
+          ".noticeBoard-view-message .entry-content a[href*='/documents/'][href*='download']"
+        ],
+        "inline_image_selectors": [".noticeBoard-view-message .entry-content img[src]"]
+      },
+      "validation": {
+        "min_list_items": 2,
+        "min_body_characters": 30
+      }
+    },
+    {
+      "id": "hanyang_erica",
+      "school_id": "hanyang",
+      "university": "한양대학교",
+      "board_name": "ERICA캠퍼스 전체공지",
+      "profile_tags": ["campus:ERICA"],
+      "adapter": "hanyang_liferay",
+      "list_url": "https://www.hanyang.ac.kr/web/www/notice_all",
+      "allowed_hosts": ["www.hanyang.ac.kr", "hanyang.ac.kr", "site.hanyang.ac.kr"],
+      "list": {
+        "row_selector": ".noticeBoard-view .hyu-list-body-inner[role='list'] > .hyu-list-body-item",
+        "link_selector": "h4 a[href*='entryId=']",
+        "id_attribute": "href",
+        "id_regex": "[?&]_[^&]*entryId=(\\d+)",
+        "date_selector": ".hyu-list-body-item-col:last-child > span",
+        "category_selector": "p .hyu-badge[data-itemvalue]:not(.custom-bg)",
+        "include_selector": "p .hyu-badge.custom-bg[data-itemvalue]",
+        "include_regex": "^ERICA$",
+        "detail_url_template": "https://www.hanyang.ac.kr/notice_all?p_p_id=kr_ac_hanyang_noticeBoard_web_portlet_NoticeBoardPortlet&p_p_lifecycle=0&p_p_state=normal&p_p_mode=view&_kr_ac_hanyang_noticeBoard_web_portlet_NoticeBoardPortlet_action=view_message&_kr_ac_hanyang_noticeBoard_web_portlet_NoticeBoardPortlet_entryId={id}"
+      },
+      "detail": {
+        "title_selectors": [".noticeBoard-view-message .hyu-list-body-inner[role='article'] h4"],
+        "body_selectors": [".noticeBoard-view-message .entry-content"],
+        "date_selectors": [".noticeBoard-view-message .hyu-meta-item:nth-of-type(2) span:last-child"],
+        "author_selectors": [".noticeBoard-view-message .hyu-meta-item:nth-of-type(1) span:last-child"],
+        "attachment_selectors": [
+          ".noticeBoard-view-message .entry-content a[href*='/documents/'][href*='download']"
+        ],
+        "inline_image_selectors": [".noticeBoard-view-message .entry-content img[src]"]
+      },
+      "validation": {
+        "min_list_items": 2,
+        "min_body_characters": 30
+      }
+    }
+  ]
+}

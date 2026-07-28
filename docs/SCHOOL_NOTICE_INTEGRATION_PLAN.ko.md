@@ -1,29 +1,30 @@
 # 학교 공지 기능 설명서
 
-이 문서는 마사몽의 학교 공지 사용자 흐름, 외부 수집 코어와의 계약, 운영 설정, 실패 처리와
-한계를 설명한다. 기능은 General 인스턴스의 선택 기능이며, 기존 Masamo 운영에는 연결하지
-않는다.
+이 문서는 마사몽의 학교 공지 사용자 흐름, 수집 코어와의 계약, 운영 설정, 실패 처리와
+한계를 설명한다. 현재 기능과 누적 상태, 23:00 timer의 소유자는 Masamo다. General은
+기본 비활성이며 나중에 사용하더라도 별도 DB·파일·timer를 가져야 한다.
 
 ## 현재 지원 범위
 
-- Masamo: `SCHOOL_NOTICE_ENABLED=false` 유지
-- General: 전용 DB와 외부 core를 준비하고 검증한 뒤에만 활성화
-- 마사몽 저장소: 자연어 등록·확인, 동의, profile/feedback, digest 계약 검증, Discord 전달
-- 외부 `school_notice` core: 공개 학교 게시판 수집, 사실 분석, 개인화 점수, digest 생성
+- Masamo: 전용 학교 schema/core DB/digest와 timer로 현재 기능 운영
+- General: `SCHOOL_NOTICE_ENABLED=false`로 시작하고 Masamo 상태를 공유하지 않음
+- Discord bot: 자연어 등록·확인, 동의, profile/feedback, digest 계약 검증, Discord 전달
+- vendored `school_notice` core: 공개 학교 게시판 수집, 사실 분석, 개인화 점수, digest 생성
 - 수집 시각: 매일 `23:00` KST systemd one-shot
 - 전달 시각: 사용자별, 신규 기본 `09:00` KST
 - 전달 대상 날짜: 보통 전날 23:00 batch가 만든 digest를 다음 날 사용자 시각에 전달하고,
   장애 복구 때는 최근 3일 안의 가장 최신 유효 결과만 제한적으로 확인
 - 관련 공지가 없으면 자동 DM을 보내지 않음
 
-외부 core는 이 저장소에 vendoring되거나 release version이 고정되어 있지 않다. 이 문서에
-적힌 CLI와 JSON 계약을 만족하는 별도 설치본이 반드시 필요하다.
+수집 core는 저장소의 `school_notice/`에 포함되어 봇과 같은 release SHA로 배포된다.
+다만 CPU·메모리와 실패 범위를 격리하기 위해 상주 봇 안에서 import해 돌리지 않고 별도
+systemd one-shot 프로세스로 실행한다.
 
 ## 사용자 시나리오
 
 ### 1. 목적별 동의
 
-DM에서 시작한다.
+DM에서 `!메뉴` 또는 `!공지`의 설정 버튼을 누르거나 기능을 자연어로 요청해 시작한다.
 
 ```text
 !개인정보 동의 학교공지
@@ -32,6 +33,7 @@ DM에서 시작한다.
 고지문에는 Discord 사용자 ID, 학교·과정·학년·학과·캠퍼스·학적·이수/성적·관심/알림
 설정과 피드백의 수집·이용, 보관·철회·삭제 범위가 나온다. 명령을 실행한 본인이
 `동의합니다` 버튼을 누르기 전에는 새 정보를 수집하거나 기존 프로필을 이용하지 않는다.
+기능 진입 도중 나온 동의 버튼을 누르면 원래 설정 흐름이 한 번만 자동으로 이어진다.
 현재 자연어 등록 UI는 아래의 최소 필드만 새로 저장하고, 이수/성적 등은 기존 core 호환
 profile에 이미 존재하는 경우까지 포함해 동의 범위로 보호한다.
 
@@ -44,6 +46,7 @@ profile에 이미 존재하는 경우까지 포함해 동의 범위로 보호한
 
 ```text
 !공지 등록 전북대 소프트웨어공학과 3학년이고 오전 9시에 알려줘
+전북대 소프트웨어공학과 3학년 공지를 오전 9시에 알려줘
 ```
 
 먼저 유한한 로컬 파서로 해석하므로 입력만으로 값이 명확하면 프로필 LLM 호출은 0회다.
@@ -88,7 +91,7 @@ profile에 이미 존재하는 경우까지 포함해 동의 범위로 보호한
 - 학교 프로필이 존재함
 - `enabled=1`
 
-프로필의 `school_id`를 버전 관리된 카탈로그와 외부 core `sources.json`에 대조하고, 교집합의
+프로필의 `school_id`를 버전 관리된 카탈로그와 vendored core `sources.json`에 대조하고, 교집합의
 source ID만 core의 반복 `--source` 인자로 전달한다. 등록되지 않은 학교와 사용자 없는
 학교는 수집하지 않는다.
 
@@ -125,7 +128,8 @@ visible item이 0건이면 전달 run만 완료 상태로 기록하고 DM은 보
 
 | 명령 | 동작 |
 |---|---|
-| `!공지 [페이지]` | 현재 사용할 수 있는 digest의 지정 페이지를 다시 표시 |
+| `!공지` | 설정·최근 공지·시간·중지/재개 버튼이 있는 대시보드 |
+| `!공지 1` | 현재 사용할 수 있는 digest의 1페이지를 다시 표시 |
 | `!공지 등록 <자연어>` | 신규 등록 또는 확인 기반 갱신 |
 | `!공지 수정 <자연어>` | 기존 프로필 후보를 자연어로 보정하고 다시 확인 |
 | `!공지 정보` | 저장된 최소 프로필, 전달 시각과 활성 상태 확인 |
@@ -166,8 +170,8 @@ visible item이 0건이면 전달 run만 완료 상태로 기록하고 DM은 보
 | `kookmin` | 국민대학교 | `kookmin_academic` |
 | `hanyang` | 한양대학교 | `hanyang_seoul`, `hanyang_erica` |
 
-카탈로그는 `profiles/catalogs/school_notice_catalog.v1.json`이다. 학교가 목록에 있어도 외부
-core의 실제 `sources.json`에 같은 source ID가 없으면 실행하지 않는다. 새 학교는 카탈로그와
+카탈로그는 `profiles/catalogs/school_notice_catalog.v1.json`이다. 학교가 목록에 있어도
+같은 release의 `school_notice/sources.json`에 같은 source ID가 없으면 실행하지 않는다. 새 학교는 카탈로그와
 core source 설정, selector/host/robots 계약, fixture/live-check를 함께 추가해야 한다.
 로그인·SSO·CAPTCHA 우회는 지원하지 않는다.
 
@@ -175,17 +179,17 @@ core source 설정, selector/host/robots 계약, fixture/live-check를 함께 �
 
 ```text
 Discord DM
-  └─ 동의 → 자연어 후보 → 사용자 확인 → General DB profile
+  └─ 동의 → 자연어 후보 → 사용자 확인 → Masamo DB profile
 
 23:00 KST systemd timer
   └─ run_school_notice_batch.py (one-shot, thread 1)
        ├─ 동의·활성 profile 조회
        ├─ profile 학교 source만 선택
-       ├─ 미반영 feedback을 외부 core에 먼저 반영
-       ├─ 외부 core daily를 사용자별 순차 실행
+       ├─ 미반영 feedback을 수집 core에 먼저 반영
+       ├─ vendored core daily를 사용자별 순차 실행
        └─ 계약 검증 후 digest/run report 원자적 공개
 
-상주 General bot
+상주 Masamo bot
   └─ 1분 delivery catch-up
        ├─ 사용자별 시각과 보통 전날 digest 확인
        ├─ 장애 시 최근 3일 중 최신 유효 batch만 제한적으로 확인
@@ -201,14 +205,14 @@ Discord DM
 
 | 데이터 | 소유자/위치 |
 |---|---|
-| Discord 사용자 ID와 정규화 profile | General main DB |
-| 목적별 동의 current/event | General main DB |
-| feedback, 전달·batch·delivery run | General main DB |
-| 공지 snapshot/revision/분석 cache | 외부 core SQLite |
-| 사용자별 digest/run report | General 전용 digest directory |
-| 학교/별칭/source mapping | 버전 관리된 catalog + 외부 `sources.json` |
+| Discord 사용자 ID와 정규화 profile | Masamo main DB |
+| 목적별 동의 current/event | Masamo main DB |
+| feedback, 전달·batch·delivery run | Masamo main DB |
+| 공지 snapshot/revision/분석 cache | Masamo 전용 core SQLite |
+| 사용자별 digest/run report | Masamo 전용 digest directory |
+| 학교/별칭/source mapping | 버전 관리된 catalog + vendored `sources.json` |
 
-두 프로필이 이 경로와 DB를 공유하지 않는다. Masamo에는 school table이 없어도
+두 프로필이 이 경로와 DB를 공유하지 않는다. General에는 school table이 없어도
 `SCHOOL_NOTICE_ENABLED=false`이면 정상 기동해야 한다.
 
 ## Batch wrapper
@@ -216,11 +220,11 @@ Discord DM
 기본 명령:
 
 ```bash
-MASAMONG_ENV_FILE=/etc/masamong/general.env \
+MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
   <masamong-venv>/bin/python scripts/run_school_notice_batch.py \
-  --core-python <core-venv>/bin/python \
-  --core-cwd <core-repository> \
-  --source-config <core-repository>/school_notice/sources.json
+  --core-python <masamong-venv>/bin/python \
+  --core-cwd /srv/masamong/current \
+  --source-config /srv/masamong/current/school_notice/sources.json
 ```
 
 옵션:
@@ -247,7 +251,7 @@ LLM을 켠다.
 
 ### Feedback 선처리
 
-미반영 feedback은 사용자 `daily`보다 먼저 외부 core의 `feedback` CLI에 전달한다.
+미반영 feedback은 사용자 `daily`보다 먼저 수집 core의 `feedback` CLI에 전달한다.
 프로세스 종료 코드 0과 구조화 JSON의 `recorded > 0`을 모두 확인한 ID만 `consumed_at`으로
 표시한다. 한 건이라도 실패하면 옛 선호 상태로 digest를 만들지 않고 그 사용자의 daily를
 실패로 남겨 다음 유한 batch에 보류한다.
@@ -289,7 +293,7 @@ rotation을 사용한다. 처리하지 못한 사용자가 다음 batch에서 �
 | 2 | profile/feedback/daily 실패, timeout, deadline, profile cap |
 | 3 | single-flight lock 충돌 |
 
-외부 core가 nonzero로 끝나면 생성된 파일이 있어도 성공으로 간주하지 않는다. 각 사용자
+수집 core가 nonzero로 끝나면 생성된 파일이 있어도 성공으로 간주하지 않는다. 각 사용자
 `school_notice_batch_runs.status`와 run report의 `status`/`collection_health`도 함께 본다.
 `partial`은 숨겨진 완전 성공이 아니다. `school_notice_batch_runs`에는
 `profile_version`과 `profile_hash`도 필요하며, 이 컬럼이 생기기 전의 기존 run은 새 batch가
@@ -331,7 +335,8 @@ duplicate_sources: array
 - digest 날짜와 요청 날짜가 다르면 거부
 - 예상 schema version 불일치 거부
 - 중복 notice/revision 거부
-- Discord embed 6,000자, 한 메시지 10개 제한
+- Discord 일반 메시지 2,000자, embed 설명 4,096자·전체 6,000자·field 25개 제한
+- 자동 digest 한 페이지의 공지 항목은 기본 최대 10개
 
 본문 전체 대신 `analysis.summary`를 표시하고 `score.reasons`를 “왜 추천됐는지” 근거로
 보여준다. `eligibility=UNKNOWN`과 추론 날짜는 원문 확인이 필요함을 표시한다. 공지 원문
@@ -339,7 +344,7 @@ duplicate_sources: array
 
 ## 개인화와 알림 의미
 
-외부 core는 공지의 사실 추출과 사용자별 판단을 분리한다. LLM을 켜도 공지 사실·근거 후보
+수집 core는 공지의 사실 추출과 사용자별 판단을 분리한다. LLM을 켜도 공지 사실·근거 후보
 구조화에만 사용하고, 사용자 profile에 대한 최종 점수는 재현 가능한 로컬 규칙이 담당해야
 한다.
 
@@ -387,11 +392,11 @@ INELIGIBLE   → hidden
 주요 env:
 
 ```dotenv
-SCHOOL_NOTICE_ENABLED=false
-SCHOOL_NOTICE_DIGEST_DIR=/var/lib/masamong/general/notice/out
-SCHOOL_NOTICE_CORE_DB=/var/lib/masamong/general/notice/core.db
+SCHOOL_NOTICE_ENABLED=true
+SCHOOL_NOTICE_DIGEST_DIR=/var/lib/masamong/masamo/notice/out
+SCHOOL_NOTICE_CORE_DB=/var/lib/masamong/masamo/notice/core.db
 SCHOOL_NOTICE_CATALOG_PATH=/srv/masamong/current/profiles/catalogs/school_notice_catalog.v1.json
-SCHOOL_NOTICE_SOURCE_CONFIG=/srv/school-notice/school_notice/sources.json
+SCHOOL_NOTICE_SOURCE_CONFIG=/srv/masamong/current/school_notice/sources.json
 
 SCHOOL_NOTICE_DELIVERY_HOUR=9
 SCHOOL_NOTICE_DELIVERY_MINUTE=0
@@ -420,7 +425,7 @@ SCHOOL_NOTICE_STALE_WARNING_ENABLED=false
 경로는 실제 배포 layout의 절대 경로여야 한다. `SCHOOL_NOTICE_ENABLED=true`이면 digest와
 core DB 경로는 비어 있지 않은 절대 경로여야 하고, catalog와 source config는 실제 파일로
 존재해야 한다. 조건을 만족하지 않으면 기동을 중단한다. 위 예시는 `/srv` layout이며
-`profiles/general.env.example` 및 systemd 템플릿도 같은 layout을 사용한다. 실제 서버에서
+`profiles/masamo.env.example` 및 systemd 템플릿도 같은 layout을 사용한다. 실제 서버에서
 다른 경로를 쓰면 env와 unit의 모든 절대 경로를 함께 바꾼다.
 
 23:00 수집 시각의 source of truth는 아래 systemd timer다. 봇 env의
@@ -446,10 +451,12 @@ AccuracySec=1min
 service는 `Type=oneshot`, 내부 최대 deadline 7,200초에 cleanup 여유를 둔
 `RuntimeMaxSec=7800`, CPU/BLAS thread 1, 낮은 CPU/IO weight, `UMask=0077`,
 `NoNewPrivileges=true`를 사용한다. env에는 secret을 unit literal로 넣지 않고
-`MASAMONG_ENV_FILE=/etc/masamong/general.env`만 선택한다.
+`MASAMONG_ENV_FILE=/etc/masamong/masamo.env`만 선택한다.
 
-템플릿은 core나 venv를 설치하지 않는다. 실제 service 사용자, group, path, 권한을 맞춘 뒤
-수동 dry-run과 제한된 batch가 성공해야 timer를 켠다. Masamo에는 timer를 활성화하지 않는다.
+템플릿은 별도 core repository를 내려받지 않는다. 같은 release의 `school_notice/`와
+Masamo Python 환경을 사용한다. 실제 service 사용자, group, path, 권한을 맞춘 뒤 수동
+dry-run과 제한된 batch가 성공해야 Masamo timer를 켠다. General에는 이 timer를 설치하지
+않는다.
 
 ## 실패와 알림 정책
 
@@ -472,13 +479,8 @@ DM을 만들지 않는다. 운영자가 true로 켜면 stale 경고의 의미와
 
 ## 알려진 한계
 
-- 외부 core는 이 저장소에서 version/release가 고정되지 않는다.
-- wrapper는 사용자 profile별로 core `daily`를 실행한다. 같은 학교 사용자 여러 명의
-  크롤링 결과를 하나로 공유하지 못해 같은 학교를 여러 번 수집할 수 있다.
-- 따라서 현재 보장은 “모든 학교가 아니라 등록된 profile의 학교만”이지 “학교당 하루 한
-  번”이 아니다.
-- core가 목록 첫 페이지만 읽거나, OCR/브라우저 렌더링을 지원하지 않거나, selector가
-  깨지는 등의 한계는 core 배포본에 따라 남는다.
+- selector가 변경되거나 OCR/로그인/브라우저 렌더링이 필요한 게시판은 source별 보강이
+  필요하다.
 - 제목 기반 중복은 의미 기반 중복이 아닐 수 있다.
 - 공개·비로그인 게시판만 대상이며 robots, 허용 host, redirect와 요청 크기 제한을 지켜야
   한다.
@@ -502,7 +504,7 @@ DM을 만들지 않는다. 운영자가 true로 켜면 stale 경고의 의미와
 
 추가 확인:
 
-- 외부 core 전체 테스트
+- vendored core 전체 테스트
 - 등록 → 오인식 수정 → 확인 → 저장 → 재수정 → 취소 시나리오
 - 미동의·철회·정책 변경 fail-closed
 - 14개 학교 별칭과 지원하지 않는 학교 거부
@@ -514,7 +516,7 @@ DM을 만들지 않는다. 운영자가 true로 켜면 stale 경고의 의미와
 - feedback 실제 반영 뒤에만 consumed
 - dry-run 완전 무변경
 - timeout/deadline/lock/profile rotation
-- Masamo flag false에서 school table 없이 정상 기동
-- General/외부 core/sidecar/digest/log 경로가 Masamo와 겹치지 않음
+- General flag false에서 school table 없이 정상 기동
+- General과 Masamo의 DB/core/digest/log/timer 경로가 겹치지 않음
 
 운영 배치와 rollback은 [배포 가이드](../DEPLOYMENT.md)를 따른다.

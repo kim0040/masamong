@@ -1935,10 +1935,23 @@ AI_CREATIVE_PROMPTS = {
 FUN_KEYWORD_TRIGGERS = { "enabled": True, "cooldown_seconds": 60, "triggers": { "fortune": ["운세", "오늘 운", "운세 좀"], "summarize": ["요약해줘", "무슨 얘기했어", "무슨 얘기함", "요약 좀", "지금까지 뭔 얘기"] } }
 AI_DEBUG_ENABLED = as_bool(load_config_value('AI_DEBUG_ENABLED', False))
 AI_DEBUG_LOG_MAX_LEN = int(load_config_value('AI_DEBUG_LOG_MAX_LEN', 400))
-KMA_API_DAILY_CALL_LIMIT = 10000
+KMA_API_DAILY_CALL_LIMIT = min(
+    100000,
+    max(
+        100,
+        as_int(load_config_value("KMA_API_DAILY_CALL_LIMIT", 10000), 10000),
+    ),
+)
 KMA_API_MAX_RETRIES = min(
     5,
     max(1, as_int(load_config_value("KMA_API_MAX_RETRIES", 3), 3)),
+)
+KMA_URGENT_API_MAX_RETRIES = min(
+    2,
+    max(
+        1,
+        as_int(load_config_value("KMA_URGENT_API_MAX_RETRIES", 1), 1),
+    ),
 )
 KMA_API_RETRY_DELAY_SECONDS = min(
     30,
@@ -1971,6 +1984,19 @@ ENABLE_EARTHQUAKE_ALERT = as_bool(
 EARTHQUAKE_CHECK_INTERVAL_MINUTES = max(
     1,
     as_int(load_config_value("EARTHQUAKE_CHECK_INTERVAL_MINUTES", 1), 1),
+)
+EARTHQUAKE_CHECK_INTERVAL_SECONDS = min(
+    300,
+    max(
+        15,
+        as_int(
+            load_config_value(
+                "EARTHQUAKE_CHECK_INTERVAL_SECONDS",
+                EARTHQUAKE_CHECK_INTERVAL_MINUTES * 60,
+            ),
+            EARTHQUAKE_CHECK_INTERVAL_MINUTES * 60,
+        ),
+    ),
 )
 MORNING_GREETING_TIME = {
     "hour": as_int(load_config_value("MORNING_GREETING_HOUR", 7), 7),
@@ -2066,19 +2092,28 @@ if REQUIRE_EXPLICIT_PROFILE:
 # 수집·분석은 별도 batch 프로세스가 수행하고 봇은 결과 digest만 읽어 전달한다.
 # 봇 프로세스 안에서 크롤링하지 않으므로 저사양 서버의 상주 예산이 그대로 유지된다.
 SCHOOL_NOTICE_ENABLED = as_bool(load_config_value("SCHOOL_NOTICE_ENABLED", "false"))
-if REQUIRE_EXPLICIT_PROFILE and PROFILE == "masamo":
-    _masamo_school_notice_raw = _EXPLICIT_ENV_VALUES.get(
+if REQUIRE_EXPLICIT_PROFILE:
+    _school_notice_enabled_raw = _EXPLICIT_ENV_VALUES.get(
         "SCHOOL_NOTICE_ENABLED"
     )
     if (
-        _masamo_school_notice_raw is None
-        or str(_masamo_school_notice_raw).strip().lower()
-        not in {"0", "false", "no", "n", "off"}
-        or SCHOOL_NOTICE_ENABLED
+        _school_notice_enabled_raw is None
+        or str(_school_notice_enabled_raw).strip().lower()
+        not in {
+            "1",
+            "true",
+            "yes",
+            "y",
+            "on",
+            "0",
+            "false",
+            "no",
+            "n",
+            "off",
+        }
     ):
         raise RuntimeError(
-            "학교 공지 수집·개인화는 general 인스턴스가 소유합니다. "
-            "누적 운영 masamo env에는 SCHOOL_NOTICE_ENABLED=false를 "
+            "명시적 프로필 env에는 SCHOOL_NOTICE_ENABLED=true 또는 false를 "
             "직접 명시해야 합니다."
         )
 SCHOOL_NOTICE_DIGEST_DIR = as_str(load_config_value("SCHOOL_NOTICE_DIGEST_DIR", ""), "")
@@ -2254,6 +2289,17 @@ if SCHOOL_NOTICE_ENABLED:
             "SCHOOL_NOTICE_SOURCE_CONFIG",
         } and not Path(str(_path_value)).expanduser().is_file():
             _school_notice_errors.append(f"{_path_key} 파일이 없음")
+    if REQUIRE_EXPLICIT_PROFILE:
+        for _owned_path_key, _owned_path_value in (
+            ("SCHOOL_NOTICE_DIGEST_DIR", SCHOOL_NOTICE_DIGEST_DIR),
+            ("SCHOOL_NOTICE_CORE_DB", SCHOOL_NOTICE_CORE_DB),
+        ):
+            _owned_parts = Path(str(_owned_path_value)).expanduser().parts
+            if INSTANCE_NAME not in _owned_parts:
+                _school_notice_errors.append(
+                    f"{_owned_path_key} 경로에 인스턴스 이름 "
+                    f"'{INSTANCE_NAME}'이 독립 경로 구성요소로 포함되어야 함"
+                )
     if _school_notice_errors:
         raise RuntimeError(
             "SCHOOL_NOTICE_ENABLED=true인데 필수 경로 설정이 올바르지 않습니다: "

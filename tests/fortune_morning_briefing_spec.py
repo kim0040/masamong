@@ -36,7 +36,7 @@ class _User:
         self.send_calls = 0
         self.messages = []
 
-    async def send(self, content):
+    async def send(self, content, **_kwargs):
         self.send_calls += 1
         if self.send_outcomes:
             outcome = self.send_outcomes.pop(0)

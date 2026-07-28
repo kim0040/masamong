@@ -6,7 +6,7 @@
 """
 
 from utils.fortune import get_sign_from_date
-from utils.discord_helpers import split_message_chunks
+from utils.discord_helpers import normalize_discord_text, split_message_chunks
 
 
 class TestZodiacBoundaries:
@@ -60,3 +60,29 @@ class TestSplitMessageChunks:
         chunks = split_message_chunks(text, chunk_size=100)
         assert all(len(c) <= 100 for c in chunks)
         assert "".join(chunks) == text
+
+    def test_discord_partial_markdown_normalizes_heading_and_table(self):
+        text = (
+            "## 오늘 정보\n"
+            "| 항목 | 값 |\n"
+            "| --- | --- |\n"
+            "| 기온 | 21도 |\n"
+            "| 강수 | 없음 |"
+        )
+
+        normalized = normalize_discord_text(text)
+
+        assert normalized.startswith("**오늘 정보**")
+        assert "| --- |" not in normalized
+        assert "• **기온** · 값: 21도" in normalized
+        assert "• **강수** · 값: 없음" in normalized
+
+    def test_code_block_is_not_rewritten_and_each_chunk_is_balanced(self):
+        text = "```python\n" + ("print('# not a heading')\n" * 30) + "```"
+
+        chunks = split_message_chunks(text, chunk_size=120)
+
+        assert len(chunks) > 1
+        assert all(len(chunk) <= 120 for chunk in chunks)
+        assert all(chunk.count("```") % 2 == 0 for chunk in chunks)
+        assert sum(chunk.count("# not a heading") for chunk in chunks) == 30

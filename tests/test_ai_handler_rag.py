@@ -143,6 +143,52 @@ async def test_rag_info_logs_exclude_query_and_retrieved_content(monkeypatch):
     assert "message_id=777" in rendered_logs
 
 
+@pytest.mark.asyncio
+async def test_structured_memory_uses_its_own_acceptance_threshold(monkeypatch):
+    """구조화 검색을 통과한 0.50대 결과를 전역 0.60으로 다시 버리지 않는다."""
+
+    class _Engine:
+        async def search(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                entries=[
+                    {
+                        "combined_score": 0.55,
+                        "acceptance_threshold": 0.50,
+                        "dialogue_block": "구조화 기억",
+                        "origin": "structured_memory",
+                        "message_id": "memory:1",
+                    },
+                    {
+                        "combined_score": 0.59,
+                        "dialogue_block": "레거시 기억",
+                        "origin": "discord",
+                        "message_id": 2,
+                    },
+                ],
+                top_score=0.59,
+            )
+
+    monkeypatch.setattr(config, "AI_MEMORY_ENABLED", True)
+    monkeypatch.setattr(config, "EMBEDDING_ENABLED", True)
+    monkeypatch.setattr(config, "RAG_GUILD_SCOPE", "channel")
+    monkeypatch.setattr(config, "RAG_HYBRID_TOP_K", 4)
+    monkeypatch.setattr(config, "RAG_SIMILARITY_THRESHOLD", 0.60)
+    handler = AIHandler.__new__(AIHandler)
+    handler.hybrid_search_engine = _Engine()
+
+    context, entries, _score, blocks = await handler._get_rag_context(
+        1,
+        2,
+        3,
+        "기억 테스트",
+    )
+
+    assert "구조화 기억" in context
+    assert "레거시 기억" not in context
+    assert [entry["message_id"] for entry in entries] == ["memory:1"]
+    assert blocks == ["구조화 기억"]
+
+
 def test_disabled_kakao_memory_does_not_construct_kakao_store(monkeypatch):
     class _UnexpectedKakaoStore:
         def __init__(self, *_args, **_kwargs):

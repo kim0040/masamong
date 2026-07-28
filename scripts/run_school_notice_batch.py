@@ -13,8 +13,9 @@
       → 계약 검증한 산출물만 원자적으로 공개
       → 실행 상태를 school_notice_batch_runs에 기록
 
-`--core-python`과 `--core-cwd`로 코어 위치를 지정합니다. 코어를 이 저장소에
-vendoring하지 않으므로 배포 환경에 맞게 넘겨야 합니다.
+`--core-python`과 `--core-cwd`로 코어 위치를 지정합니다. 기본 운영 배포는
+이 저장소에 고정된 ``school_notice`` 패키지를 같은 release에서 실행해 봇
+adapter와 core의 버전이 어긋나지 않게 합니다.
 """
 
 from __future__ import annotations
