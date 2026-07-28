@@ -3,6 +3,7 @@
 import asyncio
 from datetime import date, datetime, timedelta
 
+import aiosqlite
 import pytest
 
 import config
@@ -14,13 +15,44 @@ class _FakeChannel:
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
         self.attempts = 0
+        self.edits = 0
         self.payloads: list[str] = []
+        self.messages: dict[int, "_FakeSentMessage"] = {}
 
     async def send(self, content, **_kwargs):
         self.attempts += 1
         if self.fail:
             raise RuntimeError("discord send failed")
         self.payloads.append(content)
+        message_id = 10_000 + len(self.messages)
+        message = _FakeSentMessage(
+            message_id,
+            self,
+            payload_index=len(self.payloads) - 1,
+        )
+        self.messages[message_id] = message
+        return message
+
+    async def fetch_message(self, message_id: int):
+        return self.messages[int(message_id)]
+
+
+class _FakeSentMessage:
+    def __init__(
+        self,
+        message_id: int,
+        channel: _FakeChannel,
+        *,
+        payload_index: int,
+    ) -> None:
+        self.id = int(message_id)
+        self.channel = channel
+        self.payload_index = int(payload_index)
+
+    async def edit(self, *, content: str, **_kwargs):
+        self.channel.edits += 1
+        self.channel.payloads[self.payload_index] = content
+        return self
 
 
 class _FakeAI:
@@ -225,6 +257,256 @@ async def test_earthquake_empty_first_start_creates_baseline(monkeypatch):
     assert len(persisted) == 1
     assert persisted[0] >= before
     assert cog._earthquake_watermark_exists is True
+
+
+@pytest.mark.asyncio
+async def test_earthquake_aftershock_edits_original_message(monkeypatch):
+    """같은 지진군의 후속 지진은 새 메시지 대신 원본 현황을 수정한다."""
+    channel = _FakeChannel()
+    ai = _FakeAI()
+    bot = _FakeBot({10: channel}, ai)
+    cog = WeatherCog(bot)
+    cog._earthquake_watermark_exists = True
+
+    main_at = datetime.now(KST).replace(microsecond=0)
+    events = [
+        {
+            "tmEqk": main_at.strftime("%Y%m%d%H%M%S"),
+            "tmFc": main_at.strftime("%Y%m%d%H%M"),
+            "loc": "일본 구마모토현 남쪽 20km 지역",
+            "lat": "32.60",
+            "lon": "130.70",
+            "mt": "7.1",
+            "dep": "10",
+            "rem": "국내 일부 지역에서 지진동을 느낄 수 있음",
+        }
+    ]
+    cog.last_earthquake_time = main_at - timedelta(minutes=1)
+
+    async def fake_earthquakes(*_args, **_kwargs):
+        return [dict(item) for item in events]
+
+    async def fake_persist(_occurred_at):
+        return None
+
+    monkeypatch.setattr(weather_utils, "get_kma_api_key", lambda: "test-key")
+    monkeypatch.setattr(weather_utils, "get_recent_earthquakes", fake_earthquakes)
+    monkeypatch.setattr(cog, "_persist_earthquake_watermark", fake_persist)
+    monkeypatch.setattr(config, "CHANNEL_AI_CONFIG", {10: {"allowed": True}})
+    monkeypatch.setattr(config, "RAIN_NOTIFICATION_CHANNEL_ID", 0)
+
+    await WeatherCog.earthquake_alert_loop.coro(cog)
+    assert channel.attempts == 1
+    assert channel.edits == 0
+
+    aftershock_at = main_at + timedelta(minutes=12)
+    events.append(
+        {
+            "tmEqk": aftershock_at.strftime("%Y%m%d%H%M%S"),
+            "tmFc": aftershock_at.strftime("%Y%m%d%H%M"),
+            "loc": "일본 구마모토현 남쪽 25km 지역",
+            "lat": "32.64",
+            "lon": "130.75",
+            "mt": "4.8",
+            "dep": "12",
+            "rem": "국내 일부 지역에서 지진동을 느낄 수 있음",
+        }
+    )
+    await WeatherCog.earthquake_alert_loop.coro(cog)
+
+    assert channel.attempts == 1
+    assert channel.edits == 1
+    assert "**🚨 지진 연속 발생 현황**" in channel.payloads[0]
+    assert "총 2건" in channel.payloads[0]
+    assert "규모 **4.8**" in channel.payloads[0]
+    assert ai.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_earthquake_restart_restores_message_id_and_edits(monkeypatch):
+    """재기동 후에도 DB counter의 원본 메시지 ID를 복원해 같은 글을 수정한다."""
+    channel = _FakeChannel()
+    bot = _FakeBot({10: channel}, _FakeAI())
+    bot.db = await aiosqlite.connect(":memory:")
+    await bot.db.execute(
+        """
+        CREATE TABLE system_counters (
+            counter_name TEXT PRIMARY KEY,
+            counter_value INTEGER NOT NULL,
+            last_reset_at TEXT NOT NULL
+        )
+        """
+    )
+    await bot.db.commit()
+
+    main_at = datetime.now(KST).replace(microsecond=0)
+    events = [
+        {
+            "tmEqk": main_at.strftime("%Y%m%d%H%M%S"),
+            "loc": "일본 구마모토현",
+            "lat": "32.60",
+            "lon": "130.70",
+            "mt": "7.1",
+            "rem": "국내 영향 가능",
+        }
+    ]
+
+    async def fake_earthquakes(*_args, **_kwargs):
+        return [dict(item) for item in events]
+
+    monkeypatch.setattr(weather_utils, "get_kma_api_key", lambda: "test-key")
+    monkeypatch.setattr(weather_utils, "get_recent_earthquakes", fake_earthquakes)
+    monkeypatch.setattr(config, "CHANNEL_AI_CONFIG", {10: {"allowed": True}})
+    monkeypatch.setattr(config, "RAIN_NOTIFICATION_CHANNEL_ID", 0)
+
+    first_cog = WeatherCog(bot)
+    first_cog._earthquake_watermark_loaded = True
+    first_cog._earthquake_watermark_exists = True
+    first_cog.last_earthquake_time = main_at - timedelta(minutes=1)
+    await WeatherCog.earthquake_alert_loop.coro(first_cog)
+    assert channel.attempts == 1
+
+    aftershock_at = main_at + timedelta(minutes=9)
+    events.append(
+        {
+            "tmEqk": aftershock_at.strftime("%Y%m%d%H%M%S"),
+            "loc": "일본 구마모토현 남쪽 15km",
+            "lat": "32.63",
+            "lon": "130.73",
+            "mt": "4.6",
+            "rem": "국내 영향 가능",
+        }
+    )
+
+    restarted_cog = WeatherCog(bot)
+    await WeatherCog.earthquake_alert_loop.coro(restarted_cog)
+
+    assert channel.attempts == 1
+    assert channel.edits == 1
+    assert "총 2건" in channel.payloads[0]
+    await bot.db.close()
+
+
+@pytest.mark.asyncio
+async def test_unrelated_earthquake_starts_new_message(monkeypatch):
+    """시간이 가깝더라도 먼 진앙의 독립 지진은 별도 현황 메시지를 시작한다."""
+    channel = _FakeChannel()
+    bot = _FakeBot({10: channel}, _FakeAI())
+    cog = WeatherCog(bot)
+    cog._earthquake_watermark_exists = True
+    first_at = datetime.now(KST).replace(microsecond=0)
+    events = [
+        {
+            "tmEqk": first_at.strftime("%Y%m%d%H%M%S"),
+            "loc": "일본 구마모토현",
+            "lat": "32.60",
+            "lon": "130.70",
+            "mt": "7.1",
+            "rem": "국내 영향 가능",
+        }
+    ]
+    cog.last_earthquake_time = first_at - timedelta(minutes=1)
+
+    async def fake_earthquakes(*_args, **_kwargs):
+        return [dict(item) for item in events]
+
+    async def fake_persist(_occurred_at):
+        return None
+
+    monkeypatch.setattr(weather_utils, "get_kma_api_key", lambda: "test-key")
+    monkeypatch.setattr(weather_utils, "get_recent_earthquakes", fake_earthquakes)
+    monkeypatch.setattr(cog, "_persist_earthquake_watermark", fake_persist)
+    monkeypatch.setattr(config, "CHANNEL_AI_CONFIG", {10: {"allowed": True}})
+    monkeypatch.setattr(config, "RAIN_NOTIFICATION_CHANNEL_ID", 0)
+
+    await WeatherCog.earthquake_alert_loop.coro(cog)
+    second_at = first_at + timedelta(minutes=20)
+    events.append(
+        {
+            "tmEqk": second_at.strftime("%Y%m%d%H%M%S"),
+            "loc": "대만 동부 해역",
+            "lat": "24.00",
+            "lon": "122.00",
+            "mt": "6.2",
+            "rem": "국내 영향 가능",
+        }
+    )
+    await WeatherCog.earthquake_alert_loop.coro(cog)
+
+    assert channel.attempts == 2
+    assert channel.edits == 0
+    assert len(channel.payloads) == 2
+
+
+def test_earthquake_clustering_uses_distance_and_dedupes_corrections():
+    events = [
+        {
+            "tmEqk": "20260728162700",
+            "tmFc": "202607281634",
+            "tmSeq": "1",
+            "loc": "일본 구마모토현 남쪽 20km",
+            "lat": "32.60",
+            "lon": "130.70",
+            "mt": "7.0",
+        },
+        {
+            "tmEqk": "20260728162700",
+            "tmFc": "202607281636",
+            "tmSeq": "2",
+            "loc": "일본 구마모토현 남쪽 20km",
+            "lat": "32.60",
+            "lon": "130.70",
+            "mt": "7.1",
+            "cor": "규모 상향",
+        },
+        {
+            "tmEqk": "20260728170800",
+            "tmFc": "202607281712",
+            "loc": "일본 구마모토현 남쪽 25km",
+            "lat": "32.64",
+            "lon": "130.75",
+            "mt": "4.8",
+        },
+        {
+            "tmEqk": "20260728172000",
+            "tmFc": "202607281724",
+            "loc": "대만 동부 해역",
+            "lat": "24.00",
+            "lon": "122.00",
+            "mt": "6.0",
+        },
+    ]
+
+    clusters = weather_utils.cluster_earthquake_events(events)
+
+    assert [len(cluster) for cluster in clusters] == [2, 1]
+    assert clusters[0][0]["mt"] == "7.1"
+    assert clusters[0][0]["cor"] == "규모 상향"
+
+
+def test_earthquake_incident_render_is_formal_and_discord_sized():
+    events = [
+        {
+            "tmEqk": f"2026072816{27 + index:02d}00",
+            "tmFc": f"2026072816{34 + index:02d}",
+            "loc": f"일본 구마모토현 남쪽 {20 + index}km 지역",
+            "lat": str(32.60 + index * 0.01),
+            "lon": str(130.70 + index * 0.01),
+            "mt": "7.1" if index == 0 else f"4.{index}",
+            "dep": "10",
+            "rem": "국내 일부 지역에서 지진동을 느낄 수 있음",
+        }
+        for index in range(8)
+    ]
+
+    payload = weather_utils.format_earthquake_incident_alert(events)
+
+    assert "**🚨 지진 연속 발생 현황**" in payload
+    assert "총 8건" in payload
+    assert "공식 여진 판정이 아닙니다" in payload
+    assert "지금 해야 할 일" in payload
+    assert "마사몽" not in payload
+    assert len(payload) <= 1950
 
 
 def test_earthquake_alert_is_official_fixed_format_with_useful_fields():

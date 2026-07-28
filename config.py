@@ -1998,6 +1998,30 @@ EARTHQUAKE_CHECK_INTERVAL_SECONDS = min(
         ),
     ),
 )
+EARTHQUAKE_SEQUENCE_WINDOW_HOURS = min(
+    168,
+    max(
+        1,
+        as_int(load_config_value("EARTHQUAKE_SEQUENCE_WINDOW_HOURS", 72), 72),
+    ),
+)
+EARTHQUAKE_SEQUENCE_RADIUS_KM = min(
+    500,
+    max(
+        10,
+        as_int(load_config_value("EARTHQUAKE_SEQUENCE_RADIUS_KM", 150), 150),
+    ),
+)
+EARTHQUAKE_SEQUENCE_MAX_DISPLAY_EVENTS = min(
+    10,
+    max(
+        3,
+        as_int(
+            load_config_value("EARTHQUAKE_SEQUENCE_MAX_DISPLAY_EVENTS", 6),
+            6,
+        ),
+    ),
+)
 MORNING_GREETING_TIME = {
     "hour": as_int(load_config_value("MORNING_GREETING_HOUR", 7), 7),
     "minute": as_int(load_config_value("MORNING_GREETING_MINUTE", 30), 30),

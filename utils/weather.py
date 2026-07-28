@@ -7,6 +7,8 @@
 from __future__ import annotations
 import asyncio
 import csv
+import difflib
+import math
 import re
 import threading
 import time
@@ -146,7 +148,9 @@ async def _fetch_kma_api(
         base_params.update({"disp": "1"})
     elif api_type == 'eqk':
         base_url = "https://apihub.kma.go.kr/api/typ02/openApi/EqkInfoService/getEqkMsg"
-        base_params.update({"pageNo": "1", "numOfRows": "10", "dataType": "JSON"})
+        # 같은 지진군의 기준 사건이 후속 통보 10건에 밀려 사라지면 Discord
+        # 원본 메시지 key가 바뀔 수 있으므로 공식 3일 조회 범위를 넉넉히 받는다.
+        base_params.update({"pageNo": "1", "numOfRows": "100", "dataType": "JSON"})
     elif api_type == 'overview': # Weather Situation (Typ02)
         base_url = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstMsgService/getWthrSituation"
         base_params.update({"pageNo": "1", "numOfRows": "10", "dataType": "JSON", "stnId": "108"})
@@ -1190,6 +1194,155 @@ async def get_recent_earthquakes(db: aiosqlite.Connection) -> list | None:
     except Exception:
         return None
 
+
+def earthquake_event_datetime(item: dict) -> datetime | None:
+    """기상청 지진 발생시각을 KST aware datetime으로 변환합니다."""
+    raw = _clean_earthquake_field(item.get("tmEqk"), limit=14)
+    if len(raw) not in {12, 14} or not raw.isdigit():
+        return None
+    try:
+        parsed = datetime.strptime(
+            raw,
+            "%Y%m%d%H%M%S" if len(raw) == 14 else "%Y%m%d%H%M",
+        )
+    except ValueError:
+        return None
+    return KST.localize(parsed)
+
+
+def _earthquake_coordinate(item: dict, key: str) -> float | None:
+    value = _safe_float(item.get(key))
+    if value is None:
+        return None
+    if key == "lat" and not -90 <= value <= 90:
+        return None
+    if key == "lon" and not -180 <= value <= 180:
+        return None
+    return value
+
+
+def _earthquake_distance_km(left: dict, right: dict) -> float | None:
+    """두 진앙의 위·경도로 haversine 거리를 계산합니다."""
+    left_lat = _earthquake_coordinate(left, "lat")
+    left_lon = _earthquake_coordinate(left, "lon")
+    right_lat = _earthquake_coordinate(right, "lat")
+    right_lon = _earthquake_coordinate(right, "lon")
+    if None in {left_lat, left_lon, right_lat, right_lon}:
+        return None
+
+    lat1, lon1, lat2, lon2 = map(
+        math.radians,
+        (left_lat, left_lon, right_lat, right_lon),
+    )
+    delta_lat = lat2 - lat1
+    delta_lon = lon2 - lon1
+    haversine = (
+        math.sin(delta_lat / 2) ** 2
+        + math.cos(lat1) * math.cos(lat2) * math.sin(delta_lon / 2) ** 2
+    )
+    return 6371.0088 * 2 * math.asin(min(1.0, math.sqrt(haversine)))
+
+
+def _earthquake_location_similarity(left: dict, right: dict) -> float:
+    """좌표가 빠진 통보문을 위한 보수적 위치명 유사도를 계산합니다."""
+
+    def normalize(value) -> str:
+        text = str(value or "").casefold()
+        text = re.sub(r"\d+(?:\.\d+)?\s*km.*$", "", text)
+        text = re.sub(
+            r"(북북동|북동|동북동|동남동|남동|남남동|남남서|남서|서남서|"
+            r"서북서|북서|북북서|북쪽|남쪽|동쪽|서쪽|지역|해역)",
+            "",
+            text,
+        )
+        return re.sub(r"[^0-9a-z가-힣]", "", text)
+
+    left_name = normalize(left.get("loc"))
+    right_name = normalize(right.get("loc"))
+    if len(left_name) < 4 or len(right_name) < 4:
+        return 0.0
+    return difflib.SequenceMatcher(None, left_name, right_name).ratio()
+
+
+def _earthquake_magnitude(item: dict) -> float:
+    return _safe_float(item.get("mt")) or 0.0
+
+
+def cluster_earthquake_events(
+    items: list[dict],
+    *,
+    sequence_window_hours: float = 72,
+    sequence_radius_km: float = 150,
+) -> list[list[dict]]:
+    """발생시각·진앙 거리로 연속 지진군을 보수적으로 묶습니다.
+
+    이것은 기상청의 공식 여진 판정이 아니라 Discord 표시를 정리하기 위한
+    자동 분류다. 좌표가 있으면 거리 기준을 사용하고, 좌표가 빠진 경우에만
+    위치명 유사도를 fallback으로 사용한다. 같은 발생시각의 정정 통보는 가장
+    최근 발표본 하나로 합친다.
+    """
+    bounded_hours = max(1.0, min(168.0, float(sequence_window_hours)))
+    bounded_radius = max(10.0, min(500.0, float(sequence_radius_km)))
+
+    # 같은 사건의 정정 통보가 여러 건이면 tmFc/tmSeq가 최신인 항목을 남긴다.
+    by_occurrence: dict[str, dict] = {}
+    for raw_item in items or []:
+        if not isinstance(raw_item, dict):
+            continue
+        occurred_at = earthquake_event_datetime(raw_item)
+        if occurred_at is None:
+            continue
+        occurrence_key = occurred_at.strftime("%Y%m%d%H%M%S")
+        previous = by_occurrence.get(occurrence_key)
+        candidate_order = (
+            str(raw_item.get("tmFc") or ""),
+            str(raw_item.get("tmSeq") or raw_item.get("cnt") or ""),
+        )
+        previous_order = (
+            str(previous.get("tmFc") or "") if previous else "",
+            str(previous.get("tmSeq") or previous.get("cnt") or "")
+            if previous
+            else "",
+        )
+        if previous is None or candidate_order >= previous_order:
+            by_occurrence[occurrence_key] = dict(raw_item)
+
+    # by_occurrence에는 위에서 발생시각 파싱에 성공한 항목만 들어온다. 원문
+    # 숫자 문자열은 YYYYMMDDHHMMSS로 정규화되어 있어 문자열 정렬도 시간순이다.
+    ordered = sorted(
+        by_occurrence.values(),
+        key=lambda item: str(item.get("tmEqk") or ""),
+    )
+    clusters: list[list[dict]] = []
+    for item in ordered:
+        occurred_at = earthquake_event_datetime(item)
+        if occurred_at is None:
+            continue
+        matched_cluster: list[dict] | None = None
+        for cluster in reversed(clusters):
+            first_at = earthquake_event_datetime(cluster[0])
+            if first_at is None:
+                continue
+            elapsed_hours = (occurred_at - first_at).total_seconds() / 3600
+            if elapsed_hours < 0 or elapsed_hours > bounded_hours:
+                continue
+            reference = max(cluster, key=_earthquake_magnitude)
+            distance = _earthquake_distance_km(item, reference)
+            same_area = (
+                distance <= bounded_radius
+                if distance is not None
+                else _earthquake_location_similarity(item, reference) >= 0.58
+            )
+            if same_area:
+                matched_cluster = cluster
+                break
+        if matched_cluster is None:
+            clusters.append([item])
+        else:
+            matched_cluster.append(item)
+    return clusters
+
+
 def get_earthquake_safety_tips(magnitude: float) -> str:
     """공식 국민행동요령을 즉시 읽을 수 있는 길이로 반환합니다."""
     del magnitude  # 행동은 추정 규모와 무관하게 보수적으로 안내한다.
@@ -1291,6 +1444,118 @@ def format_earthquake_alert(item: dict) -> str:
             "기상청 최신 발표와 재난문자를 즉시 확인하세요.\n"
             "https://www.weather.go.kr/w/eqk-vol/recent-eqk.do"
         )
+
+
+def format_earthquake_incident_alert(
+    events: list[dict],
+    *,
+    max_followups: int = 6,
+) -> str:
+    """한 지진군을 단일 Discord 메시지의 수정 가능한 현황으로 렌더링합니다."""
+    valid_events = [
+        dict(item)
+        for item in events
+        if isinstance(item, dict) and earthquake_event_datetime(item) is not None
+    ]
+    valid_events.sort(key=lambda item: earthquake_event_datetime(item))
+    if not valid_events:
+        return (
+            "**🚨 지진 발생 알림**\n"
+            "기상청 지진 통보를 감지했으나 유효한 발생시각을 확인하지 못했습니다. "
+            "기상청 최신 발표와 재난문자를 즉시 확인하세요.\n"
+            "https://www.weather.go.kr/w/eqk-vol/recent-eqk.do"
+        )
+    if len(valid_events) == 1:
+        return (
+            format_earthquake_alert(valid_events[0])
+            + "\n\n후속 지진이 감지되면 새 메시지를 반복 전송하지 않고 "
+            "**이 메시지를 수정해 현황을 갱신합니다.**"
+        )
+
+    main_event = max(valid_events, key=_earthquake_magnitude)
+    main_at = earthquake_event_datetime(main_event)
+    latest_at = earthquake_event_datetime(valid_events[-1])
+    main_loc = _clean_earthquake_field(
+        main_event.get("loc"),
+        fallback="기상청 확인 중",
+        limit=120,
+    )
+    main_mag = _clean_earthquake_field(
+        main_event.get("mt"),
+        fallback="확인 중",
+        limit=12,
+    )
+    main_depth = _clean_earthquake_field(main_event.get("dep"), limit=20)
+    main_intensity = _clean_earthquake_field(
+        main_event.get("inT") or main_event.get("int"),
+        limit=80,
+    )
+    max_display = max(1, min(10, int(max_followups)))
+    followups = [
+        item
+        for item in reversed(valid_events)
+        if item is not main_event
+    ][:max_display]
+
+    def followup_line(item: dict) -> str:
+        occurred_at = earthquake_event_datetime(item)
+        occurred = (
+            occurred_at.strftime("%m/%d %H:%M:%S")
+            if occurred_at is not None
+            else "시각 확인 중"
+        )
+        magnitude = _clean_earthquake_field(
+            item.get("mt"),
+            fallback="확인 중",
+            limit=12,
+        )
+        location = _clean_earthquake_field(
+            item.get("loc"),
+            fallback="위치 확인 중",
+            limit=100,
+        )
+        return f"• `{occurred}` · 규모 **{magnitude}** · {location}"
+
+    def render(displayed: list[dict]) -> str:
+        omitted = max(0, len(valid_events) - 1 - len(displayed))
+        main_details = [
+            f"• **발생 시각:** {main_at.strftime('%Y년 %m월 %d일 %H시 %M분 %S초')} (한국시간)",
+            f"• **발생 위치:** {main_loc}",
+            f"• **최대 규모:** {main_mag}",
+        ]
+        if main_depth:
+            main_details.append(
+                f"• **깊이:** {main_depth}"
+                f"{'' if 'km' in main_depth.lower() else ' km'}"
+            )
+        if main_intensity:
+            main_details.append(f"• **계기진도:** {main_intensity}")
+        followup_lines = [followup_line(item) for item in displayed]
+        if omitted:
+            followup_lines.append(f"• 앞선 후속 지진 {omitted}건은 길이 제한으로 생략")
+        return (
+            "**🚨 지진 연속 발생 현황**\n"
+            "**기상청 통보를 자동 감지해 같은 지진군의 단일 메시지를 갱신했습니다.**\n\n"
+            f"**기준 지진(현재 지진군 내 최대 규모)**\n"
+            + "\n".join(main_details)
+            + "\n\n"
+            f"**후속 현황** · 총 {len(valid_events)}건 · "
+            f"최근 {latest_at.strftime('%m/%d %H:%M:%S')}\n"
+            + "\n".join(followup_lines)
+            + "\n\n"
+            + get_earthquake_safety_tips(_earthquake_magnitude(main_event))
+            + "\n\n"
+            "※ `후속 지진(여진 가능)` 묶음은 발생시각과 진앙 거리로 자동 분류한 "
+            "표시이며 공식 여진 판정이 아닙니다. 기상청 정정 통보와 재난문자가 "
+            "우선합니다.\n"
+            "출처: https://www.weather.go.kr/w/eqk-vol/recent-eqk.do"
+        )
+
+    rendered = render(followups)
+    while len(rendered) > 1950 and followups:
+        followups.pop()
+        rendered = render(followups)
+    return rendered[:1950]
 
 async def get_weather_overview(db: aiosqlite.Connection, timeout: float | None = None) -> str | None:
     """기상 개황(종합)을 조회합니다."""
