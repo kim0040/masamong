@@ -21,9 +21,12 @@
 ### AI 대화와 도구
 
 - 허용된 서버 채널에서는 봇 멘션으로, DM에서는 멘션 없이 대화한다.
-- 명백한 인사·도구 요청은 로컬 규칙으로 먼저 분기해 불필요한 의도 분석 LLM 호출을
-  줄인다. 애매한 요청만 설정에 따라 routing LLM을 쓴다.
+- 정상 경로의 도구 선택은 routing LLM이 도구 계약, 현재 요청의 목적, 화자가 표시된
+  최근 대화를 함께 읽어 의미적으로 결정한다. 키워드 목록은 provider가 꺼졌거나 응답
+  파싱까지 실패했을 때 최소 기능을 유지하는 제한된 비상 fallback에만 사용한다.
 - 응답 LLM과 routing LLM은 서로 다른 레인으로 설정할 수 있다.
+- 의미 라우터는 도구 계획과 함께 장기기억 검색 필요 여부를 결정한다. 날씨·웹·이미지
+  요청처럼 과거 기억이 필요 없는 턴은 로컬 임베딩과 TiDB RAG를 건너뛴다.
 - 웹 검색은 URL을 정규화하고 같은 동시 질의를 한 요청으로 합친다. 기본 페이지 수집은
   저비용 비-JavaScript 방식이며 내용이 비었을 때만 설정된 1회 JS 재시도를 허용한다.
   검색 결과를 먼저 별도 LLM으로 답하게 하지 않고 공통 응답 경로에서 최종 답변 LLM을
@@ -43,6 +46,20 @@
   현재 질문자의 이전 발화만 사용하며 다른 사용자의 주제를 섞지 않는다. 검색·도구 결과는
   명령이 아닌 신뢰하지 않는 참고자료로 취급하고, 검토 과정 대신 확인된 결론만 출력한다.
 
+#### 대화 컨텍스트 관리
+
+활성 프롬프트는 무제한 전체 로그가 아니라 세 계층으로 구성한다.
+
+1. 최신 `AI_CONTEXT_RECENT_TURNS`개 발화는 화자와 함께 원문으로 보존한다.
+2. 한 번 읽은 최대 `AI_CONTEXT_SOURCE_HISTORY_LIMIT`개 발화가 문자 임계치를 넘으면,
+   같은 의미 라우팅 호출이 최신 원문보다 앞선 구간의 사실·결정·변경·부정·미정 사항만
+   `context_digest`로 압축한다. 압축만을 위한 추가 API 호출은 없다.
+3. 그보다 오래된 정보가 현재 질문에 필요할 때만 Discord/Kakao RAG를 검색한다.
+
+이는 오래된 대화를 모두 매번 프롬프트에 넣지 않으면서 최신 표현은 그대로 유지하는
+working context + compaction + retrieval 구조다. `context_digest`는 현재 응답 입력일 뿐
+별도 개인정보 테이블에 영속 저장하지 않는다. `!요약`의 채널 요약 상태와도 별개다.
+
 ### 기억/RAG
 
 - Discord 대화와, Masamo에 한해 기존 Kakao 대화 저장소를 검색할 수 있다.
@@ -56,6 +73,11 @@
 - NumPy·SentenceTransformer·Transformers·Torch의 무거운 최초 import와 모델 생성은
   worker thread에서 실행해 Discord heartbeat를 막지 않는다. 로드 실패 뒤에는 유한
   cooldown을 적용해 메시지마다 같은 모델 로드를 반복하지 않는다.
+- E5 passage 본문은 `독립 요약 + 화자 포함 원문 근거`만 사용한다. 유형·참여자·날짜·
+  키워드는 별도 DB metadata 열에 보존하고 벡터 본문에는 반복하지 않는다. 합성 질의
+  5개 실측에서 두 형식 모두 정답 문서를 5/5 1위로 찾았고, 라벨을 제거한 문서의 평균
+  1위 분리 여유가 0.2912에서 0.3091로 높았다. 평가는 실제 운영 E5 모델을 사용한
+  `scripts/evaluate_memory_retrieval_offline.py`로 재현한다.
 
 ### 일반 기능
 
@@ -121,8 +143,8 @@ DB를 공유하면 운세 프로필, DM/LLM 사용량, 사용자 선호, 메시�
 - 최고 관리자는 `MASAMONG_SUPERADMIN_USER_IDS`에 프로필별로 고정한다. 관리자 등록·
   비활성화와 봇 초대 링크 생성은 최고 관리자만 가능하다.
 
-Masamo 운영 프로필은 `275928240126820352`를 최고 관리자로 지정한다. General에는 이 값을
-복사하지 않고 별도 최고 관리자를 결정할 때까지 빈 목록으로 둔다. 최고 관리자는 DM에서
+Masamo 운영 프로필의 실제 최고 관리자 Discord ID는 보호된 운영 env에서만 지정한다.
+General에는 그 값을 복사하지 않고 별도 최고 관리자를 결정할 때까지 빈 목록으로 둔다. 최고 관리자는 DM에서
 `!관리 추가 <사용자 ID 또는 @멘션>`, `!관리 제거 ...`, `!관리 목록`을 사용한다. 제거는
 행 삭제가 아니라 `enabled=0` 갱신이다. 서버의 `!관리`는 공개 실행 버튼 뒤 호출자 전용
 패널을 열며, `!초대`는 최고 관리자 DM에 최소 권한 OAuth 초대 버튼을 보낸다.
@@ -450,8 +472,10 @@ EMBEDDING_MAX_CONCURRENCY=1
 RAG_MAX_BACKGROUND_TASKS=2
 RAG_MAX_TRACKED_WINDOWS=64
 MASAMONG_DISCORD_MAX_MESSAGES=100
+TIDB_STARTER_FREE_PLAN_MODE=true
+TIDB_STARTER_USAGE_WARNING_RATIO=0.8
 STRUCTURED_MEMORY_QUERY_LIMIT=384
-STRUCTURED_MEMORY_FALLBACK_QUERY_LIMIT=1024
+STRUCTURED_MEMORY_FALLBACK_QUERY_LIMIT=768
 LINKUP_FETCH_RENDER_JS=false
 LINKUP_FETCH_JS_RETRY_ENABLED=true
 TOKENIZERS_PARALLELISM=false
@@ -462,6 +486,29 @@ General은 처음에 로컬 memory와 반복 scheduler를 끈 뒤 두 프로세�
 thread, load average를 측정해 기능을 단계적으로 켠다. 학교·편입 수집은 봇 프로세스가
 아닌 `Type=oneshot` 프로세스에서 CPU thread 1개, low nice/IO와 systemd
 `TimeoutStartSec`을 포함한 전체 deadline으로 실행한다.
+
+TiDB Cloud Starter 무료 플랜은 인스턴스당 행 저장소 5GiB, 열 저장소 5GiB,
+월 5천만 RU를 기준으로 운영한다. `TIDB_STARTER_FREE_PLAN_MODE=true`이면 env가 더 큰
+값을 요청해도 구조화 기억 BLOB 후보는 384개, 확장 재검색은 768개를 넘지 않는다.
+기존 행을 삭제·갱신하거나 전체 재임베딩하지는 않는다.
+
+SQL의 일별 RU 이력은 당일 사용량과 Cloud 네트워크 egress가 빠질 수 있으므로 최종 판정은
+TiDB Cloud 콘솔의 **Usage this month**에서 한다. 다음 비식별 감사는 stale-read
+transaction에서 테이블 크기 집계와 사용 가능한 RU 이력만 읽으며 대화 내용이나 사용자
+ID를 출력하지 않는다.
+
+```bash
+MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
+  <venv>/bin/python scripts/audit_tidb_free_plan_readonly.py \
+  --expected-profile masamo --expected-db masamong
+```
+
+추적 파일과 전체 Git 이력의 자격증명·운영 식별값은 실제 값을 출력하지 않는 다음
+감사로 확인한다. 운영에서는 `--secret-env /etc/masamong/masamo.env`를 사용한다.
+
+```bash
+<venv>/bin/python scripts/audit_tracked_secrets.py --secret-env .env
+```
 
 ## 설치와 실행
 

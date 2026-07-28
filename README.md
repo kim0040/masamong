@@ -169,12 +169,28 @@ without reprocessing the whole channel. The table is additive, and unrelated
 conversation, embedding, profile, and delivery rows are neither replaced nor
 deleted.
 
+Ordinary AI turns use a separate, non-persistent three-level context: the newest
+turns verbatim, an on-demand digest of the older portion of the same bounded
+Discord history, and long-term RAG only when the semantic router says older
+memory is required. Tool routing is semantic in the normal path; keyword rules
+exist only as a provider-outage fallback. The digest is returned by the same
+routing call, so it does not add another LLM request.
+
+Structured-memory embeddings use a lean `independent summary + speaker-labelled
+evidence` passage. Memory type, speakers, date, and keywords remain separate
+metadata instead of being repeated into the E5 vector text. The reproducible
+synthetic retrieval check is:
+
+```bash
+<venv>/bin/python scripts/evaluate_memory_retrieval_offline.py
+```
+
 ## Administration boundary
 
 `MASAMONG_SUPERADMIN_USER_IDS` belongs to one runtime profile and is never copied
-between Masamo and General. The current Masamo example pins
-`275928240126820352`; General intentionally starts with an empty, separately
-chosen list. Discord members with **Manage Server** or the guild owner can use
+between Masamo and General. The real Discord user ID stays only in the protected
+runtime env; tracked examples use a placeholder. General intentionally starts
+with an empty, separately chosen list. Discord members with **Manage Server** or the guild owner can use
 `/config` and `/persona`, but every read/write is keyed only to that guild.
 
 Registered instance admins live in `bot_admin_accounts` with `instance_name` in
@@ -343,8 +359,10 @@ EMBEDDING_MAX_CONCURRENCY=1
 RAG_MAX_BACKGROUND_TASKS=2
 RAG_MAX_TRACKED_WINDOWS=64
 MASAMONG_DISCORD_MAX_MESSAGES=100
+TIDB_STARTER_FREE_PLAN_MODE=true
+TIDB_STARTER_USAGE_WARNING_RATIO=0.8
 STRUCTURED_MEMORY_QUERY_LIMIT=384
-STRUCTURED_MEMORY_FALLBACK_QUERY_LIMIT=1024
+STRUCTURED_MEMORY_FALLBACK_QUERY_LIMIT=768
 LINKUP_FETCH_RENDER_JS=false
 LINKUP_FETCH_JS_RETRY_ENABLED=true
 TOKENIZERS_PARALLELISM=false
@@ -354,6 +372,20 @@ Preserve the actual existing Masamo values during its profile cutover. Start
 General with memory and recurring jobs disabled, measure combined CPU/RSS, and
 enable only the features that fit the host.
 
+For TiDB Cloud Starter, free-plan mode caps the structured-memory BLOB candidate
+set even if an env file requests a larger value. It does not delete or rewrite
+existing data. The official free allowance is 5 GiB row storage, 5 GiB columnar
+storage, and 50 million RUs per month. The Cloud **Usage this month** panel is
+authoritative because SQL-side RU history can omit the current day and network
+egress. Run the bounded, non-identifying audit after deployments and during
+monthly operations:
+
+```bash
+MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
+  <venv>/bin/python scripts/audit_tidb_free_plan_readonly.py \
+  --expected-profile masamo --expected-db masamong
+```
+
 ## Verification
 
 ```bash
@@ -361,6 +393,9 @@ enable only the features that fit the host.
 .venv/bin/python -m compileall -q .
 .venv/bin/python -m pip check
 .venv/bin/python scripts/verify_bang_commands.py
+.venv/bin/python scripts/audit_tracked_secrets.py --secret-env .env
+.venv/bin/python scripts/audit_tidb_free_plan_readonly.py \
+  --expected-profile masamo --expected-db masamong
 .venv/bin/python -m school_notice live-check \
   --details-per-source 2 --max-requests 96 \
   --output-dir /tmp/masamong-school-livecheck

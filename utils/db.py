@@ -345,6 +345,61 @@ async def get_daily_api_count(db: aiosqlite.Connection, api_type: str) -> int:
         logger.error(f"일일 API 호출 횟수 조회 중 오류 ({api_type}): {e}", exc_info=True)
         return 0
 
+
+async def get_daily_api_counts(
+    db: aiosqlite.Connection,
+    api_types: list[str] | tuple[str, ...],
+) -> dict[str, int]:
+    """여러 API 유형의 오늘 사용량을 DB 왕복 한 번으로 조회합니다."""
+    normalized = list(
+        dict.fromkeys(
+            str(api_type or "").strip()
+            for api_type in api_types
+            if str(api_type or "").strip()
+        )
+    )[:32]
+    if not normalized:
+        return {}
+
+    result = {api_type: 0 for api_type in normalized}
+    placeholders = ",".join("?" for _ in normalized)
+    today_start = datetime.now(timezone.utc).replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    ).isoformat()
+    try:
+        async with db.execute(
+            f"""
+            SELECT api_type, COUNT(*) AS call_count
+            FROM api_call_log
+            WHERE api_type IN ({placeholders})
+              AND called_at >= ?
+            GROUP BY api_type
+            """,
+            (*normalized, today_start),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        for row in rows:
+            try:
+                api_type = str(row["api_type"])
+                count = int(row["call_count"])
+            except (TypeError, KeyError, IndexError):
+                api_type = str(row[0])
+                count = int(row[1])
+            if api_type in result:
+                result[api_type] = max(0, count)
+        return result
+    except Exception as exc:
+        logger.error(
+            "복수 일일 API 호출 횟수 조회 중 오류: %s",
+            exc,
+            exc_info=True,
+        )
+        return result
+
+
 async def archive_old_conversations(db: aiosqlite.Connection):
     """
     `conversation_history` 테이블의 레코드 수가 한도를 초과하면,

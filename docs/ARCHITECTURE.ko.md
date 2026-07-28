@@ -58,30 +58,30 @@ graph TB
 
 ## 핵심 설계 원칙
 
-### 1. 3단계 AI 파이프라인 (2026-04 기준)
+### 1. 3단계 AI 파이프라인
 
 ```mermaid
 flowchart TB
     Input["👤 사용자 메시지"] --> Valid[검증<br/>멘션/채널/잠금]
 
-    Valid --> Step1["🔍 Step 1: 의도 분석<br/>IntentAnalyzer<br/><i>키워드 휴리스틱 + LLM</i>"]
+    Valid --> Step1["🔍 Step 1: 의미 라우팅<br/>IntentAnalyzer<br/><i>도구 + 기억 필요 + 선택적 digest</i>"]
 
-    Step1 -->|"도구 필요 없음"| RAG
+    Step1 -->|"장기기억 필요"| RAG
+    Step1 -->|"장기기억 불필요"| Step2
     Step1 -->|"도구 실행 계획"| Step2["🛠️ Step 2: 도구 실행<br/>ToolsCog"]
 
     subgraph Step2Detail[" "]
         direction LR
         W["날씨<br/>KMA"]
-        F["금융<br/>Finnhub/yfinance"]
-        S["웹 검색<br/>Linkup/DDG"]
-        P["장소<br/>Kakao"]
+        S["웹·금융·장소 검색<br/>Linkup"]
         I["이미지<br/>CometAPI"]
     end
 
     Step2 --> Step2Detail
-    Step2Detail --> RAG["🧠 RAG 컨텍스트 검색<br/>HybridSearchEngine<br/><i>임베딩 + BM25 + RRF</i>"]
+    Step2Detail --> Merge["🧩 컨텍스트 조립<br/><i>digest + 최신 원문 + 선택 RAG</i>"]
+    RAG --> Merge
 
-    RAG --> Step3["✍️ Step 3: 응답 생성<br/>LLMClient (Main Lane)<br/><i>DeepSeek-V3.2-Exp</i>"]
+    Merge --> Step3["✍️ Step 3: 응답 생성<br/>LLMClient (Main Lane)<br/><i>deepseek-v4-flash</i>"]
 
     Step3 --> Output["💬 Discord 응답<br/><i>페르소나 + 이모지 적용</i>"]
 
@@ -99,20 +99,16 @@ flowchart TB
 flowchart TB
     subgraph Routing["Routing Lane (의도 분석)"]
         direction TB
-        RP1["Primary: gemini-3.1-flash-lite<br/><i>(CometAPI)</i>"]
-        RF1["Fallback: gemini-2.5-flash<br/><i>(CometAPI)</i>"]
-        RD1["Direct Gemini<br/><i>(선택적)</i>"]
-        RP1 -->|"fail"| RF1
-        RF1 -->|"fail"| RD1
+        RP1["Primary: gpt-5.4-nano<br/><i>(CometAPI)</i>"]
+        RE["장애 시 제한된 키워드 fallback"]
+        RP1 -->|"provider/JSON fail"| RE
     end
 
     subgraph Main["Main Lane (응답 생성)"]
         direction TB
-        MP1["Primary: DeepSeek-V3.2-Exp<br/><i>(CometAPI)</i>"]
-        MF1["Fallback: DeepSeek-R1<br/><i>(CometAPI)</i>"]
-        MD1["Direct Gemini<br/><i>(선택적)</i>"]
-        MP1 -->|"fail"| MF1
-        MF1 -->|"fail"| MD1
+        MP1["Primary: deepseek-v4-flash<br/><i>(CometAPI)</i>"]
+        ME["Bounded timeout / 명시적 실패"]
+        MP1 -->|"fail"| ME
     end
 
     Caller["LLMClient"] --> Routing
@@ -120,8 +116,8 @@ flowchart TB
 
     style RP1 fill:#e3f2fd,stroke:#1565c0
     style MP1 fill:#fff8e1,stroke:#f57f17
-    style RF1 fill:#e3f2fd,stroke:#90caf9
-    style MF1 fill:#fff8e1,stroke:#ffb74d
+    style RE fill:#ffebee,stroke:#c62828
+    style ME fill:#ffebee,stroke:#c62828
 ```
 
 **LLM 호출 시퀀스**:
@@ -356,40 +352,31 @@ sequenceDiagram
 
     Bot->>AI: process_agent_message(message)
 
-    Note over AI: 5. 의도 분석
-    AI->>Intent: analyze(query, context, history)
-
-    Intent->>Intent: _detect_by_keywords(query)
-    Note over Intent: 날씨 키워드 O<br/>주식 키워드 O
-
-    Intent->>LLMR: call_routing_llm(분석 프롬프트)
-    LLMR-->>Intent: {<br/>  analysis: "...",<br/>  tool_plan: [<br/>    {tool: "weather", params: {location: "서울"}},<br/>    {tool: "stock_us", params: {ticker: "AAPL"}}<br/>  ],<br/>  draft: "...",<br/>  self_score: {overall: 0.92}<br/>}
-
-    Intent-->>AI: intent_result + tool_plan
+    Note over AI: 5. Discord history 한 번 조회
+    AI->>Intent: route_tools(query, history)
+    Intent->>LLMR: call_routing_lane_target(도구 계약 + 최근 대화)
+    LLMR-->>Intent: {intent, needs_memory, context_digest, tools}
+    Intent-->>AI: ToolRoutingDecision
 
     Note over AI: 6. 도구 실행 → ToolsCog 위임
 
-    par 날씨 조회
-        AI->>Tools: get_weather(location="서울")
-        Tools-->>AI: {temp: 22°C, sky: "맑음", ...}
-    and 주식 조회
-        AI->>Tools: get_us_stock_info("AAPL")
-        Tools-->>AI: {price: $182.63, change: +1.2%}
+    AI->>Tools: get_weather_forecast(location="서울", day_offset=0)
+    Tools-->>AI: 기상청 근거 데이터
+
+    opt needs_memory=true
+        Note over AI: 7. 오래된 기억만 선택 검색
+        AI->>RAG: search(query, channel_id, user_id)
+        RAG-->>AI: 관련 장기 기억
     end
-
-    Note over AI: 7. RAG 컨텍스트 검색
-
-    AI->>RAG: search(query, channel_id, scope)
-    RAG-->>AI: RAG context (관련 대화 기억)
 
     Note over AI: 8. 응답 생성
 
-    AI->>LLMM: call_main_llm(<br/>  system_prompt + persona,<br/>  tool_results + RAG_context + history<br/>)
-    LLMM-->>AI: "서울은 맑고 22°C, 애플은 $182.63 (+1.2%) 🍎"
+    AI->>LLMM: call_main_llm(<br/>persona + tool results + digest<br/>+ 최신 원문 + 선택 RAG)
+    LLMM-->>AI: Discord 규격 최종 응답
 
     Note over AI: 9. 응답 전송
 
-    AI->>Discord: reply("서울은 맑고 22°C, 애플은 $182.63 (+1.2%) 🍎")
+    AI->>Discord: reply(정규화된 응답)
 
     Note over AI: 10. 임베딩 비동기 저장
     AI->>AI: asyncio.create_task(save_embedding)
@@ -625,42 +612,29 @@ sequenceDiagram
 
 ---
 
-## Gemini 통신 프로토콜
+## 의미 라우터 통신 계약
 
 ### 의도 분석 프롬프트 구조
 
 **입력 프롬프트 구조**:
 ```json
-{
-  "system": "routing_system_prompt + MENTION_GUARD",
-  "context": {
-    "rag_results": [...],
-    "recent_messages": [...],
-    "channel_persona": "츤데레",
-    "rules": "반말 사용, ..."
-  },
-  "user_query": "서울 날씨 알려줘"
-}
+도구 계약, KST 시각, 화자가 표시된 최근 대화, 현재 요청을 전달한다. 대화가 설정된
+문자 임계치를 넘은 경우에만 최신 원문보다 앞선 구간을 `압축할 오래된 대화`로 함께
+전달한다. RAG와 서버 페르소나는 도구 선택 입력에 넣지 않는다.
 ```
 
 **출력 JSON 구조**:
 ```json
 {
-  "analysis": "사용자가 서울 날씨 정보를 요청함",
-  "tool_plan": [
+  "intent": "서울 날씨 확인",
+  "needs_memory": false,
+  "context_digest": "",
+  "tools": [
     {
-      "tool_name": "get_weather",
-      "parameters": {"location": "서울"}
+      "tool": "get_weather_forecast",
+      "params": {"location": "서울", "day_offset": 0}
     }
-  ],
-  "draft": "서울 날씨? 지금 확인해볼게~",
-  "self_score": {
-    "accuracy": 0.95,
-    "completeness": 0.90,
-    "risk": 0.10,
-    "overall": 0.92
-  },
-  "needs_flash": false
+  ]
 }
 ```
 
@@ -729,18 +703,16 @@ ON conversation_windows (channel_id, start_message_id, end_message_id);
 
 ## 에러 처리 패턴
 
-### 계층적 폴백
+### 제한된 공급자 실패 처리
 
 ```mermaid
 flowchart LR
-    Try1["1순위: Primary LLM<br/><i>CometAPI</i>"]
-    Try1 -->|"fail"| Try2["2순위: Fallback LLM<br/><i>CometAPI</i>"]
-    Try2 -->|"fail"| Try3["3순위: Gemini Direct<br/><i>(선택적)</i>"]
-    Try3 -->|"fail"| Error["에러 응답<br/>AI 서비스 이용 불가"]
+    Try1["Primary LLM<br/><i>CometAPI</i>"]
+    Try1 -->|"routing fail"| RouteFallback["제한된 로컬 라우팅 fallback"]
+    Try1 -->|"main fail"| Error["명시적 오류 응답<br/>무한 재시도 없음"]
 
     style Try1 fill:#c8e6c9,stroke:#2e7d32
-    style Try2 fill:#fff9c4,stroke:#f9a825
-    style Try3 fill:#ffecb3,stroke:#f57c00
+    style RouteFallback fill:#fff9c4,stroke:#f9a825
     style Error fill:#ffcdd2,stroke:#c62828
 ```
 
@@ -759,12 +731,9 @@ flowchart LR
 ### 도구 실행 실패 처리
 
 ```python
-# 도구 실행 실패 시 자동으로 웹 검색 추가
-if tool_execution_failed:
-    tool_plan.append({
-        "tool_name": "web_search",
-        "parameters": {"query": original_query}
-    })
+# 도구 실패는 결과에 명시하고 main 모델이 추측하지 않게 한다.
+# 의미 라우터가 정상 응답한 요청에는 키워드 기반 도구를 뒤늦게 추가하지 않는다.
+tool_results.append({"tool": tool_name, "error": public_error})
 ```
 
 ---
@@ -796,8 +765,8 @@ async def my_new_tool(self, param1: str) -> dict:
     result = await some_api_call(param1)
     return {"result": result}
 
-# IntentAnalyzer > keyword sets에 키워드 추가
-# AIHandler가 자동으로 발견하여 사용 가능
+# IntentAnalyzer의 routing tool contract와 allowlist에 이름/파라미터를 추가
+# 정상 선택은 routing LLM이 의미적으로 수행하고 keyword는 장애 fallback만 수정
 ```
 
 ### 새 임베딩 소스 추가
@@ -925,7 +894,7 @@ graph TB
 {
   "event_type": "AI_INTERACTION",
   "details": {
-    "model_used": "DeepSeek-V3.2-Exp",
+    "model_used": "deepseek-v4-flash",
     "rag_hits": 3,
     "latency_ms": 1250,
     "tools_used": ["get_weather"],

@@ -58,6 +58,25 @@ LLM_MAIN_PRIMARY_API_KEY=${COMETAPI_KEY}
 LLM_MAIN_FALLBACK_PROVIDER=none
 ```
 
+도구 선택은 정상적으로 routing 모델의 의미 판단을 사용하고, 키워드 감지는 provider
+장애 시 fallback에만 사용됩니다. 활성 대화 컨텍스트와 routing JSON 출력 예산은 다음처럼
+제한합니다.
+
+```env
+INTENT_LLM_ENABLED=true
+SEMANTIC_ROUTER_MAX_TOKENS=384
+AI_CONTEXT_SOURCE_HISTORY_LIMIT=24
+AI_CONTEXT_RECENT_TURNS=8
+AI_CONTEXT_COMPACTION_TRIGGER_CHARS=3500
+AI_CONTEXT_COMPACTION_SOURCE_MAX_CHARS=5000
+AI_CONTEXT_DIGEST_MAX_CHARS=600
+```
+
+`AI_CONTEXT_COMPACTION_TRIGGER_CHARS`를 넘지 않으면 digest를 만들지 않습니다. 넘으면 같은
+routing 호출의 JSON에만 짧은 digest를 포함하므로 별도 LLM 호출은 늘지 않습니다.
+`scripts/benchmark_llm_lanes.py`는 DB·실사용자 대화 없이 현재/후보 레인을 비교하며
+`--max-calls`로 물리 호출 수를 제한합니다.
+
 ### 1.3 웹 검색 설정
 
 ```env
@@ -73,8 +92,8 @@ LINKUP_FETCH_JS_RETRY_ENABLED=true
 ### 1.4 관리자 경계
 
 ```env
-# 프로필마다 별도 지정. General에 Masamo ID를 복사하지 않습니다.
-MASAMONG_SUPERADMIN_USER_IDS=replace-with-current-masamo-superadmin-user-id
+# 프로필마다 별도 지정. 실제 ID는 운영 env에만 두고 Git 예제에는 기록하지 않습니다.
+MASAMONG_SUPERADMIN_USER_IDS=replace-with-current-profile-superadmin-user-id
 ```
 
 - 서버 소유자와 **서버 관리** 권한 사용자는 그 서버의 `/config`, `/persona`만 사용합니다.
@@ -248,6 +267,26 @@ MASAMONG_DB_CONN_MAX_LIFETIME_SECONDS=600
 MASAMONG_DB_CONNECT_TIMEOUT=10
 MASAMONG_DB_READ_TIMEOUT=30
 MASAMONG_DB_WRITE_TIMEOUT=30
+```
+
+### 6.4 TiDB Cloud Starter 무료 플랜
+
+```env
+TIDB_STARTER_FREE_PLAN_MODE=true
+TIDB_STARTER_USAGE_WARNING_RATIO=0.8
+STRUCTURED_MEMORY_QUERY_LIMIT=384
+STRUCTURED_MEMORY_FALLBACK_QUERY_LIMIT=768
+```
+
+무료 플랜 모드는 큰 구조화 기억 BLOB 후보 조회를 위 값으로 제한한다. 기존 데이터를
+삭제하거나 자동 압축하지 않는다. TiDB Cloud Starter의 무료 한도는 행 저장소 5GiB,
+열 저장소 5GiB, 월 5천만 RU다. SQL RU 이력은 당일 및 네트워크 egress가 누락될 수 있어
+Cloud 콘솔의 **Usage this month**가 최종 기준이다.
+
+```bash
+MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
+  <venv>/bin/python scripts/audit_tidb_free_plan_readonly.py \
+  --expected-profile masamo --expected-db masamong
 ```
 
 ---

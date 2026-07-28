@@ -64,24 +64,24 @@ graph TB
 flowchart TB
     Input["👤 User Message"] --> Valid["Validation<br/>mention / channel / lock"]
 
-    Valid --> Step1["🔍 Stage 1: Intent Analysis<br/>IntentAnalyzer<br/><i>Keyword Heuristics + LLM</i>"]
+    Valid --> Step1["🔍 Stage 1: Semantic Routing<br/>IntentAnalyzer<br/><i>tools + memory need + optional digest</i>"]
 
-    Step1 -->|"no tools needed"| RAG
+    Step1 -->|"long-term memory needed"| RAG
+    Step1 -->|"no long-term memory"| Step2
     Step1 -->|"tool plan"| Step2["🛠️ Stage 2: Tool Execution<br/>ToolsCog"]
 
     subgraph Step2Detail[" "]
         direction LR
         W["Weather<br/>KMA"]
-        F["Finance<br/>Finnhub/yfinance"]
-        S["Web Search<br/>Linkup/DDG"]
-        P["Place<br/>Kakao"]
+        S["Web, finance, place facts<br/>Linkup"]
         I["Image<br/>CometAPI"]
     end
 
     Step2 --> Step2Detail
-    Step2Detail --> RAG["🧠 RAG Context Search<br/>HybridSearchEngine<br/><i>Embedding + BM25 + RRF</i>"]
+    Step2Detail --> Merge["🧩 Context Assembly<br/><i>digest + recent verbatim + selective RAG</i>"]
+    RAG["🧠 Selective Long-Term Memory<br/>HybridSearchEngine"] --> Merge
 
-    RAG --> Step3["✍️ Stage 3: Response Generation<br/>LLMClient (Main Lane)<br/><i>DeepSeek-V3.2-Exp</i>"]
+    Merge --> Step3["✍️ Stage 3: Response Generation<br/>LLMClient (Main Lane)<br/><i>deepseek-v4-flash</i>"]
 
     Step3 --> Output["💬 Discord Reply<br/><i>Persona + Emoji applied</i>"]
 
@@ -99,20 +99,16 @@ flowchart TB
 flowchart TB
     subgraph Routing["Routing Lane (Intent Analysis)"]
         direction TB
-        RP1["Primary: gemini-3.1-flash-lite<br/><i>(CometAPI)</i>"]
-        RF1["Fallback: gemini-2.5-flash<br/><i>(CometAPI)</i>"]
-        RD1["Direct Gemini<br/><i>(optional)</i>"]
-        RP1 -->|"fail"| RF1
-        RF1 -->|"fail"| RD1
+        RP1["Primary: gpt-5.4-nano<br/><i>(CometAPI)</i>"]
+        RE["Restricted keyword fallback on provider failure"]
+        RP1 -->|"provider / JSON failure"| RE
     end
 
     subgraph Main["Main Lane (Response Generation)"]
         direction TB
-        MP1["Primary: DeepSeek-V3.2-Exp<br/><i>(CometAPI)</i>"]
-        MF1["Fallback: DeepSeek-R1<br/><i>(CometAPI)</i>"]
-        MD1["Direct Gemini<br/><i>(optional)</i>"]
-        MP1 -->|"fail"| MF1
-        MF1 -->|"fail"| MD1
+        MP1["Primary: deepseek-v4-flash<br/><i>(CometAPI)</i>"]
+        ME["Bounded timeout / explicit failure"]
+        MP1 -->|"fail"| ME
     end
 
     Caller["LLMClient"] --> Routing
@@ -120,8 +116,8 @@ flowchart TB
 
     style RP1 fill:#e3f2fd,stroke:#1565c0
     style MP1 fill:#fff8e1,stroke:#f57f17
-    style RF1 fill:#e3f2fd,stroke:#90caf9
-    style MF1 fill:#fff8e1,stroke:#ffb74d
+    style RE fill:#ffebee,stroke:#c62828
+    style ME fill:#ffebee,stroke:#c62828
 ```
 
 **LLM Call Sequence**:
@@ -341,40 +337,31 @@ sequenceDiagram
 
     Bot->>AI: process_agent_message(message)
 
-    Note over AI: 5. Intent Analysis
-    AI->>Intent: analyze(query, context, history)
-
-    Intent->>Intent: _detect_by_keywords(query)
-    Note over Intent: weather keywords: ✅<br/>stock keywords: ✅
-
-    Intent->>LLMR: call_routing_llm(analysis prompt)
-    LLMR-->>Intent: {analysis, tool_plan, draft, self_score}
-
-    Intent-->>AI: intent_result + tool_plan
+    Note over AI: 5. Fetch Discord history once
+    AI->>Intent: route_tools(query, history)
+    Intent->>LLMR: call_routing_lane_target(tool contract + recent turns)
+    LLMR-->>Intent: {intent, needs_memory, context_digest, tools}
+    Intent-->>AI: ToolRoutingDecision
 
     Note over AI: 6. Tool Execution → delegate to ToolsCog
 
-    par Weather query
-        AI->>Tools: get_weather(location="Seoul")
-        Tools-->>AI: {temp: 22°C, sky: "clear"}
-    and Stock query
-        AI->>Tools: get_us_stock_info("AAPL")
-        Tools-->>AI: {price: $182.63, change: +1.2%}
+    AI->>Tools: get_weather_forecast(location="Seoul", day_offset=0)
+    Tools-->>AI: grounded KMA data
+
+    opt needs_memory=true
+        Note over AI: 7. Selective search of older memory
+        AI->>RAG: search(query, channel_id, user_id)
+        RAG-->>AI: relevant long-term memory
     end
-
-    Note over AI: 7. RAG Context Search
-
-    AI->>RAG: search(query, channel_id, scope)
-    RAG-->>AI: RAG context (relevant conversation memory)
 
     Note over AI: 8. Response Generation
 
-    AI->>LLMM: call_main_llm(<br/>  system + persona,<br/>  tool_results + RAG + history<br/>)
-    LLMM-->>AI: "Seoul is clear and 22°C. Apple at $182.63 (+1.2%)"
+    AI->>LLMM: call_main_llm(<br/>persona + tool results + digest<br/>+ recent verbatim + optional RAG)
+    LLMM-->>AI: final Discord-safe response
 
     Note over AI: 9. Send Response
 
-    AI->>Discord: reply("Seoul is clear and 22°C. Apple at $182.63 (+1.2%)")
+    AI->>Discord: reply(normalized response)
 
     Note over AI: 10. Async embedding save
     AI->>AI: asyncio.create_task(save_embedding)
@@ -666,18 +653,16 @@ ON conversation_windows (channel_id, start_message_id, end_message_id);
 
 ## Error Handling Patterns
 
-### Layered Fallback
+### Bounded Provider Failure Handling
 
 ```mermaid
 flowchart LR
-    Try1["1st: Primary LLM<br/><i>CometAPI</i>"]
-    Try1 -->|"fail"| Try2["2nd: Fallback LLM<br/><i>CometAPI</i>"]
-    Try2 -->|"fail"| Try3["3rd: Gemini Direct<br/><i>(optional)</i>"]
-    Try3 -->|"fail"| Error["Error Response<br/>AI service unavailable"]
+    Try1["Primary LLM<br/><i>CometAPI</i>"]
+    Try1 -->|"routing failure"| RouteFallback["Restricted local routing fallback"]
+    Try1 -->|"main failure"| Error["Explicit error response<br/>no unbounded retries"]
 
     style Try1 fill:#c8e6c9,stroke:#2e7d32
-    style Try2 fill:#fff9c4,stroke:#f9a825
-    style Try3 fill:#ffecb3,stroke:#f57c00
+    style RouteFallback fill:#fff9c4,stroke:#f9a825
     style Error fill:#ffcdd2,stroke:#c62828
 ```
 
@@ -696,12 +681,9 @@ flowchart LR
 ### Tool Execution Failure
 
 ```python
-# Auto-add web search on tool failure
-if tool_execution_failed:
-    tool_plan.append({
-        "tool_name": "web_search",
-        "parameters": {"query": original_query}
-    })
+# Keep tool failures explicit so the main model does not invent results.
+# Do not append keyword-selected tools after a successful semantic routing result.
+tool_results.append({"tool": tool_name, "error": public_error})
 ```
 
 ---
@@ -733,8 +715,8 @@ async def my_new_tool(self, param1: str) -> dict:
     result = await some_api_call(param1)
     return {"result": result}
 
-# IntentAnalyzer → add keywords to keyword sets
-# AIHandler auto-discovers and uses the tool
+# Add the tool name/parameters to IntentAnalyzer's routing contract and allowlist.
+# The routing LLM makes normal semantic choices; edit keywords only for outage fallback.
 ```
 
 ### Adding a New Embedding Source
@@ -862,7 +844,7 @@ graph TB
 {
   "event_type": "AI_INTERACTION",
   "details": {
-    "model_used": "DeepSeek-V3.2-Exp",
+    "model_used": "deepseek-v4-flash",
     "rag_hits": 3,
     "latency_ms": 1250,
     "tools_used": ["get_weather"],

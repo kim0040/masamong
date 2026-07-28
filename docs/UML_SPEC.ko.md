@@ -138,10 +138,10 @@ graph TB
     end
 
     subgraph IntentModule["utils/intent_analyzer.py"]
-        Analyze["analyze()<br/>의도 분석"]
-        KeywordMatch["_detect_by_keywords()<br/>키워드 매칭"]
-        LLMAnalyze["_analyze_with_llm()<br/>LLM 의도 분석"]
-        ToolPlan["_build_tool_plan()<br/>도구 실행 계획"]
+        Analyze["route_tools()<br/>의미 라우팅"]
+        LLMAnalyze["routing lane 호출<br/>도구·기억·digest 판단"]
+        ToolPlan["_sanitize_tool_plan()<br/>계약·상한 검증"]
+        Emergency["_emergency_routing_decision()<br/>provider 장애 fallback"]
     end
 
     subgraph LLMModule["utils/llm_client.py"]
@@ -185,9 +185,10 @@ graph TB
     ProcessAgent --> SearchRAG
     ProcessAgent --> PrimaryCall
     
-    Analyze --> KeywordMatch
     Analyze --> LLMAnalyze
-    Analyze --> ToolPlan
+    LLMAnalyze --> ToolPlan
+    LLMAnalyze -. "provider/JSON 실패" .-> Emergency
+    Emergency --> ToolPlan
 
     ToolPlan --> ToolsModule
 
@@ -243,8 +244,8 @@ classDiagram
         +process_agent_message(message)
         +_message_has_valid_mention(message) bool
         +add_message_to_history(message)
-        +_execute_tool_plan(plan) dict
-        +_generate_response(context) str
+        +_execute_tool(tool_name, parameters) dict
+        +_compose_main_prompt(context) str
         +_save_embedding(message)
     }
 
@@ -269,10 +270,10 @@ classDiagram
         +Connection db
         +LLMClient llm_client
         +float auto_search_cooldown
-        +analyze(query, context, history) dict
-        +_detect_by_keywords(query) dict
-        +_analyze_with_llm(query, context) dict
-        +_build_tool_plan(intent) list
+        +route_tools(query, history) ToolRoutingDecision
+        +_parse_routing_json(raw) dict
+        +_emergency_routing_decision(query) ToolRoutingDecision
+        +_sanitize_tool_plan(plan) list
         +_needs_web_search(query, rag_score) bool
     }
 
@@ -307,14 +308,13 @@ classDiagram
     class ToolsCog {
         +Bot bot
         +AIHandler ai_handler
-        +get_weather(location, date) dict
-        +get_us_stock_info(ticker) dict
-        +get_kr_stock_info(name) dict
-        +get_exchange_rate(currencies) dict
+        +get_weather_forecast(location, day_offset) str
+        +get_stock_price(symbol, stock_name, user_query) str
+        +get_krw_exchange_rate(currency_code) str
         +search_for_place(query) dict
         +web_search(query) dict
         +generate_image(prompt) dict
-        +linkup_search(query, depth) dict
+        +web_search_rag(query) dict
     }
 
     class TiDBConnection {
@@ -452,10 +452,10 @@ sequenceDiagram
 
             Bot->>AI: process_agent_message(message)
 
-            AI->>Intent: analyze(query, context, history)
+            AI->>Intent: route_tools(query, history)
             Intent->>Routing: call_routing_llm(prompt, system)
-            Routing-->>Intent: analysis JSON (tool_plan, draft, self_score)
-            Intent-->>AI: intent analysis result
+            Routing-->>Intent: JSON (intent, needs_memory, context_digest, tools)
+            Intent-->>AI: ToolRoutingDecision
 
             alt 도구 필요
                 loop 각 도구
@@ -464,12 +464,12 @@ sequenceDiagram
                 end
             end
 
-            opt RAG 검색 필요
+            opt needs_memory=true
                 AI->>RAG: search(query, channel_id)
                 RAG-->>AI: RAG context
             end
 
-            AI->>Main: call_main_llm(prompt, system, tool_results, rag_context)
+            AI->>Main: call_main_llm(tool results, digest, recent turns, optional RAG)
             Main-->>AI: 최종 응답 텍스트
 
             AI->>Discord: reply(message, response)
@@ -582,31 +582,26 @@ sequenceDiagram
     participant Tools as ToolsCog
     participant Weather as weather.py
     participant KMA as 기상청 KMA
-    participant Finance as Finnhub/ yfinance
     participant Search as Linkup/ DDG
     participant Image as CometAPI Image
 
     User->>AI: "애플 주가랑 내일 서울 날씨 알려줘"
-    AI->>Intent: analyze(query)
-
-    Intent->>Intent: _detect_by_keywords()
-    Note over Intent: 키워드 매칭 결과:<br/>- weather: "서울", "날씨", "내일"<br/>- stock_us: "애플", "주가"
-
-    Intent-->>AI: tool_plan: [<br/>  {tool: "weather", params: {location: "서울", date: "내일"}},<br/>  {tool: "stock_us", params: {ticker: "AAPL"}}<br/>]
+    AI->>Intent: route_tools(query, recent_history)
+    Intent-->>AI: tools: [<br/>  {tool: "get_weather_forecast", params: {location: "서울", day_offset: 1}},<br/>  {tool: "web_search", params: {query: "애플 최신 주가"}}<br/>]
 
     par 날씨 도구 실행
-        AI->>Tools: get_weather(location="서울", date="내일")
+        AI->>Tools: get_weather_forecast(location="서울", day_offset=1)
         Tools->>Weather: get_weather_forecast("서울", "내일")
         Weather->>Weather: coords.convert_to_grid("서울")
         Weather->>KMA: VilageFcstInfoService API
         KMA-->>Weather: 기온, 강수확률, 하늘상태
         Weather-->>Tools: formatted weather data
         Tools-->>AI: weather_result
-    and 주식 도구 실행
-        AI->>Tools: get_us_stock_info("AAPL")
-        Tools->>Finance: get_stock_data("AAPL")
-        Finance-->>Tools: {price, change, volume, news}
-        Tools-->>AI: stock_result
+    and 최신 금융 근거 검색
+        AI->>Tools: web_search(query="애플 최신 주가")
+        Tools->>Search: bounded search
+        Search-->>Tools: cited source context
+        Tools-->>AI: web_result
     end
 
     AI->>AI: 결과 취합 → Main Lane LLM 프롬프트 구성
@@ -693,15 +688,11 @@ flowchart TD
     HasTools -->|Yes| ExecuteTools[2단계: 도구 실행<br/>ToolsCog 호출]
     ExecuteTools --> CollectResults[도구 결과 수집]
 
-    HasTools -->|No| RAGSearch[RAG 컨텍스트 검색<br/>RAGManager.search]
-    CollectResults --> RAGSearch
-
-    RAGSearch --> CheckRAGScore{RAG 점수 낮음<br/>+ 검색 필요어?}
-
-    CheckRAGScore -->|Yes| WebSearch[자동 웹 검색<br/>Linkup / DuckDuckGo]
-    CheckRAGScore -->|No| BuildPrompt[프롬프트 구성<br/>페르소나 + 도구결과 + RAG]
-
-    WebSearch --> BuildPrompt
+    HasTools -->|No| CheckMemory{needs_memory?}
+    CollectResults --> CheckMemory
+    CheckMemory -->|Yes| RAGSearch[선택적 장기기억 검색<br/>RAGManager.search]
+    CheckMemory -->|No| BuildPrompt[프롬프트 구성<br/>페르소나 + 도구결과 + digest + 최신 원문]
+    RAGSearch --> BuildPrompt
 
     BuildPrompt --> GenResponse[3단계: 응답 생성<br/>Main Lane LLM 호출]
 
@@ -722,53 +713,18 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    Start([의도 분석 시작]) --> KeywordMatch[키워드 기반 1차 분석]
-    
-    KeywordMatch --> CheckWeather{날씨 키워드?}
-    CheckWeather -->|Yes| MarkWeather[weather 플래그 설정]
-    CheckWeather -->|No| CheckStock{주식 키워드?}
-    
-    CheckStock -->|Yes| ClassifyStock{국내/해외?}
-    ClassifyStock -->|해외| MarkUS[stock_us 플래그]
-    ClassifyStock -->|국내| MarkKR[stock_kr 플래그]
-    
-    CheckStock -->|No| CheckExchange{환율 키워드?}
-    CheckExchange -->|Yes| MarkExchange[exchange 플래그]
-    CheckExchange -->|No| CheckFinance{금융 의도 힌트?}
-    
-    CheckFinance -->|Yes| MarkFinance[finance 플래그]
-    CheckFinance -->|No| CheckPlace{장소 키워드?}
-    
-    CheckPlace -->|Yes| MarkPlace[place 플래그]
-    CheckPlace -->|No| CheckWebSearch{웹 검색어?<br/>최신/뉴스/방법/왜}
-    
-    CheckWebSearch -->|Yes| MarkWeb[web_search 플래그]
-    CheckWebSearch -->|No| CheckImage{이미지 키워드?}
-    
-    CheckImage -->|Yes| MarkImage[image_gen 플래그]
-    CheckImage -->|No| CheckGeneral[일반 대화 감지]
-
-    MarkWeather --> LLMEntry[LLM 의도 분석 진입]
-    MarkUS --> LLMEntry
-    MarkKR --> LLMEntry
-    MarkExchange --> LLMEntry
-    MarkFinance --> LLMEntry
-    MarkPlace --> LLMEntry
-    MarkWeb --> LLMEntry
-    MarkImage --> LLMEntry
-    CheckGeneral --> LLMEntry
-
-    LLMEntry --> BuildPrompt2[분석 프롬프트 구성]
-    BuildPrompt2 --> CallLLM[LLM 호출<br/>gemini-3.1-flash-lite]
-    CallLLM --> ParseJSON[JSON 파싱<br/>tool_plan, draft, self_score]
-    ParseJSON --> ValidateScore{self_score 검증}
-
-    ValidateScore -->|통과| MergeIntent[키워드 + LLM 결과 병합]
-    ValidateScore -->|실패| RetryLLM[재시도 / 키워드만 사용]
-    RetryLLM --> MergeIntent
-
-    MergeIntent --> BuildPlan[도구 실행 계획 생성]
-    BuildPlan --> Done([분석 완료])
+    Start([의미 라우팅 시작]) --> BuildPrompt[도구 계약 + 현재 요청 + 최근 대화]
+    BuildPrompt --> NeedDigest{오래된 구간이<br/>압축 임계치 초과?}
+    NeedDigest -->|Yes| AddDigest[같은 호출에 압축 대상 포함]
+    NeedDigest -->|No| CallRouting
+    AddDigest --> CallRouting[Routing lane 1회 호출<br/>gpt-5.4-nano]
+    CallRouting --> ParseJSON[JSON 추출·파싱]
+    ParseJSON --> Valid{계약 유효?}
+    Valid -->|Yes| Sanitize[도구 allowlist·개수·파라미터 상한 검증]
+    Valid -->|No| Emergency[제한된 키워드 장애 fallback]
+    Sanitize --> Decision[ToolRoutingDecision<br/>tools + needs_memory + digest]
+    Emergency --> Decision
+    Decision --> Done([라우팅 완료])
 ```
 
 ---

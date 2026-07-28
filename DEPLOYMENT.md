@@ -82,8 +82,8 @@ Masamo는 `profiles/masamo.env.example`로 기존 env를 교체하지 않는다.
 반드시 보존·명시할 항목:
 
 - 현재 token과 `MASAMONG_EXPECTED_DISCORD_BOT_USER_ID`
-- 현재 프로필 전용 `MASAMONG_SUPERADMIN_USER_IDS`; Masamo에는
-  `275928240126820352`, General은 별도 결정 전 빈 값
+- 현재 프로필 전용 `MASAMONG_SUPERADMIN_USER_IDS`; 실제 Discord 사용자 ID는
+  보호된 운영 env에서만 유지하고 General은 별도 결정 전 빈 값
 - 현재 TiDB host/port/user/password와 DB `masamong`
 - `MASAMONG_EXPECTED_DB_NAME=masamong`, strict TLS/CA/hostname 검증
 - 현재 prompt, embedding, Kakao mapping과 실제 저장소 경로

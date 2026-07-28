@@ -388,9 +388,18 @@ class LLMClient:
         *,
         prompt: str,
         log_extra: dict,
+        max_tokens: int | None = None,
     ) -> str | None:
         """단일 라우팅 레인 LLM 타겟을 호출하여 프롬프트 응답을 반환합니다."""
         provider = target["provider"]
+        effective_max_tokens = max(
+            64,
+            int(
+                max_tokens
+                if max_tokens is not None
+                else getattr(config, "ROUTING_LLM_MAX_TOKENS", 1024)
+            ),
+        )
         if provider == "openai_compat":
             client = self.get_openai_client(target["base_url"], target["api_key"])
             if client is None:
@@ -398,7 +407,7 @@ class LLMClient:
             request_kwargs: dict[str, Any] = {
                 "model": target["model"],
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": int(getattr(config, "ROUTING_LLM_MAX_TOKENS", 1024)),
+                "max_tokens": effective_max_tokens,
                 "temperature": 0.0,
                 "timeout": self._call_timeout_seconds,
                 "stream": False,
@@ -434,9 +443,7 @@ class LLMClient:
                     contents=prompt,
                     config={
                         "temperature": 0.0,
-                        "max_output_tokens": int(
-                            getattr(config, "ROUTING_LLM_MAX_TOKENS", 1024)
-                        ),
+                        "max_output_tokens": effective_max_tokens,
                     },
                 )
 
@@ -710,6 +717,7 @@ class LLMClient:
         log_extra: dict,
         *,
         trace_key: str = "cometapi_fast",
+        max_tokens: int | None = None,
     ) -> str | None:
         """라우팅 레인 Fast 모델을 통해 텍스트를 생성합니다.
 
@@ -739,7 +747,10 @@ class LLMClient:
             for target in targets:
                 try:
                     response_text = await self.call_routing_lane_target(
-                        target, prompt=prompt, log_extra=log_extra,
+                        target,
+                        prompt=prompt,
+                        log_extra=log_extra,
+                        max_tokens=max_tokens,
                     )
                 except (LLMAdmissionTimeoutError, LLMProviderTimeoutError) as lane_exc:
                     logger.warning(

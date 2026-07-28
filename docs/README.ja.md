@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <a href="../../README.md">English</a> &nbsp;|&nbsp;
+  <a href="../README.md">English</a> &nbsp;|&nbsp;
   <a href="README.ko.md">한국어</a>
 </p>
 
@@ -66,8 +66,14 @@ cp prompts.example.json prompts.json
 ```env
 DISCORD_BOT_TOKEN=your_token_here
 COMETAPI_KEY=your_cometapi_key
-COMETAPI_BASE_URL=https://api.cometapi.com/v1
-USE_COMETAPI=true
+LLM_ROUTING_PRIMARY_PROVIDER=openai_compat
+LLM_ROUTING_PRIMARY_MODEL=gpt-5.4-nano
+LLM_ROUTING_PRIMARY_BASE_URL=https://api.cometapi.com/v1
+LLM_ROUTING_PRIMARY_API_KEY=${COMETAPI_KEY}
+LLM_MAIN_PRIMARY_PROVIDER=openai_compat
+LLM_MAIN_PRIMARY_MODEL=deepseek-v4-flash
+LLM_MAIN_PRIMARY_BASE_URL=https://api.cometapi.com/v1
+LLM_MAIN_PRIMARY_API_KEY=${COMETAPI_KEY}
 ```
 
 > **ヒント:** `python setup.py`を実行すると対話式セットアップウィザードが使えます。
@@ -99,6 +105,9 @@ $env:PYTHONPATH="."; python main.py
 | **Web検索** | リアルタイム検索 — Linkup API (主) / DuckDuckGo (代替) |
 | **画像生成** | `!이미지 <プロンプト>` — CometAPI Gemini Image |
 | **運勢** | 日/月/年 運勢 + 星座 + 購読 |
+| **学校のお知らせ** | DM限定、自然文で学校・学年・関心分野を確認後に登録 |
+| **編入のお知らせ** | DM限定、TOEIC等の公認英語を使う20大学を購読 |
+| **プライバシー** | 個人情報を使う機能は保存前にDiscordボタンで同意 |
 | **ランキング** | サーバー活動ランキング (`!랭킹`) |
 | **要約** | チャンネル会話要約 (`!요약`) |
 | **投票** | `!투표 "テーマ" "項目1" "項目2"` |
@@ -110,8 +119,17 @@ $env:PYTHONPATH="."; python main.py
 マサモンは**3ステージデュアルレーンエージェントパイプライン**を使用します：
 
 ```
-メッセージ → 意図分析 (Routing Lane) → ツール実行 → RAG検索 → 応答生成 (Main Lane)
+メッセージ → 意味ルーティング → 必要なツール → 選択的な長期記憶 → 応答生成
 ```
+
+通常時のツール選択は固定キーワードではなくRouting Laneが会話の意味から決定します。
+キーワード規則はプロバイダ障害時の限定fallbackだけです。直近の発話は原文のまま保ち、
+長くなった同一リクエスト内の文脈は追加API呼び出しなしで短いdigestにし、さらに古い
+内容が必要な質問だけRAGを検索します。
+
+TiDB Cloud Starterでは`TIDB_STARTER_FREE_PLAN_MODE=true`を使用し、構造化メモリの
+候補読み取りを384件、拡張読み取りを768件に制限します。無料枠は行5GiB・列5GiB・
+月5,000万RUで、最終使用量はCloudの**Usage this month**を確認してください。
 
 [📘 詳細アーキテクチャ (English)](ARCHITECTURE.en.md) &nbsp;|&nbsp; [📗 詳細アーキテクチャ (한국어)](ARCHITECTURE.ko.md)
 
@@ -136,7 +154,7 @@ $env:PYTHONPATH="."; python main.py
 
 ## ライセンス
 
-MIT License — 詳細は [LICENSE](../../LICENSE) を参照してください。
+MIT License — 詳細は [LICENSE](../LICENSE) を参照してください。
 
 ---
 
@@ -147,7 +165,7 @@ MIT License — 詳細は [LICENSE](../../LICENSE) を参照してください�
 | [ARCHITECTURE.en.md](ARCHITECTURE.en.md) | English | システムアーキテクチャ詳細 (15図) |
 | [ARCHITECTURE.md](ARCHITECTURE.ko.md) | 한국어 | システムアーキテクチャ詳細 (15図) |
 | [UML_SPEC.md](UML_SPEC.ko.md) | 한국어 | UML分析 — C4, クラス, シーケンス, ER (17図) |
-| [../README.md](../../README.md) | English | 英語README |
+| [../README.md](../README.md) | English | 英語README |
 | [README.ko.md](README.ko.md) | 한국어 | 韓国語README |
 
 ---

@@ -121,3 +121,33 @@ async def test_api_rate_limit_preserves_rows_older_than_daily_window(api_log_db)
 
     assert limited is False
     assert preserved == 1
+
+
+@pytest.mark.asyncio
+async def test_daily_api_counts_reads_multiple_keys_in_one_result(api_log_db):
+    now = datetime.now(timezone.utc)
+    await api_log_db.executemany(
+        "INSERT INTO api_call_log (api_type, called_at) VALUES (?, ?)",
+        [
+            ("llm_user_1", now.isoformat()),
+            ("llm_user_1", now.isoformat()),
+            ("llm_global", now.isoformat()),
+            ("unrelated", now.isoformat()),
+            (
+                "llm_global",
+                (now - timedelta(days=2)).isoformat(),
+            ),
+        ],
+    )
+    await api_log_db.commit()
+
+    counts = await db_utils.get_daily_api_counts(
+        api_log_db,
+        ("llm_user_1", "llm_global", "missing", "llm_global"),
+    )
+
+    assert counts == {
+        "llm_user_1": 2,
+        "llm_global": 1,
+        "missing": 0,
+    }

@@ -2,24 +2,21 @@ import pytest
 
 import config
 from cogs.ai_handler import AIHandler
+from utils.intent_analyzer import IntentAnalyzer
 
 
 def _build_handler_without_init() -> AIHandler:
     return AIHandler.__new__(AIHandler)
 
 
-def test_select_tool_plan_routes_factual_query_to_web_search():
-    handler = _build_handler_without_init()
-
-    plan = handler._select_tool_plan_without_intent_llm(
-        "아브라함 링컨은 언제 태어났어?",
-        rag_top_score=0.1,
-        log_extra=None,
+def test_routing_json_parser_accepts_reasoning_prefix_without_eval():
+    result = IntentAnalyzer._parse_routing_json(
+        '<think>짧은 판단</think>\n'
+        '{"intent":"날씨","needs_memory":false,"tools":[]}'
     )
 
-    assert isinstance(plan, list)
-    assert plan
-    assert plan[0]["tool_to_use"] == "web_search"
+    assert result["intent"] == "날씨"
+    assert result["needs_memory"] is False
 
 
 @pytest.mark.asyncio
@@ -57,7 +54,14 @@ async def test_fast_thinking_path_uses_routing_lane_only():
             return [{"name": "routing.primary"}]
         return [{"name": "main.primary"}]
 
-    async def _fake_call_routing_lane_target(target, *, prompt: str, log_extra: dict):
+    async def _fake_call_routing_lane_target(
+        target,
+        *,
+        prompt: str,
+        log_extra: dict,
+        max_tokens=None,
+    ):
+        _ = max_tokens
         routing_calls.append((target.get("name"), prompt, dict(log_extra)))
         return "intent-json"
 
@@ -78,17 +82,22 @@ async def test_fast_thinking_path_uses_routing_lane_only():
 
 
 @pytest.mark.asyncio
-async def test_detect_tools_by_llm_runs_for_smalltalk_when_always_run_enabled(monkeypatch):
+async def test_detect_tools_by_llm_runs_for_smalltalk(monkeypatch):
     handler = _build_handler_without_init()
     handler.use_cometapi = True
 
     monkeypatch.setattr(config, "INTENT_LLM_ENABLED", True)
-    monkeypatch.setattr(config, "INTENT_LLM_ALWAYS_RUN", True)
 
     called = {"value": False}
 
-    async def _fake_fast(prompt, model, log_extra, trace_key="cometapi_fast"):
-        _ = prompt, model, log_extra, trace_key
+    async def _fake_fast(
+        prompt,
+        model,
+        log_extra,
+        trace_key="cometapi_fast",
+        max_tokens=None,
+    ):
+        _ = prompt, model, log_extra, trace_key, max_tokens
         called["value"] = True
         return '{"intent":"인사/잡담","reasoning":"일반 대화","tools":[]}'
 
@@ -98,6 +107,175 @@ async def test_detect_tools_by_llm_runs_for_smalltalk_when_always_run_enabled(mo
 
     assert called["value"] is True
     assert plan == []
+
+
+@pytest.mark.asyncio
+async def test_semantic_router_controls_tool_choice_without_keyword_override():
+    handler = _build_handler_without_init()
+    handler.use_cometapi = True
+    captured = {}
+
+    async def _fake_fast(
+        prompt,
+        model,
+        log_extra,
+        trace_key="cometapi_fast",
+        max_tokens=None,
+    ):
+        _ = model, log_extra, trace_key
+        captured["prompt"] = prompt
+        captured["max_tokens"] = max_tokens
+        return (
+            '{"intent":"시각 자료 생성","needs_memory":false,'
+            '"tools":[{"tool":"generate_image",'
+            '"params":{"prompt":"도시 성장 과정을 보여주는 인포그래픽"}}]}'
+        )
+
+    handler._cometapi_fast_generate_text = _fake_fast
+    decision = await handler._route_tools(
+        "도시가 커지는 과정을 시각 자료로 부탁해",
+        {"trace_id": "semantic-router"},
+        history=[],
+    )
+    plan = handler._sanitize_tool_plan(
+        "도시가 커지는 과정을 시각 자료로 부탁해",
+        decision.plan,
+        rag_top_score=0.0,
+        trust_llm=decision.source == "llm",
+    )
+
+    assert decision.source == "llm"
+    assert decision.needs_memory is False
+    assert plan == [
+        {
+            "tool_to_use": "generate_image",
+            "tool_name": "generate_image",
+            "parameters": {
+                "prompt": "도시 성장 과정을 보여주는 인포그래픽"
+            },
+        }
+    ]
+    assert "Examples:" not in captured["prompt"]
+    assert "단어 포함 여부가 아니라" in captured["prompt"]
+    assert captured["max_tokens"] == config.SEMANTIC_ROUTER_MAX_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_semantic_router_can_request_memory_without_external_tool():
+    handler = _build_handler_without_init()
+    handler.use_cometapi = True
+
+    async def _fake_fast(*_args, **_kwargs):
+        return (
+            '{"intent":"이전 계획 회상","needs_memory":true,'
+            '"tools":[]}'
+        )
+
+    handler._cometapi_fast_generate_text = _fake_fast
+    decision = await handler._route_tools(
+        "전에 정한 여행 계획 다시 알려줘",
+        {"trace_id": "memory-router"},
+        history=[],
+    )
+
+    assert decision.source == "llm"
+    assert decision.needs_memory is True
+    assert decision.plan == []
+
+
+@pytest.mark.asyncio
+async def test_semantic_router_no_tool_is_not_replaced_by_keyword_plan():
+    handler = _build_handler_without_init()
+    handler.use_cometapi = True
+
+    async def _fake_fast(*_args, **_kwargs):
+        return (
+            '{"intent":"검색 개념에 대한 일반 대화",'
+            '"needs_memory":false,"tools":[]}'
+        )
+
+    handler._cometapi_fast_generate_text = _fake_fast
+    decision = await handler._route_tools(
+        "검색이라는 개념에 대한 네 생각만 말해줘",
+        {"trace_id": "no-tool-router"},
+        history=[],
+    )
+
+    assert decision.source == "llm"
+    assert decision.plan == []
+
+
+@pytest.mark.asyncio
+async def test_semantic_router_compacts_only_older_history(monkeypatch):
+    handler = _build_handler_without_init()
+    handler.use_cometapi = True
+    monkeypatch.setattr(config, "AI_CONTEXT_RECENT_TURNS", 4)
+    monkeypatch.setattr(config, "AI_CONTEXT_COMPACTION_TRIGGER_CHARS", 1_000)
+    monkeypatch.setattr(config, "AI_CONTEXT_COMPACTION_SOURCE_MAX_CHARS", 2_000)
+    monkeypatch.setattr(config, "AI_CONTEXT_DIGEST_MAX_CHARS", 240)
+    captured = {}
+
+    history = [
+        {
+            "role": "user",
+            "speaker": "민수",
+            "is_current_user": True,
+            "parts": [f"오래된 계획 {index} " + ("내용 " * 70)],
+        }
+        for index in range(7)
+    ]
+    history.extend(
+        {
+            "role": "model",
+            "speaker": "Masamong",
+            "parts": [f"최신 답변 {index}"],
+        }
+        for index in range(4)
+    )
+
+    async def _fake_fast(prompt, *_args, **_kwargs):
+        captured["prompt"] = prompt
+        return (
+            '{"intent":"계획 이어가기","needs_memory":false,'
+            '"context_digest":"민수는 자가용을 쓰지 않기로 했고 KTX 예약은 미정이다.",'
+            '"tools":[]}'
+        )
+
+    handler._cometapi_fast_generate_text = _fake_fast
+    decision = await handler._route_tools(
+        "그 계획 계속 정리해줘",
+        {"trace_id": "context-digest"},
+        history=history,
+    )
+
+    assert decision.source == "llm"
+    assert decision.context_digest == (
+        "민수는 자가용을 쓰지 않기로 했고 KTX 예약은 미정이다."
+    )
+    assert "압축할 오래된 대화:" in captured["prompt"]
+    assert "오래된 계획" in captured["prompt"]
+    assert "최신 답변 3" in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_semantic_router_ignores_unsolicited_digest_for_short_history():
+    handler = _build_handler_without_init()
+    handler.use_cometapi = True
+
+    async def _fake_fast(*_args, **_kwargs):
+        return (
+            '{"intent":"인사","needs_memory":false,'
+            '"context_digest":"모델이 임의로 만든 오래된 사실","tools":[]}'
+        )
+
+    handler._cometapi_fast_generate_text = _fake_fast
+    decision = await handler._route_tools(
+        "안녕",
+        {"trace_id": "no-context-digest"},
+        history=[],
+    )
+
+    assert decision.context_digest == ""
 
 
 def test_detect_tools_by_keyword_place_routes_to_web_search():
@@ -222,6 +400,34 @@ def test_short_web_followup_uses_only_same_users_previous_turn():
 
     assert "OpenAI 새 모델" in query
     assert "제주도" not in query
+
+
+def test_rag_search_context_is_derived_from_already_loaded_history():
+    history = [
+        {
+            "role": "user",
+            "speaker": "다른 사람",
+            "is_current_user": False,
+            "parts": ["다른 사람의 주제"],
+        },
+        {
+            "role": "user",
+            "speaker": "질문자",
+            "is_current_user": True,
+            "parts": ["내가 전에 정한 일정"],
+        },
+        {
+            "role": "model",
+            "speaker": "Masamong",
+            "is_current_user": False,
+            "parts": ["지난 답변"],
+        },
+    ]
+
+    assert AIHandler._recent_search_messages_from_history(history) == [
+        "내가 전에 정한 일정",
+        "지난 답변",
+    ]
 
 
 def test_discord_source_footer_is_deduplicated_and_suppresses_embeds():
