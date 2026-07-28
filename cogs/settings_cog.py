@@ -77,7 +77,7 @@ class SettingsCog(commands.Cog):
 
     @config_group.command(name="set_ai", description="이 서버에서 AI 기능 활성화 여부를 설정합니다.")
     @app_commands.describe(enabled="AI 기능을 활성화하려면 True, 비활성화하려면 False")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def set_ai_enabled(self, interaction: discord.Interaction, enabled: bool):
         """서버 전체의 AI 기능 활성화/비활성화를 설정합니다."""
         guild_id = interaction.guild_id
@@ -99,7 +99,7 @@ class SettingsCog(commands.Cog):
         app_commands.Choice(name="추가", value="add"),
         app_commands.Choice(name="제거", value="remove"),
     ])
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def set_allowed_channel(self, interaction: discord.Interaction, action: str, channel: discord.TextChannel):
         """AI가 응답할 수 있는 채널 목록을 관리합니다."""
         guild_id = interaction.guild_id
@@ -144,7 +144,7 @@ class SettingsCog(commands.Cog):
             await interaction.response.send_message("❌ 설정 변경 중 오류가 발생했습니다.", ephemeral=True)
 
     @persona_group.command(name="view", description="현재 서버에 설정된 AI 페르소나를 확인합니다.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def view_persona(self, interaction: discord.Interaction):
         """DB에 저장된 현재 서버의 커스텀 페르소나를 보여줍니다."""
         guild_id = interaction.guild_id
@@ -157,7 +157,7 @@ class SettingsCog(commands.Cog):
             await interaction.response.send_message("ℹ️ 이 서버에 설정된 커스텀 페르소나가 없습니다. `config.py`의 기본 페르소나를 사용합니다.", ephemeral=True)
 
     @persona_group.command(name="set", description="이 서버의 AI 페르소나를 새로 설정합니다.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def set_persona(self, interaction: discord.Interaction):
         """페르소나 설정을 위한 Modal을 띄웁니다."""
         guild_id = interaction.guild_id
@@ -171,7 +171,7 @@ class SettingsCog(commands.Cog):
         app_commands.Choice(name="English", value="en"),
         app_commands.Choice(name="日本語 (Japanese)", value="ja"),
     ])
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def set_language(self, interaction: discord.Interaction, lang: str):
         """서버의 봇 언어를 변경합니다."""
         guild_id = interaction.guild_id

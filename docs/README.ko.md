@@ -98,6 +98,7 @@ additive 테이블이다.
 | 대화·운세·사용량 | 누적 데이터 보존 | 빈 상태에서 시작 |
 | 기억 소스 | `discord,kakao` | `discord`만 |
 | env/config/prompt/embedding | Masamo 전용 절대 경로 | General 전용 절대 경로 |
+| 관리자 | Masamo 전용 최고 관리자 env와 Masamo DB 등록 목록 | 별도 General 최고 관리자 env와 General DB 등록 목록 |
 | 로그와 service | 별도 | 별도 |
 | 학교 공지 | 현재 운영 기능·DB·digest·23시 timer 소유 | 기본 비활성, 나중에 켤 때도 General 전용 경로만 사용 |
 | 편입 공지 | 20개 공식 공지원·snapshot·23:35 timer 소유 | 기본 비활성, Masamo 구독·파일·timer 공유 금지 |
@@ -106,6 +107,25 @@ additive 테이블이다.
 DB를 공유하면 운세 프로필, DM/LLM 사용량, 사용자 선호, 메시지·기억 키가 섞이므로 완전
 분리가 아니다. 자세한 배치 순서는 [인스턴스 분리 가이드](INSTANCE_SEPARATION.ko.md)에
 있다.
+
+## 관리자 권한과 여러 Discord 서버의 격리
+
+관리 권한은 세 단계이며 서로 자동 승격되지 않는다.
+
+- Discord 서버 소유자 또는 **서버 관리** 권한 보유자는 `/config`와 `/persona`로 현재
+  서버의 AI 채널·언어·말투만 바꾼다. DB read/write에는 현재 `guild_id`만 사용하며 A
+  서버 관리자가 B 서버 설정이나 기억을 볼 수 없다.
+- 등록 인스턴스 관리자는 `bot_admin_accounts`에서 현재 `instance_name`과 사용자 ID가
+  모두 일치할 때만 Masamo 또는 General 한쪽의 비식별 상태를 볼 수 있다. 이 권한만으로
+  Discord 서버 설정 권한을 얻지 않는다.
+- 최고 관리자는 `MASAMONG_SUPERADMIN_USER_IDS`에 프로필별로 고정한다. 관리자 등록·
+  비활성화와 봇 초대 링크 생성은 최고 관리자만 가능하다.
+
+Masamo 운영 프로필은 `275928240126820352`를 최고 관리자로 지정한다. General에는 이 값을
+복사하지 않고 별도 최고 관리자를 결정할 때까지 빈 목록으로 둔다. 최고 관리자는 DM에서
+`!관리 추가 <사용자 ID 또는 @멘션>`, `!관리 제거 ...`, `!관리 목록`을 사용한다. 제거는
+행 삭제가 아니라 `enabled=0` 갱신이다. 서버의 `!관리`는 공개 실행 버튼 뒤 호출자 전용
+패널을 열며, `!초대`는 최고 관리자 DM에 최소 권한 OAuth 초대 버튼을 보낸다.
 
 ## 개인정보 동의
 

@@ -283,6 +283,22 @@ def _parse_csv_set(value: Any) -> frozenset[str]:
     )
 
 
+def _parse_snowflake_csv(value: Any, setting_name: str) -> frozenset[int]:
+    """Discord 사용자 ID 목록을 양의 64비트 정수 집합으로 검증합니다."""
+    parsed: set[int] = set()
+    for raw_item in str(value or "").split(","):
+        item = raw_item.strip()
+        if not item:
+            continue
+        if not item.isdigit():
+            raise RuntimeError(f"{setting_name}에는 숫자 Discord 사용자 ID만 허용됩니다.")
+        user_id = int(item)
+        if user_id <= 0 or user_id > 9_223_372_036_854_775_807:
+            raise RuntimeError(f"{setting_name}의 Discord 사용자 ID 범위가 잘못되었습니다.")
+        parsed.add(user_id)
+    return frozenset(parsed)
+
+
 def normalize_llm_provider(value: Any, default: str = "none") -> str:
     """LLM provider 식별자를 정규화합니다."""
     raw = as_str(value, default).lower()
@@ -499,6 +515,10 @@ PROFILE = _normalize_profile_name(load_config_value("MASAMONG_PROFILE", "legacy"
 INSTANCE_NAME = _normalize_profile_name(
     load_config_value("MASAMONG_INSTANCE_NAME", PROFILE),
     PROFILE,
+)
+SUPERADMIN_USER_IDS = _parse_snowflake_csv(
+    load_config_value("MASAMONG_SUPERADMIN_USER_IDS", ""),
+    "MASAMONG_SUPERADMIN_USER_IDS",
 )
 _require_explicit_profile_raw = load_config_value(
     "MASAMONG_REQUIRE_EXPLICIT_PROFILE",

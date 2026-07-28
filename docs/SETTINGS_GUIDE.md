@@ -40,21 +40,22 @@ cp .env.example .env
 
 | 레인 | 용도 | Primary 모델 | Fallback 모델 |
 |------|------|-------------|---------------|
-| **Routing** | 의도 분석, 쿼리 정제 | gemini-3.1-flash-lite-preview | gemini-2.5-flash |
-| **Main** | 최종 답변 생성 | DeepSeek-V3.2-Exp | DeepSeek-V3.2-Exp |
+| **Routing** | 의도 분석, 쿼리 정제 | gpt-5.4-nano | 없음 |
+| **Main** | 최종 답변 생성 | deepseek-v4-flash | 없음 |
 
 ```env
 # Routing 레인
 LLM_ROUTING_PRIMARY_PROVIDER=openai_compat
-LLM_ROUTING_PRIMARY_MODEL=gemini-3.1-flash-lite-preview
+LLM_ROUTING_PRIMARY_MODEL=gpt-5.4-nano
 LLM_ROUTING_PRIMARY_BASE_URL=${COMETAPI_BASE_URL}
 LLM_ROUTING_PRIMARY_API_KEY=${COMETAPI_KEY}
 
 # Main 레인
 LLM_MAIN_PRIMARY_PROVIDER=openai_compat
-LLM_MAIN_PRIMARY_MODEL=xiaomi/mimo-v2-flash
-LLM_MAIN_PRIMARY_BASE_URL=${NANOGPT_BASE_URL}
-LLM_MAIN_PRIMARY_API_KEY=${NANOGPT_KEY}
+LLM_MAIN_PRIMARY_MODEL=deepseek-v4-flash
+LLM_MAIN_PRIMARY_BASE_URL=${COMETAPI_BASE_URL}
+LLM_MAIN_PRIMARY_API_KEY=${COMETAPI_KEY}
+LLM_MAIN_FALLBACK_PROVIDER=none
 ```
 
 ### 1.3 웹 검색 설정
@@ -65,9 +66,25 @@ LINKUP_API_KEY=your_linkup_api_key_here
 LINKUP_ENABLED=true
 LINKUP_MONTHLY_BUDGET_ENFORCED=true
 LINKUP_MONTHLY_BUDGET_EUR=4.5
+LINKUP_FETCH_RENDER_JS=false
+LINKUP_FETCH_JS_RETRY_ENABLED=true
 ```
 
-### 1.4 이미지 생성 설정
+### 1.4 관리자 경계
+
+```env
+# 프로필마다 별도 지정. General에 Masamo ID를 복사하지 않습니다.
+MASAMONG_SUPERADMIN_USER_IDS=replace-with-current-masamo-superadmin-user-id
+```
+
+- 서버 소유자와 **서버 관리** 권한 사용자는 그 서버의 `/config`, `/persona`만 사용합니다.
+- 최고 관리자는 DM에서 `!관리 추가`, `!관리 제거`, `!관리 목록`으로 현재 인스턴스
+  관리자를 등록합니다.
+- 등록 관리자는 현재 Masamo/General 인스턴스 상태만 보고, Discord 서버 권한을 자동으로
+  얻지 않습니다.
+- `!초대`는 최고 관리자에게만 비공개 초대 버튼을 제공합니다.
+
+### 1.5 이미지 생성 설정
 
 ```env
 COMETAPI_IMAGE_ENABLED=true
@@ -77,7 +94,7 @@ IMAGE_MODEL=qwen-image
 IMAGE_ASPECT_RATIO=1:1
 ```
 
-### 1.5 외부 API 설정
+### 1.6 외부 API 설정
 
 ```env
 KMA_API_KEY=your_kma_api_key_here        # 기상청 API

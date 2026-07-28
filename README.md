@@ -30,13 +30,15 @@ The two production editions are not forks:
 | Database | Existing TiDB `masamong` | New TiDB `masamong_general` |
 | Memory | Existing Discord and Kakao data | Discord only; no Masamo data |
 | Configuration | Dedicated env/config/prompt/embedding files | Separate dedicated files |
+| Administration | Masamo-only superadmin env and Masamo DB registrations | Separate General superadmin env and General DB registrations |
 | Logs/service | Dedicated paths and service | Separate paths and service |
 | School notices | Owns the existing rollout, schema, state, and 23:00 timer | Disabled by default; may later use only General-owned paths and state |
 | Transfer notices | Owns its subscription tables, public snapshot, and 23:35 timer | Disabled by default; never shares Masamo state |
 
 Never point both profiles at the same token, database, DB account, writable path,
-prompt file, embedding store, log, or service. The existing Masamo database keeps
-its current name and data; it is not renamed, copied into General, or rebuilt.
+prompt file, embedding store, administrator list, log, or service. The existing
+Masamo database keeps its current name and data; it is not renamed, copied into
+General, or rebuilt.
 
 ## Features
 
@@ -57,6 +59,10 @@ its current name and data; it is not renamed, copied into General, or rebuilt.
   schools
 - Optional DM-only subscription to 20 official transfer-admissions notice
   sources, with TOEIC/public-English caveats and no LLM use
+- Three-level administration: Discord server managers are limited to their own
+  guild settings, registered instance admins can inspect only their profile
+  runtime, and env-pinned superadmins alone can register admins or create invite
+  links
 
 Database personas are keyed and cached by `guild_id`; static deployments bind
 personas to Discord's globally unique `channel_id`. Normal chat, creative command
@@ -157,6 +163,21 @@ personal dashboard remains available.
 without reprocessing the whole channel. The table is additive, and unrelated
 conversation, embedding, profile, and delivery rows are neither replaced nor
 deleted.
+
+## Administration boundary
+
+`MASAMONG_SUPERADMIN_USER_IDS` belongs to one runtime profile and is never copied
+between Masamo and General. The current Masamo example pins
+`275928240126820352`; General intentionally starts with an empty, separately
+chosen list. Discord members with **Manage Server** or the guild owner can use
+`/config` and `/persona`, but every read/write is keyed only to that guild.
+
+Registered instance admins live in `bot_admin_accounts` with `instance_name` in
+the primary key. A superadmin manages them in bot DM with `!관리 추가`, `!관리
+제거`, and `!관리 목록`; removal disables the row instead of deleting it.
+Registered instance admins do not inherit Discord server permissions. `!관리`
+opens a caller-only panel in a guild, while `!초대` and the invite button are
+superadmin-only and deliver the OAuth link privately.
 
 ## School-notice behavior
 
@@ -296,6 +317,8 @@ do not match.
 | `!편입 삭제` | Delete choices and delivery state, then withdraw consent |
 | `!랭킹`, `!요약`, `!투표 ...` | Community utilities |
 | `/config`, `/persona` | Guild AI policy and persona |
+| `!관리` | Caller-only administration panel at the authorized server/profile scope |
+| `!초대` | Superadmin-only private bot invite button |
 
 Some commands and schedulers are feature-flagged or permission-restricted.
 

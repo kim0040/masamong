@@ -240,9 +240,10 @@ async def test_kakao_storage_is_required_only_for_kakao_profiles(monkeypatch):
                 "source_message_ids", "speaker_names", "keyword_json",
                 "room_key", "source_room_label", "chunk_id", "session_id",
                 "start_date", "message_count", "summary", "text_long",
-                "scope", "policy_version", "notice_hash", "status",
-                "granted_at", "withdrawn_at", "updated_at",
-            ]
+                    "scope", "policy_version", "notice_hash", "status",
+                    "granted_at", "withdrawn_at", "updated_at",
+                    "instance_name", "role", "enabled", "changed_by",
+                ]
 
         monkeypatch.setattr(bot, "_existing_tables", _fake_existing_tables)
         monkeypatch.setattr("main.get_table_columns", _fake_get_table_columns)

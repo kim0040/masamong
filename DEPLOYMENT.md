@@ -82,6 +82,8 @@ Masamo는 `profiles/masamo.env.example`로 기존 env를 교체하지 않는다.
 반드시 보존·명시할 항목:
 
 - 현재 token과 `MASAMONG_EXPECTED_DISCORD_BOT_USER_ID`
+- 현재 프로필 전용 `MASAMONG_SUPERADMIN_USER_IDS`; Masamo에는
+  `275928240126820352`, General은 별도 결정 전 빈 값
 - 현재 TiDB host/port/user/password와 DB `masamong`
 - `MASAMONG_EXPECTED_DB_NAME=masamong`, strict TLS/CA/hostname 검증
 - 현재 prompt, embedding, Kakao mapping과 실제 저장소 경로
@@ -130,7 +132,8 @@ MASAMONG_ENV_FILE=/etc/masamong/general.env \
   --expected-db masamong_general
 ```
 
-초기 Masamo 검사에서 privacy 또는 `channel_summary_state` table 누락을 보고하는 것은
+초기 Masamo 검사에서 privacy, `channel_summary_state` 또는 `bot_admin_accounts` table
+누락을 보고하는 것은
 각 additive migration 전이라면 예상 가능한 상태다. 새 release의 검사기는
 `channel_summary_state`를 필수 대상으로 보므로, schema 적용 전 기준값은 현재 운영
 release의 검사기로 먼저 보존한다. 그 밖의 DB/profile mismatch, 기존 핵심 table/column
@@ -216,6 +219,29 @@ MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
 
 적용 뒤 새 release의 read-only 검사기로 다섯 필수 column과 기존 핵심 table 집계를
 확인한다. 최초 행은 사용자가 다음 `!요약`을 성공시킬 때만 생성된다.
+
+### 프로필별 관리자 계정 table one-shot
+
+`bot_admin_accounts`는 등록 인스턴스 관리자만 저장한다. 최고 관리자는 DB에 seed하지 않고
+프로필 env에 고정한다. table의 기본 키는 `(instance_name, user_id)`라 Masamo/General
+관리자가 섞이지 않으며, 관리자 제거 명령은 row를 삭제하지 않고 `enabled=0`으로 바꾼다.
+
+```bash
+MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
+  <venv>/bin/python <new-release>/scripts/apply_admin_accounts_schema.py \
+  --expected-profile masamo \
+  --expected-db masamong
+
+MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
+  <venv>/bin/python <new-release>/scripts/apply_admin_accounts_schema.py \
+  --expected-profile masamo \
+  --expected-db masamong \
+  --apply \
+  --confirm 'APPLY ADMIN ACCOUNTS SCHEMA TO profile=masamo backend=tidb database=masamong'
+```
+
+이 one-shot도 정확히 `CREATE TABLE IF NOT EXISTS bot_admin_accounts` 한 문장만 실행한다.
+기존 사용자·대화·운세·공지·기억 행을 읽거나 수정하지 않는다.
 
 ### 전체 데이터 이관 도구는 이 배포에 사용하지 않는다
 
@@ -316,6 +342,11 @@ systemctl status <masamo-service> --no-pager
   없으며 학교·편입·개인정보 버튼이 `DM`으로 표시되어 비활성인지
 - `!요약` 뒤 재기동해도 같은 `guild_id/channel_id`의 저장 기준점부터 이어지며, 새
   메시지가 없을 때 `channel_summary_state`를 다시 쓰지 않는지
+- Masamo 최고 관리자 ID가 `!관리` 호출자 전용 패널과 `!초대` DM 버튼을 사용할 수 있는지
+- 일반 사용자는 `!관리`가 거부되고, 서버 관리자는 현재 서버 `/config`·`/persona`만
+  변경하며 다른 `guild_id` 행은 변하지 않는지
+- 최고 관리자의 DM `!관리 추가/제거/목록`이 `instance_name=masamo`에만 적용되고,
+  등록 관리자는 초대 버튼과 다른 서버 설정 권한을 얻지 않는지
 - `!개인정보` 상태, 운세/학교공지/편입공지의 동의·거부·철회 흐름
 - 운세 미동의 차단, 선택 항목 `NULL`, 개인 LLM 운세 합산 일 3회, 구독 설정
 - 기존 Discord/Kakao RAG 조회와 기존 prompt 채널
@@ -534,7 +565,7 @@ timer는 `OnCalendar=*-*-* 23:35:00 Asia/Seoul`, `Persistent=true`이며 General
 
 ## 12. Rollback
 
-### DB 쓰기 전 또는 additive privacy/school/transfer/summary-state table만 추가한 경우
+### DB 쓰기 전 또는 additive privacy/school/transfer/summary-state/admin table만 추가한 경우
 
 1. 새 service/timer를 중지한다.
 2. 이전 release SHA, env, config, prompt/embedding과 unit을 복원한다.
@@ -542,7 +573,8 @@ timer는 `OnCalendar=*-*-* 23:35:00 Asia/Seoul`, `Persistent=true`이며 General
 4. identity/DB target와 read-only fingerprint를 다시 확인한다.
 
 privacy table 두 개, school table 다섯 개, 편입 관련 세 table과
-`channel_summary_state`는 additive이므로 이전 코드가 사용하지 않으면 그대로 둘 수 있다.
+`channel_summary_state`, `bot_admin_accounts`는 additive이므로 이전 코드가 사용하지
+않으면 그대로 둘 수 있다.
 서둘러 drop하지 않는다.
 
 ### 새 코드가 DB에 쓰기 시작한 경우
@@ -575,6 +607,8 @@ privacy table 두 개, school table 다섯 개, 편입 관련 세 table과
 - `.git` 없는 immutable release에서도 `!업데이트`가 release metadata로 응답함
 - 서버 `!메뉴` 상세는 호출자 전용이고 DM 전용 버튼은 비활성, 개인 정보 조회 없음
 - `channel_summary_state` 추가 뒤 기존 table count가 감소하지 않고 재기동 요약이 이어짐
+- Masamo/General 최고 관리자 env와 등록 관리자 행이 분리되고, 서버 관리자는 자기
+  `guild_id`만 변경하며 초대는 최고 관리자에게만 제공됨
 - Masamo 학교 flag/Cog 활성, 23:00 KST timer 하나, 전용 writable path와 다섯 table 확인
 - 등록 프로필 source만 수집하고 관련 공지가 없을 때 무알림, 사용자별 기본 09:00 전달
 - General 학교 flag false이고 Masamo school DB/file/timer 접근 없음

@@ -73,6 +73,7 @@ _EXPLICIT_PROFILE_TABLES = frozenset(
         "user_preferences",
         "dm_usage_logs",
         "channel_summary_state",
+        "bot_admin_accounts",
     }
 )
 _SCHOOL_NOTICE_TABLES = frozenset(
@@ -111,6 +112,7 @@ _TABLE_TIMESTAMP_COLUMNS = {
     "privacy_consent_events": "created_at",
     "dm_usage_logs": "reset_at",
     "channel_summary_state": "updated_at",
+    "bot_admin_accounts": "updated_at",
     "discord_chat_embeddings": "timestamp",
     "discord_memory_entries": "timestamp",
     "kakao_chunks": "start_date",
@@ -180,6 +182,17 @@ _CORE_EXPECTED_COLUMNS = {
             "channel_id",
             "anchor_message_id",
             "summary_text",
+            "updated_at",
+        }
+    ),
+    "bot_admin_accounts": frozenset(
+        {
+            "instance_name",
+            "user_id",
+            "role",
+            "enabled",
+            "changed_by",
+            "created_at",
             "updated_at",
         }
     ),

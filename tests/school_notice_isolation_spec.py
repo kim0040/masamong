@@ -53,6 +53,7 @@ async def _requested_tables(monkeypatch, *, enabled: bool) -> set[str]:
             "http_requests", "llm_calls", "finished_at",
             "next_attempt_at", "sent_at", "last_error",
             "channel_id", "anchor_message_id", "summary_text",
+            "instance_name", "role", "changed_by",
         ]
 
     monkeypatch.setattr(bot, "_existing_tables", _fake_existing)
