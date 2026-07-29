@@ -1595,7 +1595,10 @@ class SchoolNoticeCog(commands.Cog):
             seen_users: set[int] = set()
             # 최신 digest부터 처리한다. 동일 notice의 더 높은 revision이 먼저
             # 기록되므로 이후 오래된 digest의 낮은 revision은 자동으로 빠진다.
-            for days_ago in range(1, _DELIVERY_BACKLOG_DAYS + 1):
+            # 05:00에 만든 오늘 digest를 같은 날 사용자 설정 시각(기본
+            # 09:00)에 먼저 처리한다. 이전 23:00 수집 시절의 "전날 digest"
+            # 기준을 유지하면 모든 알림이 하루 늦어지므로 today가 0번이다.
+            for days_ago in range(_DELIVERY_BACKLOG_DAYS):
                 if remaining <= 0:
                     break
                 digest_date = current.date() - timedelta(days=days_ago)
@@ -1603,7 +1606,7 @@ class SchoolNoticeCog(commands.Cog):
                     digest_date=digest_date,
                     now=current,
                     limit=remaining,
-                    catch_up=days_ago > 1,
+                    catch_up=days_ago > 0,
                 )
                 for user_id, user_key in profiles:
                     if user_id in seen_users:

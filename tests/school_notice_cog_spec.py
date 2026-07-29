@@ -212,7 +212,7 @@ async def _record_batch_run(cog, digest_date: date, *, status="succeeded"):
         SET updated_at = ?
         WHERE user_id = ?
         """,
-        (f"{digest_date.isoformat()}T22:00:00+09:00", USER_ID),
+        (f"{digest_date.isoformat()}T04:00:00+09:00", USER_ID),
     )
     async with cog.bot.db.execute(
         """
@@ -236,7 +236,7 @@ async def _record_batch_run(cog, digest_date: date, *, status="succeeded"):
             int(profile_version),
             profile_snapshot_hash(str(profile_json)),
             status,
-            f"{digest_date.isoformat()}T23:10:00+09:00",
+            f"{digest_date.isoformat()}T05:10:00+09:00",
         ),
     )
     await cog.bot.db.commit()
@@ -655,12 +655,12 @@ async def test_active_profiles_excludes_disabled(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_scheduler_delivers_previous_day_at_default_time_and_completes_run(
+async def test_scheduler_delivers_current_day_at_default_time_and_completes_run(
     tmp_path,
     monkeypatch,
 ):
     cog, bot, db = await _make_cog(tmp_path, monkeypatch)
-    delivery_day = TODAY + timedelta(days=1)
+    delivery_day = TODAY
     try:
         await _register_profile(cog)
         await _record_batch_run(cog, TODAY)
@@ -696,7 +696,7 @@ async def test_scheduler_pages_all_relevant_items_before_completing(
 ):
     cog, _bot, db = await _make_cog(tmp_path, monkeypatch)
     monkeypatch.setattr(config, "SCHOOL_NOTICE_MAX_ITEMS_PER_DM", 2)
-    delivery_day = TODAY + timedelta(days=1)
+    delivery_day = TODAY
     now = datetime(
         delivery_day.year,
         delivery_day.month,
@@ -749,7 +749,7 @@ async def test_scheduler_pages_all_relevant_items_before_completing(
 @pytest.mark.asyncio
 async def test_scheduler_respects_custom_delivery_time(tmp_path, monkeypatch):
     cog, bot, db = await _make_cog(tmp_path, monkeypatch)
-    delivery_day = TODAY + timedelta(days=1)
+    delivery_day = TODAY
     try:
         await _register_profile(cog)
         await db.execute(
@@ -782,7 +782,7 @@ async def test_healthy_empty_digest_completes_without_dm(tmp_path, monkeypatch):
         monkeypatch,
         fixture="school_notice_digest_empty.json",
     )
-    delivery_day = TODAY + timedelta(days=1)
+    delivery_day = TODAY
     try:
         await _register_profile(cog)
         await _record_batch_run(cog, TODAY)
@@ -815,7 +815,7 @@ async def test_scheduler_retry_is_backed_off_and_stops_at_max_attempts(
     monkeypatch,
 ):
     cog, _bot, db = await _make_cog(tmp_path, monkeypatch)
-    delivery_day = TODAY + timedelta(days=1)
+    delivery_day = TODAY
     now = datetime(
         delivery_day.year,
         delivery_day.month,
@@ -852,13 +852,13 @@ async def test_profile_changed_after_batch_is_cancelled_without_dm(
     monkeypatch,
 ):
     cog, bot, db = await _make_cog(tmp_path, monkeypatch)
-    delivery_day = TODAY + timedelta(days=1)
+    delivery_day = TODAY
     try:
         await _register_profile(cog)
         await _record_batch_run(cog, TODAY)
         await db.execute(
             "UPDATE school_notice_profiles SET updated_at = ? WHERE user_id = ?",
-            (f"{TODAY.isoformat()}T23:20:00+09:00", USER_ID),
+            (f"{TODAY.isoformat()}T08:20:00+09:00", USER_ID),
         )
         await db.commit()
         now = datetime(
@@ -908,7 +908,7 @@ async def test_batch_snapshot_rejects_profile_change_in_same_timestamp_second(
             """,
             (
                 json.dumps(profile, ensure_ascii=False, sort_keys=True),
-                f"{TODAY.isoformat()}T23:10:00+09:00",
+                f"{TODAY.isoformat()}T05:10:00+09:00",
                 USER_ID,
             ),
         )
