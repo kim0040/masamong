@@ -143,6 +143,12 @@ global, per-feature, per-guild, per-user, and per-DM budgets *before* the
 provider is touched, and these checks fail closed — an error loop can't become an
 unbounded billing loop.
 
+The existing semantic-router call also selects a request-local `low` or `high`
+reasoning level for the final model. Simple conversation and source formatting
+stay on `low`; multi-constraint, conflicting, ambiguous, or long-evidence
+synthesis can use `high`. This does not add a classifier call or retry a `low`
+answer at `high`, and it never mutates a shared model target across guilds.
+
 Questions that require current or niche external facts are fail-closed: the bot
 must obtain a successful source-backed tool result before it can answer. A failed
 lookup produces an explicit “not verified” response instead of an ungrounded

@@ -331,6 +331,22 @@ def default_reasoning_effort_for_model(model: Any) -> str:
     return ""
 
 
+def normalize_dynamic_reasoning_level(
+    value: Any,
+    default: str = "low",
+) -> str:
+    """요청 단위 동적 추론 수준을 운영에서 허용한 low/high로 제한합니다."""
+    normalized_default = as_str(default, "low").lower()
+    if normalized_default not in {"low", "high"}:
+        normalized_default = "low"
+    normalized = as_str(value, normalized_default).lower()
+    return (
+        normalized
+        if normalized in {"low", "high"}
+        else normalized_default
+    )
+
+
 _embed_config_path = Path(
     _direct_config_value('EMB_CONFIG_PATH', 'emb_config.json')
 ).expanduser()
@@ -1343,6 +1359,13 @@ LLM_MAIN_PRIMARY_REASONING_EFFORT = as_str(
         ),
     ),
     '',
+)
+LLM_DYNAMIC_REASONING_ENABLED = as_bool(
+    load_config_value('LLM_DYNAMIC_REASONING_ENABLED', True),
+    True,
+)
+LLM_DYNAMIC_REASONING_DEFAULT = normalize_dynamic_reasoning_level(
+    load_config_value('LLM_DYNAMIC_REASONING_DEFAULT', 'low'),
 )
 
 LLM_MAIN_FALLBACK_PROVIDER = normalize_llm_provider(

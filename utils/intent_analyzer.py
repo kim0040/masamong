@@ -27,6 +27,7 @@ class ToolRoutingDecision:
     plan: list[dict[str, Any]]
     source: str
     needs_memory: bool
+    reasoning_level: str = "low"
     intent: str = ""
     context_digest: str = ""
     requires_external_evidence: bool = False
@@ -661,6 +662,11 @@ class IntentAnalyzer:
             # 도구를 특정하지 못한 경우에는 기존 대화 품질을 보존하도록 RAG를
             # 허용한다. 명시 도구 fallback은 과거 기억을 불필요하게 조회하지 않는다.
             needs_memory=not bool(plan),
+            reasoning_level=(
+                config.LLM_DYNAMIC_REASONING_DEFAULT
+                if config.LLM_DYNAMIC_REASONING_ENABLED
+                else ""
+            ),
             intent="fallback",
             requires_external_evidence=requires_external_evidence,
         )
@@ -860,11 +866,20 @@ class IntentAnalyzer:
             "저장 운세만 있으면 답할 수 있는 요청에서는 needs_fortune_context=true, "
             "needs_memory=false다. 운세 외의 오래된 Discord/Kakao 사실도 함께 필요할 "
             "때만 두 값을 모두 true로 둔다.\n"
+            "reasoning_level은 최종 답변 모델의 요청 단위 추론 수준이다. 기본은 low다. "
+            "단순 잡담·번역·요약·명확한 사실 회상·단일 조회 결과 정리는 low다. "
+            "여러 제약을 동시에 풀거나, 복수 자료·기억의 충돌을 비교하거나, "
+            "동명이인·지시 대상의 모호성을 해소하거나, 긴 대화 압축과 여러 근거를 "
+            "종합해야만 정확히 답할 수 있으면 high다. 질문이 길거나 최신 정보라는 "
+            "이유만으로 high를 쓰지 않는다. 최신성·사실성은 조회 도구와 "
+            "requires_external_evidence로 해결하고, 조회 결과의 단순 정리는 low다. "
+            "low에서 시작한 뒤 재호출하거나 단계적으로 high로 올리는 계획은 만들지 않는다.\n"
             f"{digest_instruction}\n"
             "출력 형식: "
             '{"intent":"짧은 의도","needs_memory":false,'
             '"needs_fortune_context":false,'
             '"requires_external_evidence":false,'
+            '"reasoning_level":"low",'
             '"context_digest":"","tools":[{"tool":"도구명","params":{}}]}\n'
             f"현재 시각(KST): {now_kst}\n"
             f"{compaction_section}"
@@ -1005,6 +1020,12 @@ class IntentAnalyzer:
                 )
             ):
                 needs_memory = False
+            reasoning_level = ""
+            if config.LLM_DYNAMIC_REASONING_ENABLED:
+                reasoning_level = config.normalize_dynamic_reasoning_level(
+                    parsed.get("reasoning_level"),
+                    config.LLM_DYNAMIC_REASONING_DEFAULT,
+                )
             context_digest = ""
             if compaction_requested:
                 context_digest = re.sub(
@@ -1014,12 +1035,14 @@ class IntentAnalyzer:
                 ).strip()[:digest_limit]
             logger.info(
                 "[의미라우터] intent=%s tools=%s needs_memory=%s "
-                "fortune_context=%s external_evidence=%s digest_chars=%d",
+                "fortune_context=%s external_evidence=%s reasoning=%s "
+                "digest_chars=%d",
                 intent or "-",
                 [item["tool_to_use"] for item in plan],
                 needs_memory,
                 needs_fortune_context,
                 requires_external_evidence,
+                reasoning_level or "fixed",
                 len(context_digest),
                 extra=log_extra,
             )
@@ -1027,6 +1050,7 @@ class IntentAnalyzer:
                 plan=plan,
                 source="llm",
                 needs_memory=needs_memory,
+                reasoning_level=reasoning_level,
                 intent=intent,
                 context_digest=context_digest,
                 requires_external_evidence=requires_external_evidence,
