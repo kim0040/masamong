@@ -106,7 +106,8 @@ deletes conversation or memory rows.
 
 ## External tools
 
-- KMA: observation, nowcast, forecasts, warnings, earthquakes, and typhoons
+- KMA: observation, nowcast, forecasts, warnings, earthquakes, and on-demand
+  official typhoon analysis/forecast
 - Finance: Finnhub/yfinance/KRX/EximBank with market-evidence validation
 - Web/news: Linkup with a bounded fallback and visible source links
 - Places: Kakao Local

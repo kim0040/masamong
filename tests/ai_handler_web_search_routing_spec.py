@@ -10,6 +10,15 @@ def _build_handler_without_init() -> AIHandler:
     return AIHandler.__new__(AIHandler)
 
 
+def test_final_reasoning_progress_text_distinguishes_high_requests():
+    assert (
+        AIHandler._final_reasoning_progress_text("high")
+        == "🧠 마사몽이 여러 내용을 살펴보며 조금 더 오래 고민 중이에요..."
+    )
+    assert "답변을 작성 중" in AIHandler._final_reasoning_progress_text("low")
+    assert "답변을 작성 중" in AIHandler._final_reasoning_progress_text(None)
+
+
 def test_routing_json_parser_accepts_reasoning_prefix_without_eval():
     result = IntentAnalyzer._parse_routing_json(
         '<think>짧은 판단</think>\n'
@@ -530,6 +539,16 @@ def test_detect_tools_by_keyword_place_routes_to_web_search():
     assert plan
     assert plan[0]["tool_to_use"] == "web_search"
     assert "맛집" in plan[0]["parameters"]["query"]
+
+
+def test_detect_tools_by_keyword_typhoon_routes_to_kma_weather():
+    handler = _build_handler_without_init()
+
+    plan = handler._detect_tools_by_keyword("내일 태풍 영향은 어때?")
+
+    assert plan
+    assert plan[0]["tool_to_use"] == "get_weather_forecast"
+    assert plan[0]["parameters"]["day_offset"] == 1
 
 
 def test_no_tool_conversation_gets_bounded_passive_memory_search(monkeypatch):

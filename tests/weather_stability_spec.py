@@ -577,6 +577,110 @@ async def test_weather_overview_accepts_normalized_and_raw_contract(
     )
 
 
+_ACTIVE_TYPHOON_LIST = """#START7777
+# YY SEQ NOW EFF TM_ST TM_ED TYP_NAME TYP_EN REM
+2026 13 1 4 202607270600 210012310000 돌핀 DOLPHIN 제13호 태풍
+#7777END"""
+
+_ACTIVE_TYPHOON_DETAIL = """#START7777
+# FT YY TYP SEQ TMD TYP_TM FT_TM LAT LON DIR SP PS WS RAD15 RAD25 RAD ED15 ER15 LOC ED25 ER25
+0 2026 13 10 0 202607291200 202607291200 15.2 167.6 NW 23 935 49 330 90 0 SW 230 괌 동쪽 약 2470 km 부근 해상 SW,60,
+1 2026 13 0 12 202607291200 202607300000 16.3 165.7 WNW 20 925 51 350 110 40 SW 250 괌 동쪽 약 2270 km 부근 해상 SW,90,
+1 2026 13 0 24 202607291200 202607301200 17.3 163.8 WNW 19 915 55 370 120 80 SW 270 괌 동북동쪽 약 2080 km 부근 해상 SW,100,
+#7777END"""
+
+
+def test_typhoon_formatter_uses_latest_official_analysis_and_forecast():
+    rendered = weather_utils.format_typhoon_list(
+        _ACTIVE_TYPHOON_LIST,
+        _ACTIVE_TYPHOON_DETAIL,
+    )
+
+    assert "**제13호 태풍 돌핀(DOLPHIN)** · 활동 중" in rendered
+    assert "07/29 21:00 KST" in rendered
+    assert "괌 동쪽 약 2470 km 부근 해상" in rendered
+    assert "중심기압 935 hPa" in rendered
+    assert "최대풍속 49 m/s" in rendered
+    assert "북서쪽 23 km/h" in rendered
+    assert "**한반도 영향:** 현재 영향 없음" in rendered
+    assert "**24시간 전망:** 07/30 21:00 KST" in rendered
+    assert "최대풍속 55 m/s" in rendered
+
+
+def test_typhoon_formatter_distinguishes_no_active_storm_from_api_failure():
+    ended = _ACTIVE_TYPHOON_LIST.replace(" 1 4 ", " 2 4 ")
+
+    assert (
+        weather_utils.format_typhoon_list(ended)
+        == "현재 기상청 목록에 활동 중인 태풍이 없습니다."
+    )
+    assert weather_utils.format_typhoon_list("invalid response") is None
+
+
+@pytest.mark.asyncio
+async def test_typhoon_detail_is_only_fetched_when_active(monkeypatch):
+    calls: list[tuple[str, dict]] = []
+
+    async def fake_cached(
+        _db,
+        _endpoint,
+        params,
+        *,
+        api_type,
+        **_kwargs,
+    ):
+        calls.append((api_type, dict(params)))
+        if api_type == "typhoon":
+            return _ACTIVE_TYPHOON_LIST
+        return _ACTIVE_TYPHOON_DETAIL
+
+    monkeypatch.setattr(weather_utils, "_fetch_kma_cached", fake_cached)
+
+    rendered = await weather_utils.get_typhoons(object(), timeout=1.0)
+
+    assert "제13호 태풍 돌핀" in rendered
+    assert [api_type for api_type, _params in calls] == [
+        "typhoon",
+        "typhoon_detail",
+    ]
+    assert calls[1][1]["mode"] == "2"
+    assert len(calls[1][1]["tm"]) == 12
+
+
+@pytest.mark.asyncio
+async def test_future_weather_question_keeps_typhoon_context(monkeypatch):
+    async def fake_forecast(*_args, **_kwargs):
+        return {"item": []}
+
+    async def fake_typhoons(*_args, **_kwargs):
+        return "공식 태풍 분석"
+
+    monkeypatch.setattr(
+        weather_utils,
+        "get_short_term_forecast_from_kma",
+        fake_forecast,
+    )
+    monkeypatch.setattr(
+        weather_utils,
+        "format_short_term_forecast",
+        lambda *_args, **_kwargs: "내일 예보",
+    )
+    monkeypatch.setattr(weather_utils, "get_typhoons", fake_typhoons)
+    cog = WeatherCog(_FakeBot({}, _FakeAI()))
+
+    rendered, error = await cog.get_formatted_weather_string(
+        1,
+        "서울",
+        "60",
+        "127",
+        "내일 태풍 영향 어때?",
+    )
+
+    assert error is None
+    assert "🌀 **태풍 정보:** 공식 태풍 분석" in rendered
+    assert "내일 예보" in rendered
+
+
 @pytest.mark.asyncio
 async def test_mid_term_weather_uses_structured_json_path(monkeypatch):
     captured: list[tuple[str, int]] = []

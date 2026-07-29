@@ -32,8 +32,9 @@ is scoped: guild-wide facts stay in that guild, DM facts stay in that DM, and
 one member's private memories are never surfaced to another.
 
 **Tools.** KMA weather (observation, six-hour nowcast, short/mid-range forecast,
-active warnings, earthquakes, typhoons), stocks and exchange rates, web and news
-search with visible sources, and image generation.
+active warnings, earthquakes, and on-demand typhoon analysis/forecast), stocks
+and exchange rates, web and news search with visible sources, and image
+generation.
 
 **School notices.** Tell it your school, program, and year in plain Korean. Every
 morning it checks only your school's public boards and DMs you what's actually

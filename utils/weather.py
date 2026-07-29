@@ -157,6 +157,9 @@ async def _fetch_kma_api(
     elif api_type == 'typhoon': # Typhoon List (Typ01)
         base_url = "https://apihub.kma.go.kr/api/typ01/url/typ_lst.php"
         base_params.update({"disp": "0", "help": "0"})
+    elif api_type == 'typhoon_detail': # Current Typhoon Analysis/Forecast (Typ01)
+        base_url = "https://apihub.kma.go.kr/api/typ01/url/typ_now.php"
+        base_params.update({"disp": "0", "help": "0"})
     elif api_type == 'mid':
         base_url = "https://apihub.kma.go.kr/api/typ02/openApi/MidFcstInfoService"
         base_params.update({"pageNo": "1", "numOfRows": "1000", "dataType": "JSON"})
@@ -208,7 +211,7 @@ async def _fetch_kma_api(
 
                 # API Hub Typ01 often returns text/plain, handle header manually
                 content_type = response.headers.get('Content-Type', '')
-                if 'application/json' in content_type or (api_type not in ['typhoon', 'mid', 'mid_v2', 'warning', 'impact', 'alert'] and api_type != 'overview'):
+                if 'application/json' in content_type or (api_type not in ['typhoon', 'typhoon_detail', 'mid', 'mid_v2', 'warning', 'impact', 'alert'] and api_type != 'overview'):
                      try:
                          data = response.json()
                          # Normalize API Hub V2 flat format {"item": [...]} to standard KMA structure
@@ -276,7 +279,7 @@ async def _fetch_kma_api(
                 if (
                     status_code is not None
                     and 500 <= status_code < 600
-                    and api_type in ['typhoon', 'mid', 'warning', 'impact', 'alert']
+                    and api_type in ['typhoon', 'typhoon_detail', 'mid', 'warning', 'impact', 'alert']
                 ):
                     logger.warning(
                         "기상청 부가 서비스 일시적 장애 (status=%s, type=%s): %s",
@@ -1608,11 +1611,15 @@ async def get_weather_overview(db: aiosqlite.Connection, timeout: float | None =
         return None
 
 async def get_typhoons(db: aiosqlite.Connection, timeout: float | None = None) -> str | None:
-    """진행 중인 태풍 정보를 조회합니다."""
-    now_year = datetime.now().year
+    """진행 중인 태풍의 공식 목록·분석·예측 정보를 조회합니다.
+
+    목록 조회로 활동 여부를 먼저 확인하고, 활동 태풍이 있을 때만 상세 API를
+    한 번 더 호출합니다. 두 응답은 각각 캐시되므로 같은 질문이 반복돼도
+    기상청과 TiDB에 불필요한 호출을 만들지 않습니다.
+    """
+    now_year = datetime.now(KST).year
     params = {"YY": str(now_year)}
-    # This returns raw text, needs parsing
-    res = await _fetch_kma_cached(
+    list_result = await _fetch_kma_cached(
         db,
         "",
         params,
@@ -1621,53 +1628,244 @@ async def get_typhoons(db: aiosqlite.Connection, timeout: float | None = None) -
         ttl_seconds=1800,
         timeout=timeout,
     )
-    return format_typhoon_list(res)
-
-def format_typhoon_list(raw_data: str) -> str | None:
-    """Parses typ_lst.php response text."""
-    if not raw_data or raw_data.startswith("Error") or "#START" not in raw_data:
+    active_records = parse_active_typhoon_records(list_result)
+    if active_records is None:
         return None
-        
-    lines = raw_data.strip().split('\n')
-    active_typhoons = []
-    
-    # Format usually:
-    # YY SEQ NOW EFF ... TYP_NAME ...
-    # Skip comments (#)
-    
-    for line in lines:
-        if line.startswith("#"): continue
-        if not line.strip(): continue
-        
-        parts = line.split() # Space separated
-        # Valid data line usually has many parts.
-        # Check 'NOW' column (3rd usually? Wait, let's verify header)
-        # Header: # YY SEQ NOW EFF ...
-        # Line:   2024 1  0   0 ...
-        
-        if len(parts) < 8: continue
-        
-        try:
-            # 0:YY, 1:SEQ, 2:NOW(0/1?), 3:EFF, 4:TM_ST, 5:TM_ED, 6:TYP_NAME
-            # Checking NOW column. '1' typically means active?
-            # User doc says: "진행여부". Assuming 1=Active, 0=End.
-            # Wait, verify with data. User provided doc doesn't explicitly map 0/1.
-            # But usually 0=End.
-            
-            # Let's collect ALL active ones.
-            now_flag = parts[2]
-            if now_flag != '1': continue # Only active
-            
-            name = parts[6]
-            # name might be encoded or English? Doc says TYP_NAME.
-            # Often Korean in KMA.
-            
-            active_typhoons.append(f"🌀 태풍 **{name}** 활동 중")
-        except (IndexError, KeyError) as e:
-            logger.debug(f"태풍 데이터 파싱 실패: {e}")
+    if not active_records:
+        return "현재 기상청 목록에 활동 중인 태풍이 없습니다."
+
+    # typ_now.php는 현재 UTC 시각 이하의 가장 최근 분석을 mode=2로 조회하면
+    # 해당 분석과 공식 예측을 함께 반환한다. 15분 버킷으로 같은 요청을 합친다.
+    now_utc = datetime.now(pytz.UTC)
+    bucket_minute = (now_utc.minute // 15) * 15
+    query_time = now_utc.replace(
+        minute=bucket_minute,
+        second=0,
+        microsecond=0,
+    ).strftime("%Y%m%d%H%M")
+    detail_result = await _fetch_kma_cached(
+        db,
+        "",
+        {"tm": query_time, "mode": "2"},
+        api_type="typhoon_detail",
+        cache_key=f"active-typhoon-detail:{query_time}",
+        ttl_seconds=900,
+        timeout=timeout,
+    )
+    return format_typhoon_list(list_result, detail_result)
+
+
+def parse_active_typhoon_records(
+    raw_data: object,
+) -> list[dict[str, str]] | None:
+    """typ_lst.php에서 활동 중인 태풍만 구조화합니다.
+
+    ``None``은 API/형식 오류, 빈 목록은 정상 응답이지만 활동 태풍이 없음을
+    뜻합니다. 이 둘을 구분해야 조회 실패를 "태풍 없음"으로 오인하지 않습니다.
+    """
+    if (
+        not isinstance(raw_data, str)
+        or raw_data.startswith("Error")
+        or "#START" not in raw_data
+    ):
+        return None
+
+    records: list[dict[str, str]] = []
+    for line in raw_data.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
             continue
-        
-    return "\n".join(active_typhoons) if active_typhoons else None
+        # REM에는 공백이 포함되므로 고정된 앞 8개 열까지만 분리한다.
+        parts = line.split(maxsplit=8)
+        if len(parts) < 8 or parts[2] != "1":
+            continue
+        if not (
+            parts[0].isdigit()
+            and parts[1].isdigit()
+            and parts[4].isdigit()
+        ):
+            continue
+        records.append(
+            {
+                "year": parts[0],
+                "seq": parts[1],
+                "impact": parts[3],
+                "started_at": parts[4],
+                "name": parts[6],
+                "english_name": parts[7],
+            }
+        )
+    return records
+
+
+def parse_typhoon_detail_rows(raw_data: object) -> list[dict[str, object]]:
+    """typ_now.php의 현재 분석/예측 행을 필요한 필드만 구조화합니다."""
+    if (
+        not isinstance(raw_data, str)
+        or raw_data.startswith("Error")
+        or "#START" not in raw_data
+    ):
+        return []
+
+    rows: list[dict[str, object]] = []
+    for line in raw_data.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        # 18개 수치/코드 열 뒤 LOC에는 공백이 들어간다.
+        parts = line.split(maxsplit=18)
+        if len(parts) < 19:
+            continue
+        try:
+            location = re.sub(
+                r"\s+(?:[A-Z-]+),-?\d+,\s*$",
+                "",
+                parts[18],
+            ).strip()
+            rows.append(
+                {
+                    "forecast": parts[0] == "1",
+                    "year": int(parts[1]),
+                    "typhoon": int(parts[2]),
+                    "sequence": int(parts[3]),
+                    "hours_ahead": int(parts[4]),
+                    "analysis_time": parts[5],
+                    "forecast_time": parts[6],
+                    "latitude": float(parts[7]),
+                    "longitude": float(parts[8]),
+                    "direction": parts[9],
+                    "speed_kmh": int(parts[10]),
+                    "pressure_hpa": int(parts[11]),
+                    "wind_ms": int(parts[12]),
+                    "radius_15ms_km": int(parts[13]),
+                    "location": location,
+                }
+            )
+        except (TypeError, ValueError):
+            logger.debug("태풍 상세 데이터 행 파싱 실패", exc_info=True)
+    return rows
+
+
+_TYPHOON_IMPACT_LABELS = {
+    "1": "한반도 상륙",
+    "2": "한반도 직접 영향",
+    "3": "한반도 간접 영향",
+    "4": "현재 영향 없음",
+}
+_TYPHOON_DIRECTION_LABELS = {
+    "N": "북",
+    "NNE": "북북동",
+    "NE": "북동",
+    "ENE": "동북동",
+    "E": "동",
+    "ESE": "동남동",
+    "SE": "남동",
+    "SSE": "남남동",
+    "S": "남",
+    "SSW": "남남서",
+    "SW": "남서",
+    "WSW": "서남서",
+    "W": "서",
+    "WNW": "서북서",
+    "NW": "북서",
+    "NNW": "북북서",
+}
+
+
+def _format_typhoon_time(value: object) -> str:
+    raw = str(value or "")
+    try:
+        utc_dt = pytz.UTC.localize(datetime.strptime(raw, "%Y%m%d%H%M"))
+        return utc_dt.astimezone(KST).strftime("%m/%d %H:%M")
+    except ValueError:
+        return raw
+
+
+def format_typhoon_list(
+    raw_data: object,
+    detail_data: object | None = None,
+) -> str | None:
+    """기상청 태풍 목록과 최신 분석/예측을 Discord용으로 요약합니다."""
+    active_records = parse_active_typhoon_records(raw_data)
+    if active_records is None:
+        return None
+    if not active_records:
+        return "현재 기상청 목록에 활동 중인 태풍이 없습니다."
+
+    detail_rows = parse_typhoon_detail_rows(detail_data)
+    rendered: list[str] = []
+    for record in active_records[:3]:
+        typhoon_number = int(record["seq"])
+        title = (
+            f"제{typhoon_number}호 태풍 "
+            f"{record['name']}({record['english_name']})"
+        )
+        rendered.append(f"**{title}** · 활동 중")
+
+        matching = [
+            row
+            for row in detail_rows
+            if row["year"] == int(record["year"])
+            and row["typhoon"] == typhoon_number
+        ]
+        analyses = [row for row in matching if not row["forecast"]]
+        analysis = max(
+            analyses,
+            key=lambda row: (
+                str(row["analysis_time"]),
+                int(row["sequence"]),
+            ),
+            default=None,
+        )
+        if analysis:
+            direction = _TYPHOON_DIRECTION_LABELS.get(
+                str(analysis["direction"]),
+                str(analysis["direction"]),
+            )
+            rendered.append(
+                f"• **기준:** {_format_typhoon_time(analysis['analysis_time'])} KST"
+                f" · {analysis['location']}"
+            )
+            rendered.append(
+                f"• **세력:** 중심기압 {analysis['pressure_hpa']} hPa"
+                f" · 최대풍속 {analysis['wind_ms']} m/s"
+                f" · {direction}쪽 {analysis['speed_kmh']} km/h"
+            )
+
+        impact = _TYPHOON_IMPACT_LABELS.get(
+            record["impact"],
+            "기상청 영향 분류 확인 필요",
+        )
+        rendered.append(f"• **한반도 영향:** {impact}")
+
+        forecasts = sorted(
+            (
+                row
+                for row in matching
+                if row["forecast"]
+                and (
+                    not analysis
+                    or row["analysis_time"] == analysis["analysis_time"]
+                )
+            ),
+            key=lambda row: int(row["hours_ahead"]),
+        )
+        forecast = next(
+            (
+                row
+                for row in forecasts
+                if int(row["hours_ahead"]) >= 24
+            ),
+            forecasts[0] if forecasts else None,
+        )
+        if forecast:
+            rendered.append(
+                f"• **{forecast['hours_ahead']}시간 전망:** "
+                f"{_format_typhoon_time(forecast['forecast_time'])} KST"
+                f" · {forecast['location']}"
+                f" · 최대풍속 {forecast['wind_ms']} m/s"
+            )
+        rendered.append("")
+
+    return "\n".join(rendered).strip()
 
 async def get_active_warnings(db: aiosqlite.Connection, timeout: float | None = None) -> str | None:
     """전국 기상 특보(주의보/경보)를 조회합니다."""
