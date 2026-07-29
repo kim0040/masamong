@@ -185,10 +185,31 @@ class TransferNoticeCollector:
 
     def _write_output(self, payload: dict) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        rendered = json.dumps(payload, ensure_ascii=False, indent=2)
         final_path = self.output_dir / "latest.json"
         temporary_path = self.output_dir / f".latest-{os.getpid()}.tmp"
         temporary_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
+            rendered,
             encoding="utf-8",
         )
         os.replace(temporary_path, final_path)
+        if payload.get("changes"):
+            # 봇이 재시작 중이어도 다음 collector가 latest.json을 덮어써서
+            # 미전송 변경을 잃지 않도록 작은 불변 이벤트 파일을 함께 남긴다.
+            # 실제 중복 방지는 TiDB delivery ledger가 담당한다.
+            event_dir = self.output_dir / "events"
+            event_dir.mkdir(parents=True, exist_ok=True)
+            event_path = event_dir / f"{payload['run_id']}.json"
+            event_tmp = event_dir / f".{payload['run_id']}-{os.getpid()}.tmp"
+            event_payload = {
+                "schema_version": 1,
+                "run_id": payload["run_id"],
+                "generated_at": payload["generated_at"],
+                "changes": payload["changes"],
+                "latest": [],
+            }
+            event_tmp.write_text(
+                json.dumps(event_payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(event_tmp, event_path)

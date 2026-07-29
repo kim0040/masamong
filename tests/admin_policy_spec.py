@@ -85,7 +85,7 @@ def test_superadmin_and_guild_admin_are_separate(monkeypatch):
     assert is_guild_admin(SimpleNamespace(id=300), guild) is True
 
 
-def test_invite_button_is_enabled_only_for_superadmin(monkeypatch):
+def test_superadmin_panel_exposes_private_invite_button(monkeypatch):
     monkeypatch.setattr(config, "SUPERADMIN_USER_IDS", frozenset({100}))
     bot = SimpleNamespace(
         user=SimpleNamespace(id=999),
@@ -97,7 +97,7 @@ def test_invite_button_is_enabled_only_for_superadmin(monkeypatch):
         guild=None,
         clean_prefix="!",
     )
-    super_view = AdminPanelView(bot, ctx, "superadmin")
+    super_view = AdminPanelView(bot, ctx)
     invite_button = next(
         child
         for child in super_view.children
@@ -105,11 +105,3 @@ def test_invite_button_is_enabled_only_for_superadmin(monkeypatch):
     )
     assert invite_button.disabled is False
     assert _invite_url(bot).startswith("https://discord.com/oauth2/authorize")
-
-    registered_view = AdminPanelView(bot, ctx, "instance_admin")
-    registered_invite = next(
-        child
-        for child in registered_view.children
-        if isinstance(child, discord.ui.Button) and "초대" in child.label
-    )
-    assert registered_invite.disabled is True

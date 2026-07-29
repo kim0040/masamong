@@ -116,6 +116,29 @@ def test_local_fallback_parses_alias_campus_department_topics_and_time():
     assert missing_profile_fields(profile) == ()
 
 
+def test_local_parser_corrects_unique_school_and_department_typos():
+    profile = parse_profile_locally(
+        "전북데 소프트웨어공학가 3학년 장학 공지를 오전 9시에 알려줘"
+    )
+
+    assert profile["school_id"] == "jbnu"
+    assert profile["department"] == "소프트웨어공학과"
+
+
+def test_local_parser_corrects_unique_two_character_department_typo():
+    profile = parse_profile_locally(
+        "전북대 소프투웨어공학가 3학년 공지를 알려줘"
+    )
+
+    assert profile["department"] == "소프트웨어공학과"
+
+
+def test_fuzzy_school_match_fails_closed_when_short_alias_is_ambiguous():
+    catalog = load_school_catalog()
+
+    assert catalog.matching_schools("KNU 공지 알려줘", allow_fuzzy=True) == ()
+
+
 def test_local_fallback_infers_undergraduate_from_grade_and_uses_default_time():
     profile = parse_profile_locally(
         "전북대학교 소프트웨어공학과 편입 3학년, 취업 공지를 알려줘"
@@ -487,7 +510,7 @@ def test_llm_patch_returns_only_explicit_changes_and_supports_clear():
     assert "preferred_topics" not in merged
 
 
-def test_llm_department_requires_exact_user_provenance_even_when_catalogued():
+def test_llm_department_requires_user_provenance_and_accepts_unique_typo():
     with pytest.raises(SchoolProfileError, match="원문 검증"):
         parse_llm_profile_json(
             '{"school_id":"snu","department":"컴퓨터공학부",'
@@ -506,6 +529,32 @@ def test_llm_department_requires_exact_user_provenance_even_when_catalogued():
         user_text="서울대 컴공 2학년이야",
     )
     assert profile["department"] == "컴퓨터공학부"
+    corrected = parse_llm_profile_json(
+        '{"school_id":"snu","department":"컴퓨터공학부",'
+        '"degree_level":"undergraduate","grade":2}',
+        user_text="서울대 컴퓨터공학브 2학년이야",
+    )
+    assert corrected["department"] == "컴퓨터공학부"
+    corrected_two = parse_llm_profile_json(
+        '{"school_id":"jbnu","department":"소프트웨어공학과",'
+        '"degree_level":"undergraduate","grade":3}',
+        user_text="전북대 소프투웨어공학가 3학년이야",
+    )
+    assert corrected_two["department"] == "소프트웨어공학과"
+
+
+def test_llm_can_accept_unique_school_typo_but_not_invent_school():
+    corrected = parse_llm_profile_json(
+        '{"school_id":"jbnu","degree_level":"undergraduate","grade":3}',
+        user_text="전북데 3학년 공지를 알려줘",
+    )
+    assert corrected["school_id"] == "jbnu"
+
+    with pytest.raises(SchoolProfileError, match="school_id"):
+        parse_llm_profile_json(
+            '{"school_id":"jbnu","degree_level":"undergraduate","grade":3}',
+            user_text="학교 공지를 알려줘",
+        )
 
 
 def test_llm_uncatalogued_department_must_appear_verbatim_and_be_bounded():

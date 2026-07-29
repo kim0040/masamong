@@ -1517,6 +1517,23 @@ IMAGE_COMMAND_COOLDOWN_SECONDS = min(
     ),
 )
 
+# 무료/공공 외부 도구가 연속 실패할 때 같은 요청을 계속 쌓지 않는 짧은 회로 차단.
+# cooldown 뒤에는 다음 사용자 요청 1회가 자동 복구 probe가 된다.
+TOOL_CIRCUIT_FAILURE_THRESHOLD = min(
+    5,
+    max(
+        1,
+        as_int(load_config_value("TOOL_CIRCUIT_FAILURE_THRESHOLD", 2), 2),
+    ),
+)
+TOOL_CIRCUIT_COOLDOWN_SECONDS = min(
+    600,
+    max(
+        15,
+        as_int(load_config_value("TOOL_CIRCUIT_COOLDOWN_SECONDS", 60), 60),
+    ),
+)
+
 # 이미지 생성 안전 설정
 IMAGE_SAFETY_TOLERANCE = 0  # 가장 엄격한 수준 (0=strict, 5=permissive) - 절대 변경 금지
 

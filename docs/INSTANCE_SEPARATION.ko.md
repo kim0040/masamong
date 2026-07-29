@@ -30,7 +30,7 @@
 | embedding | 현재 파일과 Kakao mapping 보존 | 별도 파일, Kakao mapping 없음 |
 | 기억 소스 | 정확히 `discord,kakao` | 정확히 `discord` |
 | 로그 | `masamo*.log` | `general*.log` |
-| 최고/등록 관리자 | Masamo 전용 env ID와 `instance_name=masamo` 행 | 별도 General env ID와 `instance_name=general` 행 |
+| 최고 관리자 | Masamo 전용 env ID | 별도 General env ID |
 | 서비스 unit | `masamong-masamo.service` | `masamong-general.service` |
 | 정기 작업 | 기존 작업·학교 05:00·편입 05:35 timer 소유 | 첫 부트스트랩에는 전부 끄고 검증 뒤 필요한 작업만 소유 |
 | 학교 공지 | 현재 schema/core DB/digest/timer 소유 | `SCHOOL_NOTICE_ENABLED=false`, Masamo 상태 공유 금지 |
@@ -92,8 +92,9 @@ MASAMONG_MEMORY_SOURCES=discord,kakao
 MASAMONG_SUPERADMIN_USER_IDS=replace-with-current-masamo-superadmin-user-id
 ```
 
-`static`은 기존 prompt의 채널/페르소나 동작을 유지한다. 오래된 `guild_settings` 값을
-읽기 전용으로 대조하기 전에는 Masamo를 `database` 모드로 전환하지 않는다.
+`static`은 기존 prompt의 채널/페르소나 동작을 유지한다. 오래된
+`guild_settings.persona` 값은 보존하지만 런타임에 적용하지 않으며, Masamo를
+`database` 말투 모드로 전환하지 않는다.
 
 현재 저사양 서비스의 `MASAMONG_CPU_THREADS`, `MASAMONG_EXECUTOR_WORKERS`,
 `AI_MAX_CONCURRENT_PROCESSING`, `AI_QUEUE_WAIT_TIMEOUT_SECONDS`,
@@ -205,8 +206,8 @@ Restart=on-failure
 - `MASAMONG_AUTO_MIGRATE=false`에서는 startup 및 runtime helper가 DDL을 실행하지 않고
   필수 테이블과 `guild_settings`, `user_profiles` 컬럼을 읽기 전용으로 검증
 - 프로필별 로그 파일을 열 수 없으면 명시적 운영 프로필은 기동 실패
-- 최고 관리자 env는 현재 프로필에서만 읽고, 등록 관리자는
-  `bot_admin_accounts(instance_name, user_id)`로 다시 격리
+- 최고 관리자 env는 현재 프로필에서만 읽고, 현재 서버/채널 제어는
+  `bot_guild_controls(instance_name, guild_id)`로 다시 격리
 
 `MASAMONG_EXPECTED_DISCORD_BOT_USER_ID`는 Discord Developer Portal의 해당 애플리케이션
 bot user ID를 십진 정수로 적는다. 두 프로필 값은 반드시 달라야 한다.
@@ -399,8 +400,9 @@ General RAG는 두 프로세스 합산 RSS, thread 수, load average를 측정�
 - 기존 운세 구독, DM 제한, 대화, Discord/Kakao RAG가 그대로 작동한다.
 - General에서 Kakao 저장소 객체/쿼리가 생성되지 않고 Masamo 기억이 검색되지 않는다.
 - 같은 사용자/guild/message ID를 넣어도 양쪽 DB에서 교차 조회되지 않는다.
-- 같은 프로세스 안의 여러 Discord 서버도 페르소나 캐시를 `guild_id`로 구분하고,
-  일반 응답·창의형 명령·일상 알림이 목적지 서버의 말투만 사용한다.
+- 같은 프로세스 안의 여러 Discord 서버도 static 채널 페르소나와 대화/RAG 범위를
+  목적지 `guild_id/channel_id`로 검증하고, 일반 응답·창의형 명령·일상 알림이 목적지
+  서버의 말투만 사용한다.
 - 공통 지진 경보에는 어떤 서버 페르소나나 LLM도 적용되지 않고, 최초 기준점 생성이나
   재기동으로 기존 지진·여진이 재전송되지 않는다. 같은 지진군은 서버별 원본 메시지
   ID만 해당 채널에 매핑해 수정하며 다른 서버의 message ID를 사용하지 않는다.
@@ -421,8 +423,7 @@ General RAG는 두 프로세스 합산 RSS, thread 수, load average를 측정�
 
 프로필 경계는 코드와 설정으로 강제하지만 다음은 별도 운영 강화가 필요하다.
 
-- 정기 알림의 DB lease/claim 및 idempotency key
-- API/이미지/DM quota의 원자적 예약
+- 여러 replica를 허용하려면 정기 알림의 전역 DB lease/claim을 추가 검증
 - 학교 공지 수집 core의 사용자별 파생 데이터 삭제를 운영 환경에서 끝까지 검증하는 작업
 - 버전형 `schema_migrations`와 staging restore 기반 migration 테스트
 - 실제 원격 service unit, grant, CPU 제한과 백업 복원 가능성의 읽기 전용 감사

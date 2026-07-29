@@ -139,6 +139,7 @@ class ReMasamongBot(commands.Bot):
         # 대화형 커맨드(예: !운세 등록) 진행 중인 사용자를 추적하여 AI 자동응답을 방지합니다.
         self.locked_users = set()
         self._guild_settings_cache: dict[int, dict[str, object]] = {}
+        self._guild_control_cache = {}
 
     async def _load_guild_settings_cache(self) -> None:
         """서버별 AI 정책을 한 번 읽어 메시지마다 원격 DB를 조회하지 않게 합니다."""
@@ -152,7 +153,7 @@ class ReMasamongBot(commands.Bot):
         cache: dict[int, dict[str, object]] = {}
         async with self.db.execute(
             """
-            SELECT guild_id, ai_enabled, ai_allowed_channels, persona_text
+            SELECT guild_id, ai_enabled, ai_allowed_channels
             FROM guild_settings
             """
         ) as cursor:
@@ -186,10 +187,24 @@ class ReMasamongBot(commands.Bot):
             cache[guild_id] = {
                 "ai_enabled": bool(row[1]),
                 "ai_allowed_channels": allowed_channels,
-                "persona_text": str(row[3]).strip() if row[3] else None,
             }
         self._guild_settings_cache = cache
         logger.info("서버별 AI 설정 캐시 로드 완료: %d개 길드", len(cache))
+
+    async def _load_guild_control_cache(self) -> None:
+        """인스턴스별 최고 관리자 override를 정적/DB 모드와 무관하게 읽습니다."""
+        from utils.guild_controls import load_guild_controls
+
+        self._guild_control_cache = await load_guild_controls(self.db)
+        logger.info(
+            "인스턴스별 서버 제어 캐시 로드 완료: instance=%s guilds=%d",
+            config.INSTANCE_NAME,
+            len(self._guild_control_cache),
+        )
+
+    def update_guild_control_cache(self, guild_id: int, control) -> None:
+        """안전 설정 변경 직후 현재 인스턴스 캐시만 갱신합니다."""
+        self._guild_control_cache[int(guild_id)] = control
 
     def update_guild_setting_cache(self, guild_id: int, setting_name: str, value) -> None:
         """관리 명령이 DB를 갱신한 직후 런타임 캐시에도 동일 값을 반영합니다."""
@@ -206,11 +221,17 @@ class ReMasamongBot(commands.Bot):
             }
         elif setting_name == "ai_enabled":
             entry[setting_name] = bool(value)
-        elif setting_name == "persona_text":
-            entry[setting_name] = str(value).strip() if value else None
 
     def is_ai_channel_allowed(self, guild_id: int, channel_id: int) -> bool:
-        """DB 정책이 있으면 우선 적용하고, 없을 때만 정적 프롬프트 설정을 사용합니다."""
+        """최고 관리자 override 뒤 기존 정적/DB 채널 정책을 적용합니다."""
+        control = self._guild_control_cache.get(int(guild_id))
+        if control is not None:
+            if not control.ai_enabled:
+                return False
+            if int(channel_id) in control.disabled_channels:
+                return False
+            if int(channel_id) in control.enabled_channels:
+                return True
         entry = self._guild_settings_cache.get(int(guild_id), {})
         if entry.get("ai_enabled") is False:
             return False
@@ -221,16 +242,19 @@ class ReMasamongBot(commands.Bot):
         return bool(channel_conf.get("allowed", False))
 
     def get_guild_persona(self, guild_id: int | None) -> str | None:
-        """길드 관리자가 지정한 런타임 페르소나를 반환합니다."""
-        if guild_id is None:
-            return None
-        entry = self._guild_settings_cache.get(int(guild_id), {})
-        persona = entry.get("persona_text")
-        return str(persona) if persona else None
+        """레거시 공유 DB persona를 적용하지 않습니다.
+
+        서버·채널 말투는 선택한 인스턴스의 protected prompt 파일에 있는
+        CHANNEL_AI_CONFIG만 사용합니다. 기존 DB 행은 삭제하지 않지만 서로 다른
+        봇 인스턴스 사이에 섞일 가능성이 있는 런타임 경로에서는 제외합니다.
+        """
+        _ = guild_id
+        return None
 
     async def _verify_runtime_schema(self) -> None:
         """DDL 없이 런타임 필수 테이블/컬럼이 이미 존재하는지 검증합니다."""
         required_tables = {
+            "bot_guild_controls",
             "conversation_history",
             "guild_settings",
             "locations",
@@ -894,6 +918,7 @@ class ReMasamongBot(commands.Bot):
         from utils.locale import load_guild_languages_from_db
         await load_guild_languages_from_db(self.db)
         await self._load_guild_settings_cache()
+        await self._load_guild_control_cache()
 
         # Cog(기능 모듈) 로드
         # 의존성 순서를 고려하여 리스트 순서 결정 (예: tools_cog -> 다른 cogs)

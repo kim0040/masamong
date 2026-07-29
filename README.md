@@ -54,20 +54,19 @@ General, or rebuilt.
 - Discord and optional Kakao memory with hybrid retrieval
 - Daily/monthly/yearly fortune, zodiac, and persistent morning briefing
 - Activity ranking, restart-safe incremental conversation summaries, polls,
-  localization, and guild persona settings
+  localization, and profile-pinned guild/channel personas
 - Optional school-notice personalization for registered users and supported
   schools
 - Optional DM-only subscription to 20 official transfer-admissions notice
-  sources, with bounded list/detail-page extraction and TOEIC/public-English
-  caveats
-- Three-level administration: Discord server managers are limited to their own
-  guild settings, registered instance admins can inspect only their profile
-  runtime, and env-pinned superadmins alone can register admins or create invite
-  links
+  sources, with bounded list/detail-page extraction and final-guide caveats
+- One restricted administration boundary: only profile-pinned superadmins see
+  the private panel for current-guild AI/channel toggles and invite links
 
-Database personas are keyed and cached by `guild_id`; static deployments bind
-personas to Discord's globally unique `channel_id`. Normal chat, creative command
-responses, and routine AI-written notices resolve only the destination
+Runtime personas come only from the selected profile's protected static
+channel configuration. Legacy `guild_settings.persona` rows are preserved for
+compatibility but are not applied, preventing an old shared-DB row or a Discord
+administrator from injecting one guild's tone into another. Normal chat,
+creative responses, and routine AI-written notices resolve only the destination
 guild/channel persona. Conversation and RAG reads additionally require the same
 guild and channel. Shared emergency notices such as earthquake alerts never use
 a guild persona or an LLM: every destination receives the same fixed, formal
@@ -80,9 +79,9 @@ Fortune generation and school collection also use explicit finite attempt and
 runtime limits; neither scheduler retries indefinitely.
 
 Discord component callbacks acknowledge the interaction before remote DB or API
-work. Views, modals, and slash commands share a private terminal error response,
-so an internal exception does not leave only Discord's “application did not
-respond” banner. Menu, consent, and notice-feedback clicks do not call an LLM;
+work. Views and modals share a terminal error response, so an internal exception
+does not leave only Discord's “application did not respond” banner. Menu,
+consent, and notice-feedback clicks do not call an LLM;
 they use only Discord and the bounded database operation required by that action.
 
 Each logical LLM request is reserved before provider access against global,
@@ -174,13 +173,16 @@ In a guild, the prefix command itself posts a small launcher because Discord
 prefix messages cannot be ephemeral. Pressing **Open my menu** returns the full
 dashboard only to the caller. The dashboard does not flatten every command into
 one screen: it first shows **School/Transfer, AI/Search, Weather/Disaster,
-Fortune, Community, Personal settings, Server administration, and Help**. A
+Fortune, Community, Personal settings, and Help**; **Quick settings** is added
+only for a configured superadmin. A
 selection replaces the view with only that category's actions. School and
 transfer dashboards and personal settings are visibly disabled in a guild and
 point to DM; no personal setting or result is read for the public launcher.
 Weather, image, poll, ranking, summary, fortune, and notification-time actions
 can be run from their category, including modal input where arguments are
-required. Each member must run their own `!메뉴`, and another member cannot use
+required. The private selector remains caller-only, while non-sensitive feature
+results are posted to the channel; personal and administrative results remain
+private. Each member must run their own `!메뉴`, and another member cannot use
 its button.
 
 `!요약` persists only its per-guild/per-channel anchor and bounded summary in
@@ -220,15 +222,16 @@ provide them.
 `MASAMONG_SUPERADMIN_USER_IDS` belongs to one runtime profile and is never copied
 between Masamo and General. The real Discord user ID stays only in the protected
 runtime env; tracked examples use a placeholder. General intentionally starts
-with an empty, separately chosen list. Discord members with **Manage Server** or the guild owner can use
-`/config` and `/persona`, but every read/write is keyed only to that guild.
+with an empty, separately chosen list.
 
-Registered instance admins live in `bot_admin_accounts` with `instance_name` in
-the primary key. A superadmin manages them in bot DM with `!관리 추가`, `!관리
-제거`, and `!관리 목록`; removal disables the row instead of deleting it.
-Registered instance admins do not inherit Discord server permissions. `!관리`
-opens a caller-only panel in a guild, while `!초대` and the invite button are
-superadmin-only and deliver the OAuth link privately.
+Only that profile's superadmin can see or use `!관리`. The private panel can
+toggle AI for the current guild, override the current channel, or open the
+invite link. It cannot change models, database targets, collection schedules,
+language, or personas. Discord guild permissions and legacy
+`bot_admin_accounts` rows grant no control-panel authority. The state is stored
+additively in `bot_guild_controls` under `(instance_name, guild_id)`, so Masamo,
+General, and different guilds cannot overwrite one another. The removed
+`/config` and `/persona` application commands are cleared once during deployment.
 
 ## School-notice behavior
 
@@ -249,10 +252,12 @@ The user flow is:
 
 1. In DM, the user opens `!메뉴`/`!공지`, presses the setup button, or simply says
    “전북대 소프트웨어공학과 3학년 공지를 오전 9시에 알려줘.”
-2. Masamong first uses its bounded local parser. Clear input makes no profile-LLM
-   call. Only unresolved input may call the routing primary once for that
+2. Masamong first uses its bounded local parser, including unique, obvious
+   school/department typo correction. Clear input makes no profile-LLM call.
+   Only unresolved input may call the routing primary once for that
    interpretation attempt, with no provider fallback or retry; the whole session is
-   capped at three provider calls by default.
+   capped at three provider calls by default. LLM corrections must map back to
+   one supported catalog entry; ambiguous or invented schools fail closed.
 3. The user confirms, corrects the summary in natural language, or cancels.
 4. Nothing is stored until confirmation. New profiles default to `09:00` KST, and
    the user can choose another delivery time.
@@ -304,9 +309,13 @@ changing the notice.
 
 The first successful collection for every source is a non-delivery baseline.
 Per-user `(source, external ID, revision)` delivery records prevent replay after a
-restart. Failed DMs have finite attempts and a durable payload, while cancellation,
-selection changes, or consent withdrawal invalidate older retries. A malformed
-retry payload is terminal rather than looped forever.
+restart. Changed runs are also written as small immutable public event files, so
+a later empty `latest.json` cannot erase a notification collected while the bot
+was down. Startup considers at most 32 event files from the last three days and
+the TiDB ledger still prevents duplicates. Failed DMs have finite attempts and
+a durable payload, while cancellation, selection changes, or consent withdrawal
+invalidate older retries. A malformed retry payload is terminal rather than
+looped forever.
 
 The catalog is exactly 20 official sources. “TOEIC/public English” means the
 school has a relevant year or recruiting unit where public-English evidence may
@@ -377,8 +386,7 @@ do not match.
 | `!편입 구독취소`, `!편입 재개` | Pause/resume without deleting university choices |
 | `!편입 삭제` | Delete choices and delivery state, then withdraw consent |
 | `!랭킹`, `!요약`, `!투표 ...` | Community utilities |
-| `/config`, `/persona` | Guild AI policy and persona |
-| `!관리` | Caller-only administration panel at the authorized server/profile scope |
+| `!관리` | Superadmin-only private current-guild AI/channel panel |
 | `!초대` | Superadmin-only private bot invite button |
 
 Some commands and schedulers are feature-flagged or permission-restricted.
@@ -405,6 +413,8 @@ STRUCTURED_MEMORY_QUERY_LIMIT=384
 STRUCTURED_MEMORY_FALLBACK_QUERY_LIMIT=768
 LINKUP_FETCH_RENDER_JS=false
 LINKUP_FETCH_JS_RETRY_ENABLED=true
+TOOL_CIRCUIT_FAILURE_THRESHOLD=2
+TOOL_CIRCUIT_COOLDOWN_SECONDS=60
 TOKENIZERS_PARALLELISM=false
 ```
 
@@ -425,6 +435,18 @@ MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
   <venv>/bin/python scripts/audit_tidb_free_plan_readonly.py \
   --expected-profile masamo --expected-db masamong
 ```
+
+Weather, stock, and place lookups each use an in-process circuit breaker.
+Repeated provider failures temporarily skip only that provider call and return
+an explicit temporary-unavailable result; after the bounded cooldown, one user
+request performs a half-open probe. This avoids hammering a silent API without
+a background probe loop or letting the answer model invent missing tool data.
+
+Image generation uses the Gemini-native
+`/v1beta/models/gemini-3.1-flash-lite-image:generateContent` contract and
+explicit 1K output. A mismatched model is rejected before quota reservation or
+network access. Provider attempts remain counted after the request begins,
+because a remote failure can still incur cost.
 
 ## Verification
 
@@ -449,9 +471,11 @@ MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
   --min-request-interval-seconds 0.35
 ```
 
-The two API smoke scripts are deliberately excluded from the offline suite.
+Live API smoke scripts are deliberately excluded from the offline suite.
 `scripts/smoke_linkup_live.py` reserves at most one standard Linkup search, and
 `scripts/smoke_llm_quality_live.py` makes at most one primary answer-model call.
+`scripts/smoke_image_provider.py` requires a typed confirmation, makes exactly
+one minimal image call, prints only MIME/size/hash prefix, and stores no image.
 Run them only as an explicit billable production-key check.
 
 The live check performs real public HTML requests, so it is an explicit operator

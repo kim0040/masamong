@@ -232,13 +232,43 @@ class SchoolCatalog:
         # 이 형식을 통과하지 못한다.
         return _normalize_department_free_text(rendered, school=school)
 
-    def matching_schools(self, text: str) -> tuple[SchoolDefinition, ...]:
+    def matching_schools(
+        self,
+        text: str,
+        *,
+        allow_fuzzy: bool = False,
+    ) -> tuple[SchoolDefinition, ...]:
         matches: dict[str, SchoolDefinition] = {}
         for school in self.schools.values():
             aliases = (school.school_id, *school.aliases)
             if any(_contains_alias(text, alias) for alias in aliases):
                 matches[school.school_id] = school
-        return tuple(matches.values())
+        if matches or not allow_fuzzy:
+            return tuple(matches.values())
+
+        # 정확히 한 학교만 편집거리 1 이내일 때만 오타로 보정한다. JNU/SNU처럼
+        # 짧은 영문 약어가 여러 학교에 걸치면 후보가 둘 이상이 되어 보정하지
+        # 않는다. LLM 경로도 이후 같은 카탈로그 검증과 사용자 확인을 거친다.
+        tokens = _fuzzy_tokens(text)
+        best_distance: dict[str, int] = {}
+        for school in self.schools.values():
+            distances = [
+                distance
+                for alias in (school.school_id, *school.aliases)
+                for token in tokens
+                if (distance := _safe_typo_distance(token, alias)) is not None
+            ]
+            if distances:
+                best_distance[school.school_id] = min(distances)
+        if not best_distance:
+            return ()
+        minimum = min(best_distance.values())
+        candidates = [
+            self.schools[school_id]
+            for school_id, distance in best_distance.items()
+            if distance == minimum
+        ]
+        return tuple(candidates) if len(candidates) == 1 else ()
 
 
 _DEGREE_VALUES: Mapping[str, tuple[str, ...]] = MappingProxyType(
@@ -343,6 +373,199 @@ _ENROLLMENT_LABELS = {
 def _lookup_key(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value).casefold()
     return "".join(character for character in normalized if character.isalnum())
+
+
+def _edit_distance_at_most_one(left: str, right: str) -> int | None:
+    """두 정규 문자열의 편집거리가 0/1일 때만 값을 반환합니다."""
+    if left == right:
+        return 0
+    if abs(len(left) - len(right)) > 1:
+        return None
+    if len(left) > len(right):
+        left, right = right, left
+    if len(left) == len(right):
+        mismatches = sum(a != b for a, b in zip(left, right))
+        return 1 if mismatches == 1 else None
+    index_left = index_right = differences = 0
+    while index_left < len(left) and index_right < len(right):
+        if left[index_left] == right[index_right]:
+            index_left += 1
+            index_right += 1
+            continue
+        differences += 1
+        if differences > 1:
+            return None
+        index_right += 1
+    return 1
+
+
+def _fuzzy_tokens(text: str) -> tuple[str, ...]:
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    return tuple(
+        dict.fromkeys(
+            _lookup_key(token)
+            for token in re.findall(r"[가-힣A-Za-z0-9]+", normalized)
+            if 3 <= len(_lookup_key(token)) <= 36
+        )
+    )
+
+
+def _safe_typo_distance(token: str, alias: str) -> int | None:
+    """짧은 별칭의 과보정을 막으면서 명백한 한 글자 오타만 허용합니다."""
+    alias_key = _lookup_key(alias)
+    token_key = _lookup_key(token)
+    if not (3 <= len(alias_key) <= 36):
+        return None
+    return _edit_distance_at_most_one(token_key, alias_key)
+
+
+def _bounded_edit_distance(
+    left: str,
+    right: str,
+    *,
+    limit: int,
+) -> int | None:
+    """작은 입력에서 limit를 넘는 즉시 실패하는 Levenshtein 거리."""
+    if abs(len(left) - len(right)) > limit:
+        return None
+    previous = list(range(len(right) + 1))
+    for left_index, left_char in enumerate(left, start=1):
+        current = [left_index]
+        row_minimum = left_index
+        for right_index, right_char in enumerate(right, start=1):
+            value = min(
+                current[-1] + 1,
+                previous[right_index] + 1,
+                previous[right_index - 1] + (left_char != right_char),
+            )
+            current.append(value)
+            row_minimum = min(row_minimum, value)
+        if row_minimum > limit:
+            return None
+        previous = current
+    distance = previous[-1]
+    return distance if distance <= limit else None
+
+
+def _llm_supported_school_match(
+    text: str,
+    catalog: SchoolCatalog,
+) -> str | None:
+    """LLM 보정용으로만 두 글자 오타까지 허용하되 유일 후보만 반환합니다."""
+    exact_or_one = catalog.matching_schools(text, allow_fuzzy=True)
+    if len(exact_or_one) == 1:
+        return exact_or_one[0].school_id
+    tokens = _fuzzy_tokens(text)
+    candidates: dict[str, int] = {}
+    for school in catalog.schools.values():
+        distances: list[int] = []
+        for alias in (school.school_id, *school.aliases):
+            alias_key = _lookup_key(alias)
+            if not (4 <= len(alias_key) <= 36):
+                continue
+            for token in tokens:
+                distance = _bounded_edit_distance(
+                    token,
+                    alias_key,
+                    limit=2,
+                )
+                if distance is not None:
+                    distances.append(distance)
+        if distances:
+            candidates[school.school_id] = min(distances)
+    if not candidates:
+        return None
+    minimum = min(candidates.values())
+    best = [
+        school_id
+        for school_id, distance in candidates.items()
+        if distance == minimum
+    ]
+    return best[0] if len(best) == 1 else None
+
+
+def _llm_supported_department_match(
+    text: str,
+    school: SchoolDefinition,
+) -> str | None:
+    """학교 내부의 학과 별칭에 한해 두 글자 오타의 유일 후보를 반환합니다."""
+    exact_or_one = _unique_catalog_match(
+        text,
+        school.departments,
+        field="department",
+    ) or _unique_fuzzy_catalog_match(text, school.departments)
+    if exact_or_one is not None:
+        return exact_or_one
+    tokens = _fuzzy_tokens(text)
+    candidates: dict[str, int] = {}
+    for item in school.departments:
+        distances = [
+            distance
+            for alias in (item.value, *item.aliases)
+            if 4 <= len(_lookup_key(alias)) <= 36
+            for token in tokens
+            if (
+                distance := _bounded_edit_distance(
+                    token,
+                    _lookup_key(alias),
+                    limit=2,
+                )
+            )
+            is not None
+        ]
+        if distances:
+            candidates[item.value] = min(distances)
+    if not candidates:
+        return None
+    minimum = min(candidates.values())
+    best = [
+        canonical
+        for canonical, distance in candidates.items()
+        if distance == minimum
+    ]
+    return best[0] if len(best) == 1 else None
+
+
+def _unique_fuzzy_catalog_match(
+    text: str,
+    values: Sequence[CatalogValue],
+) -> str | None:
+    """학교 내부에서 유일한 학과 후보만 최대 두 글자까지 보정합니다.
+
+    확인 화면을 반드시 거치므로 긴 공식 학과명의 흔한 두 글자 오타도 LLM
+    호출 없이 고칠 수 있다. 짧은 별칭은 기존 편집거리 1 규칙만 허용한다.
+    """
+    tokens = _fuzzy_tokens(text)
+    candidates: dict[str, int] = {}
+    for item in values:
+        distances = [
+            distance
+            for alias in (item.value, *item.aliases)
+            for token in tokens
+            if (
+                distance := (
+                    _bounded_edit_distance(
+                        token,
+                        _lookup_key(alias),
+                        limit=2,
+                    )
+                    if 4 <= len(_lookup_key(alias)) <= 36
+                    else _safe_typo_distance(token, alias)
+                )
+            )
+            is not None
+        ]
+        if distances:
+            candidates[item.value] = min(distances)
+    if not candidates:
+        return None
+    minimum = min(candidates.values())
+    best = [
+        canonical
+        for canonical, distance in candidates.items()
+        if distance == minimum
+    ]
+    return best[0] if len(best) == 1 else None
 
 
 def _bounded_string(
@@ -669,11 +892,33 @@ def _require_explicit_free_department(
             for alias in (item.value, *item.aliases)
         ):
             return
+        if _llm_supported_department_match(text, school) == canonical:
+            return
     elif _lookup_key(str(department)) in _lookup_key(text):
         return
     raise SchoolProfileError(
         "LLM이 반환한 department가 사용자 입력에 명시되어 있지 않습니다."
     )
+
+
+def _require_supported_school_provenance(
+    profile: Mapping[str, Any],
+    *,
+    catalog: SchoolCatalog,
+    user_text: str | None,
+) -> None:
+    """LLM이 원문 근거 없이 다른 지원 학교를 만들어내지 못하게 합니다."""
+    if user_text is None or not profile.get("school_id"):
+        return
+    selected = str(profile["school_id"])
+    matched = _llm_supported_school_match(
+        validate_natural_input(user_text),
+        catalog,
+    )
+    if matched != selected:
+        raise SchoolProfileError(
+            "LLM이 반환한 school_id를 사용자 입력에서 안전하게 확인할 수 없습니다."
+        )
 
 
 def _resolve_enum(
@@ -846,6 +1091,11 @@ def parse_llm_profile_json(
         catalog=catalog,
         require_complete=require_complete,
     )
+    _require_supported_school_provenance(
+        profile,
+        catalog=catalog,
+        user_text=user_text,
+    )
     _require_explicit_free_department(
         profile,
         catalog=catalog,
@@ -970,6 +1220,12 @@ def parse_llm_profile_patch(
                 "school_id": school.school_id,
                 "department": patch["department"],
             },
+            catalog=catalog,
+            user_text=user_text,
+        )
+    if patch.get("school_id") is not None:
+        _require_supported_school_provenance(
+            {"school_id": patch["school_id"]},
             catalog=catalog,
             user_text=user_text,
         )
@@ -1317,7 +1573,7 @@ def parse_profile_locally(
     """provider 없이 한 문장에서 결정론적으로 프로필 초안을 만든다."""
     catalog = catalog or load_school_catalog()
     text = validate_natural_input(user_text)
-    schools = catalog.matching_schools(text)
+    schools = catalog.matching_schools(text, allow_fuzzy=True)
     if not schools:
         raise UnsupportedSchoolError(
             "지원 학교를 찾지 못했습니다. 학교 이름을 정확히 적어주세요."
@@ -1342,6 +1598,8 @@ def parse_profile_locally(
         school.departments,
         field="department",
     )
+    if department is None:
+        department = _unique_fuzzy_catalog_match(text, school.departments)
     if department is None:
         department = _user_supplied_department(text, school)
     if department:
@@ -1477,7 +1735,7 @@ def parse_profile_correction_locally(
     if not base.get("school_id"):
         raise SchoolProfileError("현재 프로필에 school_id가 없습니다.")
     current_school = catalog.resolve_school(base["school_id"])
-    school_matches = catalog.matching_schools(text)
+    school_matches = catalog.matching_schools(text, allow_fuzzy=True)
     if len(school_matches) > 1:
         raise AmbiguousProfileError(
             "학교 후보가 여러 개입니다: "
@@ -1500,6 +1758,8 @@ def parse_profile_correction_locally(
         school.departments,
         field="department",
     )
+    if department is None:
+        department = _unique_fuzzy_catalog_match(text, school.departments)
     if department is None:
         department = _user_supplied_department(text, school)
     if department:
@@ -1590,7 +1850,8 @@ def build_profile_extraction_prompt(
         "응답은 Markdown 없이 JSON 객체 하나만 반환한다. 허용 키는 "
         "school_id, campus, department, degree_level, grade, admission_type, "
         "enrollment_status, preferred_topics, delivery_time뿐이다. "
-        "모르는 값은 추측하지 말고 키를 생략한다. school_id/campus는 아래 "
+        "모르는 값은 추측하지 말고 키를 생략한다. 명백한 학교·학과 오타는 "
+        "catalog의 유일한 후보일 때만 보정한다. school_id/campus는 아래 "
         "catalog의 정규 값만 사용한다. department는 catalog 값을 우선하고, "
         "목록에 없으면 user_input_json에 그대로 명시된 짧은 공식 학과/학부/전공명만 "
         "사용하며 추론하지 않는다. degree_level은 undergraduate, master, "
@@ -1670,7 +1931,8 @@ def build_profile_correction_prompt(
         "school_id, campus, department, degree_level, grade, admission_type, "
         "enrollment_status, preferred_topics, delivery_time뿐이다. 선택 필드를 "
         "지우라는 명시적 요청은 null로 반환할 수 있지만 school_id는 null일 수 없다. "
-        "모르는 값과 바꾸지 않은 값은 키를 생략한다. school_id/campus는 아래 "
+        "모르는 값과 바꾸지 않은 값은 키를 생략한다. 명백한 학교·학과 오타는 "
+        "catalog의 유일한 후보일 때만 보정한다. school_id/campus는 아래 "
         "catalog의 정규 값만 사용한다. department는 catalog 값을 우선하고, "
         "목록에 없으면 user_correction_json에 그대로 명시된 짧은 공식 "
         "학과/학부/전공명만 사용하며 추론하지 않는다. degree_level은 undergraduate, master, "
@@ -1692,7 +1954,10 @@ def build_confirmation_summary(profile: Mapping[str, Any]) -> str:
         raise SchoolProfileError(
             "확인 프로필에 지원하지 않는 필드가 있습니다: " + ", ".join(unknown)
         )
-    lines = ["제가 이렇게 이해했어요. 맞을까요?"]
+    lines = [
+        "제가 이렇게 이해했어요. 맞을까요?",
+        "오타나 약칭을 지원 목록에 맞춰 보정했을 수 있으니 학교와 학과를 확인해주세요.",
+    ]
     lines.append(f"- 학교: {profile.get('school', '미입력')}")
     if profile.get("campus"):
         lines.append(f"- 캠퍼스: {profile['campus']}")

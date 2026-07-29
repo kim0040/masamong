@@ -5,7 +5,7 @@
 * FunCog: 쿨다운/요약 캐시와 캐시 재사용
 * PollCog: 찬반·다중 선택·입력 상한
 * MaintenanceCog: 단일 archive/BM25 틱과 메시지 시각 추적
-* SettingsCog: 설정 저장, 런타임 캐시 반영, 허용 채널 갱신
+* SettingsCog: 최고 관리자 패널의 제한된 설정 저장과 런타임 캐시 반영
 * ProactiveAssistant: 준비 상태와 키워드별 정적 제안
 
 Discord gateway, 외부 API, 운영 DB에는 연결하지 않습니다. 네트워크나 실제 스케줄
@@ -14,7 +14,6 @@ Discord gateway, 외부 API, 운영 DB에는 연결하지 않습니다. 네트�
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -105,7 +104,8 @@ async def test_help_uses_the_active_instance_prefix_and_privacy_category():
 
     assert len(sent) == 1
     embed = sent[0]
-    assert "`?`로 시작" in embed.description
+    assert "`?메뉴`" in embed.description
+    assert "`?도움 <명령어>`" in embed.description
     assert "`?도움`" in embed.description
     assert embed.fields[0].name == "**🔐 개인정보 동의**"
     assert "`?개인정보`" in embed.fields[0].value
@@ -314,73 +314,57 @@ async def test_maintenance_message_tracker_ignores_bots_and_normalizes_naive_tim
 
 @pytest.mark.asyncio
 async def test_settings_ai_toggle_persists_and_updates_runtime_cache(monkeypatch):
-    writes: list[tuple] = []
+    updated = SimpleNamespace(ai_enabled=True)
+    store = pytest.importorskip("cogs.settings_cog")
+    async def set_setting(db, *, guild_id, enabled, changed_by):
+        assert db is bot.db
+        assert (guild_id, enabled, changed_by) == (123, True, 7)
+        return updated
+
+    monkeypatch.setattr(store, "set_guild_ai_enabled", set_setting)
     cache_updates: list[tuple] = []
-
-    async def set_setting(db, guild_id, key, value):
-        writes.append((db, guild_id, key, value))
-
-    monkeypatch.setattr("cogs.settings_cog.db_utils.set_guild_setting", set_setting)
     bot = SimpleNamespace(
         db=object(),
-        update_guild_setting_cache=lambda *args: cache_updates.append(args),
+        update_guild_control_cache=lambda *args: cache_updates.append(args),
     )
-    cog = SettingsCog.__new__(SettingsCog)
-    cog.bot = bot
-    response = _RecordingResponse()
-    interaction = SimpleNamespace(
+    cog = SettingsCog(bot)
+
+    result = await cog.set_ai_enabled(
         guild_id=123,
-        user=SimpleNamespace(id=7),
-        response=response,
-        followup=response,
+        enabled=True,
+        changed_by=7,
     )
 
-    await SettingsCog.set_ai_enabled.callback(cog, interaction, True)
-
-    assert writes == [(bot.db, 123, "ai_enabled", True)]
-    assert cache_updates == [(123, "ai_enabled", True)]
-    assert response.messages[0]["ephemeral"] is True
-    assert "활성화" in response.messages[0]["content"]
+    assert result is updated
+    assert cache_updates == [(123, updated)]
 
 
 @pytest.mark.asyncio
 async def test_settings_allowed_channel_adds_once_and_serializes(monkeypatch):
-    writes: list[tuple] = []
+    updated = SimpleNamespace(enabled_channels=frozenset({10, 20}))
+    store = pytest.importorskip("cogs.settings_cog")
+    async def set_setting(db, *, guild_id, channel_id, enabled, changed_by):
+        assert db is bot.db
+        assert (guild_id, channel_id, enabled, changed_by) == (123, 20, True, 7)
+        return updated
+
+    monkeypatch.setattr(store, "set_channel_enabled", set_setting)
     cache_updates: list[tuple] = []
-
-    async def get_setting(_db, _guild_id, _key):
-        return json.dumps([10])
-
-    async def set_setting(db, guild_id, key, value):
-        writes.append((db, guild_id, key, value))
-
-    monkeypatch.setattr("cogs.settings_cog.db_utils.get_guild_setting", get_setting)
-    monkeypatch.setattr("cogs.settings_cog.db_utils.set_guild_setting", set_setting)
     bot = SimpleNamespace(
         db=object(),
-        update_guild_setting_cache=lambda *args: cache_updates.append(args),
+        update_guild_control_cache=lambda *args: cache_updates.append(args),
     )
-    cog = SettingsCog.__new__(SettingsCog)
-    cog.bot = bot
-    response = _RecordingResponse()
-    interaction = SimpleNamespace(
+    cog = SettingsCog(bot)
+
+    result = await cog.set_channel_enabled(
         guild_id=123,
-        user=SimpleNamespace(id=7),
-        response=response,
-        followup=response,
-    )
-    channel = SimpleNamespace(id=20, name="ai-chat")
-
-    await SettingsCog.set_allowed_channel.callback(
-        cog,
-        interaction,
-        "add",
-        channel,
+        channel_id=20,
+        enabled=True,
+        changed_by=7,
     )
 
-    assert json.loads(writes[0][3]) == [10, 20]
-    assert cache_updates == [(123, "ai_allowed_channels", writes[0][3])]
-    assert response.messages[0]["ephemeral"] is True
+    assert result is updated
+    assert cache_updates == [(123, updated)]
 
 
 @pytest.mark.asyncio

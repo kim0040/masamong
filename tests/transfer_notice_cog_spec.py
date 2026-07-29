@@ -1,6 +1,7 @@
 """편입 공지 DM 전용·동의·구독·중복 방지 명세."""
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -105,6 +106,30 @@ def _change(source_id="kangwon"):
         "change_type": "new",
         "revision": 1,
     }
+
+
+def _write_event(
+    cog,
+    *,
+    run_id: str,
+    generated_at: str,
+    changes: list[dict],
+) -> None:
+    event_dir = cog.output_path.parent / "events"
+    event_dir.mkdir(parents=True, exist_ok=True)
+    (event_dir / f"{run_id}.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": run_id,
+                "generated_at": generated_at,
+                "changes": changes,
+                "latest": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
 
 @pytest.mark.asyncio
@@ -271,6 +296,81 @@ async def test_new_notice_is_sent_once_only_to_active_consented_subscriber(
             (USER_ID,),
         ) as cursor:
             assert await cursor.fetchone() == ("sent", 1)
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_restart_recovers_event_overwritten_by_newer_latest(
+    tmp_path,
+    monkeypatch,
+):
+    cog, bot, db = await _make_cog(tmp_path, monkeypatch)
+    try:
+        await grant_consent(db, USER_ID, TRANSFER_NOTICE_SCOPE)
+        await cog._save_subscription(USER_ID, {"kangwon"})
+        generated_at = datetime.now(timezone.utc).isoformat()
+        missed = _change()
+        _write_event(
+            cog,
+            run_id="missed-run",
+            generated_at=generated_at,
+            changes=[missed],
+        )
+        cog.output_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "run_id": "new-empty-run",
+                    "generated_at": (
+                        datetime.now(timezone.utc) + timedelta(seconds=1)
+                    ).isoformat(),
+                    "status": "succeeded",
+                    "changes": [],
+                    "latest": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        first = await cog._delivery_tick()
+        second = await cog._delivery_tick()
+
+        assert first == "sent"
+        assert second == "idle"
+        assert len(bot.user.messages) == 1
+        assert missed["title"] in bot.user.messages[0][0]
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_event_backlog_deduplicates_latest_by_run_id(
+    tmp_path,
+    monkeypatch,
+):
+    cog, _bot, db = await _make_cog(tmp_path, monkeypatch)
+    try:
+        generated_at = datetime.now(timezone.utc).isoformat()
+        payload = {
+            "schema_version": 1,
+            "run_id": "same-run",
+            "generated_at": generated_at,
+            "status": "succeeded",
+            "changes": [_change()],
+            "latest": [],
+        }
+        cog.output_path.write_text(json.dumps(payload), encoding="utf-8")
+        _write_event(
+            cog,
+            run_id="same-run",
+            generated_at=generated_at,
+            changes=[_change()],
+        )
+
+        payloads = cog._load_delivery_payloads()
+
+        assert [item["run_id"] for item in payloads] == ["same-run"]
     finally:
         await db.close()
 
