@@ -54,7 +54,7 @@ def _profile_env(tmp_path: Path, *, memory_sources: str = "discord") -> Path:
                 "SCHOOL_NOTICE_ENABLED=false",
                 "TRANSFER_NOTICE_ENABLED=false",
                 "DISCORD_BOT_TOKEN=general-token",
-                "MASAMONG_EXPECTED_DISCORD_BOT_USER_ID=replace-with-current-masamo-bot-user-id",
+                "MASAMONG_EXPECTED_DISCORD_BOT_USER_ID=123456789012345678",
                 # 명시적 프로필은 켜 둔 기능의 자격증명을 기동 시점에 요구한다.
                 # LINKUP_API_KEY는 비워 두어 provider가 legacy로 정해지게 한다.
                 "COMETAPI_KEY=test-cometapi-key",

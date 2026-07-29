@@ -426,9 +426,9 @@ async def test_failed_physical_attempt_is_logged_under_separate_key(monkeypatch)
     target = _target("main.primary", "https://failure.example/v1")
     logged_keys = []
 
-    async def not_limited(*args, **kwargs):
+    async def reserve_budget(*args, **kwargs):
         _ = args, kwargs
-        return False
+        return True, None
 
     async def capture_log(db, api_type):
         _ = db
@@ -443,7 +443,11 @@ async def test_failed_physical_attempt_is_logged_under_separate_key(monkeypatch)
     client.get_openai_client = lambda base_url, api_key: SimpleNamespace(
         chat=SimpleNamespace(completions=Endpoint())
     )
-    monkeypatch.setattr(llm_module.db_utils, "check_api_rate_limit", not_limited)
+    monkeypatch.setattr(
+        llm_module.db_utils,
+        "reserve_llm_api_call",
+        reserve_budget,
+    )
     monkeypatch.setattr(llm_module.db_utils, "log_api_call", capture_log)
 
     result = await client.generate_content("system", "user", {"trace_id": "failure"})

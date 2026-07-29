@@ -8,7 +8,11 @@ import pytest
 
 from scripts.apply_transfer_notice_schema import TABLE_COLUMNS, schema_statements
 from transfer_notice.catalog import load_transfer_sources
-from transfer_notice.parsing import TransferNoticeItem, parse_transfer_list
+from transfer_notice.parsing import (
+    TransferNoticeItem,
+    parse_transfer_detail,
+    parse_transfer_list,
+)
 from transfer_notice.storage import TransferNoticeStore
 
 
@@ -223,6 +227,84 @@ def test_title_revision_has_new_revision_and_is_not_duplicated(tmp_path):
         store.close()
 
 
+def test_detail_page_extracts_bounded_summary_and_key_dates():
+    item = _item(
+        "s",
+        "detail",
+        title="2027학년도 편입학 전형 일정 안내",
+        published_date="2026-07-28",
+        fingerprint="listing-v1",
+    )
+    html = """
+    <html><body>
+      <nav>전혀 관련 없는 사이트 메뉴 2020-01-01</nav>
+      <article class="board-view">
+        <h1>2027학년도 편입학 전형 일정 안내</h1>
+        <p>원서 접수는 2026년 12월 10일부터 진행합니다.</p>
+        <p>서류 제출 마감은 2026-12-15이며 세부 전형은 모집요강을 확인하세요.</p>
+        <script>const fakeDate = "2099-01-01";</script>
+      </article>
+    </body></html>
+    """
+
+    detailed = parse_transfer_detail(html, item)
+
+    assert "원서 접수" in detailed.detail_summary
+    assert "서류 제출" in detailed.detail_summary
+    assert detailed.key_dates == ("2026-12-10", "2026-12-15")
+    assert "2099-01-01" not in detailed.detail_text
+    assert 0 < len(detailed.detail_text) <= 12_000
+    assert len(detailed.detail_fingerprint) == 64
+
+
+def test_first_detail_enrichment_does_not_replay_but_later_change_does(tmp_path):
+    store = TransferNoticeStore(tmp_path / "core.db")
+    try:
+        listed = _item(
+            "s",
+            "same",
+            title="2027학년도 편입학 모집요강",
+            published_date="2026-07-28",
+            fingerprint="listing-v1",
+        )
+        store.upsert_source_items(
+            "s",
+            [listed],
+            observed_at="2026-07-28T01:00:00+00:00",
+        )
+        first_detail = replace(
+            listed,
+            detail_summary="원서 접수는 2026-12-10입니다.",
+            detail_text="공개 상세 본문",
+            detail_fingerprint="detail-v1",
+            key_dates=("2026-12-10",),
+        )
+        enrichment_changes, _ = store.upsert_source_items(
+            "s",
+            [first_detail],
+            observed_at="2026-07-28T02:00:00+00:00",
+        )
+        revised_detail = replace(
+            first_detail,
+            detail_summary="원서 접수는 2026-12-11로 변경되었습니다.",
+            detail_fingerprint="detail-v2",
+            key_dates=("2026-12-11",),
+        )
+        revision_changes, _ = store.upsert_source_items(
+            "s",
+            [revised_detail],
+            observed_at="2026-07-29T02:00:00+00:00",
+        )
+
+        assert enrichment_changes == []
+        assert len(revision_changes) == 1
+        assert revision_changes[0]["change_type"] == "updated"
+        assert revision_changes[0]["revision"] == 2
+        assert "detail_text" not in revision_changes[0]
+    finally:
+        store.close()
+
+
 @pytest.mark.parametrize("backend", ["sqlite", "tidb"])
 def test_schema_migration_is_additive_create_only(backend):
     statements = schema_statements(backend)
@@ -242,10 +324,12 @@ def test_systemd_timer_is_daily_bounded_and_not_a_busy_loop():
         ROOT / "deploy" / "systemd" / "masamong-transfer-notice-batch.timer"
     ).read_text(encoding="utf-8")
 
-    assert "OnCalendar=*-*-* 23:35:00 Asia/Seoul" in timer
+    assert "OnCalendar=*-*-* 05:35:00 Asia/Seoul" in timer
     assert "CPUQuota=25%" in service
     assert "MemoryMax=256M" in service
     assert "TimeoutStartSec=960" in service
     assert "--timeout-seconds 900" in service
+    assert "--max-details-per-source 3" in service
+    assert "--min-request-interval-seconds 0.35" in service
     assert "while " not in service
     assert "llm" not in service.casefold()

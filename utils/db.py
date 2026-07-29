@@ -13,6 +13,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 import pytz
 import json
+import re
 import aiosqlite
 
 import config
@@ -42,6 +43,8 @@ _ANALYTICS_METADATA_FIELDS = frozenset(
 )
 _LINKUP_SCHEMA_READY_ATTR = "_masamong_linkup_usage_table_ready"
 _LINKUP_SCHEMA_LOCK_ATTR = "_masamong_linkup_usage_table_lock"
+_API_BUDGET_RESERVATION_LOCK = asyncio.Lock()
+_SAFE_BUDGET_FEATURE_RE = re.compile(r"[^a-z0-9_.:-]+")
 
 
 def _analytics_details_for_storage(details: dict[str, Any]) -> dict[str, Any]:
@@ -173,6 +176,238 @@ async def log_api_call(db: aiosqlite.Connection, api_type: str):
         await db.commit()
     except Exception as e:
         logger.error(f"API 호출 기록 중 DB 오류 ({api_type}): {e}", exc_info=True)
+
+
+def _bounded_budget_feature(value: object) -> str:
+    rendered = str(value or "unspecified").strip().casefold()
+    rendered = _SAFE_BUDGET_FEATURE_RE.sub("_", rendered).strip("_")
+    return (rendered or "unspecified")[:48]
+
+
+async def reserve_llm_api_call(
+    db: aiosqlite.Connection,
+    *,
+    guild_id: int | None,
+    user_id: int | None,
+    feature: str,
+) -> tuple[bool, str | None]:
+    """LLM 호출 1회를 계층형 한도에 원자적으로 예약한다.
+
+    기존 ``api_call_log``를 사용해 새 고카디널리티 테이블/마이그레이션을
+    만들지 않는다. 프로세스 단일 DB 연결을 lock으로 직렬화해 동시 요청이
+    check와 INSERT 사이를 통과하는 TOCTOU를 막고, 한 번의 집계 쿼리와 한 번의
+    multi-row INSERT만 사용해 TiDB RU를 제한한다.
+    """
+    dimensions: list[tuple[str, int, int, str]] = [
+        (
+            "llm:global",
+            int(config.COMETAPI_RPM_LIMIT),
+            int(config.COMETAPI_RPD_LIMIT),
+            "전체",
+        ),
+        (
+            f"llm:feature:{_bounded_budget_feature(feature)}",
+            int(config.LLM_FEATURE_RPM_LIMIT),
+            int(config.LLM_FEATURE_RPD_LIMIT),
+            "기능",
+        ),
+    ]
+    normalized_user_id = int(user_id) if user_id is not None else None
+    normalized_guild_id = int(guild_id) if guild_id else None
+    if normalized_guild_id is not None:
+        dimensions.append(
+            (
+                f"llm:guild:{normalized_guild_id}",
+                int(config.LLM_GUILD_RPM_LIMIT),
+                int(config.LLM_GUILD_RPD_LIMIT),
+                "서버",
+            )
+        )
+    else:
+        dimensions.append(
+            (
+                "llm:dm:global",
+                int(config.LLM_DM_RPM_LIMIT),
+                int(config.LLM_DM_RPD_LIMIT),
+                "DM 전체",
+            )
+        )
+    if normalized_user_id is not None:
+        dimensions.append(
+            (
+                f"llm:user:{normalized_user_id}",
+                int(config.LLM_USER_RPM_LIMIT),
+                int(config.LLM_USER_RPD_LIMIT),
+                "사용자",
+            )
+        )
+        if normalized_guild_id is None:
+            dimensions.append(
+                (
+                    f"llm:dm:user:{normalized_user_id}",
+                    int(config.LLM_DM_USER_RPM_LIMIT),
+                    int(config.LLM_DM_USER_RPD_LIMIT),
+                    "DM 사용자",
+                )
+            )
+
+    keys = [item[0] for item in dimensions]
+    now = datetime.now(timezone.utc)
+    one_minute_ago = (now - timedelta(minutes=1)).isoformat()
+    one_day_ago = (now - timedelta(days=1)).isoformat()
+    placeholders = ",".join("?" for _ in keys)
+    async with _API_BUDGET_RESERVATION_LOCK:
+        try:
+            counts: dict[str, tuple[int, int]] = {}
+            async with db.execute(
+                f"""
+                SELECT api_type,
+                       COUNT(*) AS daily_count,
+                       COALESCE(
+                           SUM(CASE WHEN called_at >= ? THEN 1 ELSE 0 END),
+                           0
+                       ) AS minute_count
+                FROM api_call_log
+                WHERE api_type IN ({placeholders})
+                  AND called_at >= ?
+                GROUP BY api_type
+                """,
+                (one_minute_ago, *keys, one_day_ago),
+            ) as cursor:
+                for row in await cursor.fetchall():
+                    counts[str(row[0])] = (
+                        int(row[2] or 0),
+                        int(row[1] or 0),
+                    )
+            for key, rpm_limit, rpd_limit, label in dimensions:
+                minute_count, daily_count = counts.get(key, (0, 0))
+                if minute_count >= max(1, rpm_limit):
+                    return False, f"{label} 분당 한도"
+                if daily_count >= max(1, rpd_limit):
+                    return False, f"{label} 일일 한도"
+
+            timestamp = now.isoformat()
+            values_sql = ",".join("(?, ?)" for _ in dimensions)
+            params: list[str] = []
+            for key, *_ in dimensions:
+                params.extend([key, timestamp])
+            await db.execute(
+                "INSERT INTO api_call_log (api_type, called_at) VALUES "
+                + values_sql,
+                params,
+            )
+            await db.commit()
+            return True, None
+        except Exception as exc:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            logger.error(
+                "계층형 LLM 사용량 예약 실패: %s",
+                exc,
+                exc_info=True,
+            )
+            return False, "사용량 저장소 오류"
+
+
+async def reserve_web_search_call(
+    db: aiosqlite.Connection,
+    *,
+    guild_id: int | None,
+    user_id: int | None,
+) -> tuple[bool, str | None]:
+    """외부 웹 검색 1회를 전역·서버·사용자 한도에 예약합니다."""
+    dimensions: list[tuple[str, int, int, str]] = [
+        (
+            "web:global",
+            int(config.WEB_SEARCH_GLOBAL_RPM_LIMIT),
+            int(config.WEB_SEARCH_GLOBAL_RPD_LIMIT),
+            "전체 웹 검색",
+        )
+    ]
+    if guild_id:
+        dimensions.append(
+            (
+                f"web:guild:{int(guild_id)}",
+                int(config.WEB_SEARCH_GUILD_RPM_LIMIT),
+                int(config.WEB_SEARCH_GUILD_RPD_LIMIT),
+                "서버 웹 검색",
+            )
+        )
+    else:
+        dimensions.append(
+            (
+                "web:dm:global",
+                int(config.WEB_SEARCH_GUILD_RPM_LIMIT),
+                int(config.WEB_SEARCH_GUILD_RPD_LIMIT),
+                "DM 웹 검색",
+            )
+        )
+    if user_id is not None:
+        dimensions.append(
+            (
+                f"web:user:{int(user_id)}",
+                int(config.WEB_SEARCH_USER_RPM_LIMIT),
+                int(config.WEB_SEARCH_USER_RPD_LIMIT),
+                "사용자 웹 검색",
+            )
+        )
+
+    keys = [item[0] for item in dimensions]
+    now = datetime.now(timezone.utc)
+    one_minute_ago = (now - timedelta(minutes=1)).isoformat()
+    one_day_ago = (now - timedelta(days=1)).isoformat()
+    placeholders = ",".join("?" for _ in keys)
+    async with _API_BUDGET_RESERVATION_LOCK:
+        try:
+            counts: dict[str, tuple[int, int]] = {}
+            async with db.execute(
+                f"""
+                SELECT api_type,
+                       COUNT(*) AS daily_count,
+                       COALESCE(
+                           SUM(CASE WHEN called_at >= ? THEN 1 ELSE 0 END),
+                           0
+                       ) AS minute_count
+                FROM api_call_log
+                WHERE api_type IN ({placeholders})
+                  AND called_at >= ?
+                GROUP BY api_type
+                """,
+                (one_minute_ago, *keys, one_day_ago),
+            ) as cursor:
+                for row in await cursor.fetchall():
+                    counts[str(row[0])] = (
+                        int(row[2] or 0),
+                        int(row[1] or 0),
+                    )
+            for key, rpm_limit, rpd_limit, label in dimensions:
+                minute_count, daily_count = counts.get(key, (0, 0))
+                if minute_count >= rpm_limit:
+                    return False, f"{label} 분당 한도"
+                if daily_count >= rpd_limit:
+                    return False, f"{label} 일일 한도"
+
+            timestamp = now.isoformat()
+            await db.execute(
+                "INSERT INTO api_call_log (api_type, called_at) VALUES "
+                + ",".join("(?, ?)" for _ in dimensions),
+                [
+                    value
+                    for key, *_ in dimensions
+                    for value in (key, timestamp)
+                ],
+            )
+            await db.commit()
+            return True, None
+        except Exception as exc:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            logger.error("웹 검색 사용량 예약 실패: %s", exc, exc_info=True)
+            return False, "사용량 저장소 오류"
 
 
 async def _ensure_linkup_usage_table(db: aiosqlite.Connection):
@@ -535,8 +770,45 @@ async def check_image_global_limit(db: aiosqlite.Connection) -> tuple[bool, int]
         return True, 0  # 오류 시 안전하게 제한
 
 
-async def log_image_generation(db: aiosqlite.Connection, user_id: int) -> bool:
-    """이미지 provider 호출 시도를 유저별·전역으로 예약합니다.
+async def check_image_guild_limit(
+    db: aiosqlite.Connection,
+    guild_id: int | None,
+) -> tuple[bool, int]:
+    """현재 서버의 UTC 일일 이미지 생성 한도를 확인합니다."""
+    if not guild_id:
+        return False, int(getattr(config, "IMAGE_GUILD_DAILY_LIMIT", 30))
+    try:
+        guild_limit = int(getattr(config, "IMAGE_GUILD_DAILY_LIMIT", 30))
+        today_start = datetime.now(timezone.utc).replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        ).isoformat()
+        async with db.execute(
+            "SELECT COUNT(*) FROM api_call_log "
+            "WHERE api_type = ? AND called_at >= ?",
+            (f"image_gen_guild_{int(guild_id)}", today_start),
+        ) as cursor:
+            row = await cursor.fetchone()
+        count = int(row[0] or 0) if row else 0
+        return count >= guild_limit, max(0, guild_limit - count)
+    except Exception as exc:
+        logger.error(
+            "이미지 서버 제한 확인 중 오류 (guild_id=%s): %s",
+            guild_id,
+            exc,
+            exc_info=True,
+        )
+        return True, 0
+
+
+async def log_image_generation(
+    db: aiosqlite.Connection,
+    user_id: int,
+    guild_id: int | None = None,
+) -> bool:
+    """이미지 provider 호출 시도를 유저별·서버별·전역으로 예약합니다.
     
     Args:
         db: 데이터베이스 연결
@@ -555,6 +827,12 @@ async def log_image_generation(db: aiosqlite.Connection, user_id: int) -> bool:
             (f"image_gen_user_{user_id}", now)
         )
         
+        if guild_id:
+            await db.execute(
+                "INSERT INTO api_call_log (api_type, called_at) VALUES (?, ?)",
+                (f"image_gen_guild_{int(guild_id)}", now),
+            )
+
         # 전역 기록
         await db.execute(
             "INSERT INTO api_call_log (api_type, called_at) VALUES (?, ?)",
@@ -562,7 +840,11 @@ async def log_image_generation(db: aiosqlite.Connection, user_id: int) -> bool:
         )
         
         await db.commit()
-        logger.info(f"이미지 생성 시도 예약 완료 (user_id={user_id})")
+        logger.info(
+            "이미지 생성 시도 예약 완료 (user_id=%s, guild_id=%s)",
+            user_id,
+            guild_id,
+        )
         return True
         
     except Exception as e:

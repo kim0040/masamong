@@ -9,6 +9,7 @@ import pytest
 import config
 from cogs.tools_cog import ToolsCog
 from utils import linkup_search
+from utils import db as db_utils
 
 
 class _FakeBot:
@@ -27,6 +28,11 @@ def _linkup_defaults(monkeypatch):
     monkeypatch.setattr(config, "LINKUP_QUALITY_RETRY_ENABLED", False)
     monkeypatch.setattr(config, "WEB_RAG_CACHE_TTL_SECONDS", 0)
     monkeypatch.setattr(linkup_search, "_linkup_budget_lock", asyncio.Lock())
+    monkeypatch.setattr(
+        db_utils,
+        "reserve_web_search_call",
+        AsyncMock(return_value=(True, None)),
+    )
 
 
 @pytest.mark.asyncio

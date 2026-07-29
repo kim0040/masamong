@@ -11,7 +11,7 @@ General을 별도 인스턴스로 준비하는 절차다. 단순 `git pull && py
 - 같은 Discord 토큰의 구·신 프로세스를 겹쳐 실행하지 않는다.
 - 운영 DB 변경은 snapshot·읽기 전용 fingerprint·typed confirmation 뒤에만 한다.
 - Masamo는 항상 `MASAMONG_AUTO_MIGRATE=false`로 기동하고, 현재 학교·편입 공지 schema,
-  전용 writable path와 23:00/23:35 timer를 소유한다.
+  전용 writable path와 05:00/05:35 timer를 소유한다.
 - General은 학교·편입 공지를 기본 비활성화하며 Masamo의 DB·digest·snapshot·timer를
   공유하지 않는다.
 
@@ -473,8 +473,10 @@ MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
 ```
 
 dry-run은 SQLite일 때 `mode=ro`를 쓰고 profile/temp/digest 파일이나 DB update를 만들지
-않는다. 실제 제한된 수동 batch에서는 기본 `--no-llm --low-resource`가 적용된다. LLM 공지
-분석은 운영자가 명시적으로 `--use-llm`을 준 경우에만 켜진다.
+않는다. 등록 직후의 제한된 초기 확인은 빠르고 예측 가능하게
+`--no-llm --low-resource`로 실행한다. 05:00 정기 service는
+`--use-llm --low-resource`를 명시해 공개 공지 상세 본문을 분석하며, 개인 프로필은
+LLM에 보내지 않는다.
 
 검증할 항목:
 
@@ -484,13 +486,13 @@ dry-run은 SQLite일 때 `mode=ro`를 쓰고 profile/temp/digest 파일이나 DB
 - 카탈로그와 core 설정이 공통으로 가진 해당 학교 source만 `--source`로 전달
 - KST 날짜가 core에 명시
 - 사용자·날짜가 일치하는 검증된 digest와 최소 run report만 mode `0600`으로 원자적 공개
-- 관련 공지 0건이면 다음 날 자동 DM 없음
+- 관련 공지 0건이면 해당 전달 시각에 자동 DM 없음
 - 재시작·장애 복구 때 최근 3일 안의 가장 최신 유효 성공·부분 성공 batch만 전달 대상으로
   선택하고, 더 최신 성공 batch가 있으면 오래된 결과로 되돌아가지 않음
 - 한 DM 상한을 넘는 공지는 페이지로 나누고 성공한 revision을 즉시 기록한 뒤, 남은
   페이지를 다음 1분 tick에서 이어 보내며 성공 페이지는 실패 attempt를 소비하지 않음
 - batch 오류, timeout, profile 상한, lock 충돌이 성공처럼 기록되지 않음
-- 23:00 KST timer와 사용자별 기본 09:00/설정 시각 전달
+- 05:00 KST timer와 사용자별 기본 09:00/설정 시각 전달
 
 systemd 템플릿을 실제 경로와 사용자로 수정해 설치한 뒤:
 
@@ -500,7 +502,7 @@ sudo systemctl enable --now masamong-school-notice-batch.timer
 systemctl list-timers masamong-school-notice-batch.timer --all
 ```
 
-timer는 `OnCalendar=*-*-* 23:00:00 Asia/Seoul`, `Persistent=true`다. Masamo timer만
+timer는 `OnCalendar=*-*-* 05:00:00 Asia/Seoul`, `Persistent=true`다. Masamo timer만
 활성화하고 General에는 설치하지 않는다. wrapper는 현재 동의·활성·등록 프로필의 source만
 선택하므로 카탈로그의 모든 학교를 일괄 수집하지 않는다.
 
@@ -532,8 +534,10 @@ MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
   --confirm 'APPLY TRANSFER NOTICE SCHEMA TO profile=masamo backend=tidb database=masamong'
 ```
 
-이 migration은 세 table의 `CREATE TABLE IF NOT EXISTS`만 실행한다. 기존 table/row에
-`ALTER`, `UPDATE`, `DELETE`, backfill 또는 seed를 하지 않는다.
+이 migration은 세 table의 `CREATE TABLE IF NOT EXISTS`와 기존
+`transfer_notice_subscriptions`에 `delivery_time`이 없는 경우의 기본값 `09:00` 열
+추가만 수행한다. 기존 사용자 행은 DB 기본값으로 보존되며 `UPDATE`, `DELETE`, table
+재생성, 별도 backfill query 또는 seed를 실행하지 않는다.
 
 Masamo env에는 다음 경계를 둔다.
 
@@ -545,6 +549,8 @@ TRANSFER_NOTICE_OUTPUT_DIR=/var/lib/masamong/masamo/transfer_notice/out
 TRANSFER_NOTICE_DELIVERY_MAX_ATTEMPTS=3
 TRANSFER_NOTICE_DELIVERY_RETRY_MINUTES=30
 TRANSFER_NOTICE_MAX_ITEMS_PER_DM=10
+TRANSFER_NOTICE_DELIVERY_HOUR=9
+TRANSFER_NOTICE_DELIVERY_MINUTE=0
 ```
 
 운영 경로에 쓰기 전 새 임시 DB로 실제 공식 페이지를 한 번 수집한다. 모든 source의 첫 성공은
@@ -559,9 +565,10 @@ sudo systemctl enable --now masamong-transfer-notice-batch.timer
 systemctl list-timers masamong-transfer-notice-batch.timer --all
 ```
 
-timer는 `OnCalendar=*-*-* 23:35:00 Asia/Seoul`, `Persistent=true`이며 General에는 설치하지
-않는다. 배치는 LLM 없이 순차 실행하고 전체 900초, 재시도 1회, CPU/RSS 상한을 적용한다.
-구독 전달은 활성·현재 동의 사용자만 대상으로 하며 성공 revision은 DB 키로 중복 방지한다.
+timer는 `OnCalendar=*-*-* 05:35:00 Asia/Seoul`, `Persistent=true`이며 General에는 설치하지
+않는다. 배치는 LLM 없이 순차 실행하고 source별 상세 최대 3건, 요청 간격 0.35초,
+전체 900초, 재시도 1회, CPU/RSS 상한을 적용한다. 구독 전달은 사용자별 설정 시각이 된
+활성·현재 동의 사용자만 대상으로 하며 성공 revision은 DB 키로 중복 방지한다.
 
 ## 12. Rollback
 
@@ -609,10 +616,10 @@ privacy table 두 개, school table 다섯 개, 편입 관련 세 table과
 - `channel_summary_state` 추가 뒤 기존 table count가 감소하지 않고 재기동 요약이 이어짐
 - Masamo/General 최고 관리자 env와 등록 관리자 행이 분리되고, 서버 관리자는 자기
   `guild_id`만 변경하며 초대는 최고 관리자에게만 제공됨
-- Masamo 학교 flag/Cog 활성, 23:00 KST timer 하나, 전용 writable path와 다섯 table 확인
+- Masamo 학교 flag/Cog 활성, 05:00 KST timer 하나, 전용 writable path와 다섯 table 확인
 - 등록 프로필 source만 수집하고 관련 공지가 없을 때 무알림, 사용자별 기본 09:00 전달
 - General 학교 flag false이고 Masamo school DB/file/timer 접근 없음
-- Masamo 편입 flag/Cog 활성, 23:35 KST timer 하나, 전용 snapshot/output과 세 table 확인
+- Masamo 편입 flag/Cog 활성, 05:35 KST timer 하나, 전용 snapshot/output과 세 table 확인
 - 편입 첫 기준선 `changes=0`, 선택 대학의 새 revision만 DM, 취소/철회/과거 retry 무발송
 - General 편입 flag false이고 Masamo transfer DB/file/timer 접근 없음
 - 학교·편입은 DM 전용이며 서버 명령·메뉴가 개인 설정·결과를 읽거나 표시하지 않음

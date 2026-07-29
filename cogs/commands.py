@@ -134,7 +134,10 @@ class UserCommands(commands.Cog):
             return
 
         # 제한을 이미 넘은 사용자는 프롬프트 최적화 LLM을 호출하지 않는다.
-        quota = await ai_handler.tools_cog.check_image_quota(ctx.author.id)
+        quota = await ai_handler.tools_cog.check_image_quota(
+            ctx.author.id,
+            ctx.guild.id,
+        )
         if not quota.get("allowed"):
             await ctx.send(f"❌ {quota.get('error') or '이미지 생성 제한에 도달했어요.'}")
             return
@@ -147,7 +150,30 @@ class UserCommands(commands.Cog):
                 
                 # 1. 프롬프트 최적화 (LLM으로 한국어→영문 최적화 프롬프트 생성)
                 log_extra_img = {'guild_id': ctx.guild.id, 'author_id': ctx.author.id}
-                optimized_prompt = await ai_handler._generate_image_prompt(prompt, log_extra_img)
+                rag_context = ""
+                try:
+                    (
+                        rag_context,
+                        _rag_entries,
+                        _rag_score,
+                        _rag_blocks,
+                    ) = await ai_handler._get_rag_context(
+                        ctx.guild.id,
+                        ctx.channel.id,
+                        ctx.author.id,
+                        prompt,
+                    )
+                except Exception:
+                    logger.warning(
+                        "이미지 프롬프트용 관련 기억 검색 실패",
+                        exc_info=True,
+                        extra=log_extra,
+                    )
+                optimized_prompt = await ai_handler._generate_image_prompt(
+                    prompt,
+                    log_extra_img,
+                    rag_context=rag_context,
+                )
                 image_prompt = optimized_prompt or prompt
                 
                 if optimized_prompt and optimized_prompt != prompt:
@@ -156,7 +182,8 @@ class UserCommands(commands.Cog):
                 # 2. 이미지 생성 (tools_cog 직접 호출)
                 result = await ai_handler.tools_cog.generate_image(
                     prompt=image_prompt,
-                    user_id=ctx.author.id
+                    user_id=ctx.author.id,
+                    guild_id=ctx.guild.id,
                 )
                 
                 # 3. 결과 처리
@@ -171,9 +198,14 @@ class UserCommands(commands.Cog):
                     
                     # 이미지 바이너리가 있으면 파일로 직접 업로드 (URL 만료 방지)
                     if result.get('image_data'):
+                        extension = {
+                            "image/png": "png",
+                            "image/webp": "webp",
+                            "image/jpeg": "jpg",
+                        }.get(str(result.get("mime_type") or "").casefold(), "png")
                         image_file = discord.File(
                             io.BytesIO(result['image_data']),
-                            filename="generated_image.jpg"
+                            filename=f"generated_image.{extension}",
                         )
                         await ctx.reply(
                             f"짜잔~ 요청하신 이미지가 완성되었어요! 🎨\n(남은 이미지 생성 횟수: {remaining}장)",

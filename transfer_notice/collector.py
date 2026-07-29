@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from school_notice.http import AsyncFetcher
 
 from .catalog import load_transfer_sources
-from .parsing import parse_transfer_list
+from .parsing import parse_transfer_detail, parse_transfer_list
 from .storage import TransferNoticeStore, utc_now_text
 
 
@@ -29,12 +29,22 @@ class TransferNoticeCollector:
         output_dir: str | Path,
         request_timeout_seconds: float = 20.0,
         max_retries: int = 1,
+        max_details_per_source: int = 3,
+        min_request_interval_seconds: float = 0.35,
     ) -> None:
         self.sources = load_transfer_sources(source_config)
         self.database_path = Path(database_path)
         self.output_dir = Path(output_dir)
         self.request_timeout_seconds = max(5.0, min(60.0, request_timeout_seconds))
         self.max_retries = max(0, min(2, int(max_retries)))
+        self.max_details_per_source = max(
+            1,
+            min(5, int(max_details_per_source)),
+        )
+        self.min_request_interval_seconds = max(
+            0.0,
+            min(5.0, float(min_request_interval_seconds)),
+        )
 
     async def run(self) -> dict:
         started_at = utc_now_text()
@@ -50,9 +60,11 @@ class TransferNoticeCollector:
                 "+official-admissions-notices)"
             ),
             timeout_seconds=self.request_timeout_seconds,
-            max_requests=len(self.sources) * (self.max_retries + 2),
+            max_requests=len(self.sources)
+            * (self.max_details_per_source + self.max_retries + 3),
             max_retries=self.max_retries,
             min_host_interval_seconds=0.25,
+            min_request_interval_seconds=self.min_request_interval_seconds,
             respect_robots=True,
         )
         try:
@@ -80,9 +92,43 @@ class TransferNoticeCollector:
                             source_result["status"] = "degraded"
                         else:
                             observed_at = utc_now_text()
+                            detail_ids = set(
+                                store.detail_targets(
+                                    source.source_id,
+                                    items,
+                                    limit=self.max_details_per_source,
+                                )
+                            )
+                            enriched_items = []
+                            for item in items:
+                                if item.external_id not in detail_ids:
+                                    enriched_items.append(item)
+                                    continue
+                                try:
+                                    detail = await fetcher.fetch_text(
+                                        item.url,
+                                        allowed_hosts=source.allowed_hosts,
+                                    )
+                                    enriched_items.append(
+                                        parse_transfer_detail(detail.text, item)
+                                    )
+                                    source_result.setdefault(
+                                        "detail_succeeded",
+                                        0,
+                                    )
+                                    source_result["detail_succeeded"] += 1
+                                except asyncio.CancelledError:
+                                    raise
+                                except Exception as exc:
+                                    enriched_items.append(item)
+                                    source_result["warnings"].append(
+                                        "detail_fetch_failed:"
+                                        f"{item.external_id}:"
+                                        f"{type(exc).__name__}"
+                                    )
                             source_changes, baseline = store.upsert_source_items(
                                 source.source_id,
-                                items,
+                                enriched_items,
                                 observed_at=observed_at,
                             )
                             changes.extend(source_changes)

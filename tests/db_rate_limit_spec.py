@@ -1,9 +1,11 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import aiosqlite
 import pytest
 import pytest_asyncio
 
+import config
 from utils import db as db_utils
 
 
@@ -151,3 +153,72 @@ async def test_daily_api_counts_reads_multiple_keys_in_one_result(api_log_db):
         "llm_global": 1,
         "missing": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_hierarchical_llm_reservation_records_every_scope_once(
+    api_log_db,
+    monkeypatch,
+):
+    monkeypatch.setattr(config, "COMETAPI_RPM_LIMIT", 50)
+    monkeypatch.setattr(config, "COMETAPI_RPD_LIMIT", 500)
+    monkeypatch.setattr(config, "LLM_FEATURE_RPM_LIMIT", 40)
+    monkeypatch.setattr(config, "LLM_FEATURE_RPD_LIMIT", 400)
+    monkeypatch.setattr(config, "LLM_GUILD_RPM_LIMIT", 30)
+    monkeypatch.setattr(config, "LLM_GUILD_RPD_LIMIT", 300)
+    monkeypatch.setattr(config, "LLM_USER_RPM_LIMIT", 20)
+    monkeypatch.setattr(config, "LLM_USER_RPD_LIMIT", 200)
+
+    allowed, reason = await db_utils.reserve_llm_api_call(
+        api_log_db,
+        guild_id=22,
+        user_id=33,
+        feature="Image Prompt / unsafe punctuation",
+    )
+    async with api_log_db.execute(
+        "SELECT api_type, COUNT(*) FROM api_call_log GROUP BY api_type"
+    ) as cursor:
+        rows = dict(await cursor.fetchall())
+
+    assert allowed is True
+    assert reason is None
+    assert rows == {
+        "llm:global": 1,
+        "llm:feature:image_prompt_unsafe_punctuation": 1,
+        "llm:guild:22": 1,
+        "llm:user:33": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_concurrent_llm_reservations_cannot_cross_user_limit(
+    api_log_db,
+    monkeypatch,
+):
+    monkeypatch.setattr(config, "COMETAPI_RPM_LIMIT", 50)
+    monkeypatch.setattr(config, "COMETAPI_RPD_LIMIT", 500)
+    monkeypatch.setattr(config, "LLM_FEATURE_RPM_LIMIT", 50)
+    monkeypatch.setattr(config, "LLM_FEATURE_RPD_LIMIT", 500)
+    monkeypatch.setattr(config, "LLM_GUILD_RPM_LIMIT", 50)
+    monkeypatch.setattr(config, "LLM_GUILD_RPD_LIMIT", 500)
+    monkeypatch.setattr(config, "LLM_USER_RPM_LIMIT", 1)
+    monkeypatch.setattr(config, "LLM_USER_RPD_LIMIT", 100)
+
+    results = await asyncio.gather(
+        *(
+            db_utils.reserve_llm_api_call(
+                api_log_db,
+                guild_id=22,
+                user_id=33,
+                feature="chat",
+            )
+            for _ in range(2)
+        )
+    )
+
+    assert sorted(allowed for allowed, _reason in results) == [False, True]
+    assert any(reason == "사용자 분당 한도" for _allowed, reason in results)
+    async with api_log_db.execute(
+        "SELECT COUNT(*) FROM api_call_log WHERE api_type = 'llm:user:33'"
+    ) as cursor:
+        assert int((await cursor.fetchone())[0]) == 1

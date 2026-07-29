@@ -304,6 +304,7 @@ CREATE TABLE IF NOT EXISTS transfer_notice_subscriptions (
     user_id INTEGER PRIMARY KEY,
     schools_json TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
+    delivery_time TEXT NOT NULL DEFAULT '09:00',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

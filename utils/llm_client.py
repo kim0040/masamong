@@ -17,9 +17,17 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
-try:
-    import google.generativeai as genai
-except ModuleNotFoundError:
+import config
+
+# legacy direct-Gemini 경로를 운영자가 명시적으로 켠 경우에만 지원 종료된
+# SDK를 지연 import한다. 정상 CometAPI 레인은 아래 신규 google-genai 또는
+# OpenAI 호환 client만 사용한다.
+if config.GEMINI_API_KEY and config.ALLOW_DIRECT_GEMINI_FALLBACK:
+    try:
+        import google.generativeai as genai
+    except ModuleNotFoundError:
+        genai = None
+else:
     genai = None
 
 try:
@@ -33,7 +41,6 @@ except ImportError:
     AsyncOpenAI = None
     APITimeoutError = None
 
-import config
 from logger_config import logger
 from utils import db as db_utils
 
@@ -87,7 +94,6 @@ class LLMClient:
         self._provider_call_semaphore = asyncio.BoundedSemaphore(
             self._max_concurrent_calls
         )
-
         self.gemini_configured = False
         if config.GEMINI_API_KEY and genai:
             try:
@@ -99,6 +105,33 @@ class LLMClient:
         routing_targets = self.get_lane_targets("routing")
         main_targets = self.get_lane_targets("main")
         self.use_cometapi = bool(routing_targets or main_targets)
+
+    async def _reserve_request_budget(
+        self,
+        log_extra: dict | None,
+        *,
+        feature: str,
+    ) -> bool:
+        """논리 LLM 요청 하나를 전역·서버·사용자·기능 한도에 예약합니다."""
+        if self._db is None:
+            return True
+        extra = log_extra or {}
+        allowed, reason = await db_utils.reserve_llm_api_call(
+            self._db,
+            guild_id=extra.get("guild_id"),
+            # 기존 Cog 일부는 같은 Discord 식별자를 author_id로 전달한다.
+            # 두 이름을 여기서 한 번 정규화해 모든 LLM 경로에 사용자 한도를
+            # 빠짐없이 적용한다.
+            user_id=extra.get("user_id", extra.get("author_id")),
+            feature=feature,
+        )
+        if not allowed:
+            logger.warning(
+                "LLM 호출 차단 - %s",
+                reason or "계층형 사용량 한도",
+                extra=extra,
+            )
+        return bool(allowed)
 
     async def _run_bounded_provider_call(
         self,
@@ -551,20 +584,25 @@ class LLMClient:
     ) -> genai.types.GenerateContentResponse | None:
         """Gemini generate_content_async 호출을 Rate Limit + 디버그와 함께 감쌉니다."""
         if generation_config is None:
-            generation_config = genai.types.GenerationConfig(temperature=0.0)
+            generation_config = (
+                genai.types.GenerationConfig(temperature=0.0)
+                if genai is not None
+                else {"temperature": 0.0}
+            )
 
         try:
             limit_key = 'gemini_intent' if config.AI_INTENT_MODEL_NAME in model.model_name else 'gemini_response'
-            rpm = config.RPM_LIMIT_INTENT if limit_key == 'gemini_intent' else config.RPM_LIMIT_RESPONSE
-            rpd = config.RPD_LIMIT_INTENT if limit_key == 'gemini_intent' else config.RPD_LIMIT_RESPONSE
 
             if self.debug_enabled:
                 preview = self.format_prompt_debug(prompt)
                 self.debug(f"[Gemini:{model.model_name}] 호출 프롬프트: {preview}", log_extra)
 
-            if self._db and await db_utils.check_api_rate_limit(self._db, limit_key, rpm, rpd):
-                self.debug(f"[Gemini:{model.model_name}] 호출 차단 - rate limit 도달 ({limit_key})", log_extra)
-                logger.warning(f"Gemini API 호출 제한({limit_key})에 도달했습니다.", extra=log_extra)
+            feature = str((log_extra or {}).get("mode") or limit_key)
+            if not await self._reserve_request_budget(log_extra, feature=feature):
+                self.debug(
+                    f"[Gemini:{model.model_name}] 호출 차단 - 계층형 한도 ({feature})",
+                    log_extra,
+                )
                 return None
 
             async def _request_direct_gemini():
@@ -585,8 +623,6 @@ class LLMClient:
                 lane_name=limit_key,
                 log_extra=log_extra,
             )
-            if self._db:
-                await db_utils.log_api_call(self._db, limit_key)
             if self.debug_enabled and response is not None:
                 text = getattr(response, "text", None)
                 self.debug(
@@ -629,13 +665,8 @@ class LLMClient:
             return None
 
         try:
-            if self._db and await db_utils.check_api_rate_limit(
-                self._db,
-                "cometapi",
-                config.COMETAPI_RPM_LIMIT,
-                config.COMETAPI_RPD_LIMIT,
-            ):
-                logger.warning("[CometAPI] 호출 차단 - rate limit 도달", extra=log_extra)
+            feature = str((log_extra or {}).get("mode") or "main_response")
+            if not await self._reserve_request_budget(log_extra, feature=feature):
                 return None
 
             system_prompt = self._truncate_prompt_preserving_ends(
@@ -682,8 +713,6 @@ class LLMClient:
                     logger.warning("[MainLLM:%s] 호출 실패: %s", target.get("name"), lane_exc, extra=log_extra)
                     final_response = None
                 if final_response:
-                    if self._db:
-                        await db_utils.log_api_call(self._db, "cometapi")
                     break
 
             if final_response and self.looks_like_prompt_leakage(final_response):
@@ -737,10 +766,8 @@ class LLMClient:
             return None
 
         try:
-            if self._db and await db_utils.check_api_rate_limit(
-                self._db, "cometapi", config.COMETAPI_RPM_LIMIT, config.COMETAPI_RPD_LIMIT,
-            ):
-                logger.warning("[CometAPI-Fast] 호출 차단 - rate limit 도달", extra=log_extra)
+            feature = str((log_extra or {}).get("mode") or trace_key)
+            if not await self._reserve_request_budget(log_extra, feature=feature):
                 return None
 
             response_text = None
@@ -766,10 +793,6 @@ class LLMClient:
                     response_text = None
                 if response_text:
                     break
-
-            if self._db:
-                await db_utils.log_api_call(self._db, "cometapi")
-                await db_utils.log_api_call(self._db, trace_key)
 
             return response_text.strip() if response_text else None
         except Exception as e:

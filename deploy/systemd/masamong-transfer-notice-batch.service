@@ -15,7 +15,7 @@ Environment=MKL_NUM_THREADS=1
 Environment=NUMEXPR_NUM_THREADS=1
 Environment=TOKENIZERS_PARALLELISM=false
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/srv/masamong/venv/bin/python /srv/masamong/current/scripts/run_transfer_notice_batch.py --source-config /srv/masamong/current/transfer_notice/sources.json --database /var/lib/masamong/masamo/transfer_notice/core.db --output-dir /var/lib/masamong/masamo/transfer_notice/out --lock-file /var/lib/masamong/masamo/transfer_notice/batch.lock --timeout-seconds 900 --request-timeout-seconds 20 --max-retries 1
+ExecStart=/srv/masamong/venv/bin/python /srv/masamong/current/scripts/run_transfer_notice_batch.py --source-config /srv/masamong/current/transfer_notice/sources.json --database /var/lib/masamong/masamo/transfer_notice/core.db --output-dir /var/lib/masamong/masamo/transfer_notice/out --lock-file /var/lib/masamong/masamo/transfer_notice/batch.lock --timeout-seconds 900 --request-timeout-seconds 20 --max-retries 1 --max-details-per-source 3 --min-request-interval-seconds 0.35
 TimeoutStartSec=960
 TimeoutStopSec=30
 Nice=10

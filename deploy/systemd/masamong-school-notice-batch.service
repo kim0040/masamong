@@ -16,7 +16,7 @@ Environment=MKL_NUM_THREADS=1
 Environment=NUMEXPR_NUM_THREADS=1
 Environment=TOKENIZERS_PARALLELISM=false
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/srv/masamong/venv/bin/python /srv/masamong/current/scripts/run_school_notice_batch.py --core-python /srv/masamong/venv/bin/python --core-cwd /srv/masamong/current --no-llm --low-resource
+ExecStart=/srv/masamong/venv/bin/python /srv/masamong/current/scripts/run_school_notice_batch.py --core-python /srv/masamong/venv/bin/python --core-cwd /srv/masamong/current --use-llm --low-resource
 TimeoutStartSec=7800
 TimeoutStopSec=30
 Nice=10

@@ -247,6 +247,8 @@ def build_structured_memory_units(
     max_summary_chars: int = 320,
     max_context_chars: int = 1200,
     user_turn_min_chars: int = 12,
+    shared_scope: str = "channel",
+    user_scope: str = "user",
 ) -> list[StructuredMemoryUnit]:
     """대화 페이로드를 채널 공유 메모리와 사용자별 메모리 유닛으로 변환합니다."""
     turns = merge_payload_to_turns(payload)
@@ -289,7 +291,7 @@ def build_structured_memory_units(
             anchor_message_id=anchor_message_id,
             owner_user_id=None,
             owner_user_name="Shared Memory",
-            memory_scope="channel",
+            memory_scope=shared_scope,
             memory_type=shared_memory_type,
             summary_text=truncate_text(shared_summary, max_summary_chars),
             memory_text=shared_memory_text,
@@ -346,7 +348,7 @@ def build_structured_memory_units(
                 anchor_message_id=grouped["message_ids"][-1],
                 owner_user_id=grouped["user_id"],
                 owner_user_name=grouped["user_name"],
-                memory_scope="user",
+                memory_scope=user_scope,
                 memory_type=owner_memory_type,
                 summary_text=truncate_text(owner_summary, max_summary_chars),
                 memory_text=compose_memory_text(

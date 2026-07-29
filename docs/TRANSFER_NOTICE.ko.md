@@ -11,8 +11,10 @@
 2. 현재 정책 동의가 없으면 수집 항목과 목적을 보여주는 동의 버튼이 먼저 열린다.
 3. 동의한 사용자만 20개 대학 중 1~20곳을 선택할 수 있다.
 4. 선택을 저장하면 구독이 활성화된다.
-5. 매일 23:35(한국 시간) 공개 입학처 목록을 한 번 확인한다.
-6. 선택한 대학에 새 글이나 제목 수정이 있을 때만 DM한다.
+5. 매일 05:35(한국 시간)부터 공개 입학처 목록을 순차 확인하고, 필요한 상세
+   페이지 후보만 source별 최대 3건 읽는다.
+6. 선택한 대학에 새 글이나 유의미한 목록·상세 수정이 있을 때 설정 시각
+   (기본 09:00)에 요약과 공식 링크를 DM한다.
 7. 관련 변화가 없으면 아무 메시지도 보내지 않는다.
 
 서버 채널에서 명령·메뉴 버튼을 사용하면 DM으로 이동하는 방법만 안내한다. 서버에서는
@@ -25,6 +27,7 @@ DM에서만 동작한다.
 !편입
 !편입 최근
 !편입 상태
+!편입 시간 HH:MM
 !편입 구독취소
 !편입 재개
 !편입 삭제
@@ -83,6 +86,7 @@ DM에서만 동작한다.
 - Discord 사용자 ID
 - 사용자가 선택한 대학 ID 목록
 - 구독 활성 상태와 생성·수정 시각
+- 알림 시각(기본 09:00 KST)
 - 공지별 전달 상태, 유한 재시도 횟수와 성공 시각
 
 수집하지 않는 항목:
@@ -91,9 +95,9 @@ DM에서만 동작한다.
 - 학력, 전적대학, 지원 학과
 - 생년월일, 실명, 전화번호, 이메일
 
-학교 사이트에는 공개 목록 URL만 요청한다. Discord 사용자 ID, 대학 선택, 구독 여부나
-다른 개인 프로필을 전송하지 않는다. 쿠키와 프록시 상속을 사용하지 않으며, 허용 호스트,
-리다이렉트, DNS, 응답 크기와 요청 수를 제한한다.
+학교 사이트에는 공개 목록 URL과 목록에서 확인한 bounded 상세 URL만 요청한다. Discord
+사용자 ID, 대학 선택, 구독 여부나 다른 개인 프로필을 전송하지 않는다. 쿠키와 프록시
+상속을 사용하지 않으며, 허용 호스트, 리다이렉트, DNS, 응답 크기와 요청 수를 제한한다.
 
 수집 snapshot SQLite에는 Discord 사용자 데이터가 전혀 없다. 메인 DB의 구독 정보와
 공개 snapshot은 인스턴스별 경로로 분리한다.
@@ -101,19 +105,21 @@ DM에서만 동작한다.
 ## 수집과 전달 구조
 
 ```text
-23:35 systemd one-shot
+05:35 systemd one-shot
   -> 공식 목록 최대 20개를 순차 확인
   -> source별 parser와 허용 호스트 검사
+  -> 기준선 이후 신규·변경·최신 후보의 상세 본문과 핵심 날짜 발췌
   -> 공개 snapshot SQLite에 upsert
   -> 원자적으로 latest.json 교체
-  -> 봇의 1분 전달 tick이 활성·동의 구독자 한 명씩 처리
+  -> 봇의 1분 전달 tick이 설정 시각이 된 활성·동의 구독자 한 명씩 처리
   -> 성공 또는 유한 retry 상태 기록
 ```
 
 배치는 상주 루프가 아니다. systemd timer가 하루 한 번 실행하는 one-shot이며:
 
 - 전체 제한 시간 900초
-- 목록 URL은 source당 한 개
+- 목록 URL은 source당 한 개, 상세 후보는 기본 최대 3개
+- 서로 다른 host를 포함해 물리 요청 사이 기본 0.35초 간격
 - 기본 재시도 최대 1회
 - `CPUQuota=25%`, `MemoryMax=256M`, `Nice=10`
 - LLM 호출 0회
@@ -125,7 +131,8 @@ DM에서만 동작한다.
 
 - source의 첫 성공 수집은 기준선으로만 저장하고 알림하지 않는다.
 - `(user_id, source_id, external_id, revision)`이 전달 중복 키다.
-- 제목이 바뀌면 revision이 증가하므로 수정 알림은 한 번만 가능하다.
+- 제목 또는 사용자에게 표시할 상세 요약·핵심 날짜가 바뀌면 revision이 증가하므로
+  수정 알림은 한 번만 가능하다. 상세 본문을 처음 보강한 과거 행은 재알림하지 않는다.
 - 봇 재시작이나 `latest.json` 교체 뒤에도 메인 DB 전달 기록을 사용한다.
 - 실패 DM의 payload를 DB에 저장하므로 다음 배치 파일에 덮여도 같은 내용을 유한 재시도한다.
 - 실패 뒤 구독 취소·재개, 학교 선택 변경, 동의 철회·재동의가 있었다면 이전 retry를
@@ -156,6 +163,8 @@ TRANSFER_NOTICE_OUTPUT_DIR=/var/lib/masamong/masamo/transfer_notice/out
 TRANSFER_NOTICE_DELIVERY_MAX_ATTEMPTS=3
 TRANSFER_NOTICE_DELIVERY_RETRY_MINUTES=30
 TRANSFER_NOTICE_MAX_ITEMS_PER_DM=10
+TRANSFER_NOTICE_DELIVERY_HOUR=9
+TRANSFER_NOTICE_DELIVERY_MINUTE=0
 ```
 
 General은 기본 `TRANSFER_NOTICE_ENABLED=false`이며 Masamo의 DB, snapshot, output, timer를
@@ -180,7 +189,9 @@ venv/bin/python scripts/run_transfer_notice_batch.py \
   --output-dir /tmp/transfer-notice/out \
   --lock-file /tmp/transfer-notice/batch.lock \
   --timeout-seconds 600 \
-  --max-retries 0
+  --max-retries 0 \
+  --max-details-per-source 3 \
+  --min-request-interval-seconds 0.35
 ```
 
 새 DB로 실행한 `changes`는 반드시 0이어야 한다. 학교별 상태와 게시물 수를 검토한 뒤에만

@@ -503,7 +503,7 @@ def test_batch_limits_are_bounded(monkeypatch):
     assert limits.profile_timeout_seconds == 1
 
 
-def test_systemd_timer_and_service_keep_23_kst_low_resource_contract():
+def test_systemd_timer_and_service_keep_05_kst_low_resource_contract():
     timer = (
         ROOT / "deploy" / "systemd" / "masamong-school-notice-batch.timer"
     ).read_text(encoding="utf-8")
@@ -511,12 +511,14 @@ def test_systemd_timer_and_service_keep_23_kst_low_resource_contract():
         ROOT / "deploy" / "systemd" / "masamong-school-notice-batch.service"
     ).read_text(encoding="utf-8")
 
-    assert "OnCalendar=*-*-* 23:00:00 Asia/Seoul" in timer
+    assert "OnCalendar=*-*-* 05:00:00 Asia/Seoul" in timer
     assert "Persistent=true" in timer
     assert "RandomizedDelaySec=0" in timer
     assert "TimeoutStartSec=7800" in service
     assert "OMP_NUM_THREADS=1" in service
-    assert "--no-llm --low-resource" in service
+    assert "--low-resource" in service
+    assert "--no-llm" not in service
+    assert "--use-llm" in service
     # 날짜는 wrapper가 실행 시점의 KST 날짜로 고정해 코어 --date에 전달한다.
     assert " --date " not in service
     assert "TOKEN=" not in service

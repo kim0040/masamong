@@ -24,7 +24,8 @@ TABLE_COLUMNS = {
         "attempt_count", "next_attempt_at", "sent_at", "last_error", "updated_at",
     },
     "transfer_notice_subscriptions": {
-        "user_id", "schools_json", "enabled", "created_at", "updated_at",
+        "user_id", "schools_json", "enabled", "delivery_time", "created_at",
+        "updated_at",
     },
     "transfer_notice_deliveries": {
         "user_id", "run_id", "source_id", "external_id", "revision",
@@ -47,6 +48,7 @@ SQLITE_STATEMENTS = (
     CREATE TABLE IF NOT EXISTS transfer_notice_subscriptions (
         user_id INTEGER PRIMARY KEY, schools_json TEXT NOT NULL,
         enabled INTEGER NOT NULL DEFAULT 1,
+        delivery_time TEXT NOT NULL DEFAULT '09:00',
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     )
     """,
@@ -79,6 +81,7 @@ TIDB_STATEMENTS = (
     CREATE TABLE IF NOT EXISTS transfer_notice_subscriptions (
         user_id BIGINT PRIMARY KEY, schools_json TEXT NOT NULL,
         enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        delivery_time VARCHAR(5) NOT NULL DEFAULT '09:00',
         created_at VARCHAR(64) NOT NULL, updated_at VARCHAR(64) NOT NULL
     )
     """,
@@ -215,6 +218,23 @@ async def apply_schema() -> None:
         for statement in schema_statements(config.DB_BACKEND):
             await db.execute(statement)
         await db.commit()
+        subscription_columns = set(
+            await get_table_columns(db, "transfer_notice_subscriptions")
+        )
+        if "delivery_time" not in subscription_columns:
+            # 기존 구독 행은 그대로 두고 새 기본 알림 시각 열만 추가한다.
+            # 이 스크립트의 명시적 profile/database/confirm 방어를 통과한
+            # 운영자만 실행할 수 있다.
+            definition = (
+                "VARCHAR(5) NOT NULL DEFAULT '09:00'"
+                if config.DB_BACKEND == "tidb"
+                else "TEXT NOT NULL DEFAULT '09:00'"
+            )
+            await db.execute(
+                "ALTER TABLE transfer_notice_subscriptions "
+                f"ADD COLUMN delivery_time {definition}"
+            )
+            await db.commit()
         for table, required in TABLE_COLUMNS.items():
             actual = set(await get_table_columns(db, table))
             missing = sorted(required - actual)
@@ -232,7 +252,10 @@ def main() -> int:
     phrase = validate(args)
     schema_statements(config.DB_BACKEND)
     if not args.apply:
-        print("DRY-RUN: 기존 행을 읽거나 수정하지 않고 CREATE TABLE 3개만 준비합니다.")
+        print(
+            "DRY-RUN: CREATE TABLE 3개와 기존 구독표의 delivery_time "
+            "additive 열 보강만 준비합니다."
+        )
         print(phrase)
         return 0
     asyncio.run(apply_schema())

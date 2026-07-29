@@ -77,8 +77,8 @@ async def run_deepseek_check(
     settings = DeepSeekSettings.from_environment()
     if not settings.api_key:
         raise RuntimeError(
-            "DEEPSEEK_API_KEY가 환경변수에 없습니다. "
-            "새 키를 환경변수로 주입한 뒤 다시 실행하세요."
+            "SCHOOL_NOTICE_LLM_API_KEY, COMETAPI_KEY 또는 DEEPSEEK_API_KEY가 "
+            "환경변수에 없습니다. 새 키를 환경변수로 주입한 뒤 다시 실행하세요."
         )
     settings = replace(
         settings,

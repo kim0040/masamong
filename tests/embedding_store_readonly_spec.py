@@ -117,6 +117,89 @@ async def test_auto_migrate_false_allows_writes_without_becoming_read_only(
 
 
 @pytest.mark.asyncio
+async def test_memory_lookup_isolates_servers_and_prioritizes_current_user(
+    tmp_path,
+    monkeypatch,
+):
+    _use_sqlite(monkeypatch, auto_migrate=True)
+    store = DiscordEmbeddingStore(str(tmp_path / "scoped-memory.db"))
+    vector = np.zeros(4, dtype=np.float32)
+
+    async def add(
+        memory_id,
+        *,
+        server_id,
+        channel_id,
+        owner_user_id,
+        memory_scope,
+        text,
+    ):
+        await store.upsert_memory_entry(
+            memory_id=memory_id,
+            anchor_message_id=int(memory_id.rsplit("-", 1)[-1]),
+            server_id=server_id,
+            channel_id=channel_id,
+            owner_user_id=owner_user_id,
+            owner_user_name="tester",
+            memory_scope=memory_scope,
+            memory_type="conversation",
+            summary_text=text,
+            memory_text=text,
+            raw_context="",
+            source_message_ids=[],
+            speaker_names=["tester"],
+            keywords=[],
+            timestamp_iso="2026-07-28T00:00:00+00:00",
+            embedding=vector,
+        )
+
+    await add(
+        "guild-1",
+        server_id=10,
+        channel_id=100,
+        owner_user_id=None,
+        memory_scope="guild",
+        text="이 서버의 공용 여행 이야기",
+    )
+    await add(
+        "guild-user-2",
+        server_id=10,
+        channel_id=999,
+        owner_user_id=7,
+        memory_scope="guild_user",
+        text="현재 사용자는 파전을 좋아함",
+    )
+    await add(
+        "other-user-3",
+        server_id=10,
+        channel_id=100,
+        owner_user_id=8,
+        memory_scope="guild_user",
+        text="다른 사용자의 비공개 선호",
+    )
+    await add(
+        "other-server-4",
+        server_id=11,
+        channel_id=100,
+        owner_user_id=7,
+        memory_scope="guild_user",
+        text="다른 서버 기억",
+    )
+
+    rows = await store.fetch_recent_memory_entries(
+        server_id=10,
+        channel_id=100,
+        user_id=7,
+    )
+    messages = [row["message"] for row in rows]
+
+    assert messages == [
+        "현재 사용자는 파전을 좋아함",
+        "이 서버의 공용 여행 이야기",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_read_only_store_blocks_all_public_mutations(
     tmp_path,
     monkeypatch,

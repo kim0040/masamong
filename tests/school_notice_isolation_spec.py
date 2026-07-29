@@ -132,7 +132,7 @@ def _boot(tmp_path: Path, extra_lines: list[str]):
         "SCHOOL_NOTICE_ENABLED=false",
         "TRANSFER_NOTICE_ENABLED=false",
         "DISCORD_BOT_TOKEN=general-token",
-        "MASAMONG_EXPECTED_DISCORD_BOT_USER_ID=replace-with-current-masamo-bot-user-id",
+        "MASAMONG_EXPECTED_DISCORD_BOT_USER_ID=123456789012345678",
         "COMETAPI_KEY=test-cometapi-key",
         "KMA_API_KEY=test-kma-key",
     ]

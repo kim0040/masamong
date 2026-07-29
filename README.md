@@ -32,8 +32,8 @@ The two production editions are not forks:
 | Configuration | Dedicated env/config/prompt/embedding files | Separate dedicated files |
 | Administration | Masamo-only superadmin env and Masamo DB registrations | Separate General superadmin env and General DB registrations |
 | Logs/service | Dedicated paths and service | Separate paths and service |
-| School notices | Owns the existing rollout, schema, state, and 23:00 timer | Disabled by default; may later use only General-owned paths and state |
-| Transfer notices | Owns its subscription tables, public snapshot, and 23:35 timer | Disabled by default; never shares Masamo state |
+| School notices | Owns the existing rollout, schema, state, and 05:00 timer | Disabled by default; may later use only General-owned paths and state |
+| Transfer notices | Owns its subscription tables, public snapshot, and 05:35 timer | Disabled by default; never shares Masamo state |
 
 Never point both profiles at the same token, database, DB account, writable path,
 prompt file, embedding store, administrator list, log, or service. The existing
@@ -58,7 +58,8 @@ General, or rebuilt.
 - Optional school-notice personalization for registered users and supported
   schools
 - Optional DM-only subscription to 20 official transfer-admissions notice
-  sources, with TOEIC/public-English caveats and no LLM use
+  sources, with bounded list/detail-page extraction and TOEIC/public-English
+  caveats
 - Three-level administration: Discord server managers are limited to their own
   guild settings, registered instance admins can inspect only their profile
   runtime, and env-pinned superadmins alone can register admins or create invite
@@ -77,6 +78,14 @@ per-call timeout, provider rate limits, prompt/output caps, and finite
 primary/fallback attempts. A single AI turn can plan at most three tool calls.
 Fortune generation and school collection also use explicit finite attempt and
 runtime limits; neither scheduler retries indefinitely.
+
+Each logical LLM request is reserved before provider access against global,
+feature, guild-or-DM, user, and DM-user minute/day budgets. Web searches use
+separate global, guild/DM, and user budgets in addition to Linkup's persisted
+monthly EUR ceiling. Image attempts are reserved before the provider against
+rolling user, daily guild, and daily global limits. These checks fail closed
+when the usage store is unavailable, preventing an error loop from becoming an
+unbounded provider loop.
 
 Rate-limit checks query only their indexed one-minute/day windows and do not
 prune historical `api_call_log` rows. Operational history therefore remains
@@ -153,15 +162,20 @@ personalization state and withdraw consent. They do not delete ordinary Discord
 conversation or server records. Consent/audit events remain as the processing
 history.
 
-## Discord menu and summary state
+## Discord menu, context, and memory
 
 In a guild, the prefix command itself posts a small launcher because Discord
 prefix messages cannot be ephemeral. Pressing **Open my menu** returns the full
-dashboard only to the caller. School notices, transfer subscriptions, and
-privacy/profile management are visibly disabled there and point to DM; no
-personal setting or result is read for the public launcher. Each member must run
-their own `!메뉴`, and another member cannot use its button. In DM, the full
-personal dashboard remains available.
+dashboard only to the caller. The dashboard does not flatten every command into
+one screen: it first shows **School/Transfer, AI/Search, Weather/Disaster,
+Fortune, Community, Personal settings, Server administration, and Help**. A
+selection replaces the view with only that category's actions. School and
+transfer dashboards and personal settings are visibly disabled in a guild and
+point to DM; no personal setting or result is read for the public launcher.
+Weather, image, poll, ranking, summary, fortune, and notification-time actions
+can be run from their category, including modal input where arguments are
+required. Each member must run their own `!메뉴`, and another member cannot use
+its button.
 
 `!요약` persists only its per-guild/per-channel anchor and bounded summary in
 `channel_summary_state`. This lets the next summary continue after a restart
@@ -180,6 +194,16 @@ Structured-memory embeddings use a lean `independent summary + speaker-labelled
 evidence` passage. Memory type, speakers, date, and keywords remain separate
 metadata instead of being repeated into the E5 vector text. The reproducible
 synthetic retrieval check is:
+
+New structured units use explicit `guild`, `guild_user`, `dm`, and `dm_user`
+scopes. Guild-wide facts can be recalled across channels only inside the same
+guild, while a current member's facts are additionally retrieved from that
+guild's user scope. DM units remain tied to that user's DM channel. Legacy
+channel/user units stay readable without being rewritten. The response prompt
+forbids mentioning retrieved preferences or events unless they materially help
+the current request. Image prompts use the same relevant-only rule and never
+infer sensitive traits or a person's appearance when the conversation did not
+provide them.
 
 ```bash
 <venv>/bin/python scripts/evaluate_memory_retrieval_offline.py
@@ -205,7 +229,7 @@ superadmin-only and deliver the OAuth link privately.
 The always-on Discord process never imports and runs the crawler in its event
 loop. The vendored `school_notice` package runs in a separate bounded process:
 once for the registering user immediately after first confirmation, and later
-from the `23:00` systemd one-shot. Both paths publish validated JSON digests; the
+from the `05:00` systemd one-shot. Both paths publish validated JSON digests; the
 bot handles onboarding, status, delivery, and feedback.
 
 This is public-HTML crawling, not a university API integration. The fetcher reads
@@ -229,9 +253,9 @@ The user flow is:
 5. On a genuinely new profile, a one-user, one-thread, no-LLM process immediately
    checks only that school's sources. It has a finite timeout and at most one
    retry for a batch-lock collision.
-6. The `23:00` KST batch later selects sources only for consented, enabled,
+6. The `05:00` KST batch later selects sources only for consented, enabled,
    registered profiles. It does not crawl every school.
-7. Normally the nightly digest is delivered the following day at that user's
+7. Normally the 05:00 digest is delivered later that day at the user's selected
    time. After an outage, delivery considers only the newest valid result from the
    previous three days and never falls back behind a newer successful batch. If no
    relevant notice exists, no automatic DM is sent.
@@ -257,10 +281,13 @@ schools.
 
 Transfer notices are a separate DM-only subscription service. A user opens
 `!편입`, explicitly consents, and selects one to twenty universities. The public
-collector checks one official list page per source at `23:35` KST. It never
-receives a Discord ID or subscriber profile and never calls an LLM. The bot reads
-the bounded JSON result and DMs only active subscribers whose selected source has
-a genuinely new or title-revised item.
+collector checks official list pages sequentially from `05:35` KST. After the
+first non-delivery baseline it fetches only bounded new, changed, and latest
+detail-page candidates per source. It extracts a short evidence-based summary
+and key dates without receiving a Discord ID or subscriber profile. The bot
+reads the bounded JSON result and DMs only active subscribers whose selected
+source has a genuine new/list/detail revision, at that subscriber's selected
+time (default `09:00` KST).
 
 The first successful collection for every source is a non-delivery baseline.
 Per-user `(source, external ID, revision)` delivery records prevent replay after a
@@ -317,9 +344,9 @@ do not match.
 |---|---|
 | `@Masamong <message>` | AI conversation in an allowed guild channel |
 | DM message | Private AI conversation, subject to DM and LLM limits |
-| `!메뉴`, `!도움` | Unified help; a guild menu opens its details privately to the caller and disables DM-only actions |
+| `!메뉴`, `!도움` | Hierarchical category menu and complete text help; guild details are caller-only and DM-only actions are disabled |
 | `!날씨 [지역] [날짜]` | KMA observation, six-hour outlook, forecast, and active warnings |
-| `!이미지 <prompt>` | Image generation with user/global quota guards |
+| `!이미지 <prompt>` | `gemini-3.1-flash-lite-image` generation with relevant memory and user/guild/global quota guards |
 | `!운세`, `!운세 상세` | Daily summary or detailed fortune |
 | `!운세 등록` | Consent-gated DM registration |
 | `!운세 구독 HH:MM` | Persistent morning briefing |
@@ -404,7 +431,9 @@ MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
   --database /tmp/masamong-transfer/core.db \
   --output-dir /tmp/masamong-transfer/out \
   --lock-file /tmp/masamong-transfer/batch.lock \
-  --max-retries 0
+  --max-retries 0 \
+  --max-details-per-source 3 \
+  --min-request-interval-seconds 0.35
 ```
 
 The two API smoke scripts are deliberately excluded from the offline suite.
@@ -428,7 +457,7 @@ started:
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for read-only production fingerprints,
 additive privacy/school/transfer/summary-state schema migrations, immutable
-release metadata, controlled restart, 23:00/23:35 timers, verification,
+release metadata, controlled restart, 05:00/05:35 timers, verification,
 post-deploy observation, and rollback. Memory provenance/vector
 changes follow the non-destructive shadow strategy in
 [docs/MEMORY_INDEX_MIGRATION.ko.md](docs/MEMORY_INDEX_MIGRATION.ko.md).
@@ -443,7 +472,7 @@ utils/                          LLM, RAG, privacy, weather, school contracts
 database/                       SQLite and TiDB schemas/adapters
 profiles/                       isolated profile examples and school catalog
 school_notice/                  vendored bounded collection/analysis core
-transfer_notice/                bounded 20-source public list collector
+transfer_notice/                bounded 20-source public list/detail collector
 scripts/                        read-only audits, additive migrations, one-shot jobs
 deploy/systemd/                 school/transfer batch service and timer templates
 tests/                          functional, contract, safety, and resource tests

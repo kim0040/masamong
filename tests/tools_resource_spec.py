@@ -1,6 +1,7 @@
 """ToolsCog의 무거운 import 및 이미지 동시성 회귀 테스트."""
 
 import asyncio
+import base64
 import os
 from pathlib import Path
 import subprocess
@@ -97,7 +98,14 @@ async def test_image_generation_wrapper_is_process_serialized(monkeypatch):
     active = 0
     max_active = 0
 
-    async def fake_exclusive(*, prompt, user_id, aspect_ratio=None):
+    async def fake_exclusive(
+        *,
+        prompt,
+        user_id,
+        aspect_ratio=None,
+        guild_id=None,
+    ):
+        _ = guild_id
         nonlocal active, max_active
         active += 1
         max_active = max(max_active, active)
@@ -160,7 +168,7 @@ async def test_failed_provider_attempt_still_consumes_reserved_quota(monkeypatch
     result = await cog._generate_image_exclusive("safe prompt", 42)
 
     assert "error" in result
-    reservation.assert_awaited_once_with(cog.bot.db, 42)
+    reservation.assert_awaited_once_with(cog.bot.db, 42, None)
 
 
 @pytest.mark.asyncio
@@ -193,3 +201,102 @@ async def test_image_provider_is_not_called_when_quota_reservation_fails(monkeyp
     result = await cog._generate_image_exclusive("safe prompt", 42)
 
     assert "사용량" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_image_generation_uses_exact_gemini_native_contract(monkeypatch):
+    cog = ToolsCog(_FakeBot())
+    monkeypatch.setattr(config, "COMETAPI_IMAGE_ENABLED", True)
+    monkeypatch.setattr(config, "COMETAPI_IMAGE_API_KEY", "test-key")
+    monkeypatch.setattr(config, "COMETAPI_IMAGE_BASE_URL", "https://api.example")
+    monkeypatch.setattr(config, "IMAGE_MODEL", "gemini-3.1-flash-lite-image")
+    monkeypatch.setattr(
+        cog,
+        "check_image_quota",
+        AsyncMock(
+            return_value={
+                "allowed": True,
+                "remaining": 3,
+                "global_remaining": 10,
+                "guild_remaining": 5,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        tools_module.db_utils,
+        "log_image_generation",
+        AsyncMock(return_value=True),
+    )
+    recorded = {}
+    png = b"\x89PNG\r\n\x1a\n" + b"test-image"
+
+    class _Response:
+        status = 200
+
+        async def read(self):
+            return __import__("json").dumps(
+                {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"text": "generated"},
+                                {
+                                    "inlineData": {
+                                        "mimeType": "image/png",
+                                        "data": base64.b64encode(png).decode(),
+                                    }
+                                },
+                            ]
+                        }
+                    }
+                ]
+                }
+            ).encode()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class _Session:
+        def __init__(self, *, timeout):
+            recorded["timeout"] = timeout
+
+        def post(self, endpoint, *, json, headers):
+            recorded.update(
+                endpoint=endpoint,
+                payload=json,
+                headers=headers,
+            )
+            return _Response()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(tools_module.aiohttp, "ClientSession", _Session)
+
+    result = await cog._generate_image_exclusive(
+        "a safe watercolor landscape",
+        42,
+        guild_id=99,
+    )
+
+    assert recorded["endpoint"] == (
+        "https://api.example/v1beta/models/"
+        "gemini-3.1-flash-lite-image:generateContent"
+    )
+    assert recorded["headers"]["Authorization"] == "Bearer test-key"
+    assert recorded["payload"]["generationConfig"]["responseModalities"] == [
+        "TEXT",
+        "IMAGE",
+    ]
+    assert result == {
+        "image_data": png,
+        "mime_type": "image/png",
+        "remaining": 2,
+    }

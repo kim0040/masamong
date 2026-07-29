@@ -359,7 +359,7 @@ async def test_execute_web_search_raw_does_not_call_answer_llm():
     handler = _build_handler_without_init()
 
     class _Tools:
-        async def web_search_rag(self, query):
+        async def web_search_rag(self, query, **_kwargs):
             assert query == "최신 모델"
             return {
                 "status": "success",

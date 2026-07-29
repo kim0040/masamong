@@ -1,8 +1,8 @@
 [Unit]
-Description=Collect registered-school notices at 23:00 KST
+Description=Collect registered-school notices at 05:00 KST
 
 [Timer]
-OnCalendar=*-*-* 23:00:00 Asia/Seoul
+OnCalendar=*-*-* 05:00:00 Asia/Seoul
 Persistent=true
 RandomizedDelaySec=0
 AccuracySec=1min
