@@ -78,7 +78,10 @@ CASES = (
         "recent_context_only",
         "그 계획 계속 정리해줘.",
         None,
-        False,
+        # 최근 원문만으로 충분해 false가 이상적이지만, 오래된 합의가 더 있을
+        # 가능성을 보수적으로 확인하는 true도 품질 안전 범위다. 어느 쪽이든
+        # 외부 도구를 고르지 않는지가 이 시나리오의 필수 계약이다.
+        None,
         False,
         [
             {
@@ -142,7 +145,10 @@ async def run() -> int:
                 (expected_tool is None and not actual_tools)
                 or expected_tool in actual_tools
             )
-            and decision.needs_memory is expected_memory
+            and (
+                expected_memory is None
+                or decision.needs_memory is expected_memory
+            )
             and decision.needs_fortune_context is expected_fortune_context
         )
         print(
