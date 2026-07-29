@@ -33,10 +33,17 @@ class ConsentPolicy:
     display_name: str
     version: str
     notice: str
+    # 정책의 수집 항목·목적은 그대로인데 오탈자나 실제 운영 시각처럼
+    # 비본질적인 사실만 바로잡는 경우, 기존 동의를 무효화하지 않도록 이전
+    # 고지문의 식별값을 유지할 수 있다. 새로 동의한 사용자도 같은 정책
+    # 버전/식별값으로 기록되므로 별도 DB 갱신이나 구독 변경이 필요 없다.
+    stable_notice_hash: str | None = None
 
     @property
     def notice_hash(self) -> str:
-        return hashlib.sha256(self.notice.encode("utf-8")).hexdigest()
+        return self.stable_notice_hash or hashlib.sha256(
+            self.notice.encode("utf-8")
+        ).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -80,6 +87,12 @@ _POLICIES = {
         scope=SCHOOL_NOTICE_SCOPE,
         display_name="학교공지",
         version="2026-07-28.v2",
+        # v2 고지의 "기본 23시"는 수집 정책 변경이 아니라 실제 05:00
+        # 스케줄을 잘못 적은 오기였다. 화면 문구는 바로잡되 기존 동의와 활성
+        # 구독을 그대로 유지하기 위해 v2의 기존 식별값을 보존한다.
+        stable_notice_hash=(
+            "cac21ff002a1e7d966fe2ff81447734428b80a2a36e48e1f4d695c4f04bf282b"
+        ),
         notice=(
             "학교 공지 개인화 개인정보 처리 동의\n"
             "- 필수 수집: Discord 사용자 ID, 학교, 학위 과정, 학부생인 경우 학년\n"
@@ -92,7 +105,7 @@ _POLICIES = {
             "그 게시판에서 얻은 공개 공지 ID만 요청\n"
             "- 외부 LLM 처리: 로컬 해석만으로 등록 문장을 확정하지 못한 경우에만 사용자 ID를 "
             "제외한 해당 등록·수정 문장이 프로필 정규화를 위해 외부 LLM 제공자 한 곳에 전달될 "
-            "수 있음. 기본 23시 공지 수집·분석은 LLM 없이 수행하며, 운영자가 공지 분석 LLM을 "
+            "수 있음. 기본 5시 공지 수집·분석은 LLM 없이 수행하며, 운영자가 공지 분석 LLM을 "
             "명시적으로 켜더라도 공개 공지 내용만 전달하고 사용자 프로필은 전달하지 않음\n"
             "- 보관: 사용자가 `!공지 삭제`를 실행할 때까지 보관\n"
             "- 철회: `!개인정보 철회 학교공지`로 향후 batch 처리·개인화·자동 전달·피드백 "
@@ -187,9 +200,9 @@ def format_policy_notice(scope: str) -> str:
     Discord의 굵게 표시는 줄바꿈을 넘어 적용돼, 가장 꼼꼼히 읽어야 할
     고지 전문이 통째로 굵은 글씨로 나왔다.
 
-    ``policy.notice`` 문자열 자체는 절대 바꾸지 않는다. 본문이 한 글자라도
-    달라지면 ``notice_hash``가 바뀌어 기존 동의가 모두 무효가 되고
-    구독자 전원이 재동의해야 한다. 여기서는 표시 형식만 손본다.
+    본질적인 정책 변경은 새 버전과 새 ``notice_hash``를 써야 한다. 다만 실제
+    운영 시각의 오기처럼 동의 범위를 바꾸지 않는 정정은 정책에 명시한 안정
+    식별값을 유지해 기존 동의와 구독을 보존할 수 있다.
     """
     policy = get_policy(scope)
     heading, _, body = policy.notice.partition("\n")

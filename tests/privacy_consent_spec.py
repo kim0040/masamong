@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -102,6 +103,84 @@ async def test_policy_version_and_notice_hash_must_match_exactly():
         assert state.policy_version == policy.version
         assert state.notice_hash == policy.notice_hash
         assert await has_current_consent(db, USER_ID, FORTUNE_SCOPE)
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_school_notice_schedule_typo_fix_keeps_existing_consent_current(
+    monkeypatch,
+):
+    """23시 오기를 5시로 고쳐도 기존 v2 동의와 활성 구독은 그대로다."""
+    db = await _db()
+    policy = get_policy(SCHOOL_NOTICE_SCOPE)
+    legacy_notice_hash = (
+        "cac21ff002a1e7d966fe2ff81447734428b80a2a36e48e1f4d695c4f04bf282b"
+    )
+    try:
+        assert "기본 5시 공지 수집·분석" in policy.notice
+        assert "기본 23시 공지 수집·분석" not in policy.notice
+        assert policy.notice_hash == legacy_notice_hash
+        # 화면에 보이는 정정된 본문의 원문 해시와 정책 식별값이 의도적으로
+        # 다른 경우임을 명시해, 나중에 무심코 호환값을 제거하지 않게 한다.
+        assert hashlib.sha256(policy.notice.encode("utf-8")).hexdigest() != (
+            legacy_notice_hash
+        )
+
+        await db.execute(
+            """
+            INSERT INTO privacy_consents (
+                user_id, scope, policy_version, notice_hash, status,
+                granted_at, withdrawn_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+            """,
+            (
+                USER_ID,
+                SCHOOL_NOTICE_SCOPE,
+                policy.version,
+                legacy_notice_hash,
+                CONSENT_GRANTED,
+                "2026-07-28T00:00:00+00:00",
+                "2026-07-28T00:00:00+00:00",
+            ),
+        )
+        await db.execute(
+            """
+            INSERT INTO school_notice_profiles (
+                user_id, user_key, school_id, profile_json, enabled,
+                delivery_time, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+            """,
+            (
+                USER_ID,
+                f"discord-{USER_ID}",
+                "test-university",
+                '{"school_name":"테스트대학교","degree_type":"학부","grade":1}',
+                "09:00",
+                "2026-07-28T00:00:00+00:00",
+                "2026-07-28T00:00:00+00:00",
+            ),
+        )
+        await db.commit()
+
+        assert await has_current_consent(db, USER_ID, SCHOOL_NOTICE_SCOPE)
+        async with db.execute(
+            """
+            SELECT enabled, delivery_time
+            FROM school_notice_profiles
+            WHERE user_id = ?
+            """,
+            (USER_ID,),
+        ) as cursor:
+            assert await cursor.fetchone() == (1, "09:00")
+
+        # 기존 활성 구독자를 "현 정책 미동의자"로 오인해 재동의 DM을 보내는
+        # 경로까지 함께 차단한다.
+        monkeypatch.setattr(config, "FORTUNE_MORNING_BRIEFING_ENABLED", False)
+        monkeypatch.setattr(config, "SCHOOL_NOTICE_ENABLED", True)
+        monkeypatch.setattr(config, "TRANSFER_NOTICE_ENABLED", False)
+        cog = PrivacyCog(SimpleNamespace(db=db))
+        assert await cog._next_legacy_prompt_candidate() is None
     finally:
         await db.close()
 
