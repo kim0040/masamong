@@ -198,6 +198,27 @@ class IntentAnalyzer:
         )
         return any(kw in query_lower for kw in explicit_terms)
 
+    @staticmethod
+    def _looks_like_bare_identity_question(query: str) -> bool:
+        """설명 없이 이름/핸들 하나만 두고 신원을 묻는 Discord형 질문인지 봅니다.
+
+        특정 이름 목록을 두지 않는다. 직업·사건·공식 자료 같은 외부 대상 설명이
+        붙지 않은 짧은 형태만 다뤄, 동명이인 웹 결과가 서버 구성원 기억을 덮는
+        것을 막는다. 사용자가 검색을 명시한 문장은 이 형식에 들어오지 않는다.
+        """
+        return bool(
+            re.fullmatch(
+                r"\s*@?[0-9A-Za-z가-힣_.\-]{2,32}"
+                r"(?:이|가|은|는)?\s+"
+                r"(?:누구(?:야|임|냐|니|인가)?|"
+                r"어떤\s*사람(?:이야|인가)?|"
+                r"뭐\s*하는\s*사람(?:이야|인가)?)"
+                r"\s*[?!.~]*\s*",
+                str(query or ""),
+                flags=re.IGNORECASE,
+            )
+        )
+
     def _looks_like_external_fact_query(self, query: str) -> bool:
         """
         웹에서 사실 확인이 필요한 질의인지 휴리스틱으로 판별합니다.
@@ -824,7 +845,10 @@ class IntentAnalyzer:
             "개인화에 도움이 되면 true다. 이전 합의·결정·취향·관계·사건뿐 아니라 공개 지식으로 "
             "알 수 없는 현재 사용자나 서버 구성원·지인 등 특정 인물이 누구인지, "
             "어떤 사람인지, 무엇을 좋아하는지 묻는 요청도 별도의 '전에/기억' 표현이 "
-            "없어도 true다. 최근 대화만으로 지시 대상이나 생략된 주어를 확정할 수 "
+            "없어도 true다. 특히 이름이나 핸들 하나만 두고 '누구야?'라고 물으면 "
+            "공개 웹의 동명이인보다 현재 Discord 범위의 인물 기억을 우선한다. 사용자가 "
+            "검색·공개 자료를 명시하거나 외부 인물의 직업·사건을 특정한 경우만 웹을 쓴다. "
+            "최근 대화만으로 지시 대상이나 생략된 주어를 확정할 수 "
             "없을 때도 true다. 순수 인사와 과거 맥락이 전혀 필요 없는 독립적인 "
             "일반 지식·의견 질문만 false다. '그 계획을 이어서'처럼 생략이 있어도 "
             "최근 대화에 대상과 필요한 내용이 이미 드러나 있으면 false이며, 단지 "
@@ -919,6 +943,20 @@ class IntentAnalyzer:
                 if isinstance(parsed.get("needs_fortune_context"), bool)
                 else False
             )
+            # 짧은 이름 신원 질문은 라우팅 모델이 호출마다 웹 동명이인과 서버
+            # 구성원 사이에서 흔들릴 수 있다. 특정 이름을 열거하지 않는 좁은
+            # 형식 후조건으로 서버/DM 기억을 우선하고 잘못 계획된 웹 검색을
+            # 제거한다. 명시적 검색 요청은 정규식 형식 자체를 벗어나므로 보존된다.
+            bare_identity_question = self._looks_like_bare_identity_question(
+                query
+            )
+            if bare_identity_question:
+                plan = [
+                    item
+                    for item in plan
+                    if item.get("tool_to_use") != "web_search"
+                ]
+                needs_memory = True
             # 이미지 요청은 "아까 말한 철수", "네가 기억하는 나"처럼 짧은
             # 지시가 많다. 검색 결과는 범위·관련도 필터를 다시 통과하므로 모든
             # 이미지 요청에서 현재 DM/서버 기억 조회를 허용해도 무관한 기억을
@@ -932,7 +970,11 @@ class IntentAnalyzer:
             requires_external_evidence = self._derive_external_evidence_requirement(
                 query,
                 intent=intent,
-                declared=parsed.get("requires_external_evidence"),
+                declared=(
+                    False
+                    if bare_identity_question
+                    else parsed.get("requires_external_evidence")
+                ),
             )
             if any(
                 item.get("tool_to_use")

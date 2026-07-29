@@ -95,7 +95,10 @@ routing 호출의 JSON에만 짧은 digest를 포함하므로 별도 LLM 호출�
 중간에서 잘리는 것을 막고, 평상시 요청은 384토큰 상한을 그대로 사용합니다. 정상
 라우터가 `needs_memory=false`로 판정한 인사·일반 지식에는 RAG를 중복 실행하지 않으며,
 provider 장애 fallback에서만 얕은 검색을 안전망으로 사용합니다. DM의 저장된 운세
-컨텍스트도 `needs_fortune_context=true`인 운세 후속 질문에만 조회합니다.
+컨텍스트도 `needs_fortune_context=true`인 운세 후속 질문에만 조회합니다. 설명 없이
+이름·핸들 하나만 두고 신원을 묻는 짧은 질문은 공개 웹 동명이인보다 현재 Discord
+서버/DM 기억을 우선하는 형식 후조건을 적용합니다. 특정 이름 목록을 사용하지 않으며,
+직업·사건을 붙이거나 웹 검색을 명시한 외부 인물 질문은 이 후조건에서 제외됩니다.
 `scripts/benchmark_llm_lanes.py`는 DB·실사용자 대화 없이 현재/후보 레인을 비교하며
 `--max-calls`로 물리 호출 수를 제한합니다.
 

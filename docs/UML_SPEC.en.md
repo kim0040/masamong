@@ -720,7 +720,7 @@ flowchart TD
     AddDigest --> CallRouting[One routing-lane call<br/>gpt-5.4-nano]
     CallRouting --> ParseJSON[Extract and parse JSON]
     ParseJSON --> Valid{Contract valid?}
-    Valid -->|Yes| Sanitize[Validate allowlist, count, and parameter caps]
+    Valid -->|Yes| Sanitize[Validate allowlist, count, and parameter caps<br/>bare identity questions prefer scoped memory]
     Valid -->|No| Emergency[Restricted keyword outage fallback]
     Sanitize --> Decision[ToolRoutingDecision<br/>tools + needs_memory + needs_fortune_context + digest]
     Emergency --> Decision
