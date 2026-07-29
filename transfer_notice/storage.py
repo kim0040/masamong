@@ -5,7 +5,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .parsing import TransferNoticeItem
+from .parsing import TransferNoticeItem, listing_fingerprint
 
 
 def utc_now_text() -> str:
@@ -122,7 +122,7 @@ class TransferNoticeStore:
             for item in items:
                 previous = self.connection.execute(
                     """
-                    SELECT fingerprint, detail_fingerprint, revision
+                    SELECT title, url, fingerprint, detail_fingerprint, revision
                     FROM transfer_notices
                     WHERE source_id = ? AND external_id = ?
                     """,
@@ -170,7 +170,17 @@ class TransferNoticeStore:
                         changes.append(payload)
                 else:
                     revision = int(previous["revision"])
-                    list_changed = str(previous["fingerprint"]) != item.fingerprint
+                    legacy_equivalent = (
+                        listing_fingerprint(
+                            str(previous["title"]),
+                            str(previous["url"]),
+                        )
+                        == item.fingerprint
+                    )
+                    list_changed = (
+                        str(previous["fingerprint"]) != item.fingerprint
+                        and not legacy_equivalent
+                    )
                     previous_detail = str(previous["detail_fingerprint"] or "")
                     detail_changed = bool(
                         item.detail_fingerprint
