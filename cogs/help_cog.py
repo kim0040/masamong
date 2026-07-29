@@ -6,6 +6,7 @@ import discord
 from discord.ext import commands
 import config
 from logger_config import logger
+from utils.discord_interactions import ReliableModal, ReliableView
 from utils.discord_helpers import clip_discord_text
 
 class MasamongHelpCommand(commands.HelpCommand):
@@ -314,7 +315,7 @@ def _build_home_embed(
     return embed
 
 
-class MasamongHomeView(discord.ui.View):
+class MasamongHomeView(ReliableView):
     """통합 메뉴를 연 사용자만 조작할 수 있는 짧은 수명의 홈 화면."""
 
     def __init__(self, bot: commands.Bot, ctx: commands.Context) -> None:
@@ -856,7 +857,7 @@ class HomeCategorySelect(discord.ui.Select):
         )
 
 
-class FeatureInputModal(discord.ui.Modal):
+class FeatureInputModal(ReliableModal):
     """범주 안에서 인자가 필요한 명령을 입력받습니다."""
 
     def __init__(self, parent: "CategoryView", action: str) -> None:
@@ -957,7 +958,7 @@ class CategoryActionButton(discord.ui.Button):
         await self.parent_view.execute_action(interaction, self.action, {})
 
 
-class CategoryView(discord.ui.View):
+class CategoryView(ReliableView):
     """선택한 범주의 기능만 표시하는 2단계 메뉴."""
 
     _ACTIONS = {
@@ -1257,7 +1258,7 @@ class CategoryView(discord.ui.View):
             )
 
 
-class ServerMenuLauncherView(discord.ui.View):
+class ServerMenuLauncherView(ReliableView):
     """서버 채널에서는 공개 명령 뒤 호출자 전용(ephemeral) 메뉴를 엽니다."""
 
     def __init__(self, bot: commands.Bot, ctx: commands.Context) -> None:

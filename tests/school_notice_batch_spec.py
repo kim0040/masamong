@@ -278,7 +278,11 @@ def _source_config(tmp_path):
             {
                 "sources": [
                     {"id": "jbnu_campus", "school_id": "jbnu"},
-                    {"id": "jbnu_software", "school_id": "jbnu"},
+                    {
+                        "id": "jbnu_software",
+                        "school_id": "jbnu",
+                        "profile_tags": ["department:소프트웨어공학과"],
+                    },
                     {"id": "jbnu_unapproved", "school_id": "jbnu"},
                     {"id": "snu_general", "school_id": "snu"},
                 ]
@@ -319,6 +323,38 @@ def test_source_selection_is_fail_closed_to_registered_school(tmp_path):
     assert selected_ids == ("jbnu_campus", "jbnu_software")
     assert "snu_general" not in selected_ids
     assert "jbnu_unapproved" not in selected_ids
+
+
+def test_source_selection_skips_known_other_department_board(tmp_path):
+    sources = _source_config(tmp_path)
+    args = _args(core_cwd=str(tmp_path), source_config=str(sources))
+
+    _selected_config, selected_ids = select_profile_sources(
+        args,
+        {
+            "user_key": "discord-1",
+            "school_id": "jbnu",
+            "department": "경영학과",
+        },
+    )
+
+    assert selected_ids == ("jbnu_campus",)
+
+
+def test_source_selection_keeps_matching_department_board(tmp_path):
+    sources = _source_config(tmp_path)
+    args = _args(core_cwd=str(tmp_path), source_config=str(sources))
+
+    _selected_config, selected_ids = select_profile_sources(
+        args,
+        {
+            "user_key": "discord-1",
+            "school_id": "jbnu",
+            "department": "소프트웨어공학과",
+        },
+    )
+
+    assert selected_ids == ("jbnu_campus", "jbnu_software")
 
 
 def test_profile_cannot_request_another_schools_source(tmp_path):
@@ -516,6 +552,8 @@ def test_systemd_timer_and_service_keep_05_kst_low_resource_contract():
     assert "RandomizedDelaySec=0" in timer
     assert "TimeoutStartSec=7800" in service
     assert "OMP_NUM_THREADS=1" in service
+    assert "CPUQuota=25%" in service
+    assert "MemoryMax=384M" in service
     assert "--low-resource" in service
     assert "--no-llm" not in service
     assert "--use-llm" in service

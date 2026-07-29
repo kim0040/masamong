@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -75,7 +75,30 @@ class DeepSeekClient:
         settings: DeepSeekSettings | None = None,
     ) -> None:
         self.repository = repository
-        self.settings = settings or DeepSeekSettings.from_environment()
+        raw_settings = settings or DeepSeekSettings.from_environment()
+        # 잘못된 env/직접 생성값이 retry·호출 횟수·대기 시간을 사실상 무제한으로
+        # 만들지 못하게 실행 경계에서 다시 상한을 고정한다. JSON 보정 호출도
+        # 동일한 _reserve()를 통과하므로 이 총량 안에 포함된다.
+        self.settings = replace(
+            raw_settings,
+            timeout_seconds=max(
+                5.0,
+                min(120.0, float(raw_settings.timeout_seconds)),
+            ),
+            max_output_tokens=max(
+                128,
+                min(4_000, int(raw_settings.max_output_tokens)),
+            ),
+            max_calls_per_run=max(
+                1,
+                min(50, int(raw_settings.max_calls_per_run)),
+            ),
+            max_calls_per_day=max(
+                1,
+                min(1_000, int(raw_settings.max_calls_per_day)),
+            ),
+            max_retries=max(0, min(2, int(raw_settings.max_retries))),
+        )
         self.model = self.settings.model
         self.run_calls = 0
         self.consecutive_failures = 0

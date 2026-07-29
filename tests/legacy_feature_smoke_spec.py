@@ -60,11 +60,18 @@ class _RecordingContext:
 class _RecordingResponse:
     def __init__(self) -> None:
         self.messages: list[dict] = []
+        self.deferred = 0
+
+    async def defer(self, **_kwargs):
+        self.deferred += 1
 
     async def send_message(self, content=None, *, embed=None, ephemeral=False):
         self.messages.append(
             {"content": content, "embed": embed, "ephemeral": ephemeral}
         )
+
+    async def send(self, content=None, *, embed=None, ephemeral=False):
+        await self.send_message(content, embed=embed, ephemeral=ephemeral)
 
 
 @pytest.mark.asyncio
@@ -325,6 +332,7 @@ async def test_settings_ai_toggle_persists_and_updates_runtime_cache(monkeypatch
         guild_id=123,
         user=SimpleNamespace(id=7),
         response=response,
+        followup=response,
     )
 
     await SettingsCog.set_ai_enabled.callback(cog, interaction, True)
@@ -359,6 +367,7 @@ async def test_settings_allowed_channel_adds_once_and_serializes(monkeypatch):
         guild_id=123,
         user=SimpleNamespace(id=7),
         response=response,
+        followup=response,
     )
     channel = SimpleNamespace(id=20, name="ai-chat")
 

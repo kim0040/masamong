@@ -685,7 +685,9 @@ def source_config_path(args: argparse.Namespace) -> Path:
 
 
 @lru_cache(maxsize=4)
-def _source_school_pairs(config_path_text: str) -> tuple[tuple[str, str], ...]:
+def _source_metadata(
+    config_path_text: str,
+) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
     """한 batch 안에서 불변 source 설정을 프로필마다 다시 파싱하지 않습니다."""
     config_path = Path(config_path_text)
     try:
@@ -702,22 +704,121 @@ def _source_school_pairs(config_path_text: str) -> tuple[tuple[str, str], ...]:
     if not isinstance(raw_sources, list) or len(raw_sources) > _MAX_SOURCES:
         raise SourceSelectionError("source 설정의 sources 배열이 올바르지 않습니다.")
 
-    all_sources: dict[str, str] = {}
+    all_sources: dict[str, tuple[str, tuple[str, ...]]] = {}
     for entry in raw_sources:
         if not isinstance(entry, dict):
             raise SourceSelectionError("source 설정 항목이 객체가 아닙니다.")
         source_id = entry.get("id")
         entry_school_id = entry.get("school_id")
+        raw_tags = entry.get("profile_tags", [])
+        if raw_tags is None:
+            raw_tags = []
         if (
             not isinstance(source_id, str)
             or not _SAFE_SCHOOL_ID.fullmatch(source_id)
             or not isinstance(entry_school_id, str)
             or not _SAFE_SCHOOL_ID.fullmatch(entry_school_id)
             or source_id in all_sources
+            or not isinstance(raw_tags, list)
+            or len(raw_tags) > 32
+            or any(
+                not isinstance(tag, str)
+                or len(tag) > 100
+                or ":" not in tag
+                for tag in raw_tags
+            )
         ):
             raise SourceSelectionError("source 설정 식별자가 올바르지 않습니다.")
-        all_sources[source_id] = entry_school_id
-    return tuple(all_sources.items())
+        all_sources[source_id] = (
+            entry_school_id,
+            tuple(str(tag).strip() for tag in raw_tags),
+        )
+    return tuple(
+        (source_id, school_id, tags)
+        for source_id, (school_id, tags) in all_sources.items()
+    )
+
+
+@lru_cache(maxsize=4)
+def _source_school_pairs(config_path_text: str) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (source_id, school_id)
+        for source_id, school_id, _tags in _source_metadata(config_path_text)
+    )
+
+
+def _normalized_identity(value: object) -> str:
+    return "".join(str(value or "").casefold().split())
+
+
+def _department_identities(profile: dict) -> tuple[str, ...]:
+    values = (
+        profile.get("department"),
+        *(profile.get("double_majors") or []),
+        *(profile.get("minors") or []),
+    )
+    identities: list[str] = []
+    for raw in values:
+        rendered = str(raw or "").strip()
+        if not rendered:
+            continue
+        for candidate in (
+            rendered,
+            rendered.removesuffix("학과"),
+            rendered.removesuffix("학부"),
+            rendered.removesuffix("전공"),
+        ):
+            normalized = _normalized_identity(candidate)
+            if len(normalized) >= 2 and normalized not in identities:
+                identities.append(normalized)
+    return tuple(identities)
+
+
+def _tag_values(tags: tuple[str, ...], prefix: str) -> tuple[str, ...]:
+    marker = f"{prefix}:"
+    return tuple(
+        tag[len(marker) :].strip()
+        for tag in tags
+        if tag.startswith(marker) and tag[len(marker) :].strip()
+    )
+
+
+def _source_matches_known_profile_scope(
+    profile: dict,
+    tags: tuple[str, ...],
+) -> bool:
+    """알고 있는 소속과 명백히 다른 전용 source는 크롤링하지 않습니다.
+
+    프로필에 캠퍼스·학과가 없으면 daily scorer가 전용 공지를 숨기되 source
+    상태 자체는 확인할 수 있도록 수집을 유지합니다.
+    """
+    source_departments = _tag_values(tags, "department")
+    departments = _department_identities(profile)
+    if source_departments and departments:
+        normalized_tags = tuple(_normalized_identity(item) for item in source_departments)
+        if not any(
+            identity in tagged or tagged in identity
+            for identity in departments
+            for tagged in normalized_tags
+        ):
+            return False
+
+    source_degrees = {
+        _normalized_identity(item)
+        for item in _tag_values(tags, "degree")
+    }
+    degree = _normalized_identity(profile.get("degree_level"))
+    if source_degrees and degree and degree not in source_degrees:
+        return False
+
+    source_campuses = {
+        _normalized_identity(item)
+        for item in _tag_values(tags, "campus")
+    }
+    campus = _normalized_identity(profile.get("campus"))
+    if source_campuses and campus and campus not in source_campuses:
+        return False
+    return True
 
 
 @lru_cache(maxsize=4)
@@ -741,6 +842,10 @@ def select_profile_sources(
 
     config_path = source_config_path(args)
     all_sources = dict(_source_school_pairs(str(config_path)))
+    source_tags = {
+        source_id: tags
+        for source_id, _school_id, tags in _source_metadata(str(config_path))
+    }
 
     catalog_path = str(
         getattr(config, "SCHOOL_NOTICE_CATALOG_PATH", "") or ""
@@ -753,10 +858,21 @@ def select_profile_sources(
     if school is None:
         raise SourceSelectionError("등록 학교가 지원 카탈로그에 없습니다.")
 
-    school_sources = school.source_ids
+    school_sources = tuple(
+        source_id
+        for source_id in school.source_ids
+        if _source_matches_known_profile_scope(
+            profile,
+            source_tags.get(source_id, ()),
+        )
+    )
     if any(all_sources.get(source_id) != school_id for source_id in school_sources):
         raise SourceSelectionError(
             "학교 카탈로그 source가 코어 설정의 같은 학교와 일치하지 않습니다."
+        )
+    if not school_sources:
+        raise SourceSelectionError(
+            "등록한 캠퍼스·학과·과정에 맞는 공개 게시판 source가 없습니다."
         )
 
     requested = profile.get("source_ids")

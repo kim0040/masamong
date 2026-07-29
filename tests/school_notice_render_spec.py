@@ -71,7 +71,7 @@ def test_reasons_are_always_shown():
 
     text = _all_text(build_item_embed(item, today=TODAY))
 
-    assert "왜 추천됐나" in text
+    assert "내 조건과 맞는 이유" in text
     for reason in item.reasons[:3]:
         assert reason in text
 
@@ -137,7 +137,7 @@ def test_body_text_is_not_used_as_description():
 
     embed = build_item_embed(item, today=TODAY)
 
-    assert embed.description == "짧은 요약"
+    assert embed.description == "**핵심 요약**\n짧은 요약"
     assert "본문전문" not in embed.description
 
 
@@ -227,7 +227,7 @@ def test_item_embed_is_fitted_to_total_discord_text_limit():
     embed = build_item_embed(parse_digest(payload).items[0], today=TODAY)
 
     assert len(embed) <= 6000
-    assert "왜 추천됐나" in _all_text(embed)
+    assert "내 조건과 맞는 이유" in _all_text(embed)
 
 
 def test_chunking_splits_on_total_text_even_below_ten_embeds():
