@@ -1201,6 +1201,13 @@ AI_CONTEXT_DIGEST_MAX_CHARS = min(
         ),
     ),
 )
+# 의미 라우터가 장기기억 필요성을 놓치더라도 일반 무도구 대화에서는
+# 관련도 임계값을 거치는 얕은 검색을 한 번 허용한다. General 프로필은
+# AI_MEMORY_ENABLED/EMBEDDING_ENABLED가 꺼져 있으므로 추가 저장소를 열지 않는다.
+RAG_PASSIVE_NO_TOOL_SEARCH_ENABLED = as_bool(
+    load_config_value("RAG_PASSIVE_NO_TOOL_SEARCH_ENABLED", "true"),
+    True,
+)
 # 한 메시지의 LLM 도구 계획이 외부 API 호출을 증폭하지 않도록 하드 상한을 둔다.
 # 운영자가 더 큰 값을 넣어도 안전 상한(3)을 넘길 수 없다.
 AGENT_MAX_TOOL_CALLS = min(
@@ -2388,8 +2395,8 @@ SCHOOL_NOTICE_SOURCE_CONFIG = as_str(
     load_config_value("SCHOOL_NOTICE_SOURCE_CONFIG", ""),
     "",
 )
-# 수집은 deploy/systemd의 versioned timer가 23:00 KST로 단일 관리하고,
-# 봇은 전날 digest를 사용자별 시각(기본 09:00 KST)에 전달한다.
+# 수집은 deploy/systemd의 versioned timer가 05:00 KST로 단일 관리하고,
+# 봇은 당일 digest를 사용자별 시각(기본 09:00 KST)에 전달한다.
 SCHOOL_NOTICE_DELIVERY_TIME = {
     # 이전 전역 설정은 신규 프로필의 기본값으로만 유지한다. 저장 뒤에는 각
     # 사용자의 school_notice_profiles.delivery_time이 우선한다.

@@ -171,7 +171,8 @@ history.
 
 In a guild, the prefix command itself posts a small launcher because Discord
 prefix messages cannot be ephemeral. Pressing **Open my menu** returns the full
-dashboard only to the caller. The dashboard does not flatten every command into
+dashboard only to the caller and removes the temporary launcher when Discord
+permissions allow it. The dashboard does not flatten every command into
 one screen: it first shows **School/Transfer, AI/Search, Weather/Disaster,
 Fortune, Community, Personal settings, and Help**; **Quick settings** is added
 only for a configured superadmin. A
@@ -193,10 +194,13 @@ deleted.
 
 Ordinary AI turns use a separate, non-persistent three-level context: the newest
 turns verbatim, an on-demand digest of the older portion of the same bounded
-Discord history, and long-term RAG only when the semantic router says older
-memory is required. Tool routing is semantic in the normal path; keyword rules
-exist only as a provider-outage fallback. The digest is returned by the same
-routing call, so it does not add another LLM request.
+Discord history, and long-term RAG. Explicit memory intent runs the expanded
+search. A no-tool conversation also runs one bounded shallow search so a router
+miss on a named member or old event cannot disable memory entirely; relevance
+thresholds still prevent unrelated memories from entering the prompt. Tool
+routing is semantic in the normal path; keyword rules exist only as a
+provider-outage fallback. The digest is returned by the same routing call, so it
+does not add another LLM request.
 
 Structured-memory embeddings use a lean `independent summary + speaker-labelled
 evidence` passage. Memory type, speakers, date, and keywords remain separate
@@ -317,14 +321,17 @@ a durable payload, while cancellation, selection changes, or consent withdrawal
 invalidate older retries. A malformed retry payload is terminal rather than
 looped forever.
 
-The catalog is exactly 20 official sources. “TOEIC/public English” means the
+The automatic catalog is exactly 20 official sources. “TOEIC/public English” means the
 school has a relevant year or recruiting unit where public-English evidence may
 matter; it does not mean every department uses TOEIC. Rules can change yearly, so
 every alert directs the user to the final official guide. Each batch records
 per-school `healthy`, `degraded`, or `failed` status. `robots.txt` restrictions,
 WAFs, and official maintenance are not bypassed, and the dashboard reports the
 latest healthy-source count instead of silently presenting an incomplete run as
-fully successful.
+fully successful. Chungnam National University and Pukyong National University
+currently disallow automated access in their official `robots.txt`; the DM
+dashboard provides direct official-link buttons and does not mislabel them as
+automatic subscriptions.
 
 School and transfer features are unavailable in guild channels, including their
 menu buttons and natural-language entry points. The guild path only explains how
@@ -406,6 +413,7 @@ LLM_CALL_TIMEOUT_SECONDS=120
 EMBEDDING_MAX_CONCURRENCY=1
 RAG_MAX_BACKGROUND_TASKS=2
 RAG_MAX_TRACKED_WINDOWS=64
+RAG_PASSIVE_NO_TOOL_SEARCH_ENABLED=true
 MASAMONG_DISCORD_MAX_MESSAGES=100
 TIDB_STARTER_FREE_PLAN_MODE=true
 TIDB_STARTER_USAGE_WARNING_RATIO=0.8

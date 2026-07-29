@@ -269,7 +269,7 @@ class TransferNoticeStore:
         """새 글·목록 수정 글과 최신 한 건을 상세 확인 대상으로 고른다.
 
         첫 성공은 과거 공지 기준선이므로 전체 상세를 읽지 않는다. 이후에도
-        source당 유한 개수만 반환해 20개 사이트를 순차 확인하는 저사양
+        source당 유한 개수만 반환해 공식 사이트를 순차 확인하는 저사양
         collector의 HTTP/CPU 상한을 유지한다.
         """
         if self.source_state(source_id) is None:

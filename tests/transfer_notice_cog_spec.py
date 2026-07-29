@@ -11,7 +11,7 @@ import pytest
 from discord.ext import commands
 
 import config
-from cogs.transfer_notice_cog import TransferNoticeCog
+from cogs.transfer_notice_cog import TransferDashboardView, TransferNoticeCog
 from utils.privacy_consent import (
     TRANSFER_NOTICE_SCOPE,
     grant_consent,
@@ -162,6 +162,43 @@ async def test_dashboard_has_defense_in_depth_and_never_reads_guild_profile(
             "SELECT COUNT(*) FROM transfer_notice_subscriptions"
         ) as cursor:
             assert (await cursor.fetchone())[0] == 0
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_exposes_manual_official_links_without_auto_subscription(
+    tmp_path,
+    monkeypatch,
+):
+    cog, _bot, db = await _make_cog(tmp_path, monkeypatch)
+    try:
+        view = TransferDashboardView(
+            cog,
+            user_id=USER_ID,
+            selected=set(),
+            active=False,
+        )
+        link_buttons = [
+            child
+            for child in view.children
+            if isinstance(child, discord.ui.Button) and child.url
+        ]
+
+        assert {button.label for button in link_buttons} == {
+            "국립부경대학교 공식 공지",
+            "충남대학교 공식 공지",
+        }
+        assert all(button.url.startswith("https://") for button in link_buttons)
+        assert set(cog.sources) == set(
+            option.value
+            for child in view.children
+            if isinstance(child, discord.ui.Select)
+            for option in child.options
+        )
+        assert not (set(cog.manual_sources) & set(cog.sources))
+        embed = cog._dashboard_embed(set(), False)
+        assert "자동 접근 정책" in embed.description
     finally:
         await db.close()
 

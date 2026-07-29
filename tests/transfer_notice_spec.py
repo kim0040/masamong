@@ -7,7 +7,10 @@ from pathlib import Path
 import pytest
 
 from scripts.apply_transfer_notice_schema import TABLE_COLUMNS, schema_statements
-from transfer_notice.catalog import load_transfer_sources
+from transfer_notice.catalog import (
+    load_manual_transfer_sources,
+    load_transfer_sources,
+)
 from transfer_notice.parsing import (
     TransferNoticeItem,
     listing_fingerprint,
@@ -49,6 +52,17 @@ def test_catalog_has_exactly_twenty_official_https_sources():
         assert source.official_url.startswith("https://")
         assert source.allowed_hosts
         assert source.toeic_note
+
+
+def test_robots_blocked_official_sources_are_manual_and_never_mislabelled_as_auto():
+    automatic = load_transfer_sources()
+    manual = load_manual_transfer_sources()
+
+    assert set(manual) == {"chungnam", "pknu"}
+    assert not (set(automatic) & set(manual))
+    for source in manual.values():
+        assert source.official_url.startswith("https://")
+        assert "자동 수집" in source.reason
 
 
 @pytest.mark.parametrize(

@@ -93,8 +93,101 @@ async def test_query_variants_reuse_same_discord_database_rows(monkeypatch):
         channel_id=456,
         user_id=789,
         recent_messages=["직전 대화 주제"],
+        deep_search=True,
     )
 
     assert len(result.query_variants) == 2
     assert store.structured_calls == 1
     assert store.legacy_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_shallow_search_uses_one_variant_to_bound_database_work(monkeypatch):
+    monkeypatch.setattr(config, "SEARCH_QUERY_EXPANSION_ENABLED", False)
+    monkeypatch.setattr(config, "RAG_QUERY_REWRITE_VARIANTS", 3)
+    monkeypatch.setattr(config, "RAG_SIMILARITY_THRESHOLD", 0.1)
+
+    async def fake_get_embedding(_text: str, prefix: str = ""):
+        return np.array([0.9, 0.1], dtype=np.float32)
+
+    monkeypatch.setattr("utils.hybrid_search.get_embedding", fake_get_embedding)
+    store = DummyDiscordStore()
+    engine = HybridSearchEngine(store, None, None)
+
+    result = await engine.search(
+        "후속 질문",
+        guild_id=123,
+        channel_id=456,
+        user_id=789,
+        recent_messages=["직전 대화 주제"],
+        deep_search=False,
+    )
+
+    assert result.query_variants == ["후속 질문"]
+    assert store.structured_calls == 1
+    assert store.legacy_calls == 1
+
+
+def test_lexical_name_bonus_handles_korean_postposition():
+    row = {
+        "summary_text": "김재원은 부산 여행을 다녀왔다.",
+        "raw_context": "서버 대화에서 김재원의 여행 이야기를 나눴다.",
+    }
+
+    score = HybridSearchEngine._lexical_relevance(
+        "김재원이 누구야?",
+        row,
+    )
+
+    assert score >= 0.04
+
+
+@pytest.mark.asyncio
+async def test_deep_search_reads_structured_and_raw_discord_embeddings(monkeypatch):
+    monkeypatch.setattr(config, "SEARCH_QUERY_EXPANSION_ENABLED", False)
+    monkeypatch.setattr(config, "RAG_SIMILARITY_THRESHOLD", 0.1)
+    monkeypatch.setattr(config, "STRUCTURED_MEMORY_SIMILARITY_THRESHOLD", 0.1)
+
+    class _Store(DummyDiscordStore):
+        async def fetch_recent_memory_entries(
+            self,
+            *,
+            server_id,
+            channel_id,
+            user_id=None,
+            limit=200,
+        ):
+            self.structured_calls += 1
+            return [
+                {
+                    "memory_id": "memory-1",
+                    "message_id": 10,
+                    "summary_text": "김재원은 부산 여행을 다녀왔다.",
+                    "raw_context": "김재원: 부산에 다녀왔어.",
+                    "embedding": np.array([0.8, 0.2], dtype=np.float32),
+                    "memory_scope": "guild",
+                    "memory_type": "event",
+                    "timestamp": "2026-07-01T00:00:00",
+                }
+            ]
+
+    async def fake_get_embedding(_text: str, prefix: str = ""):
+        return np.array([0.9, 0.1], dtype=np.float32)
+
+    monkeypatch.setattr("utils.hybrid_search.get_embedding", fake_get_embedding)
+    store = _Store()
+    engine = HybridSearchEngine(store, None, None)
+
+    result = await engine.search(
+        "김재원이 누구야?",
+        guild_id=123,
+        channel_id=456,
+        user_id=None,
+        memory_user_id=789,
+        deep_search=True,
+    )
+
+    assert result.entries
+    assert store.structured_calls == 1
+    assert store.legacy_calls == 1
+    assert result.entries[0]["lexical_score"] >= 0.04

@@ -31,6 +31,14 @@ class TransferSource:
     toeic_note: str
 
 
+@dataclass(frozen=True)
+class ManualTransferSource:
+    source_id: str
+    university: str
+    official_url: str
+    reason: str
+
+
 def _as_source(raw: dict) -> TransferSource:
     return TransferSource(
         source_id=str(raw["id"]),
@@ -137,12 +145,47 @@ def load_transfer_sources(
     sources = [_as_source(raw) for raw in raw_sources]
     if len(sources) != 20:
         raise ValueError(
-            f"편입 공지 catalog는 정확히 20개교여야 합니다: {len(sources)}"
+            f"자동 편입 공지 catalog는 정확히 20개교여야 합니다: {len(sources)}"
         )
     result: dict[str, TransferSource] = {}
     for source in sources:
         _validate(source)
         if source.source_id in result:
+            raise ValueError(f"중복 편입 공지 source id: {source.source_id}")
+        result[source.source_id] = source
+    return result
+
+
+def load_manual_transfer_sources(
+    path: str | Path | None = None,
+) -> dict[str, ManualTransferSource]:
+    """robots 정책 등으로 자동 수집하지 않는 공식 바로가기 목록을 읽는다."""
+    catalog_path = Path(path) if path else DEFAULT_CATALOG
+    payload = json.loads(catalog_path.read_text(encoding="utf-8"))
+    raw_sources = payload.get("manual_sources") or []
+    if not isinstance(raw_sources, list):
+        raise ValueError("편입 공지 catalog의 manual_sources는 배열이어야 합니다.")
+    automatic_ids = set(load_transfer_sources(catalog_path))
+    result: dict[str, ManualTransferSource] = {}
+    for raw in raw_sources:
+        if not isinstance(raw, dict):
+            raise ValueError("manual source 항목은 객체여야 합니다.")
+        source = ManualTransferSource(
+            source_id=str(raw.get("id") or "").strip(),
+            university=str(raw.get("university") or "").strip(),
+            official_url=str(raw.get("official_url") or "").strip(),
+            reason=str(raw.get("reason") or "").strip(),
+        )
+        parsed = urlparse(source.official_url)
+        if (
+            not re.fullmatch(r"[a-z0-9_]{2,40}", source.source_id)
+            or not source.university
+            or parsed.scheme != "https"
+            or not parsed.hostname
+            or not source.reason
+        ):
+            raise ValueError(f"잘못된 manual 편입 공지 source: {source.source_id!r}")
+        if source.source_id in automatic_ids or source.source_id in result:
             raise ValueError(f"중복 편입 공지 source id: {source.source_id}")
         result[source.source_id] = source
     return result

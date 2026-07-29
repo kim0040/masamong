@@ -349,7 +349,7 @@ class MasamongHomeView(ReliableView):
                 label="편입 공지",
                 value="transfer",
                 emoji="📚",
-                description="20개 대학 선택 구독과 새 공지 DM",
+                description="20개 대학 자동 알림과 공식 바로가기",
             ),
             discord.SelectOption(
                 label="운세",
@@ -1319,6 +1319,17 @@ class ServerMenuLauncherView(ReliableView):
             ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
         )
+        # prefix 명령은 Discord 프로토콜상 처음부터 ephemeral 응답을 만들 수
+        # 없다. 대신 소유자가 버튼을 눌러 실제 ephemeral 메뉴를 받은 즉시
+        # 잠깐 노출됐던 공개 launcher를 제거한다.
+        launcher_message = getattr(interaction, "message", None) or self.message
+        if launcher_message is not None:
+            try:
+                await launcher_message.delete()
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+        self.message = None
+        self.stop()
 
     async def on_timeout(self) -> None:
         for child in self.children:
@@ -1364,6 +1375,14 @@ class HelpCog(commands.Cog):
                 view=launcher,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
+            # 사용자가 입력한 prefix 메시지도 권한이 있으면 정리한다. 실제
+            # 결과는 메뉴 액션의 interaction followup으로 채널에 공개된다.
+            invocation = getattr(ctx, "message", None)
+            if invocation is not None:
+                try:
+                    await invocation.delete()
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    pass
             return
 
         await ctx.send(

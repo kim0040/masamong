@@ -194,6 +194,7 @@ RAG(Retrieval-Augmented Generation) 시스템의 설정입니다.
 | `similarity_threshold` | 0.6 | 최소 유사도 임계값 |
 | `strong_similarity_threshold` | 0.72 | 강한 유사도 (웹 검색 불필요) |
 | `conversation_window_size` | 12 | 대화 윈도우 크기 |
+| `RAG_PASSIVE_NO_TOOL_SEARCH_ENABLED` | true | 무도구 대화에서 bounded 얕은 기억 검색 1회 허용. 관련도 임계값과 인스턴스 격리는 그대로 적용 |
 
 ---
 

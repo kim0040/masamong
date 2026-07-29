@@ -100,9 +100,12 @@ class AIHandler(commands.Cog):
         self.tools_cog = bot.get_cog('ToolsCog')
         self.ai_user_cooldowns: Dict[int, datetime] = {}
         self.proactive_cooldowns: Dict[int, float] = {}
-        # 뉴스 출처 리액션 캐시: {메시지ID: [URL, ...]} — 📰 리액션 클릭 시 출처 표시
-        self._news_source_cache: Dict[int, list] = {}
-        self._updating_news_sources: set[int] = set() # [NEW] 동시성 방어용: 현재 업데이트 중인 메시지 ID 세트
+        # 뉴스 출처 리액션 캐시: {메시지ID: [URL, ...]} — 📰 리액션 클릭 시 출처 표시.
+        # 프로세스 수명 동안만 필요한 UI 상태이며 상한을 둬 장기 실행 시 누적을 막는다.
+        self._news_source_cache: Dict[int, list[str]] = {}
+        # 같은 메시지에서 빠른 추가/취소 이벤트가 겹쳐도 최종 반응 수와
+        # 본문 표시 상태가 어긋나지 않도록 메시지별로 직렬화한다.
+        self._news_source_locks: Dict[int, asyncio.Lock] = {}
         self.gemini_configured = False
         self.api_call_lock = asyncio.Lock()
         # [저사양 보호] 전역 AI 처리 동시성 제한.
@@ -190,27 +193,107 @@ class AIHandler(commands.Cog):
         # [NEW] Emoji Cache: {guild_id: (formatted_list, timestamp)}
         self._emoji_cache: Dict[int, Tuple[list[str], float]] = {}
 
-    # 이전 응답에서 제거할 레거시 안내 문구. 새 응답은 출처를 본문에 바로 표시한다.
+    # 이전 응답에서 제거할 레거시 안내 문구.
     NEWS_SOURCE_FOOTER = "\n\n📰 *뉴스 리액션을 누르면 출처를 확인할 수 있어!*"
+    NEWS_SOURCE_SECTION = "\n\n📰 **뉴스 출처**\n"
+    NEWS_SOURCE_CACHE_MAX = 512
 
-    @staticmethod
-    def _format_web_source_footer(source_urls: list[str], *, max_sources: int = 5) -> str:
+    @classmethod
+    def _format_web_source_footer(
+        cls,
+        source_urls: list[str],
+        *,
+        max_sources: int = 5,
+        max_chars: int | None = None,
+    ) -> str:
         """Discord 자동 임베드를 억제한 짧은 출처 목록을 만듭니다."""
         seen: set[str] = set()
         lines: list[str] = []
+        char_budget = (
+            max(0, min(int(max_chars), 2_000))
+            if max_chars is not None
+            else None
+        )
         for raw_url in source_urls or []:
             url = str(raw_url or "").strip()
             if not re.match(r"^https?://", url, flags=re.IGNORECASE):
                 continue
             if url in seen:
                 continue
+            # Discord 메시지 하나보다 긴 추적 URL은 UI를 망가뜨리고 어차피
+            # 표시할 수 없다. 정상적인 기사 URL에는 충분한 여유를 둔다.
+            if len(url) > 800:
+                continue
             seen.add(url)
-            lines.append(f"{len(lines) + 1}. <{url}>")
+            candidate_lines = [*lines, f"{len(lines) + 1}. <{url}>"]
+            candidate = cls.NEWS_SOURCE_SECTION + "\n".join(candidate_lines)
+            if char_budget is not None and len(candidate) > char_budget:
+                continue
+            lines = candidate_lines
             if len(lines) >= max(1, min(int(max_sources), 8)):
                 break
         if not lines:
             return ""
-        return "\n\n**출처**\n" + "\n".join(lines)
+        return cls.NEWS_SOURCE_SECTION + "\n".join(lines)
+
+    async def _register_news_source_reaction(
+        self,
+        messages: list[discord.Message],
+        source_urls: list[str],
+    ) -> discord.Message | None:
+        """웹 답변 메시지 하나에 bounded 출처 캐시와 봇 📰 반응을 등록한다."""
+        if not messages:
+            return None
+        valid_urls: list[str] = []
+        seen: set[str] = set()
+        for raw_url in source_urls or []:
+            url = str(raw_url or "").strip()
+            if (
+                url in seen
+                or len(url) > 800
+                or not re.match(r"^https?://", url, flags=re.IGNORECASE)
+            ):
+                continue
+            seen.add(url)
+            valid_urls.append(url)
+            if len(valid_urls) >= 5:
+                break
+        if not valid_urls:
+            return None
+
+        # 분할 응답 중 가장 짧은 조각을 골라 사용자가 반응했을 때 출처를
+        # 같은 메시지에 안전하게 덧붙일 공간을 최대화한다.
+        anchor = min(
+            messages,
+            key=lambda item: len(str(getattr(item, "content", "") or "")),
+        )
+        available = 2_000 - len(str(getattr(anchor, "content", "") or ""))
+        if not self._format_web_source_footer(valid_urls, max_chars=available):
+            logger.warning(
+                "뉴스 출처 반응 등록 생략: 메시지 여유 공간 부족. message_id=%s",
+                getattr(anchor, "id", None),
+            )
+            return None
+
+        message_id = int(anchor.id)
+        self._news_source_cache[message_id] = valid_urls
+        self._news_source_locks.setdefault(message_id, asyncio.Lock())
+        while len(self._news_source_cache) > self.NEWS_SOURCE_CACHE_MAX:
+            oldest_message_id = next(iter(self._news_source_cache))
+            self._news_source_cache.pop(oldest_message_id, None)
+            self._news_source_locks.pop(oldest_message_id, None)
+        try:
+            await anchor.add_reaction("📰")
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            self._news_source_cache.pop(message_id, None)
+            self._news_source_locks.pop(message_id, None)
+            logger.warning(
+                "뉴스 출처 📰 반응 등록 실패. message_id=%s",
+                message_id,
+                exc_info=True,
+            )
+            return None
+        return anchor
 
     @staticmethod
     def _contextualize_web_query(
@@ -917,7 +1000,7 @@ class AIHandler(commands.Cog):
         플로우:
         1. tools_cog.web_search_rag() 호출 (뉴스/웹/블로그/문서 탐색 + 요약)
         2. 마사몽 채널 페르소나 + 탐색 컨텍스트로 LLM 최종 답변 생성
-        3. 출처 URL 자동 첨부
+        3. 출처 URL은 📰 반응 캐시에 전달
         """
         news_result = await self._execute_web_search_raw(user_query, log_extra)
         if news_result.get("error"):
@@ -986,13 +1069,9 @@ class AIHandler(commands.Cog):
                 "use_reaction_source": True,  # 📰 리액션으로 출처 표시
             }
 
-        # LLM 요약 실패 시 원본 컨텍스트 + 출처만 반환
-        source_urls = news_result.get("source_urls", [])
-        source_footer = ""
-        if source_urls:
-            source_lines = [f"{idx}. {url}" for idx, url in enumerate(source_urls, 1)]
-            source_footer = "\n\n[출처]\n" + "\n".join(source_lines)
-        fallback = f"자료를 찾긴 했는데 요약에 실패했어. 참고 자료야:\n\n{news_context}{source_footer}"
+        # LLM 요약 실패 시에도 출처는 본문에 강제 노출하지 않고 같은
+        # 반응 캐시 경로로 보낸다.
+        fallback = f"자료를 찾긴 했는데 요약에 실패했어. 참고 자료야:\n\n{news_context}"
         return {"result": fallback, "source_urls": news_result.get("source_urls", [])}
 
 
@@ -1079,6 +1158,52 @@ class AIHandler(commands.Cog):
             history,
         )
 
+    @staticmethod
+    def _should_search_memory(routing_decision: Any) -> bool:
+        """명시 기억 요청은 깊게, 일반 무도구 대화는 얕게 검색합니다.
+
+        의미 라우터가 특정 서버 인물 질문을 일반 대화로 오판해도 저장된
+        기억을 전혀 보지 않는 회귀를 막습니다. 실제 관련성은 검색 임계값이
+        다시 검증하므로 무관한 기억을 프롬프트에 강제로 넣지는 않습니다.
+        """
+        if bool(getattr(routing_decision, "needs_memory", False)):
+            return True
+        if not bool(
+            getattr(config, "RAG_PASSIVE_NO_TOOL_SEARCH_ENABLED", True)
+        ):
+            return False
+        return not bool(getattr(routing_decision, "plan", None))
+
+    @staticmethod
+    def _select_final_history(
+        history: list[dict[str, Any]],
+        routing_decision: Any,
+    ) -> list[dict[str, Any]]:
+        """라우터가 읽은 짧은 최근 문맥이 최종 모델 앞에서 사라지지 않게 합니다."""
+        if getattr(routing_decision, "context_digest", ""):
+            limit = max(
+                1,
+                int(getattr(config, "AI_CONTEXT_RECENT_TURNS", 8)),
+            )
+        else:
+            # 최종 프롬프트 빌더가 최근 대화에 별도 문자 예산(기본 4,000자)을
+            # 적용한다. 여기서 RAG 여부만으로 8/12개까지 먼저 잘라내면 짧은
+            # 13~24번째 메시지는 압축도 검색도 되지 않는 공백이 생긴다.
+            limit = max(
+                1,
+                int(
+                    getattr(
+                        config,
+                        "AI_CONTEXT_SOURCE_HISTORY_LIMIT",
+                        max(
+                            config.HISTORY_LIMIT_WITH_RAG,
+                            config.HISTORY_LIMIT_WITHOUT_RAG,
+                        ),
+                    )
+                ),
+            )
+        return history[-limit:]
+
     def _detect_tools_by_keyword(self, query: str) -> list[dict]:
         """키워드 기반 도구 감지 (LLM 실패 시 fallback)."""
         return self._ensure_intent_analyzer()._detect_tools_by_keyword(query)
@@ -1108,6 +1233,8 @@ class AIHandler(commands.Cog):
         user_id: int,
         query: str,
         recent_messages: list[str] | None = None,
+        *,
+        deep_search: bool = False,
     ) -> tuple[str, list[dict[str, Any]], float, list[str]]:
         """RAG: 하이브리드 검색 결과를 바탕으로 컨텍스트를 구성합니다."""
         if not getattr(
@@ -1147,6 +1274,7 @@ class AIHandler(commands.Cog):
                 user_id=search_user_id,
                 memory_user_id=user_id,
                 recent_messages=recent_messages,
+                deep_search=deep_search,
             )
         except Exception as exc:
             logger.error("하이브리드 검색 중 오류: %s", exc, extra=log_extra, exc_info=True)
@@ -1941,17 +2069,23 @@ class AIHandler(commands.Cog):
             # 순서 보장을 위한 짧은 텀
             await asyncio.sleep(0.5)
 
-    async def _edit_status_with_split_response(self, status_msg: discord.Message, text: str) -> list[discord.Message]:
+    async def _edit_status_with_split_response(
+        self,
+        status_msg: discord.Message,
+        text: str,
+        *,
+        chunk_size: int = 1900,
+    ) -> list[discord.Message]:
         """진행 상태 메시지를 최종 응답으로 바꾸되, 길면 후속 메시지로 나눠 보냅니다."""
-        chunks = self._split_message_chunks(text)
+        chunks = self._split_message_chunks(text, chunk_size=chunk_size)
         if not chunks:
             return []
 
-        await status_msg.edit(
+        edited_status = await status_msg.edit(
             content=chunks[0],
             allowed_mentions=discord.AllowedMentions.none(),
         )
-        sent_messages = [status_msg]
+        sent_messages = [edited_status or status_msg]
         for chunk in chunks[1:]:
             sent_messages.append(
                 await status_msg.channel.send(
@@ -2327,7 +2461,7 @@ class AIHandler(commands.Cog):
             rag_entries: list[dict[str, Any]] = []
             rag_top_score = 0.0
             rag_blocks: list[str] = []
-            if routing_decision.needs_memory:
+            if self._should_search_memory(routing_decision):
                 recent_search_messages = self._recent_search_messages_from_history(
                     history
                 )
@@ -2342,21 +2476,13 @@ class AIHandler(commands.Cog):
                     message.author.id,
                     user_query,
                     recent_messages=recent_search_messages,
+                    deep_search=bool(routing_decision.needs_memory),
                 )
 
-            if routing_decision.context_digest:
-                recent_history_limit = max(
-                    1,
-                    int(getattr(config, "AI_CONTEXT_RECENT_TURNS", 8)),
-                )
-            elif rag_prompt:
-                recent_history_limit = max(1, config.HISTORY_LIMIT_WITH_RAG)
-            else:
-                recent_history_limit = max(
-                    1,
-                    config.HISTORY_LIMIT_WITHOUT_RAG,
-                )
-            history = history[-recent_history_limit:]
+            history = self._select_final_history(
+                history,
+                routing_decision,
+            )
 
             raw_tool_plan = routing_decision.plan
             llm_decision_trusted = routing_decision.source == "llm"
@@ -2671,19 +2797,20 @@ class AIHandler(commands.Cog):
                     elif img_url:
                         final_response_text += f"\n\n🖼️ {img_url}"
                 
-                # [Progress Update] 최종 답변으로 편집
-                if source_urls_to_cache:
-                    source_footer = self._format_web_source_footer(
-                        source_urls_to_cache,
-                    )
-                    if source_footer and source_footer not in final_response_text:
-                        final_response_text += source_footer
-
+                # [Progress Update] 최종 답변으로 편집. 웹 출처는 본문에 항상
+                # 노출하지 않고 봇이 단 📰 반응을 사용자가 눌렀을 때만 표시한다.
                 await progress.stop()
-                await self._edit_status_with_split_response(
+                response_messages = await self._edit_status_with_split_response(
                     status_msg,
                     final_response_text,
+                    # 출처 footer가 같은 메시지에 들어갈 여유를 확보한다.
+                    chunk_size=1_400 if source_urls_to_cache else 1_900,
                 )
+                if source_urls_to_cache:
+                    await self._register_news_source_reaction(
+                        response_messages,
+                        source_urls_to_cache,
+                    )
                 
                 # 분석 데이터 로깅 (순차 실행: 단일 커넥션 공유)
                 await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
@@ -3223,7 +3350,7 @@ class AIHandler(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
-        """📰 리액션 클릭 시 뉴스 출처 URL을 해당 메시지의 reply로 전송합니다."""
+        """사용자가 📰를 더하면 캐시한 뉴스 출처를 같은 메시지에 표시합니다."""
         # 봇 자신의 리액션은 무시
         if payload.user_id == self.bot.user.id:
             return
@@ -3234,84 +3361,105 @@ class AIHandler(commands.Cog):
         source_urls = self._news_source_cache.get(payload.message_id)
         if not source_urls:
             return
-        # 동시성 방어: 이미 다른 요청이 이 메시지를 업데이트 중이면 무시
-        if payload.message_id in self._updating_news_sources:
-            return
-            
-        self._updating_news_sources.add(payload.message_id)
-        try:
-            channel = self.bot.get_channel(payload.channel_id)
-            if not channel:
-                # DM 채널의 경우 캐시에 없을 수 있으므로 직접 가져오기 시도
-                try:
-                    channel = await self.bot.fetch_channel(payload.channel_id)
-                except Exception as e:
-                    logger.debug(f"채널 fetch 실패 (ID: {payload.channel_id}): {e}")
+        lock = self._news_source_locks.setdefault(
+            int(payload.message_id),
+            asyncio.Lock(),
+        )
+        async with lock:
+            try:
+                channel = self.bot.get_channel(payload.channel_id)
+                if not channel:
+                    # DM 채널도 캐시될 수 있으므로 API 조회로 보완한다.
+                    try:
+                        channel = await self.bot.fetch_channel(payload.channel_id)
+                    except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
+                        logger.debug(
+                            "뉴스 출처 채널 조회 실패. channel_id=%s error=%s",
+                            payload.channel_id,
+                            exc,
+                        )
+                        return
+
+                if not channel:
                     return
-            
-            if not channel:
-                return
-                
-            msg = await channel.fetch_message(payload.message_id)
-            
-            # 출처 목록 생성
-            url_lines = [f"{i}. {url}" for i, url in enumerate(source_urls, 1)]
-            source_text = "\n\n📰 **뉴스 출처**\n" + "\n".join(url_lines)
-            
-            # 이미 출처가 포함되어 있는지 확인 (더블 체크)
-            if "📰 **뉴스 출처**" in msg.content:
-                return
-                
-            await msg.edit(content=msg.content + source_text)
-        except Exception as e:
-            logger.warning(f"뉴스 출처 리액션 처리 실패: {e}")
-        finally:
-            # 작업이 끝나면 세트에서 제거 (성공/실패 여부와 상관없이)
-            if payload.message_id in self._updating_news_sources:
-                self._updating_news_sources.remove(payload.message_id)
+
+                msg = await channel.fetch_message(payload.message_id)
+
+                # 이미 출처가 포함되어 있는지 확인 (더블 체크)
+                if self.NEWS_SOURCE_SECTION in msg.content:
+                    return
+                source_text = self._format_web_source_footer(
+                    source_urls,
+                    max_chars=2_000 - len(msg.content),
+                )
+                if not source_text:
+                    logger.warning(
+                        "뉴스 출처 표시 생략: 메시지 길이 여유 없음. message_id=%s",
+                        payload.message_id,
+                    )
+                    return
+                await msg.edit(content=msg.content + source_text)
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
+                logger.warning(
+                    "뉴스 출처 반응 처리 실패. message_id=%s error=%s",
+                    payload.message_id,
+                    exc,
+                )
+            except Exception:
+                logger.exception(
+                    "뉴스 출처 반응 처리 중 예상하지 못한 오류. message_id=%s",
+                    payload.message_id,
+                )
 
     @commands.Cog.listener()
     async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent):
-        """📰 리액션이 제거되어 1개(봇 것)만 남으면 메시지에서 출처 정보를 다시 지웁니다."""
+        """마지막 사용자 📰 반응이 제거되면 메시지에서 출처를 다시 숨깁니다."""
         if str(payload.emoji) != "📰":
             return
-            
+
         # 캐시에 있는 메시지인지 확인
         if payload.message_id not in self._news_source_cache:
             return
 
-        # 동시성 방어
-        if payload.message_id in self._updating_news_sources:
-            return
-            
-        self._updating_news_sources.add(payload.message_id)
-        try:
-            channel = self.bot.get_channel(payload.channel_id)
-            if not channel:
-                try:
-                    channel = await self.bot.fetch_channel(payload.channel_id)
-                except:
-                    return
-            
-            if not channel:
-                return
+        lock = self._news_source_locks.setdefault(
+            int(payload.message_id),
+            asyncio.Lock(),
+        )
+        async with lock:
+            try:
+                channel = self.bot.get_channel(payload.channel_id)
+                if not channel:
+                    try:
+                        channel = await self.bot.fetch_channel(payload.channel_id)
+                    except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                        return
 
-            msg = await channel.fetch_message(payload.message_id)
-            
-            # 리액션 개수 확인
-            newspaper_reaction = discord.utils.get(msg.reactions, emoji="📰")
-            
-            # 만약 리액션이 1개 이하(봇만 남거나 다 사라진 경우)면 출처 텍스트 제거
-            if newspaper_reaction and newspaper_reaction.count <= 1:
-                if "📰 **뉴스 출처**" in msg.content:
-                    # 출처 섹션 시작 지점을 찾아 그 앞까지만 남김
-                    new_content = msg.content.split("\n\n📰 **뉴스 출처**")[0]
-                    await msg.edit(content=new_content)
-        except Exception as e:
-            logger.debug(f"뉴스 출처 숨기기 실패: {e}")
-        finally:
-            if payload.message_id in self._updating_news_sources:
-                self._updating_news_sources.remove(payload.message_id)
+                if not channel:
+                    return
+
+                msg = await channel.fetch_message(payload.message_id)
+
+                # 봇이 미리 붙인 반응 하나만 남았거나 반응 자체가 사라졌다면
+                # 출처 섹션을 제거한다. 다른 사용자가 누른 상태면 유지한다.
+                newspaper_reaction = discord.utils.get(msg.reactions, emoji="📰")
+                if newspaper_reaction is None or newspaper_reaction.count <= 1:
+                    if self.NEWS_SOURCE_SECTION in msg.content:
+                        new_content = msg.content.split(
+                            self.NEWS_SOURCE_SECTION,
+                            1,
+                        )[0]
+                        await msg.edit(content=new_content)
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
+                logger.debug(
+                    "뉴스 출처 숨기기 실패. message_id=%s error=%s",
+                    payload.message_id,
+                    exc,
+                )
+            except Exception:
+                logger.exception(
+                    "뉴스 출처 숨기기 중 예상하지 못한 오류. message_id=%s",
+                    payload.message_id,
+                )
 
 
 async def setup(bot: commands.Bot):
