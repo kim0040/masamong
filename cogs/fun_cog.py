@@ -183,14 +183,14 @@ class FunCog(commands.Cog):
         `!요약` 명령어 또는 키워드 트리거에 의해 호출됩니다.
         """
         if not self.ai_handler or not self.ai_handler.is_ready or not config.AI_MEMORY_ENABLED:
-            if status_msg: await status_msg.edit(content="죄송합니다, 대화 요약 기능이 현재 준비되지 않았습니다.")
-            else: await channel.send("죄송합니다, 대화 요약 기능이 현재 준비되지 않았습니다.")
+            if status_msg: await status_msg.edit(content="지금은 대화 요약을 쓸 수 없어요. 잠시 뒤 다시 시도해주세요.")
+            else: await channel.send("지금은 대화 요약을 쓸 수 없어요. 잠시 뒤 다시 시도해주세요.")
             return
 
         # [Safety] DM Support Check
         if not channel.guild:
-            if status_msg: await status_msg.edit(content="이 명령어는 개인 메시지(DM)에서는 사용할 수 없어요! 서버(채널)에서 사용해주세요.")
-            else: await channel.send("이 명령어는 개인 메시지(DM)에서는 사용할 수 없어요! 서버(채널)에서 사용해주세요.")
+            if status_msg: await status_msg.edit(content="이건 서버 채널에서만 쓸 수 있어요!")
+            else: await channel.send("이건 서버 채널에서만 쓸 수 있어요!")
             return
 
         async with channel.typing():

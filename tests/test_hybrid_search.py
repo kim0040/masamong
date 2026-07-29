@@ -29,7 +29,7 @@ class DummyDiscordStore:
             },
         ]
 
-    async def fetch_recent_memory_entries(self, *, server_id, channel_id, user_id=None, limit=200):
+    async def fetch_recent_memory_entries(self, *, server_id, channel_id, user_id=None, limit=200, query_vector=None):
         self.structured_calls += 1
         return []
 
@@ -156,6 +156,7 @@ async def test_deep_search_reads_structured_and_raw_discord_embeddings(monkeypat
             channel_id,
             user_id=None,
             limit=200,
+            query_vector=None,
         ):
             self.structured_calls += 1
             return [

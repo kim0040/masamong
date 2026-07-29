@@ -122,8 +122,8 @@ async def test_zodiac_failure_is_negative_cached_without_second_provider_call():
         await cog._show_zodiac_ranking(second)
 
         assert ai.calls == 1
-        assert "오류" in str(first.send.await_args)
-        assert "오류" in str(second.send.await_args)
+        assert "문제가 생겼어요" in str(first.send.await_args)
+        assert "문제가 생겼어요" in str(second.send.await_args)
     finally:
         await db.close()
 
@@ -143,7 +143,7 @@ async def test_zodiac_physical_attempt_cap_is_reserved_before_provider(
         await cog._show_zodiac_fortune(second, "사자자리")
 
         assert ai.calls == 1
-        assert "상한" in str(second.send.await_args)
+        assert "다 썼어요" in str(second.send.await_args)
         async with db.execute(
             "SELECT COUNT(*) FROM api_call_log WHERE api_type = ?",
             (_ZODIAC_ATTEMPT_API_TYPE,),

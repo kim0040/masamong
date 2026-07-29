@@ -493,6 +493,13 @@ class DiscordEmbeddingStore:
             db_connection: 공유 TiDBConnection 인스턴스 (미사용, 호환성 유지).
         """
         self.db_path = Path(db_path)
+        # 선택적 서버측 벡터 열 상태. DDL 전 false를 영구 캐시하면 열 추가 뒤
+        # 신규 기억이 계속 NULL로 쌓이므로, 부정 결과는 짧은 TTL 뒤 재확인한다.
+        self._vector_column_state: bool | None = None
+        self._vector_column_checked_at = 0.0
+        self._vector_coverage_complete: bool | None = None
+        self._vector_coverage_checked_at = 0.0
+        self._vector_search_failed = False
         self.backend = getattr(config, "DISCORD_EMBEDDING_BACKEND", "sqlite")
         self.tidb_table = getattr(config, "DISCORD_EMBEDDING_TIDB_TABLE", "discord_chat_embeddings")
         self._tidb_settings = _build_tidb_settings()
@@ -986,30 +993,38 @@ class DiscordEmbeddingStore:
         owner_user_id_str = str(owner_user_id) if owner_user_id is not None else None
 
         if self.backend == "tidb":
-            query = """
-                INSERT INTO discord_memory_entries (
-                    memory_id, anchor_message_id, server_id, channel_id, owner_user_id, owner_user_name,
-                    memory_scope, memory_type, summary_text, memory_text, raw_context, source_message_ids,
-                    speaker_names, keyword_json, timestamp, embedding
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                    owner_user_id = VALUES(owner_user_id),
-                    owner_user_name = VALUES(owner_user_name),
-                    memory_scope = VALUES(memory_scope),
-                    memory_type = VALUES(memory_type),
-                    summary_text = VALUES(summary_text),
-                    memory_text = VALUES(memory_text),
-                    raw_context = VALUES(raw_context),
-                    source_message_ids = VALUES(source_message_ids),
-                    speaker_names = VALUES(speaker_names),
-                    keyword_json = VALUES(keyword_json),
-                    timestamp = VALUES(timestamp),
-                    embedding = VALUES(embedding)
-            """
-            await asyncio.to_thread(
-                self._tidb_exec,
-                query,
-                (
+            vector_literal = _vector_literal(embedding)
+            has_vector_column = await asyncio.to_thread(
+                self._vector_column_exists,
+            )
+            if has_vector_column:
+                query = """
+                    INSERT INTO discord_memory_entries (
+                        memory_id, anchor_message_id, server_id, channel_id,
+                        owner_user_id, owner_user_name, memory_scope, memory_type,
+                        summary_text, memory_text, raw_context, source_message_ids,
+                        speaker_names, keyword_json, timestamp, embedding,
+                        embedding_vec
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s
+                    )
+                    ON DUPLICATE KEY UPDATE
+                        owner_user_id = VALUES(owner_user_id),
+                        owner_user_name = VALUES(owner_user_name),
+                        memory_scope = VALUES(memory_scope),
+                        memory_type = VALUES(memory_type),
+                        summary_text = VALUES(summary_text),
+                        memory_text = VALUES(memory_text),
+                        raw_context = VALUES(raw_context),
+                        source_message_ids = VALUES(source_message_ids),
+                        speaker_names = VALUES(speaker_names),
+                        keyword_json = VALUES(keyword_json),
+                        timestamp = VALUES(timestamp),
+                        embedding = VALUES(embedding),
+                        embedding_vec = VALUES(embedding_vec)
+                """
+                query_params = (
                     memory_id,
                     str(anchor_message_id),
                     str(server_id),
@@ -1026,7 +1041,55 @@ class DiscordEmbeddingStore:
                     keywords_json,
                     timestamp_iso,
                     embedding_bytes,
-                ),
+                    vector_literal,
+                )
+            else:
+                query = """
+                    INSERT INTO discord_memory_entries (
+                        memory_id, anchor_message_id, server_id, channel_id,
+                        owner_user_id, owner_user_name, memory_scope, memory_type,
+                        summary_text, memory_text, raw_context, source_message_ids,
+                        speaker_names, keyword_json, timestamp, embedding
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s
+                    )
+                    ON DUPLICATE KEY UPDATE
+                        owner_user_id = VALUES(owner_user_id),
+                        owner_user_name = VALUES(owner_user_name),
+                        memory_scope = VALUES(memory_scope),
+                        memory_type = VALUES(memory_type),
+                        summary_text = VALUES(summary_text),
+                        memory_text = VALUES(memory_text),
+                        raw_context = VALUES(raw_context),
+                        source_message_ids = VALUES(source_message_ids),
+                        speaker_names = VALUES(speaker_names),
+                        keyword_json = VALUES(keyword_json),
+                        timestamp = VALUES(timestamp),
+                        embedding = VALUES(embedding)
+                """
+                query_params = (
+                    memory_id,
+                    str(anchor_message_id),
+                    str(server_id),
+                    str(channel_id),
+                    owner_user_id_str,
+                    owner_user_name,
+                    memory_scope,
+                    memory_type,
+                    summary_text,
+                    memory_text,
+                    raw_context,
+                    source_json,
+                    speakers_json,
+                    keywords_json,
+                    timestamp_iso,
+                    embedding_bytes,
+                )
+            await asyncio.to_thread(
+                self._tidb_exec,
+                query,
+                query_params,
             )
             return
 
@@ -1073,6 +1136,108 @@ class DiscordEmbeddingStore:
             )
             await db.commit()
 
+    def _vector_column_exists(self, *, force: bool = False) -> bool:
+        """선택적 ``embedding_vec`` 열 존재를 짧은 부정 TTL과 함께 확인한다."""
+        if self.backend != "tidb":
+            return False
+        now = time.monotonic()
+        recheck_seconds = max(
+            5.0,
+            min(
+                300.0,
+                float(
+                    getattr(
+                        config,
+                        "STRUCTURED_MEMORY_VECTOR_STATE_RECHECK_SECONDS",
+                        60.0,
+                    )
+                ),
+            ),
+        )
+        if self._vector_column_state is True and not force:
+            return True
+        if (
+            self._vector_column_state is False
+            and not force
+            and now - self._vector_column_checked_at < recheck_seconds
+        ):
+            return False
+        try:
+            rows = self._tidb_exec(
+                "SELECT COUNT(*) AS n FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s "
+                "AND COLUMN_NAME = %s",
+                ("discord_memory_entries", "embedding_vec"),
+                fetch=True,
+            )
+            available = bool(rows and int(rows[0]["n"]) > 0)
+        except Exception as exc:  # pragma: no cover - 방어적 처리
+            logger.warning("벡터 열 확인 실패, 기존 경로를 사용합니다: %s", exc)
+            available = False
+        self._vector_column_state = available
+        self._vector_column_checked_at = now
+        if not available:
+            self._vector_coverage_complete = None
+        return available
+
+    def _vector_coverage_is_complete(self, *, force: bool = False) -> bool:
+        """기존 BLOB 중 새 벡터 열이 비어 있는 행이 하나도 없는지 확인한다."""
+        if not self._vector_column_exists(force=force):
+            return False
+        now = time.monotonic()
+        recheck_seconds = max(
+            5.0,
+            min(
+                300.0,
+                float(
+                    getattr(
+                        config,
+                        "STRUCTURED_MEMORY_VECTOR_STATE_RECHECK_SECONDS",
+                        60.0,
+                    )
+                ),
+            ),
+        )
+        if (
+            self._vector_coverage_complete is not None
+            and not force
+            and now - self._vector_coverage_checked_at < recheck_seconds
+        ):
+            return self._vector_coverage_complete
+        try:
+            rows = self._tidb_exec(
+                "SELECT EXISTS("
+                "SELECT 1 FROM discord_memory_entries "
+                "WHERE embedding IS NOT NULL AND embedding_vec IS NULL LIMIT 1"
+                ") AS missing",
+                (),
+                fetch=True,
+            )
+            missing = bool(rows and int(rows[0]["missing"]) > 0)
+            complete = not missing
+        except Exception as exc:  # pragma: no cover - 방어적 처리
+            logger.warning("벡터 백필 상태 확인 실패, 기존 경로를 사용합니다: %s", exc)
+            complete = False
+        self._vector_coverage_complete = complete
+        self._vector_coverage_checked_at = now
+        return complete
+
+    def _vector_search_available(self) -> bool:
+        """열·전체 백필·기능 플래그가 모두 준비됐을 때만 벡터 검색을 쓴다."""
+        if self.backend != "tidb":
+            return False
+        if not bool(getattr(config, "STRUCTURED_MEMORY_VECTOR_SEARCH_ENABLED", False)):
+            return False
+        if self._vector_search_failed:
+            return False
+        if self._vector_coverage_is_complete():
+            return self._vector_column_state
+        logger.info(
+            "embedding_vec 열 또는 전체 백필이 준비되지 않아 기존 최신순 "
+            "경로를 사용합니다."
+        )
+        return False
+
     async def fetch_recent_memory_entries(
         self,
         *,
@@ -1080,6 +1245,7 @@ class DiscordEmbeddingStore:
         channel_id: int,
         user_id: int | None = None,
         limit: int = 200,
+        query_vector: "np.ndarray | None" = None,
     ) -> list[aiosqlite.Row]:
         """서버/DM 경계를 지키며 공유·현재 사용자 기억을 반환합니다.
 
@@ -1138,15 +1304,52 @@ class DiscordEmbeddingStore:
                     ]
                 )
                 params.extend([user_id_str, str(channel_id), user_id_str])
-        params.append(int(limit))
-        query = (
-            select_sql
-            + f" WHERE server_id = {placeholder} AND ("
+        where_sql = (
+            f" WHERE server_id = {placeholder} AND ("
             + " OR ".join(scope_parts)
             + ") "
-            + "ORDER BY CASE WHEN memory_scope IN "
-            + "('guild_user', 'dm_user', 'user') THEN 0 ELSE 1 END, "
-            + f"timestamp DESC LIMIT {placeholder}"
+        )
+
+        # 서버측 벡터 검색이 준비돼 있으면 시간이 아니라 유사도로 자른다. 이러면
+        # 후보가 최근 며칠이 아니라 쌓인 기억 전체가 된다.
+        vector_search_available = (
+            query_vector is not None
+            and await asyncio.to_thread(self._vector_search_available)
+        )
+        if vector_search_available:
+            vector_literal = _vector_literal(query_vector)
+            vector_params = list(params)
+            vector_params.append(vector_literal)
+            vector_params.append(int(limit))
+            vector_query = (
+                select_sql
+                + where_sql
+                + f"AND embedding_vec IS NOT NULL "
+                + f"ORDER BY VEC_COSINE_DISTANCE(embedding_vec, {placeholder}) "
+                + f"LIMIT {placeholder}"
+            )
+            try:
+                rows = await asyncio.to_thread(
+                    self._tidb_exec, vector_query, tuple(vector_params), fetch=True
+                )
+                if rows:
+                    return rows
+                logger.info("벡터 검색 결과가 비어 최신순 경로로 보완합니다.")
+            except Exception as exc:
+                # 한 번이라도 실패하면 이 프로세스에서는 기존 경로만 쓴다.
+                self._vector_search_failed = True
+                logger.warning("벡터 검색 실패, 기존 경로로 전환합니다: %s", exc)
+
+        params.append(int(limit))
+        # 최신순으로만 자른다. 예전에는 본인 범위(`guild_user`/`user`)를 앞세워
+        # 정렬했는데, 활발한 사용자는 본인 범위 행만 수천 개라 LIMIT이 전부
+        # 거기서 소진됐다. 그러면 공용 대화 기억(`guild`/`channel`)이 후보에
+        # 단 한 건도 들어오지 못해, 다른 사람이 한 말은 원리상 회수할 수 없었다.
+        # 본인 기억 우대는 이미 _score_discord_rows의 유사도 가산으로 처리한다.
+        query = (
+            select_sql
+            + where_sql
+            + f"ORDER BY timestamp DESC LIMIT {placeholder}"
         )
         if self.backend == "tidb":
             rows = await asyncio.to_thread(

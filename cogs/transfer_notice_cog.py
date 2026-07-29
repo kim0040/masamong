@@ -113,13 +113,13 @@ class TransferDeliveryTimeModal(ReliableModal, title="편입 공지 알림 시�
                 exc_info=True,
             )
             await interaction.followup.send(
-                "알림 시각을 저장하지 못했습니다. 잠시 후 다시 시도해주세요.",
+                "알림 시각을 저장하지 못했어요. 잠시 뒤 다시 해주세요.",
                 ephemeral=True,
             )
             return
         await interaction.followup.send(
-            f"✅ 편입 공지 알림 시각을 매일 **{normalized} (한국 시간)**으로 "
-            "저장했습니다.",
+            f"✅ 편입 공지 알림을 매일 **{normalized} (한국 시간)**으로 "
+            "맞췄어요.",
             ephemeral=True,
         )
 
@@ -185,7 +185,7 @@ class TransferSchoolSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction) -> None:
         if int(interaction.user.id) != self.user_id:
             await interaction.response.send_message(
-                "이 대학 선택 메뉴는 요청한 사용자만 바꿀 수 있습니다.",
+                "이 메뉴는 명령을 부른 사람만 바꿀 수 있어요.",
                 ephemeral=True,
             )
             return
@@ -216,10 +216,10 @@ class TransferSchoolSelect(discord.ui.Select):
             ),
         )
         await interaction.followup.send(
-            "✅ 편입 공지 구독을 저장했습니다.\n"
-            f"선택 대학: {', '.join(names)}\n"
-            "매일 공식 입학처를 한 번 확인하며, 새 공지나 제목 수정이 있을 때만 "
-            "이 DM으로 알려드립니다.",
+            "✅ 편입 공지 구독을 저장했어요.\n"
+            f"선택한 대학: {', '.join(names)}\n"
+            "매일 공식 입학처를 한 번 확인하고, 새 공지나 제목이 바뀐 게 있을 때만 "
+            "이 DM으로 알려드릴게요.",
             ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
         )
@@ -260,7 +260,7 @@ class TransferDashboardView(ReliableView):
         if int(interaction.user.id) == self.user_id:
             return True
         await interaction.response.send_message(
-            "이 편입 공지 메뉴는 요청한 사용자만 조작할 수 있습니다.",
+            "이 메뉴는 명령을 부른 사람만 쓸 수 있어요.",
             ephemeral=True,
         )
         return False
@@ -279,7 +279,7 @@ class TransferDashboardView(ReliableView):
         await interaction.response.defer(ephemeral=True, thinking=True)
         if not await self.cog._has_consent(self.user_id):
             await interaction.followup.send(
-                "현재 개인정보 동의가 없어 저장하지 않았습니다.",
+                "개인정보 동의가 없어서 저장하지 않았어요.",
                 ephemeral=True,
             )
             return
@@ -303,8 +303,8 @@ class TransferDashboardView(ReliableView):
             ),
         )
         await interaction.followup.send(
-            f"✅ {len(self.cog.sources)}개 대학을 모두 구독했습니다. "
-            "새 편입 공지가 있을 때만 DM합니다.",
+            f"✅ {len(self.cog.sources)}개 대학을 모두 구독했어요. "
+            "새 공지가 있을 때만 DM으로 알려드려요.",
             ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
         )
@@ -343,7 +343,7 @@ class TransferDashboardView(ReliableView):
         row = await self.cog._subscription_row(self.user_id)
         if row is None:
             await interaction.followup.send(
-                "먼저 위에서 대학을 선택하거나 **전체 대학 구독**을 눌러주세요.",
+                "위에서 대학을 고르거나 **전체 대학 구독**을 눌러주세요.",
                 ephemeral=True,
             )
             return
@@ -365,9 +365,9 @@ class TransferDashboardView(ReliableView):
         )
         await interaction.followup.send(
             (
-                "🔕 구독을 취소했습니다. 저장한 대학 선택은 유지되며 알림은 보내지 않습니다."
+                "🔕 구독을 취소했어요. 저장한 대학 선택은 유지되며 알림은 보내지 않아요."
                 if active
-                else "🔔 구독을 재개했습니다. 기존 대학 선택으로 새 공지를 확인합니다."
+                else "🔔 구독을 재개했어요. 기존 대학 선택으로 새 공지를 확인해요."
             ),
             ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
@@ -718,8 +718,7 @@ class TransferNoticeCog(commands.Cog):
     async def send_dashboard(self, destination) -> None:
         if getattr(destination, "guild", None) is not None:
             await destination.send(
-                "🔒 학교·편입 공지는 개인 정보 보호를 위해 DM에서만 "
-                "사용할 수 있습니다. 마사몽에게 DM으로 `!편입`을 보내주세요."
+                "🔒 개인 정보가 오가는 기능이라 DM에서만 쓸 수 있어요. 마사몽에게 DM으로 `!편입`을 보내주세요."
             )
             return
         user_id = int(destination.author.id)
@@ -1274,7 +1273,7 @@ class TransferNoticeCog(commands.Cog):
             return
         row = await self._subscription_row(ctx.author.id)
         if row is None:
-            await ctx.send("아직 편입 공지를 구독하지 않았습니다. `!편입`에서 선택해주세요.")
+            await ctx.send("아직 구독한 대학이 없어요. `!편입`에서 골라주세요.")
             return
         selected = self._decode_schools(row[1])
         names = [
@@ -1295,10 +1294,10 @@ class TransferNoticeCog(commands.Cog):
         """편입 공지 알림을 중단하고 대학 선택은 유지합니다."""
         row = await self._subscription_row(ctx.author.id)
         if row is None or not bool(row[2]):
-            await ctx.send("현재 활성화된 편입 공지 구독이 없습니다.")
+            await ctx.send("지금 켜져 있는 편입 공지 구독이 없어요.")
             return
         await self._set_enabled(ctx.author.id, False)
-        await ctx.send("🔕 편입 공지 구독을 취소했습니다. 이후 알림은 보내지 않습니다.")
+        await ctx.send("🔕 편입 공지 구독을 취소했어요. 이후 알림은 보내지 않아요.")
 
     @transfer.command(name="재개")
     @commands.dm_only()
@@ -1309,10 +1308,10 @@ class TransferNoticeCog(commands.Cog):
             return
         row = await self._subscription_row(ctx.author.id)
         if row is None:
-            await ctx.send("저장된 대학 선택이 없습니다. `!편입`에서 먼저 선택해주세요.")
+            await ctx.send("저장해둔 대학이 없어요. `!편입`에서 먼저 골라주세요.")
             return
         await self._set_enabled(ctx.author.id, True)
-        await ctx.send("🔔 저장된 대학 선택으로 편입 공지 구독을 재개했습니다.")
+        await ctx.send("🔔 저장된 대학 선택으로 편입 공지 구독을 재개했어요.")
 
     @transfer.command(name="시간", aliases=["알림시간"])
     @commands.dm_only()
@@ -1328,7 +1327,7 @@ class TransferNoticeCog(commands.Cog):
             await ctx.send(str(exc))
             return
         await ctx.send(
-            f"⏰ 편입 공지 알림 시각을 **{normalized} (한국 시간)**으로 변경했습니다."
+            f"⏰ 편입 공지 알림 시각을 **{normalized} (한국 시간)**으로 변경했어요."
         )
 
     @transfer.command(name="삭제")
@@ -1347,8 +1346,7 @@ class TransferNoticeCog(commands.Cog):
         await self.bot.db.commit()
         await withdraw_consent(self.bot.db, user_id, TRANSFER_NOTICE_SCOPE)
         await ctx.send(
-            "🗑️ 편입 공지 대학 선택·구독·전달 기록을 삭제하고 동의를 철회했습니다.\n"
-            "동의·철회 증빙용 감사 이력은 별도 보관됩니다."
+            "🗑️ 편입 공지 대학 선택·구독·발송 기록을 지우고 동의도 철회했어요.\n동의·철회 기록은 그대로 남아요."
         )
 
 

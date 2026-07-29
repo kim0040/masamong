@@ -160,7 +160,7 @@ class MaintenanceCog(commands.Cog):
         try:
             import psutil
         except ImportError:
-            await ctx.send("⚠️ psutil이 설치되어 있지 않아 시스템 상태를 조회할 수 없습니다. `pip install psutil`")
+            await ctx.send("⚠️ psutil이 없어서 시스템 상태를 볼 수 없어요. `pip install psutil`")
             return
         process = psutil.Process()
         mem_info = process.memory_info()
@@ -182,7 +182,7 @@ class MaintenanceCog(commands.Cog):
         try:
              await self.bot.db.execute("DELETE FROM dm_usage_logs WHERE user_id = ?", (user_id,))
              await self.bot.db.commit()
-             await ctx.send(f"✅ 유저 {user_id}의 DM 제한 로그를 초기화했습니다.")
+             await ctx.send(f"✅ 유저 {user_id}의 DM 제한 로그를 초기화했어요.")
         except Exception as e:
              await ctx.send(f"❌ 초기화 실패: {e}")
 

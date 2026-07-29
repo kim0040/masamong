@@ -241,11 +241,83 @@ class HybridSearchEngine:
             ),
             reverse=True,
         )
-        enriched = enriched[: max(self.hybrid_top_k, 1)]
+        enriched = self._gate_by_relevance(
+            enriched,
+            deep_search=deep_search,
+        )
+        if not enriched:
+            return HybridSearchResult(entries=[], query_variants=variants, top_score=0.0)
+        # 상한은 config 파일의 top_k와 코드 상한 중 작은 쪽이다. 이미 배포된
+        # 서버의 embedding config를 고치지 않아도 새 상한이 적용되게 한다.
+        block_limit = min(
+            max(self.hybrid_top_k, 1),
+            max(int(getattr(config, "RAG_MEMORY_MAX_BLOCKS", 3)), 1),
+        )
+        enriched = enriched[:block_limit]
 
         reranked = await self._apply_reranker(query, enriched)
         top_score = reranked[0].get("combined_score", 0.0) if reranked else 0.0
         return HybridSearchResult(entries=reranked, query_variants=variants, top_score=top_score)
+
+    def _gate_by_relevance(
+        self,
+        entries: List[dict[str, Any]],
+        *,
+        deep_search: bool,
+    ) -> List[dict[str, Any]]:
+        """관련 없는 기억이 프롬프트에 섞이지 않게 최종 관문을 적용한다.
+
+        후보 생성 임계값(구조화 기억 0.5)은 "이 정도면 볼 만하다"는 넓은 그물이고,
+        여기는 "정말 이 대화에 필요한가"를 판단한다. 둘을 하나로 합치면 그물을
+        좁히는 순간 오래된 기억이 통째로 사라진다.
+
+        운영 기억 실측: 잡담의 최고 유사도가 0.45~0.61, 기억이 필요한 질문이
+        0.60~0.74로 분포가 겹친다. 절대 게이트만으로는 경계가 아슬아슬하므로
+        최고점 대비 상대 컷오프를 함께 쓴다.
+        """
+        if not entries:
+            return []
+
+        def _score(entry: dict[str, Any]) -> float:
+            return float(entry.get("combined_score", 0.0) or 0.0)
+
+        def _semantic_score(entry: dict[str, Any]) -> float:
+            # lexical_score와 본인 범위 +0.025는 순위 보조에만 쓴다. 이를
+            # 최종 게이트에 섞으면 전수 검색에서 "안녕"처럼 흔한 두 글자가
+            # 우연히 일치한 개인 기억이 0.61을 넘는 회귀가 생긴다.
+            value = entry.get("semantic_similarity")
+            if value is None:
+                value = entry.get("combined_score", 0.0)
+            return float(value or 0.0)
+
+        semantic_best = max(_semantic_score(entry) for entry in entries)
+        gate = float(
+            getattr(
+                config,
+                (
+                    "RAG_EXPLICIT_MEMORY_GATE_SCORE"
+                    if deep_search
+                    else "RAG_MEMORY_GATE_SCORE"
+                ),
+                0.58 if deep_search else 0.61,
+            )
+        )
+        if semantic_best < gate:
+            # 가장 관련 있는 기억의 순수 의미 점수조차 기준에 못 미치면
+            # 어휘·개인 가산점과 무관하게 아무것도 넣지 않는다.
+            logger.debug(
+                "RAG 게이트: 최고 semantic 점수 %.3f < %.3f "
+                "(deep=%s), 기억을 사용하지 않습니다.",
+                semantic_best,
+                gate,
+                deep_search,
+            )
+            return []
+
+        best = _score(entries[0])
+        floor_ratio = float(getattr(config, "RAG_MEMORY_RELATIVE_FLOOR", 0.94))
+        floor = best * max(0.0, min(1.0, floor_ratio))
+        return [entry for entry in entries if _score(entry) >= floor]
 
     async def _expand_query_variants(
         self,
@@ -323,11 +395,22 @@ class HybridSearchEngine:
         structured_cache_key = (
             "structured_wide" if deep_search else "structured"
         )
+        if getattr(config, "STRUCTURED_MEMORY_VECTOR_SEARCH_ENABLED", False):
+            # 최신순 후보는 질의 변형끼리 재사용할 수 있지만, 서버측 벡터
+            # 후보는 query_vector마다 결과가 다르다. 첫 변형의 top-k를 다른
+            # 변형에 재사용하면 확장 검색의 recall이 다시 사라진다.
+            structured_cache_key += f":vector:{hash(query)}"
         structured_limit = (
             self.structured_memory_fallback_limit
             if deep_search
             else self.structured_memory_limit
         )
+        if getattr(config, "STRUCTURED_MEMORY_VECTOR_SEARCH_ENABLED", False):
+            # 서버가 유사도로 골라주면 후보를 많이 받을 이유가 없다. 전송량이
+            # 줄어드는 만큼 저사양 서버의 파이썬 계산도 줄어든다.
+            structured_limit = int(
+                getattr(config, "STRUCTURED_MEMORY_VECTOR_TOP_K", 32)
+            )
         if structured_cache_key not in cache:
             cache[structured_cache_key] = (
                 await self.discord_store.fetch_recent_memory_entries(
@@ -339,6 +422,7 @@ class HybridSearchEngine:
                         else user_id
                     ),
                     limit=structured_limit,
+                    query_vector=query_vector,
                 )
             )
         structured_rows = cache[structured_cache_key]

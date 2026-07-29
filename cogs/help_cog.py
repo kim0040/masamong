@@ -219,7 +219,7 @@ class MasamongHelpCommand(commands.HelpCommand):
                 256,
             ),
             description=clip_discord_text(
-                group.help or "설명이 없습니다.",
+                group.help or "설명이 없어요.",
                 4096,
             ),
             color=0xffaa00
@@ -299,7 +299,7 @@ def _build_home_embed(
     )
     embed.set_footer(
         text=(
-            "서버 메뉴의 상세 화면은 호출자에게만 표시됩니다."
+            "서버 메뉴의 상세 화면은 호출자에게만 표시돼요."
             if server_private
             else f"전체 명령과 상세 설명: {prefix}도움"
         )
@@ -466,7 +466,7 @@ class MasamongHomeView(ReliableView):
             ),
         }
         await interaction.response.send_message(
-            guides.get(select.values[0], "해당 안내를 찾지 못했습니다."),
+            guides.get(select.values[0], "그 안내는 찾지 못했어요."),
             ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
         )
@@ -475,7 +475,7 @@ class MasamongHomeView(ReliableView):
         if int(interaction.user.id) == self.user_id:
             return True
         await interaction.response.send_message(
-            "이 메뉴는 연 사용자만 사용할 수 있습니다.",
+            "이 메뉴는 메뉴를 연 사람만 쓸 수 있어요.",
             ephemeral=True,
         )
         return False
@@ -493,19 +493,18 @@ class MasamongHomeView(ReliableView):
     ) -> None:
         if self.ctx.guild:
             await interaction.response.send_message(
-                "개인화 학교 공지는 DM에서 설정합니다. 마사몽에게 DM으로 "
-                "`학교 공지 설정`이라고 보내주세요.",
+                "개인화 학교 공지는 DM에서 설정해요. 마사몽에게 DM으로 `학교 공지 설정`이라고 보내주세요.",
                 ephemeral=True,
             )
             return
         await interaction.response.send_message(
-            "학교 공지 메뉴를 아래에 열었습니다.",
+            "학교 공지 메뉴를 아래에 열었어요.",
             ephemeral=True,
         )
         cog = self.bot.get_cog("SchoolNoticeCog")
         if cog is None:
             await interaction.followup.send(
-                "이 인스턴스에서는 학교 공지를 사용할 수 없습니다.",
+                "여기서는 학교 공지를 사용할 수 없어요.",
                 ephemeral=True,
             )
             return
@@ -531,13 +530,13 @@ class MasamongHomeView(ReliableView):
             )
             return
         await interaction.response.send_message(
-            "편입 공지 구독 메뉴를 아래에 열었습니다.",
+            "편입 공지 구독 메뉴를 아래에 열었어요.",
             ephemeral=True,
         )
         cog = self.bot.get_cog("TransferNoticeCog")
         if cog is None:
             await interaction.followup.send(
-                "이 인스턴스에서는 편입 공지를 사용할 수 없습니다.",
+                "여기서는 편입 공지를 사용할 수 없어요.",
                 ephemeral=True,
             )
             return
@@ -563,13 +562,13 @@ class MasamongHomeView(ReliableView):
             )
             return
         await interaction.response.send_message(
-            "오늘 운세를 아래에서 이어서 확인합니다.",
+            "오늘 운세를 아래에서 이어서 확인해요.",
             ephemeral=True,
         )
         cog = self.bot.get_cog("FortuneCog")
         if cog is None:
             await interaction.followup.send(
-                "이 인스턴스에서는 운세를 사용할 수 없습니다.",
+                "여기서는 운세를 사용할 수 없어요.",
                 ephemeral=True,
             )
             return
@@ -589,7 +588,7 @@ class MasamongHomeView(ReliableView):
         cog = self.bot.get_cog("PrivacyCog")
         if cog is None:
             await interaction.response.send_message(
-                "개인정보 상태 기능을 불러오지 못했습니다.",
+                "개인정보 상태 기능을 불러오지 못했어요.",
                 ephemeral=True,
             )
             return
@@ -841,7 +840,7 @@ class HomeCategorySelect(discord.ui.Select):
         category = self.values[0]
         if category == "admin" and not is_superadmin(interaction.user.id):
             await interaction.response.send_message(
-                "이 인스턴스에서는 사용할 수 없는 메뉴예요.",
+                "여기서는 사용할 수 없는 메뉴예요.",
                 ephemeral=True,
             )
             return
@@ -1025,7 +1024,7 @@ class CategoryView(ReliableView):
         if int(interaction.user.id) == self.user_id:
             return True
         await interaction.response.send_message(
-            "이 메뉴는 연 사용자만 사용할 수 있습니다.",
+            "이 메뉴는 메뉴를 연 사람만 쓸 수 있어요.",
             ephemeral=True,
         )
         return False
@@ -1060,7 +1059,7 @@ class CategoryView(ReliableView):
         command = self.bot.get_command(command_name)
         if command is None or command.cog is None:
             await interaction.response.send_message(
-                "이 인스턴스에서는 해당 기능을 사용할 수 없습니다.",
+                "여기서는 해당 기능을 사용할 수 없어요.",
                 ephemeral=True,
             )
             return
@@ -1092,7 +1091,7 @@ class CategoryView(ReliableView):
         if action == "admin_panel":
             if not is_superadmin(interaction.user.id):
                 await interaction.response.send_message(
-                    "이 인스턴스에서는 사용할 수 없는 메뉴예요.",
+                    "여기서는 사용할 수 없는 메뉴예요.",
                     ephemeral=True,
                 )
                 return
@@ -1108,8 +1107,7 @@ class CategoryView(ReliableView):
         if action in {"school_dashboard", "transfer_dashboard"}:
             if self.server_mode:
                 await interaction.response.send_message(
-                    "개인 공지 설정은 DM에서만 가능합니다. 마사몽에게 DM으로 "
-                    "`!메뉴`를 보내주세요.",
+                    "개인 공지 설정은 DM에서만 가능해요. 마사몽에게 DM으로 `!메뉴`를 보내주세요.",
                     ephemeral=True,
                 )
                 return
@@ -1120,12 +1118,12 @@ class CategoryView(ReliableView):
             )
             cog = self.bot.get_cog(cog_name)
             await interaction.response.send_message(
-                "선택한 설정 화면을 아래에 열었습니다.",
+                "고르신 설정 화면을 아래에 열었어요.",
                 ephemeral=False,
             )
             if cog is None:
                 await interaction.followup.send(
-                    "이 인스턴스에서는 해당 공지 기능을 사용할 수 없습니다."
+                    "여기서는 해당 공지 기능을 사용할 수 없어요."
                 )
                 return
             await cog.send_dashboard(self.ctx)
@@ -1139,7 +1137,7 @@ class CategoryView(ReliableView):
             text = (
                 await cog.status_text(self.user_id)
                 if cog is not None
-                else "개인정보 상태 기능을 불러오지 못했습니다."
+                else "개인정보 상태 기능을 불러오지 못했어요."
             )
             await interaction.followup.send(
                 text,
@@ -1164,7 +1162,7 @@ class CategoryView(ReliableView):
         if action == "image":
             if not self.server_mode:
                 await interaction.response.send_message(
-                    "이미지 생성은 서버에서만 사용할 수 있습니다.",
+                    "이미지 생성은 서버에서만 사용할 수 있어요.",
                     ephemeral=False,
                 )
                 return
@@ -1177,7 +1175,7 @@ class CategoryView(ReliableView):
         if action == "summary":
             if not self.server_mode:
                 await interaction.response.send_message(
-                    "채널 대화 요약은 서버에서만 사용할 수 있습니다.",
+                    "채널 대화 요약은 서버에서만 사용할 수 있어요.",
                     ephemeral=False,
                 )
                 return
@@ -1207,7 +1205,7 @@ class CategoryView(ReliableView):
                 command = self.bot.get_command("운세 구독")
                 if command is None or command.cog is None:
                     await interaction.response.send_message(
-                        "운세 알림 기능을 불러오지 못했습니다.",
+                        "운세 알림 기능을 불러오지 못했어요.",
                         ephemeral=bool(self.server_mode),
                     )
                     return
@@ -1225,7 +1223,7 @@ class CategoryView(ReliableView):
         if action in {"ranking_today", "ranking_week"}:
             if not self.server_mode:
                 await interaction.response.send_message(
-                    "활동 랭킹은 서버에서만 사용할 수 있습니다.",
+                    "활동 랭킹은 서버에서만 사용할 수 있어요.",
                     ephemeral=False,
                 )
                 return
@@ -1238,14 +1236,14 @@ class CategoryView(ReliableView):
         if action == "poll":
             if not self.server_mode:
                 await interaction.response.send_message(
-                    "투표는 서버에서만 만들 수 있습니다.",
+                    "투표는 서버에서만 만들 수 있어요.",
                     ephemeral=False,
                 )
                 return
             command = self.bot.get_command("투표")
             if command is None or command.cog is None:
                 await interaction.response.send_message(
-                    "투표 기능을 불러오지 못했습니다.",
+                    "투표 기능을 불러오지 못했어요.",
                     ephemeral=True,
                 )
                 return
@@ -1274,7 +1272,7 @@ class CategoryView(ReliableView):
             prefix = self.ctx.clean_prefix or config.COMMAND_PREFIX or "!"
             await interaction.response.send_message(
                 f"전체 목록은 `{prefix}도움`, 개별 설명은 "
-                f"`{prefix}도움 <명령어>`로 확인할 수 있습니다.",
+                f"`{prefix}도움 <명령어>`로 확인할 수 있어요.",
                 ephemeral=bool(self.server_mode),
             )
 
@@ -1361,9 +1359,7 @@ class HelpCog(commands.Cog):
             launcher_embed = discord.Embed(
                 title="🧭 마사몽 메뉴",
                 description=(
-                    "아래 버튼을 누르면 메뉴는 본인에게만 보여요. 기능을 실행한 "
-                    "결과는 함께 볼 수 있도록 채널에 표시하고, 개인 설정과 관리 "
-                    "내용만 비공개로 유지합니다."
+                    "아래 버튼을 누르면 메뉴는 본인에게만 보여요. 기능을 실행한 결과는 함께 볼 수 있도록 채널에 표시하고, 개인 설정과 관리 내용만 비공개로 유지해요."
                 ),
                 color=0x66CCFF,
             )

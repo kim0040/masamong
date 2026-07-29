@@ -62,7 +62,7 @@ class UserCommands(commands.Cog):
         """
         if not is_superadmin(ctx.author.id):
             await ctx.send(
-                "❌ 전역 로그 작업은 현재 인스턴스의 최고 관리자만 실행할 수 있습니다."
+                "❌ 이 작업은 봇 관리자만 실행할 수 있어요."
             )
             return
         log_filename = config.LOG_FILE_NAME
@@ -468,7 +468,7 @@ class UserCommands(commands.Cog):
                         description=clip_discord_text(summary, 4096),
                         color=0xff6b6b,
                     )
-                    embed.set_footer(text="최근 깃허브 변경 내역을 바탕으로 생성되었습니다.")
+                    embed.set_footer(text="최근 깃허브 변경 내역을 바탕으로 생성됐어요.")
                     await ctx.send(embed=embed)
                     return
 
@@ -481,10 +481,7 @@ class UserCommands(commands.Cog):
                 embed.add_field(
                     name="✨ 커스텀 이모지 지원 & 성능 최적화",
                     value=(
-                        "- 이제 제가 서버만의 **특별한 커스텀 이모지**를 대화 중에 사용할 수 있어요! 🥰\n"
-                        "- 불필요한 데이터를 줄여서 훨씬 **가볍고 빠르게** 대답하도록 최적화했습니다.\n"
-                        "- 각종 연결 오류 및 인텐트 버그를 수정하여 **더욱 안정적인** 모습으로 돌아왔어요!\n\n"
-                        "*최근 상세 변경 내역을 불러오지 못했습니다. 위 주요 업데이트 사항을 확인해 주세요!*"
+                        "- 이제 제가 서버만의 **특별한 커스텀 이모지**를 대화 중에 사용할 수 있어요! 🥰\n- 불필요한 데이터를 줄여서 훨씬 **가볍고 빠르게** 대답하도록 최적화했어요.\n- 각종 연결 오류 및 인텐트 버그를 수정하여 **더욱 안정적인** 모습으로 돌아왔어요!\n\n*최근 상세 변경 내역을 불러오지 못했어요. 위 주요 업데이트 사항을 확인해 주세요!*"
                     ),
                     inline=False
                 )

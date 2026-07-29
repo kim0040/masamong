@@ -101,7 +101,7 @@ async def test_registration_stops_after_three_invalid_inputs_without_saving():
     assert cog.bot.wait_for.await_count == 3
     cog._save_user_profile.assert_not_awaited()
     assert any(
-        "3회" in str(call.args[0])
+        "3번" in str(call.args[0])
         for call in ctx.send.await_args_list
     )
 

@@ -4,7 +4,7 @@
 이 모듈은 Discord API를 호출하지 않고 Embed 객체만 만듭니다. 덕분에 봇 연결
 없이 표현 규칙을 전부 테스트할 수 있습니다.
 
-표현 규칙은 기능 설계에서 나옵니다(docs/SCHOOL_NOTICE_INTEGRATION_PLAN.ko.md).
+표현 규칙은 기능 설계에서 나옵니다(docs/SCHOOL_NOTICE.ko.md).
 
 - 점수는 확률이 아니라 설명 가능한 우선순위이므로 `reasons`를 반드시 노출한다.
 - 자격을 확정할 수 없으면(`UNKNOWN`) 원문 확인이 필요함을 밝힌다.

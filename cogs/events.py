@@ -145,13 +145,13 @@ class EventListeners(commands.Cog):
 
         if isinstance(error, commands.BadArgument):
             # 인자 변환 실패 (예: 숫자가 필요한데 문자 입력)
-            await ctx.send("⚠️ 잘못된 형식의 입력입니다. 입력값을 확인해주세요.")
+            await ctx.send("⚠️ 입력을 알아듣지 못했어요. 형식을 한 번만 확인해주세요.")
             return
 
         if isinstance(error, commands.CheckFailure):
             # DM 전용 명령어 체크 실패 시 안내
             if isinstance(error, commands.PrivateMessageOnly):
-                await ctx.send("🔒 개인 정보 보호를 위해 **DM(다이렉트 메시지)**에서만 사용할 수 있는 명령어입니다.")
+                await ctx.send("🔒 개인 정보가 오가는 기능이라 **DM에서만** 쓸 수 있어요.")
                 return
             if isinstance(error, commands.NoPrivateMessage):
                 await ctx.send("📢 이 명령어는 **서버 채널**에서만 사용할 수 있어요.")

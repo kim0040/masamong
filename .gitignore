@@ -187,6 +187,7 @@ data/
 # 일회성 검증 / 디버그 스크립트
 scripts/verify_*.py
 !scripts/verify_bang_commands.py
+!scripts/verify_runtime_health.py
 scripts/check_*.py
 scripts/test_*.py
 scripts/deep_diag_*.py
@@ -207,3 +208,6 @@ NOTES.md
 # 벤치마크 테스트 파일 제외
 model_benchmark*.json
 scripts/model_benchmark*.py
+
+# v2로 대체된 카카오 임베딩 생성기
+scripts/generate_kakao_embeddings.py
