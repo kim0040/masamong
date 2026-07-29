@@ -12,6 +12,7 @@ from discord.ext import commands, tasks
 
 import config
 from logger_config import logger
+from utils.discord_interactions import ReliableView
 from utils.privacy_consent import (
     CONSENT_GRANTED,
     CONSENT_WITHDRAWN,
@@ -30,7 +31,7 @@ from utils.privacy_consent import (
 )
 
 
-class ConsentDecisionView(discord.ui.View):
+class ConsentDecisionView(ReliableView):
     """정책 고지를 읽은 본인만 명시적으로 동의할 수 있는 버튼."""
 
     def __init__(

@@ -106,6 +106,12 @@ DM에서 `!메뉴` 또는 `!공지`의 설정 버튼을 누르거나 기능을 �
 source ID만 core의 반복 `--source` 인자로 전달한다. 등록되지 않은 학교와 사용자 없는
 학교는 수집하지 않는다.
 
+source에 `department:`, `campus:`, `degree:` 범위가 있으면 프로필에서 이미 아는 값과
+명백히 다른 전용 게시판은 HTTP 요청 전에 제외한다. 필요한 소속 값이 아직 없으면
+게시판 건강도는 확인할 수 있으나 해당 전용 공지는 자동 전달 점수 상한을 39로 두어
+숨긴다. 다른 소속임이 확인된 공지는 `INELIGIBLE`로 숨긴다. 범위 태그가 없는 학교 공통
+게시판은 최소 프로필 사용자에게도 계속 열린다.
+
 처음 읽은 profile snapshot만 믿지 않는다. 실제 처리 직전, feedback 전후, daily 직전과
 publish 직전에 현재 동의, `enabled`, profile version과 정규화 JSON이 그대로인지 다시
 확인한다. 성공 run에는 사용한 `profile_version`과 전달 시각을 제외한 정규 프로필의
@@ -123,13 +129,15 @@ visible item이 0건이면 전달 run만 완료 상태로 기록하고 DM은 보
 
 공지별 버튼:
 
-- `도움 됨`
-- `지원함`
-- `관심 없음`
-- `완료`
+- `유용해요`: 비슷한 주제의 다음 맞춤 우선순위를 조금 높임
+- `이 공지 처리했어요`: 같은 공지를 다음 맞춤 목록에서 숨김
+- `비슷한 주제 덜 보기`: 유사 주제의 우선순위를 완만하게 낮춤
+- `원문 확인`: 공식 상세 페이지로 이동하며 DB나 LLM을 사용하지 않음
 
-같은 Discord interaction은 한 번만 기록한다. `관심 없음`은 비슷한 공지를 영구 차단하지
-않고 선호 가중치를 완만하게 낮춘다. 강한 주제 숨김은 사용자가 직접 `음소거`로 설정한다.
+모호했던 `지원함` 버튼은 제거했다. 같은 Discord interaction은 한 번만 기록한다.
+피드백 버튼은 Discord 접수 응답을 먼저 보낸 뒤 현재 동의와 DB 기록을 확인하며 LLM을
+호출하지 않는다. `비슷한 주제 덜 보기`는 영구 차단이 아니고, 강한 주제 숨김은 사용자가
+직접 `음소거`로 설정한다.
 등록금·수강·학적·졸업·병무 관련 근거 있는 필수 행정 공지는 보호 규칙에 따라 계속 보일 수
 있다.
 
@@ -163,14 +171,14 @@ visible item이 0건이면 전달 run만 완료 상태로 기록하고 DM은 보
 
 ## 지원 학교 카탈로그
 
-현재 마사몽 카탈로그는 14개 학교와 16개 core source ID를 정의한다.
+현재 마사몽 카탈로그는 14개 학교와 17개 core source ID를 정의한다.
 
 | school ID | 학교 | source ID |
 |---|---|---|
 | `jbnu` | 전북대학교 | `jbnu_campus`, `jbnu_software` |
 | `snu` | 서울대학교 | `snu_general` |
 | `pnu` | 부산대학교 | `pnu_general` |
-| `korea` | 고려대학교 | `korea_cs_undergrad` |
+| `korea` | 고려대학교 | `korea_academic`, `korea_cs_undergrad` |
 | `jj` | 전주대학교 | `jj_academic` |
 | `skku` | 성균관대학교 | `skku_general` |
 | `gachon` | 가천대학교 | `gachon_general` |
@@ -186,6 +194,11 @@ visible item이 0건이면 전달 run만 완료 상태로 기록하고 DM은 보
 같은 release의 `school_notice/sources.json`에 같은 source ID가 없으면 실행하지 않는다. 새 학교는 카탈로그와
 core source 설정, selector/host/robots 계약, fixture/live-check를 함께 추가해야 한다.
 로그인·SSO·CAPTCHA 우회는 지원하지 않는다.
+
+2026-07-29 live-check에서는 17개 source 모두 목록과 상세 진입에 성공했고, source당
+상세 2건씩 총 34건을 확인했다. 16개는 `healthy`, 한양대 서울 한 곳은 확인 대상 중
+이미지 본문만 있는 공지 때문에 `degraded`였다. 이 상태를 성공으로 숨기거나 이미지
+내용을 추측하지 않는다.
 
 ## 프로세스와 저장소 경계
 
@@ -474,8 +487,9 @@ AccuracySec=1min
 ```
 
 service는 `Type=oneshot`, 내부 최대 deadline 7,200초에 cleanup 여유를 둔
-`RuntimeMaxSec=7800`, CPU/BLAS thread 1, 낮은 CPU/IO weight, `UMask=0077`,
-`NoNewPrivileges=true`를 사용한다. env에는 secret을 unit literal로 넣지 않고
+`TimeoutStartSec=7800`, CPU/BLAS thread 1, `CPUQuota=25%`, `MemoryMax=384M`,
+낮은 CPU/IO weight, `UMask=0077`, `NoNewPrivileges=true`를 사용한다. env에는
+secret을 unit literal로 넣지 않고
 `MASAMONG_ENV_FILE=/etc/masamong/masamo.env`만 선택한다.
 
 템플릿은 별도 core repository를 내려받지 않는다. 같은 release의 `school_notice/`와

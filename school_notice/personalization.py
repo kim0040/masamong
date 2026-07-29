@@ -358,6 +358,7 @@ def score_notice(
     score = 20.0
     reasons: list[str] = []
     eligibility = "UNKNOWN"
+    source_scope_unknown = False
     candidate = notice_payload.get("candidate", {})
     title = str(notice_payload.get("title") or candidate.get("title") or "")
     body = str(notice_payload.get("body_text") or "")
@@ -492,8 +493,12 @@ def score_notice(
         score += 22
         reasons.append("사용자 전공과 직접 관련")
     elif source_departments and department_terms:
-        score -= 20
-        reasons.append("다른 전공의 전용 게시판")
+        score -= 60
+        eligibility = "INELIGIBLE"
+        reasons.append("등록한 전공과 다른 전공 전용 게시판")
+    elif source_departments:
+        source_scope_unknown = True
+        reasons.append("전공 전용 게시판이나 등록한 전공 정보가 없음")
 
     source_degrees = set(_tag_values(candidate, "degree"))
     if source_degrees:
@@ -501,8 +506,8 @@ def score_notice(
             score += 10
             reasons.append("학위 과정 게시판 일치")
         else:
-            score -= 35
-            eligibility = "LIKELY_INELIGIBLE"
+            score -= 60
+            eligibility = "INELIGIBLE"
             reasons.append("학위 과정 게시판 불일치")
 
     campus = str(profile.get("campus") or "")
@@ -511,16 +516,13 @@ def score_notice(
         if any(_normalized(campus) == _normalized(item) for item in source_campuses):
             score += 12
             reasons.append("소속 캠퍼스 공지")
-        elif profile.get("notification_preferences", {}).get(
-            "strict_campus",
-            False,
-        ):
+        else:
             score -= 60
             eligibility = "INELIGIBLE"
-            reasons.append("다른 캠퍼스 공지 제외 설정")
-        else:
-            score -= 15
-            reasons.append("다른 캠퍼스 공지")
+            reasons.append("등록한 캠퍼스와 다른 캠퍼스 전용 게시판")
+    elif source_campuses:
+        source_scope_unknown = True
+        reasons.append("캠퍼스 전용 게시판이나 등록한 캠퍼스 정보가 없음")
 
     if (
         str(profile.get("admission_type")) == "transfer"
@@ -649,6 +651,12 @@ def score_notice(
     if unknown_constraints:
         score = min(score, 69)
         reasons.append("확인되지 않은 자격 조건이 있어 우선순위 상한 적용")
+    if source_scope_unknown:
+        # 학과·캠퍼스 전용 source는 해당 소속을 확인할 수 있을 때만 자동 DM한다.
+        # 일반 학교 게시판은 이 제한을 받지 않으므로 최소 정보만 등록한 사용자도
+        # 학교 공통 공지는 계속 받을 수 있다.
+        score = min(score, 39)
+        reasons.append("전용 게시판 소속을 확인할 수 없어 자동 알림 제외")
 
     score = max(0.0, min(100.0, round(score, 2)))
     if expired and not required:

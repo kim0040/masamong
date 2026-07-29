@@ -34,6 +34,12 @@ BAND_LABELS = {
     "reference": "참고",
 }
 
+BAND_TITLE_PREFIXES = {
+    "action": "🚨 지금 확인",
+    "opportunity": "🎯 기회",
+    "reference": "ℹ️ 참고",
+}
+
 BAND_COLORS = {
     "action": discord.Color.from_rgb(220, 76, 70),
     "opportunity": discord.Color.from_rgb(64, 132, 214),
@@ -135,15 +141,20 @@ def build_item_embed(
 ) -> discord.Embed:
     """공지 한 건을 Embed로 만듭니다."""
     title_prefix = "[필수] " if item.required else ""
+    band_prefix = BAND_TITLE_PREFIXES.get(item.band, "📌 공지")
+    summary = _truncate(item.summary or "(요약 없음)", _DESCRIPTION_LIMIT - 20)
     embed = discord.Embed(
-        title=_truncate(f"{title_prefix}{item.title}", _TITLE_LIMIT),
+        title=_truncate(
+            f"{title_prefix}{band_prefix} · {item.title}",
+            _TITLE_LIMIT,
+        ),
         url=item.url or None,
-        description=_truncate(item.summary or "(요약 없음)", _DESCRIPTION_LIMIT),
+        description=f"**핵심 요약**\n{summary}",
         color=BAND_COLORS.get(item.band, discord.Color.light_grey()),
     )
 
     origin = " / ".join(part for part in (item.university, item.board) if part)
-    footer_bits = [BAND_LABELS.get(item.band, item.band), f"{item.score:.0f}점"]
+    footer_bits = [f"맞춤 우선순위 {item.score:.0f}/100"]
     if origin:
         footer_bits.append(origin)
     if item.change in {"new", "updated"}:
@@ -160,11 +171,11 @@ def build_item_embed(
             inline=False,
         )
 
-    # 점수는 휴리스틱이므로 근거를 항상 보여준다.
+    # 점수는 휴리스틱이므로 사용자의 조건과 맞은 근거를 항상 보여준다.
     if item.reasons:
         reasons = "\n".join(f"· {reason}" for reason in item.reasons[:5])
         embed.add_field(
-            name="왜 추천됐나",
+            name="내 조건과 맞는 이유",
             value=_truncate(reasons, _FIELD_VALUE_LIMIT),
             inline=False,
         )
@@ -238,7 +249,10 @@ def build_header_embed(digest: Digest, *, shown: int, total: int) -> discord.Emb
             for band in BAND_ORDER
             if counts[band]
         ]
-        description = " · ".join(parts) if parts else "표시할 공지가 없습니다."
+        description = (
+            "내 학교·과정·학년·학과·관심사 기준으로 추린 결과입니다.\n"
+            + (" · ".join(parts) if parts else "표시할 공지가 없습니다.")
+        )
         if shown < total:
             description += f"\n(상위 {shown}건만 표시, 전체 {total}건)"
 

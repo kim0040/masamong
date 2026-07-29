@@ -25,6 +25,7 @@ import config
 from database.compat_db import TiDBSettings, connect_main_db, get_table_columns
 from logger_config import logger, register_discord_logging
 from utils import initial_data
+from utils.discord_interactions import ReliableCommandTree
 
 # --- [Fixed] 터미널 경고 메시지(Noise) 억제 ---
 import warnings
@@ -131,6 +132,7 @@ class ReMasamongBot(commands.Bot):
     봇 인스턴스에 `db` 속성을 추가하여 모든 Cog에서 데이터베이스 연결을 공유할 수 있도록 합니다.
     """
     def __init__(self, *args, **kwargs):
+        kwargs.setdefault("tree_cls", ReliableCommandTree)
         super().__init__(*args, **kwargs)
         self.db: aiosqlite.Connection = None
         self.db_path = config.DATABASE_FILE

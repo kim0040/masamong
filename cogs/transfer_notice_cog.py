@@ -17,6 +17,7 @@ from discord.ext import commands, tasks
 import config
 from logger_config import logger
 from transfer_notice.catalog import load_transfer_sources
+from utils.discord_interactions import ReliableModal, ReliableView
 from utils.privacy_consent import (
     CONSENT_GRANTED,
     TRANSFER_NOTICE_SCOPE,
@@ -60,7 +61,24 @@ def _normalize_delivery_time(value: object) -> str:
     return rendered
 
 
-class TransferDeliveryTimeModal(discord.ui.Modal, title="편입 공지 알림 시각"):
+def _notice_block(item: dict, *, change_label: str | None = None) -> str:
+    university = discord.utils.escape_markdown(
+        str(item.get("university") or "대학").strip()
+    )
+    published = _safe_title(item.get("published_date") or "날짜 미표기", limit=30)
+    meta = " · ".join(
+        part for part in (university, change_label, published) if part
+    )
+    summary = _safe_summary(item.get("detail_summary"))
+    return (
+        f"📌 **{meta}**\n"
+        f"**{_safe_title(item.get('title'))}**"
+        + (f"\n**핵심:** {summary}" if summary else "")
+        + f"\n[공식 원문 보기]({item.get('url')})"
+    )
+
+
+class TransferDeliveryTimeModal(ReliableModal, title="편입 공지 알림 시각"):
     delivery_time = discord.ui.TextInput(
         label="한국 시간 (HH:MM)",
         placeholder="09:00",
@@ -74,15 +92,27 @@ class TransferDeliveryTimeModal(discord.ui.Modal, title="편입 공지 알림 �
         self.user_id = int(user_id)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             normalized = await self.cog.update_delivery_time(
                 self.user_id,
                 str(self.delivery_time),
             )
         except ValueError as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
+            await interaction.followup.send(str(exc), ephemeral=True)
             return
-        await interaction.response.send_message(
+        except Exception as exc:
+            logger.error(
+                "편입 공지 알림 시각 저장 실패: error=%s",
+                type(exc).__name__,
+                exc_info=True,
+            )
+            await interaction.followup.send(
+                "알림 시각을 저장하지 못했습니다. 잠시 후 다시 시도해주세요.",
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(
             f"✅ 편입 공지 알림 시각을 매일 **{normalized} (한국 시간)**으로 "
             "저장했습니다.",
             ephemeral=True,
@@ -153,8 +183,9 @@ class TransferSchoolSelect(discord.ui.Select):
                 ephemeral=True,
             )
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
         if not await self.cog._has_consent(self.user_id):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "개인정보 동의가 철회되었거나 현재 정책과 다릅니다. "
                 f"`!개인정보 동의 {consent_command_name(TRANSFER_NOTICE_SCOPE)}`를 "
                 "다시 실행해주세요.",
@@ -165,7 +196,7 @@ class TransferSchoolSelect(discord.ui.Select):
         names = [self.cog.sources[item].university for item in self.values]
         selected = set(self.values)
         saved_row = await self.cog._subscription_row(self.user_id)
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             embed=self.cog._dashboard_embed(
                 selected,
                 True,
@@ -188,7 +219,7 @@ class TransferSchoolSelect(discord.ui.Select):
         )
 
 
-class TransferDashboardView(discord.ui.View):
+class TransferDashboardView(ReliableView):
     def __init__(
         self,
         cog: "TransferNoticeCog",
@@ -228,8 +259,9 @@ class TransferDashboardView(discord.ui.View):
         interaction: discord.Interaction,
         _button: discord.ui.Button,
     ) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
         if not await self.cog._has_consent(self.user_id):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "현재 개인정보 동의가 없어 저장하지 않았습니다.",
                 ephemeral=True,
             )
@@ -240,7 +272,7 @@ class TransferDashboardView(discord.ui.View):
         )
         selected = set(self.cog.sources)
         saved_row = await self.cog._subscription_row(self.user_id)
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             embed=self.cog._dashboard_embed(
                 selected,
                 True,
@@ -289,9 +321,10 @@ class TransferDashboardView(discord.ui.View):
         interaction: discord.Interaction,
         _button: discord.ui.Button,
     ) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
         row = await self.cog._subscription_row(self.user_id)
         if row is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "먼저 위에서 대학을 선택하거나 **20개 모두 구독**을 눌러주세요.",
                 ephemeral=True,
             )
@@ -299,7 +332,7 @@ class TransferDashboardView(discord.ui.View):
         active = bool(row[2])
         await self.cog._set_enabled(self.user_id, not active)
         selected = self.cog._decode_schools(row[1])
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             embed=self.cog._dashboard_embed(
                 selected,
                 not active,
@@ -333,13 +366,8 @@ class TransferDashboardView(discord.ui.View):
         interaction: discord.Interaction,
         _button: discord.ui.Button,
     ) -> None:
-        row = await self.cog._subscription_row(self.user_id)
-        if row is None:
-            await interaction.response.send_message(
-                "먼저 대학을 한 곳 이상 선택해 구독을 저장해주세요.",
-                ephemeral=True,
-            )
-            return
+        # Modal은 defer 뒤에 열 수 없으므로 DB 조회 없이 즉시 표시한다. 제출 시
+        # update_delivery_time이 구독 존재 여부를 다시 검증한다.
         await interaction.response.send_modal(
             TransferDeliveryTimeModal(self.cog, self.user_id)
         )
@@ -666,17 +694,7 @@ class TransferNoticeCog(commands.Cog):
         ]
         blocks: list[str] = []
         for item in items:
-            date_text = str(item.get("published_date") or "날짜 미표기")
-            blocks.append(
-                f"**{item.get('university', '대학')}** · {date_text}\n"
-                f"{_safe_title(item.get('title'))}"
-                + (
-                    f"\n요약: {_safe_summary(item.get('detail_summary'))}"
-                    if _safe_summary(item.get("detail_summary"))
-                    else ""
-                )
-                + f"\n<{item.get('url')}>"
-            )
+            blocks.append(_notice_block(item))
         text, _ = _fit_notice_blocks(
             heading,
             blocks,
@@ -947,17 +965,7 @@ class TransferNoticeCog(commands.Cog):
         blocks: list[str] = []
         for item in reserved:
             label = "수정" if item.get("change_type") == "updated" else "새 글"
-            blocks.append(
-                f"**{item['university']}** · {label} · "
-                f"{item.get('published_date') or '날짜 미표기'}\n"
-                f"{_safe_title(item.get('title'))}"
-                + (
-                    f"\n요약: {_safe_summary(item.get('detail_summary'))}"
-                    if _safe_summary(item.get("detail_summary"))
-                    else ""
-                )
-                + f"\n<{item['url']}>"
-            )
+            blocks.append(_notice_block(item, change_label=label))
         message_text, included_count = _fit_notice_blocks(
             heading,
             blocks,

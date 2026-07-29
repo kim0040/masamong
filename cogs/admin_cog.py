@@ -8,6 +8,7 @@ from discord.ext import commands
 
 import config
 from logger_config import logger
+from utils.discord_interactions import ReliableView
 from utils.admin_policy import (
     is_guild_admin,
     is_instance_admin,
@@ -121,7 +122,7 @@ class _InviteLinkView(discord.ui.View):
         )
 
 
-class AdminPanelView(discord.ui.View):
+class AdminPanelView(ReliableView):
     """호출자 한 명만 조작하는 인스턴스/서버 관리 패널."""
 
     def __init__(
@@ -195,7 +196,7 @@ class AdminPanelView(discord.ui.View):
         )
 
 
-class AdminLauncherView(discord.ui.View):
+class AdminLauncherView(ReliableView):
     """접두사 명령의 공개 메시지에서 호출자 전용 관리 패널을 엽니다."""
 
     def __init__(

@@ -29,6 +29,7 @@ from discord.ext import commands, tasks
 
 import config
 from logger_config import logger
+from utils.discord_interactions import ReliableModal, ReliableView
 from utils import db as db_utils
 from utils.discord_helpers import DiscordProgress
 from utils.school_notice_contract import (
@@ -89,14 +90,31 @@ _NATURAL_NOTICE_ACTION_RE = re.compile(
 )
 _NATURAL_CHANGE_WORDS = ("수정", "변경", "바꿔", "고쳐", "추가", "빼줘", "제외")
 
-# 버튼에 노출할 피드백. 코어의 전체 타입 중 일상적으로 쓰는 것만 둔다.
+# 버튼에 노출할 피드백. 코어의 전체 타입 중 사용자가 결과를 바로 이해할 수 있는
+# 세 가지만 둔다. `applied`와 `completed`는 화면상 의미가 겹치므로 현재 공지를
+# 다시 보지 않는 `completed`만 명시적인 "처리했어요" 동작으로 제공한다.
 # `not_interested`는 영구 차단이 아니라 90일 반감기로 감쇠하는 완만한 신호다.
 _FEEDBACK_BUTTONS = (
-    ("useful", "도움 됨", discord.ButtonStyle.success),
-    ("applied", "지원함", discord.ButtonStyle.primary),
-    ("not_interested", "관심 없음", discord.ButtonStyle.secondary),
-    ("completed", "완료", discord.ButtonStyle.secondary),
+    ("useful", "유용해요", discord.ButtonStyle.success),
+    ("completed", "이 공지 처리했어요", discord.ButtonStyle.primary),
+    ("not_interested", "비슷한 주제 덜 보기", discord.ButtonStyle.secondary),
 )
+
+_FEEDBACK_CONFIRMATIONS = {
+    "useful": (
+        "✅ 이 공지를 유용한 사례로 저장했습니다. 다음 수집부터 비슷한 주제의 "
+        "맞춤 우선순위를 조금 높입니다."
+    ),
+    "completed": (
+        "✅ 이 공지를 처리 완료로 저장했습니다. 다음 수집부터 같은 공지는 "
+        "맞춤 목록에서 숨깁니다."
+    ),
+    "not_interested": (
+        "✅ 관심이 낮은 사례로 저장했습니다. 다음 수집부터 비슷한 주제의 "
+        "우선순위를 조금 낮춥니다.\n"
+        "영구 차단은 아니며, `!공지 음소거 <주제>`로 주제를 직접 숨길 수 있습니다."
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -206,7 +224,7 @@ def _delete_local_school_notice_data(
     return errors
 
 
-class FeedbackView(discord.ui.View):
+class FeedbackView(ReliableView):
     """공지 한 건에 대한 피드백 버튼.
 
     하루 뒤에는 버튼을 닫아 View가 프로세스 메모리에 무기한 남지 않게 한다.
@@ -219,14 +237,27 @@ class FeedbackView(discord.ui.View):
         self._source_id, self._external_id = item.feedback_key()
         for feedback_type, label, style in _FEEDBACK_BUTTONS:
             self.add_item(_FeedbackButton(self, feedback_type, label, style))
+        if item.url:
+            self.add_item(
+                discord.ui.Button(
+                    label="원문 확인",
+                    style=discord.ButtonStyle.link,
+                    emoji="🔗",
+                    url=item.url,
+                )
+            )
 
     async def submit(
         self,
         interaction: discord.Interaction,
         feedback_type: str,
     ) -> None:
+        # Discord component는 약 3초 안에 acknowledgement가 필요하다. 원격 TiDB
+        # 동의 확인과 피드백 INSERT보다 먼저 응답해, 저장 성공 여부와 무관한
+        # "적시에 응답하지 않았어요" 표시를 방지한다.
+        await interaction.response.defer(ephemeral=True, thinking=True)
         if not await self._cog._has_school_notice_consent(interaction.user.id):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "학교 공지 개인정보 동의가 철회되었거나 현재 정책에 대한 재동의가 "
                 "필요합니다. DM에서 `!개인정보 동의 학교공지`를 실행해주세요.",
                 ephemeral=True,
@@ -241,22 +272,28 @@ class FeedbackView(discord.ui.View):
                 interaction_id=str(interaction.id),
             )
         except ConsentRequiredError:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "동의 상태가 변경되어 피드백을 저장하지 않았습니다.",
                 ephemeral=True,
             )
             return
+        except Exception as exc:
+            logger.error(
+                "학교 공지 피드백 저장 실패: feedback_type=%s error=%s",
+                feedback_type,
+                type(exc).__name__,
+                exc_info=True,
+            )
+            await interaction.followup.send(
+                "피드백을 저장하지 못했습니다. 잠시 후 다시 눌러주세요.",
+                ephemeral=True,
+            )
+            return
         if stored:
-            message = "기록했습니다. 내일 digest부터 반영됩니다."
-            if feedback_type == "not_interested":
-                # 사용자가 "영구 차단"으로 오해하지 않게 설계 의도를 밝힌다.
-                message += (
-                    "\n비슷한 주제를 완전히 차단하지는 않고 우선순위만 낮춥니다. "
-                    "`!공지 음소거`로 주제를 직접 숨기거나 해제할 수 있습니다."
-                )
+            message = _FEEDBACK_CONFIRMATIONS[feedback_type]
         else:
             message = "이미 반영된 피드백입니다."
-        await interaction.response.send_message(message, ephemeral=True)
+        await interaction.followup.send(message, ephemeral=True)
 
 
 class _FeedbackButton(discord.ui.Button):
@@ -268,14 +305,16 @@ class _FeedbackButton(discord.ui.Button):
         style: discord.ButtonStyle,
     ) -> None:
         super().__init__(label=label, style=style)
-        self._parent = view
+        # discord.py 2.6+가 내부적으로 사용하는 Item._parent를 덮어쓰면
+        # Item._run_checks가 View를 ActionRow로 오인해 콜백 진입 전에 실패한다.
+        self._feedback_view = view
         self._feedback_type = feedback_type
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        await self._parent.submit(interaction, self._feedback_type)
+        await self._feedback_view.submit(interaction, self._feedback_type)
 
 
-class SchoolNoticeDashboardView(discord.ui.View):
+class SchoolNoticeDashboardView(ReliableView):
     """학교 공지의 주요 동작을 한 화면에서 시작하는 사용자 전용 메뉴."""
 
     def __init__(
@@ -285,6 +324,7 @@ class SchoolNoticeDashboardView(discord.ui.View):
         *,
         has_profile: bool,
         enabled: bool,
+        delivery_time: str,
     ) -> None:
         super().__init__(timeout=300)
         self.cog = cog
@@ -292,6 +332,7 @@ class SchoolNoticeDashboardView(discord.ui.View):
         self.user_id = int(ctx.author.id)
         self.has_profile = bool(has_profile)
         self.enabled = bool(enabled)
+        self.current_delivery_time = str(delivery_time)
         self.toggle.label = "알림 중지" if self.enabled else "알림 재개"
         self.latest.disabled = not self.has_profile
         self.collection_status.disabled = not self.has_profile
@@ -374,25 +415,13 @@ class SchoolNoticeDashboardView(discord.ui.View):
         interaction: discord.Interaction,
         _button: discord.ui.Button,
     ) -> None:
-        if not await self.cog._has_school_notice_consent(self.user_id):
-            await interaction.response.send_message(
-                "개인정보 동의 화면을 아래에 열었습니다.",
-                ephemeral=True,
-            )
-            await self.cog._send_school_notice_consent_prompt(self.ctx)
-            return
-        row = await self.cog._profile_row(self.user_id)
-        if row is None:
-            await interaction.response.send_message(
-                "먼저 학교 공지 정보를 설정해주세요.",
-                ephemeral=True,
-            )
-            return
+        # Modal은 defer 뒤에 열 수 없으므로 DB 조회 없이 즉시 표시한다. 실제
+        # 동의·프로필 상태는 제출 시 update_delivery_time이 다시 검증한다.
         await interaction.response.send_modal(
             SchoolNoticeTimeModal(
                 self.cog,
                 self.user_id,
-                current_time=str(row["delivery_time"]),
+                current_time=self.current_delivery_time,
             )
         )
 
@@ -432,7 +461,7 @@ class SchoolNoticeDashboardView(discord.ui.View):
         await command.callback(self.cog, self.ctx)
 
 
-class SchoolNoticeTimeModal(discord.ui.Modal, title="학교 공지 알림 시간"):
+class SchoolNoticeTimeModal(ReliableModal, title="학교 공지 알림 시간"):
     """24시간제 또는 자연어 시간을 한 번에 받는 간단한 입력창."""
 
     delivery_time = discord.ui.TextInput(
@@ -454,25 +483,26 @@ class SchoolNoticeTimeModal(discord.ui.Modal, title="학교 공지 알림 시간
         self.delivery_time.default = current_time
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             normalized = await self.cog.update_delivery_time(
                 self.user_id,
                 str(self.delivery_time.value),
             )
         except ConsentRequiredError:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "개인정보 동의가 철회되었거나 재동의가 필요합니다. "
                 "`!메뉴`에서 다시 시작해주세요.",
                 ephemeral=True,
             )
             return
         except SchoolProfileError as exc:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"알림 시각을 이해하지 못했습니다: {exc}",
                 ephemeral=True,
             )
             return
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✅ 학교 공지 알림을 매일 `{normalized}`(한국 시간)로 설정했습니다. "
             "관련 공지가 없으면 DM을 보내지 않습니다.",
             ephemeral=True,
@@ -1193,7 +1223,10 @@ class SchoolNoticeCog(commands.Cog):
                 # 공지와 피드백 버튼을 한 메시지로 보내고 성공 직후 영속화한다.
                 # 뒤 항목이 실패해도 이미 성공한 공지는 다음 재시도에서 빠진다.
                 await user.send(
-                    content=f"이 공지가 나와 얼마나 관련 있었나요? · {item.title[:80]}",
+                    content=(
+                        "아래 피드백은 다음 맞춤 공지에 반영됩니다. "
+                        f"해당하는 버튼을 하나만 눌러주세요. · {item.title[:80]}"
+                    ),
                     embeds=[build_item_embed(item, today=_as_kst().date())],
                     view=FeedbackView(self, item),
                 )
@@ -1756,6 +1789,11 @@ class SchoolNoticeCog(commands.Cog):
                 ctx,
                 has_profile=has_profile,
                 enabled=bool(row["enabled"]) if has_profile else False,
+                delivery_time=(
+                    str(row["delivery_time"])
+                    if has_profile
+                    else config.SCHOOL_NOTICE_DEFAULT_DELIVERY_TIME
+                ),
             ),
             allowed_mentions=discord.AllowedMentions.none(),
         )

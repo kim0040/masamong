@@ -79,6 +79,12 @@ primary/fallback attempts. A single AI turn can plan at most three tool calls.
 Fortune generation and school collection also use explicit finite attempt and
 runtime limits; neither scheduler retries indefinitely.
 
+Discord component callbacks acknowledge the interaction before remote DB or API
+work. Views, modals, and slash commands share a private terminal error response,
+so an internal exception does not leave only Discord's “application did not
+respond” banner. Menu, consent, and notice-feedback clicks do not call an LLM;
+they use only Discord and the bounded database operation required by that action.
+
 Each logical LLM request is reserved before provider access against global,
 feature, guild-or-DM, user, and DM-user minute/day budgets. Web searches use
 separate global, guild/DM, and user budgets in addition to Linkup's persisted
@@ -264,11 +270,15 @@ Long automatic digests are sent in bounded pages. Each successfully sent revisio
 is recorded immediately, and any remaining page continues on a later one-minute
 scheduler tick without consuming a failure attempt for the successful page.
 
-The versioned catalog currently covers 14 universities and 16 source IDs:
+The versioned catalog currently covers 14 universities and 17 source IDs:
 Jeonbuk, Seoul National, Pusan National, Korea, Jeonju, Sungkyunkwan, Gachon,
 Soongsil, Chonnam National, Sunchon National, Myongji, Konkuk, Kookmin, and
-Hanyang. A school is usable only when the separately deployed core has matching,
-validated source definitions.
+Hanyang. Korea University has both a general academic board and a scoped computer
+science board. Known department, campus, and degree mismatches are excluded before
+crawling; scoped-board results are also hidden when the required affiliation is
+unknown. General university boards remain available with the minimum profile. A
+school is usable only when the separately deployed core has matching, validated
+source definitions.
 
 The collection core is vendored in `school_notice/` and released with the bot.
 Masamo owns the current school-notice rollout and its isolated writable paths.

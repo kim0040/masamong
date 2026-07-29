@@ -134,6 +134,36 @@
       }
     },
     {
+      "id": "korea_academic",
+      "school_id": "korea",
+      "university": "고려대학교",
+      "board_name": "학사공지",
+      "adapter": "korea_portal_board",
+      "list_url": "https://www.korea.ac.kr/ko/567/subview.do",
+      "allowed_hosts": ["www.korea.ac.kr", "korea.ac.kr", "portal.korea.ac.kr"],
+      "list": {
+        "row_selector": ".boardWrap table.board-table tbody tr",
+        "link_selector": "td.td-title a[onclick*='jf_view']",
+        "id_attribute": "onclick",
+        "id_regex": "jf_view\\('([^']+)'",
+        "date_selector": "td.td-date",
+        "author_selector": "td.td-write",
+        "detail_url_template": "https://www.korea.ac.kr/portalBoard/ko/2/{id}/portalBoardView.do"
+      },
+      "detail": {
+        "title_selectors": [".board-view .view .title strong"],
+        "body_selectors": [".board-view .txt"],
+        "date_selectors": [".board-view .view .title ul.detail li:nth-of-type(1)"],
+        "author_selectors": [".board-view .view .title ul.detail li:nth-of-type(2)"],
+        "attachment_selectors": [".board-view .attachment a[href]"],
+        "inline_image_selectors": [".board-view .txt img[src]"]
+      },
+      "validation": {
+        "min_list_items": 3,
+        "min_body_characters": 30
+      }
+    },
+    {
       "id": "korea_cs_undergrad",
       "school_id": "korea",
       "university": "고려대학교",

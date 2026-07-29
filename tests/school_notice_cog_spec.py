@@ -20,10 +20,12 @@ import pytest
 import config
 import cogs.school_notice_cog as school_notice_module
 from cogs.school_notice_cog import (
+    FeedbackView,
     SchoolNoticeCog,
     user_key_for,
     validate_profile_payload,
 )
+from utils.school_notice_contract import parse_digest
 from utils.school_notice_profile import profile_snapshot_hash
 from utils.privacy_consent import (
     ConsentRequiredError,
@@ -105,6 +107,30 @@ class _FakeContext:
 
     async def send(self, content=None, **kwargs):
         self.messages.append({"content": content, **kwargs})
+
+
+class _InteractionResponse:
+    def __init__(self) -> None:
+        self.deferred = 0
+
+    async def defer(self, **_kwargs) -> None:
+        self.deferred += 1
+
+
+class _InteractionFollowup:
+    def __init__(self) -> None:
+        self.messages: list[tuple[str, dict]] = []
+
+    async def send(self, content, **kwargs) -> None:
+        self.messages.append((content, kwargs))
+
+
+class _FeedbackInteraction:
+    def __init__(self) -> None:
+        self.id = 987654321
+        self.user = SimpleNamespace(id=USER_ID)
+        self.response = _InteractionResponse()
+        self.followup = _InteractionFollowup()
 
 
 async def _make_cog(tmp_path, monkeypatch, *, fixture="school_notice_digest.json"):
@@ -235,6 +261,56 @@ async def test_repeated_interaction_records_feedback_once(tmp_path, monkeypatch)
             assert (await cursor.fetchone())[0] == 1
     finally:
         await db.close()
+
+
+@pytest.mark.asyncio
+async def test_feedback_button_enters_callback_defers_and_persists(
+    tmp_path,
+    monkeypatch,
+):
+    cog, _bot, db = await _make_cog(tmp_path, monkeypatch)
+    try:
+        digest = school_notice_module.load_digest(
+            cog.digest_dir / USER_KEY / f"daily-digest-{TODAY.isoformat()}.json"
+        )
+        view = FeedbackView(cog, digest.visible_items()[0])
+        button = next(
+            child
+            for child in view.children
+            if getattr(child, "_feedback_type", None) == "not_interested"
+        )
+        interaction = _FeedbackInteraction()
+
+        await button.callback(interaction)
+
+        assert interaction.response.deferred == 1
+        assert "우선순위를 조금 낮춥니다" in interaction.followup.messages[0][0]
+        async with db.execute(
+            "SELECT feedback_type FROM school_notice_feedback"
+        ) as cursor:
+            assert (await cursor.fetchone())[0] == "not_interested"
+        # discord.py 내부 Item._parent를 사용자 코드가 View로 덮어쓰지 않는다.
+        assert getattr(button, "_parent", None) is not view
+    finally:
+        await db.close()
+
+
+def test_feedback_buttons_have_one_clear_effect_each():
+    payload = json.loads(
+        (FIXTURES / "school_notice_digest.json").read_text(encoding="utf-8")
+    )
+    item = parse_digest(payload).visible_items()[0]
+    labels = {
+        child.label
+        for child in FeedbackView(SimpleNamespace(), item).children
+    }
+
+    assert labels == {
+        "유용해요",
+        "이 공지 처리했어요",
+        "비슷한 주제 덜 보기",
+        "원문 확인",
+    }
 
 
 @pytest.mark.asyncio
