@@ -234,6 +234,7 @@ async def test_market_news_router_cannot_skip_verified_market_tools():
     ]
     assert decision.plan[0]["parameters"]["region"] == "kr"
     search_query = decision.plan[1]["parameters"]["query"]
+    assert "대상 시장: 한국 증시" in search_query
     assert "기준일:" in search_query
     assert "거래소" in search_query
     assert "커뮤니티" in search_query
@@ -271,6 +272,8 @@ async def test_short_us_market_followup_uses_us_snapshot_even_if_router_only_sea
         "web_search",
     ]
     assert decision.plan[0]["parameters"]["region"] == "us"
+    assert "대상 시장: 미국 증시" in decision.plan[1]["parameters"]["query"]
+    assert "한국 증시" not in decision.plan[1]["parameters"]["query"]
 
 
 @pytest.mark.asyncio
