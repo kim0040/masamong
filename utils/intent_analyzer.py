@@ -361,6 +361,16 @@ class IntentAnalyzer:
             if isinstance(item, dict)
         }
         inferred_market_region = self._market_region_from_text(semantic_text)
+        market_search_label = {
+            "kr": "한국 증시(코스피·코스닥)",
+            "us": "미국 증시(다우·S&P 500·나스닥)",
+            "global": "글로벌 주요 증시",
+        }[inferred_market_region]
+        finance_search_base = (
+            f"{query}\n해석된 요청: {intent}\n대상 시장: {market_search_label}"
+            if market_brief
+            else semantic_text
+        )
 
         if market_brief and "get_market_snapshot" not in names:
             normalized.insert(
@@ -411,7 +421,7 @@ class IntentAnalyzer:
         )
         if needs_web and "web_search" not in names:
             search_query = (
-                self._build_finance_news_query(semantic_text)
+                self._build_finance_news_query(finance_search_base)
                 if finance_query
                 else (query or intent).strip()
             )
@@ -442,10 +452,9 @@ class IntentAnalyzer:
                 params = item.get("parameters")
                 if not isinstance(params, dict):
                     params = {}
-                raw_query = str(params.get("query") or query).strip()
                 item["parameters"] = {
                     "query": self._build_finance_news_query(
-                        f"{query}\n{raw_query}".strip()
+                        finance_search_base
                     )
                 }
                 break
