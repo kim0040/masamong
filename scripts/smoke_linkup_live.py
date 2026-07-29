@@ -19,12 +19,24 @@ from utils import linkup_search
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description=(
+            "Linkup provider를 최대 1회 호출하는 비용 발생 smoke. "
+            "--run과 정확한 확인 문구 없이는 호출하지 않습니다."
+        )
+    )
+    parser.add_argument(
+        "--expected-profile",
+        required=True,
+        choices=("masamo", "general"),
+    )
     parser.add_argument(
         "--query",
         default="OpenAI API 최신 공식 업데이트",
     )
     parser.add_argument("--max-cost-eur", type=float, default=0.005)
+    parser.add_argument("--run", action="store_true")
+    parser.add_argument("--confirm")
     return parser.parse_args()
 
 
@@ -55,6 +67,11 @@ def _settings() -> TiDBSettings:
 
 
 async def run(args: argparse.Namespace) -> int:
+    if config.PROFILE != args.expected_profile:
+        raise SystemExit(
+            f"현재 profile={config.PROFILE!r}이 "
+            f"--expected-profile={args.expected_profile!r}와 다릅니다."
+        )
     query = str(args.query or "").strip()
     if not query:
         raise SystemExit("query가 비어 있습니다.")
@@ -65,6 +82,21 @@ async def run(args: argparse.Namespace) -> int:
     if estimated > float(args.max_cost_eur):
         raise SystemExit(
             f"예상 비용 €{estimated:.3f}이 상한 €{args.max_cost_eur:.3f}을 넘습니다."
+        )
+    expected_confirmation = (
+        "RUN ONE LINKUP SEARCH FOR "
+        f"profile={args.expected_profile} "
+        f"max_cost_eur={float(args.max_cost_eur):.3f}"
+    )
+    if not args.run:
+        print(
+            "DRY-RUN: provider를 호출하지 않았습니다. 실행하려면 "
+            f"--run --confirm {expected_confirmation!r}"
+        )
+        return 0
+    if args.confirm != expected_confirmation:
+        raise SystemExit(
+            "--confirm 값이 현재 profile/비용 상한과 일치하지 않습니다."
         )
 
     config.LINKUP_QUALITY_RETRY_ENABLED = False
