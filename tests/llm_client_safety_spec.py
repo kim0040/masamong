@@ -140,20 +140,101 @@ async def test_gemini_compat_uses_native_async_client_and_output_cap(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_deepseek_dynamic_reasoning_is_request_local(monkeypatch):
+    client = _configure_small_client(monkeypatch, concurrency=2)
+    calls = []
+
+    class Endpoint:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            return _completion("answer")
+
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=Endpoint())
+    )
+    client.get_openai_client = lambda _base_url, _api_key: fake_client
+    target = {
+        "provider": "openai_compat",
+        "base_url": "https://deepseek.example/v1",
+        "api_key": "secret",
+        "model": "deepseek-v4-flash",
+        "reasoning_effort": "",
+        "name": "main.primary",
+    }
+
+    low_result, high_result = await asyncio.gather(
+        client.call_main_lane_target(
+            target,
+            system_prompt="system",
+            user_prompt="simple",
+            log_extra={"trace_id": "low"},
+            max_tokens=128,
+            reasoning_effort_override="low",
+        ),
+        client.call_main_lane_target(
+            target,
+            system_prompt="system",
+            user_prompt="complex",
+            log_extra={"trace_id": "high"},
+            max_tokens=128,
+            reasoning_effort_override="high",
+        ),
+    )
+
+    assert low_result == high_result == "answer"
+    assert len(calls) == 2
+    assert {call["reasoning_effort"] for call in calls} == {"low", "high"}
+    assert all(
+        call["extra_body"] == {"thinking": {"type": "enabled"}}
+        for call in calls
+    )
+    assert target["reasoning_effort"] == ""
+
+
+def test_dynamic_reasoning_rejects_unbounded_values_and_unsupported_models():
+    deepseek_target = {
+        "model": "deepseek-v4-flash",
+        "reasoning_effort": "",
+    }
+    unsupported_target = {
+        "model": "plain-chat-model",
+        "reasoning_effort": "",
+    }
+
+    assert (
+        LLMClient.resolve_reasoning_effort(
+            deepseek_target,
+            "unlimited",
+        )
+        == "low"
+    )
+    assert (
+        LLMClient.resolve_reasoning_effort(
+            unsupported_target,
+            "high",
+        )
+        == ""
+    )
+
+
+@pytest.mark.asyncio
 async def test_main_primary_and_fallback_are_each_called_at_most_once(monkeypatch):
     client = _configure_small_client(monkeypatch)
     targets = [
         _target("main.primary", "https://primary.example/v1"),
         _target("main.fallback", "https://fallback.example/v1"),
     ]
+    for target in targets:
+        target["model"] = "deepseek-v4-flash"
     calls = {"main.primary": 0, "main.fallback": 0}
+    efforts = []
 
     class Endpoint:
         def __init__(self, name):
             self.name = name
 
         async def create(self, **kwargs):
-            _ = kwargs
+            efforts.append(kwargs.get("reasoning_effort"))
             calls[self.name] += 1
             if self.name == "main.primary":
                 raise RuntimeError("definite primary failure")
@@ -170,10 +251,16 @@ async def test_main_primary_and_fallback_are_each_called_at_most_once(monkeypatc
         lambda base_url, api_key: clients[base_url]
     )
 
-    result = await client.generate_content("system", "user", {"trace_id": "main"})
+    result = await client.generate_content(
+        "system",
+        "user",
+        {"trace_id": "main"},
+        reasoning_effort_override="high",
+    )
 
     assert result == "fallback answer"
     assert calls == {"main.primary": 1, "main.fallback": 1}
+    assert efforts == ["high", "high"]
 
 
 @pytest.mark.asyncio

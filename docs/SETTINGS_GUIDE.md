@@ -59,6 +59,8 @@ LLM_MAIN_PRIMARY_MODEL=deepseek-v4-flash
 LLM_MAIN_PRIMARY_BASE_URL=${COMETAPI_BASE_URL}
 LLM_MAIN_PRIMARY_API_KEY=${COMETAPI_KEY}
 LLM_MAIN_FALLBACK_PROVIDER=none
+LLM_DYNAMIC_REASONING_ENABLED=true
+LLM_DYNAMIC_REASONING_DEFAULT=low
 
 # 논리 LLM 호출의 계층형 안전 한도
 COMETAPI_RPM_LIMIT=40
@@ -80,6 +82,15 @@ LLM_FEATURE_RPD_LIMIT=2500
 `requires_external_evidence=true` 요청과 시장 브리핑에는 조회 성공을 요구하는 실행
 후조건이 적용됩니다. 이는 답변 품질 안전장치이며 반복 라우팅이나 무한 재시도를 만들지
 않습니다. 활성 대화 컨텍스트와 routing JSON 출력 예산은 다음처럼 제한합니다.
+
+같은 routing JSON은 최종 답변의 `reasoning_level`도 `low/high` 중 하나로 정합니다.
+단순 대화·명확한 회상·단일 조회 결과 정리는 `low`, 여러 제약·충돌·모호성·긴 근거
+종합은 `high`입니다. 별도 난이도 판정 호출이나 low 실패 뒤 high 재호출은 없습니다.
+라우터가 값을 누락하거나 계약 밖의 값을 내면 `LLM_DYNAMIC_REASONING_DEFAULT`로 내리며,
+provider 장애 fallback도 같은 기본값을 사용합니다. 이 값은 현재 Discord 요청의
+지역 변수로만 전달되므로 다른 서버나 동시 요청의 모델 설정을 바꾸지 않습니다.
+`LLM_DYNAMIC_REASONING_ENABLED=false`이면 기존
+`LLM_MAIN_PRIMARY_REASONING_EFFORT` 고정 설정으로 돌아갑니다.
 
 ```env
 INTENT_LLM_ENABLED=true

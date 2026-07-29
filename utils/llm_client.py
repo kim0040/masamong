@@ -64,6 +64,17 @@ class LLMClient:
     필터링을 투명하게 처리합니다.
     """
 
+    _DYNAMIC_REASONING_MODEL_MARKERS = (
+        "deepseek-v4",
+        "kimi-k3",
+        "grok-4.5",
+        "gpt-5",
+        "gpt-oss",
+        "o1",
+        "o3",
+        "o4",
+    )
+
     def __init__(self, db=None):
         self._db = db
         self._openai_clients: dict[tuple[str, str], Any] = {}
@@ -210,6 +221,37 @@ class LLMClient:
         """LLM 프로바이더 식별자를 소문자 문자열로 정규화합니다."""
         return str(provider or "").strip().lower()
 
+    @classmethod
+    def supports_dynamic_reasoning(cls, model: Any) -> bool:
+        """검증된 요청 단위 reasoning_effort 모델 계열인지 확인합니다."""
+        model_name = str(model or "").strip().lower()
+        return bool(model_name) and any(
+            marker in model_name
+            for marker in cls._DYNAMIC_REASONING_MODEL_MARKERS
+        )
+
+    @classmethod
+    def resolve_reasoning_effort(
+        cls,
+        target: dict[str, str],
+        override: str | None,
+    ) -> str:
+        """공유 target을 바꾸지 않고 이번 요청에 사용할 effort를 결정합니다."""
+        configured = str(target.get("reasoning_effort") or "").strip().lower()
+        if configured not in {"low", "medium", "high", "max"}:
+            configured = ""
+        if override is None:
+            return configured
+        if not cls.supports_dynamic_reasoning(target.get("model")):
+            return configured
+        normalized_override = str(override or "").strip().lower()
+        # 라우터 계약 밖의 값은 고비용 수준으로 확대하지 않고 low로 내린다.
+        return (
+            normalized_override
+            if normalized_override in {"low", "high"}
+            else "low"
+        )
+
     @staticmethod
     def strip_mention_guard(text: Any) -> str:
         """프롬프트 텍스트에서 멘션 가드 스니펫을 제거합니다."""
@@ -342,6 +384,7 @@ class LLMClient:
         user_prompt: str,
         log_extra: dict,
         max_tokens: int,
+        reasoning_effort_override: str | None = None,
     ) -> str | None:
         """시스템/사용자 프롬프트로 단일 메인 레인 LLM 타겟을 호출합니다."""
         provider = target["provider"]
@@ -362,9 +405,16 @@ class LLMClient:
                 "timeout": self._call_timeout_seconds,
                 "stream": False,
             }
-            reasoning_effort = str(target.get("reasoning_effort") or "").strip()
+            reasoning_effort = self.resolve_reasoning_effort(
+                target,
+                reasoning_effort_override,
+            )
             if reasoning_effort:
                 request_kwargs["reasoning_effort"] = reasoning_effort
+                if "deepseek-v4" in str(target["model"]).strip().lower():
+                    request_kwargs["extra_body"] = {
+                        "thinking": {"type": "enabled"}
+                    }
 
             async def _request_openai_main():
                 return await client.chat.completions.create(**request_kwargs)
@@ -642,6 +692,7 @@ class LLMClient:
         model: str | None = None,
         *,
         raise_on_bounded_failure: bool = False,
+        reasoning_effort_override: str | None = None,
     ) -> str | None:
         """메인 레인(primary/fallback)을 통해 응답을 생성합니다.
 
@@ -655,6 +706,8 @@ class LLMClient:
             model: 사용할 모델명 (None이면 기본값 사용)
             raise_on_bounded_failure: timeout/포화 상태를 상위 호출자에 전달해
                 별도 provider fallback 증폭을 차단할지 여부
+            reasoning_effort_override: 현재 요청에만 적용할 low/high 추론 수준.
+                None이면 target의 고정 설정을 사용합니다.
 
         Returns:
             생성된 응답 텍스트, 실패 시 None
@@ -689,12 +742,25 @@ class LLMClient:
             final_response = None
             for target in targets:
                 try:
+                    call_kwargs: dict[str, Any] = {
+                        "system_prompt": system_prompt,
+                        "user_prompt": user_prompt,
+                        "log_extra": log_extra,
+                        "max_tokens": int(
+                            getattr(
+                                config,
+                                "MAIN_LLM_MAX_TOKENS",
+                                config.COMETAPI_MAX_TOKENS,
+                            )
+                        ),
+                    }
+                    if reasoning_effort_override is not None:
+                        call_kwargs["reasoning_effort_override"] = (
+                            reasoning_effort_override
+                        )
                     final_response = await self.call_main_lane_target(
                         target,
-                        system_prompt=system_prompt,
-                        user_prompt=user_prompt,
-                        log_extra=log_extra,
-                        max_tokens=int(getattr(config, "MAIN_LLM_MAX_TOKENS", config.COMETAPI_MAX_TOKENS)),
+                        **call_kwargs,
                     )
                 except (LLMAdmissionTimeoutError, LLMProviderTimeoutError) as lane_exc:
                     # 포화 상태에서 fallback까지 대기열에 추가하거나, 완료 여부가

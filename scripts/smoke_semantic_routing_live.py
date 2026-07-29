@@ -26,6 +26,7 @@ CASES = (
         "get_weather_forecast",
         False,
         False,
+        "low",
         [],
     ),
     (
@@ -34,6 +35,7 @@ CASES = (
         "web_search",
         False,
         False,
+        "low",
         [],
     ),
     (
@@ -42,6 +44,7 @@ CASES = (
         "generate_image",
         True,
         False,
+        "low",
         [],
     ),
     (
@@ -50,6 +53,7 @@ CASES = (
         None,
         True,
         False,
+        "low",
         [],
     ),
     (
@@ -58,6 +62,7 @@ CASES = (
         None,
         True,
         False,
+        "high",
         [],
     ),
     (
@@ -66,6 +71,7 @@ CASES = (
         None,
         False,
         False,
+        "low",
         [],
     ),
     (
@@ -74,6 +80,7 @@ CASES = (
         None,
         False,
         False,
+        "low",
         [],
     ),
     (
@@ -85,6 +92,7 @@ CASES = (
         # 외부 도구를 고르지 않는지가 이 시나리오의 필수 계약이다.
         None,
         False,
+        "low",
         [
             {
                 "role": "user",
@@ -109,6 +117,19 @@ CASES = (
         None,
         False,
         True,
+        "low",
+        [],
+    ),
+    (
+        "multi_constraint_reasoning",
+        (
+            "지민은 수아보다 먼저, 현우는 수아보다 나중이어야 하고 "
+            "수아는 11시만 가능해. 가능한 10시·11시·13시를 한 명씩 배정해줘."
+        ),
+        None,
+        False,
+        False,
+        "high",
         [],
     ),
 )
@@ -179,6 +200,7 @@ async def run(args: argparse.Namespace) -> int:
         expected_tool,
         expected_memory,
         expected_fortune_context,
+        expected_reasoning,
         history,
     ) in CASES[: int(args.max_calls)]:
         started = time.monotonic()
@@ -203,17 +225,19 @@ async def run(args: argparse.Namespace) -> int:
                 or decision.needs_memory is expected_memory
             )
             and decision.needs_fortune_context is expected_fortune_context
+            and decision.reasoning_level == expected_reasoning
         )
         print(
             "case={case} passed={passed} source={source} tools={tools} "
             "needs_memory={memory} fortune_context={fortune} "
-            "elapsed_ms={elapsed}".format(
+            "reasoning={reasoning} elapsed_ms={elapsed}".format(
                 case=case_name,
                 passed=str(passed).lower(),
                 source=decision.source,
                 tools=",".join(actual_tools) or "none",
                 memory=str(decision.needs_memory).lower(),
                 fortune=str(decision.needs_fortune_context).lower(),
+                reasoning=decision.reasoning_level or "fixed",
                 elapsed=elapsed_ms,
             )
         )

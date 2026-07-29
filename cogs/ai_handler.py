@@ -402,11 +402,21 @@ class AIHandler(commands.Cog):
         """캐시된 Gemini 호환 클라이언트를 반환하거나 새로 생성합니다."""
         return self.llm_client.get_gemini_compat_client(base_url, api_key)
 
-    async def _call_main_lane_target(self, target, *, system_prompt, user_prompt, log_extra, max_tokens):
+    async def _call_main_lane_target(
+        self,
+        target,
+        *,
+        system_prompt,
+        user_prompt,
+        log_extra,
+        max_tokens,
+        reasoning_effort_override: str | None = None,
+    ):
         """시스템/사용자 프롬프트로 단일 메인 레인 LLM 타겟을 호출합니다."""
         return await self.llm_client.call_main_lane_target(
             target, system_prompt=system_prompt, user_prompt=user_prompt,
             log_extra=log_extra, max_tokens=max_tokens,
+            reasoning_effort_override=reasoning_effort_override,
         )
 
     async def _call_routing_lane_target(
@@ -753,6 +763,7 @@ class AIHandler(commands.Cog):
         model: str | None = None,
         *,
         stop_on_bounded_failure: bool = False,
+        reasoning_effort_override: str | None = None,
     ) -> str | None:
         """메인 레인(primary/fallback)을 통해 응답을 생성합니다.
 
@@ -764,6 +775,7 @@ class AIHandler(commands.Cog):
             log_extra,
             model,
             raise_on_bounded_failure=stop_on_bounded_failure,
+            reasoning_effort_override=reasoning_effort_override,
         )
 
     async def _cometapi_fast_generate_text(
@@ -3073,6 +3085,9 @@ class AIHandler(commands.Cog):
                         main_prompt,
                         log_extra,
                         stop_on_bounded_failure=True,
+                        reasoning_effort_override=(
+                            routing_decision.reasoning_level or None
+                        ),
                     ) or ""
 
                 if not final_response_text and self._can_use_direct_gemini():

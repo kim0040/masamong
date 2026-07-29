@@ -83,6 +83,31 @@ async def test_fast_thinking_path_uses_routing_lane_only():
 
 
 @pytest.mark.asyncio
+async def test_main_wrapper_forwards_request_reasoning_without_extra_call():
+    handler = _build_handler_without_init()
+    captured = []
+
+    class _LLMClient:
+        async def generate_content(self, *args, **kwargs):
+            captured.append((args, kwargs))
+            return "완료"
+
+    handler.llm_client = _LLMClient()
+    result = await handler._cometapi_generate_content(
+        "system",
+        "user",
+        {"trace_id": "dynamic-reasoning"},
+        stop_on_bounded_failure=True,
+        reasoning_effort_override="high",
+    )
+
+    assert result == "완료"
+    assert len(captured) == 1
+    assert captured[0][1]["reasoning_effort_override"] == "high"
+    assert captured[0][1]["raise_on_bounded_failure"] is True
+
+
+@pytest.mark.asyncio
 async def test_detect_tools_by_llm_runs_for_smalltalk(monkeypatch):
     handler = _build_handler_without_init()
     handler.use_cometapi = True
@@ -147,6 +172,7 @@ async def test_semantic_router_controls_tool_choice_without_keyword_override():
 
     assert decision.source == "llm"
     assert decision.needs_memory is True
+    assert decision.reasoning_level == "low"
     assert plan == [
         {
             "tool_to_use": "generate_image",
@@ -159,7 +185,60 @@ async def test_semantic_router_controls_tool_choice_without_keyword_override():
     assert "Examples:" not in captured["prompt"]
     assert "단어 포함 여부가 아니라" in captured["prompt"]
     assert "서버 구성원·지인" in captured["prompt"]
+    assert '"reasoning_level":"low"' in captured["prompt"]
+    assert "여러 제약을 동시에 풀거나" in captured["prompt"]
     assert captured["max_tokens"] == config.SEMANTIC_ROUTER_MAX_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_semantic_router_selects_high_reasoning_for_complex_request(
+    monkeypatch,
+):
+    handler = _build_handler_without_init()
+    handler.use_cometapi = True
+    monkeypatch.setattr(config, "LLM_DYNAMIC_REASONING_ENABLED", True)
+    monkeypatch.setattr(config, "LLM_DYNAMIC_REASONING_DEFAULT", "low")
+
+    async def _fake_fast(*_args, **_kwargs):
+        return (
+            '{"intent":"충돌하는 기억과 제약 비교",'
+            '"needs_memory":true,"reasoning_level":"high","tools":[]}'
+        )
+
+    handler._cometapi_fast_generate_text = _fake_fast
+    decision = await handler._route_tools(
+        "두 사람이 말한 일정이 충돌하는데 조건을 모두 맞춰 정리해줘",
+        {"trace_id": "high-reasoning-router"},
+        history=[],
+    )
+
+    assert decision.source == "llm"
+    assert decision.reasoning_level == "high"
+
+
+@pytest.mark.asyncio
+async def test_semantic_router_invalid_reasoning_fails_down_to_low(
+    monkeypatch,
+):
+    handler = _build_handler_without_init()
+    handler.use_cometapi = True
+    monkeypatch.setattr(config, "LLM_DYNAMIC_REASONING_ENABLED", True)
+    monkeypatch.setattr(config, "LLM_DYNAMIC_REASONING_DEFAULT", "low")
+
+    async def _fake_fast(*_args, **_kwargs):
+        return (
+            '{"intent":"일반 대화","needs_memory":false,'
+            '"reasoning_level":"unlimited","tools":[]}'
+        )
+
+    handler._cometapi_fast_generate_text = _fake_fast
+    decision = await handler._route_tools(
+        "가볍게 이야기해줘",
+        {"trace_id": "invalid-reasoning-router"},
+        history=[],
+    )
+
+    assert decision.reasoning_level == "low"
 
 
 @pytest.mark.asyncio
