@@ -321,7 +321,45 @@ def test_detail_page_extracts_bounded_summary_and_key_dates():
     assert len(detailed.detail_fingerprint) == 64
 
 
-def test_first_detail_enrichment_does_not_replay_but_later_change_does(tmp_path):
+def test_detail_parser_prefers_title_context_and_ignores_dynamic_view_count():
+    item = _item(
+        "s",
+        "detail",
+        title="2027학년도 편입학 전형 일정 안내",
+        published_date="2026-07-28",
+        fingerprint="listing-v1",
+    )
+    template = """
+    <html><body>
+      <main>
+        <nav>메인메뉴 바로가기 전체메뉴 {noise}</nav>
+        <section class="board-view">
+          <h2>2027학년도 편입학 전형 일정 안내</h2>
+          <p>작성일: 2026-07-28 조회수: {views}</p>
+          <p>원서 접수는 2026-12-10부터 시작합니다.</p>
+          <p>제출 서류와 모집단위는 공식 모집요강을 확인하세요.</p>
+        </section>
+        <aside>{noise}</aside>
+      </main>
+    </body></html>
+    """
+
+    first = parse_transfer_detail(
+        template.format(views="1,200", noise="메뉴 " * 500),
+        item,
+    )
+    second = parse_transfer_detail(
+        template.format(views="1,201", noise="다른 메뉴 " * 500),
+        item,
+    )
+
+    assert "원서 접수" in first.detail_summary
+    assert "메인메뉴 바로가기" not in first.detail_summary
+    assert "1,200" not in first.detail_summary
+    assert second.detail_fingerprint == first.detail_fingerprint
+
+
+def test_detail_enrichment_and_detail_only_change_do_not_replay(tmp_path):
     store = TransferNoticeStore(tmp_path / "core.db")
     try:
         listed = _item(
@@ -354,17 +392,17 @@ def test_first_detail_enrichment_does_not_replay_but_later_change_does(tmp_path)
             detail_fingerprint="detail-v2",
             key_dates=("2026-12-11",),
         )
-        revision_changes, _ = store.upsert_source_items(
+        detail_only_changes, _ = store.upsert_source_items(
             "s",
             [revised_detail],
             observed_at="2026-07-29T02:00:00+00:00",
         )
+        latest = store.latest_items()[0]
 
         assert enrichment_changes == []
-        assert len(revision_changes) == 1
-        assert revision_changes[0]["change_type"] == "updated"
-        assert revision_changes[0]["revision"] == 2
-        assert "detail_text" not in revision_changes[0]
+        assert detail_only_changes == []
+        assert latest["revision"] == 1
+        assert latest["detail_summary"] == revised_detail.detail_summary
     finally:
         store.close()
 
