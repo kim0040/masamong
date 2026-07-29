@@ -81,6 +81,7 @@ LLM_FEATURE_RPD_LIMIT=2500
 ```env
 INTENT_LLM_ENABLED=true
 SEMANTIC_ROUTER_MAX_TOKENS=384
+SEMANTIC_ROUTER_COMPACTION_MAX_TOKENS=768
 AI_CONTEXT_SOURCE_HISTORY_LIMIT=24
 AI_CONTEXT_RECENT_TURNS=8
 AI_CONTEXT_COMPACTION_TRIGGER_CHARS=3500
@@ -90,6 +91,11 @@ AI_CONTEXT_DIGEST_MAX_CHARS=600
 
 `AI_CONTEXT_COMPACTION_TRIGGER_CHARS`를 넘지 않으면 digest를 만들지 않습니다. 넘으면 같은
 routing 호출의 JSON에만 짧은 digest를 포함하므로 별도 LLM 호출은 늘지 않습니다.
+이때만 `SEMANTIC_ROUTER_COMPACTION_MAX_TOKENS`가 적용되어 한국어 digest 때문에 JSON이
+중간에서 잘리는 것을 막고, 평상시 요청은 384토큰 상한을 그대로 사용합니다. 정상
+라우터가 `needs_memory=false`로 판정한 인사·일반 지식에는 RAG를 중복 실행하지 않으며,
+provider 장애 fallback에서만 얕은 검색을 안전망으로 사용합니다. DM의 저장된 운세
+컨텍스트도 `needs_fortune_context=true`인 운세 후속 질문에만 조회합니다.
 `scripts/benchmark_llm_lanes.py`는 DB·실사용자 대화 없이 현재/후보 레인을 비교하며
 `--max-calls`로 물리 호출 수를 제한합니다.
 
@@ -199,7 +205,7 @@ RAG(Retrieval-Augmented Generation) 시스템의 설정입니다.
 | `similarity_threshold` | 0.6 | 최소 유사도 임계값 |
 | `strong_similarity_threshold` | 0.72 | 강한 유사도 (웹 검색 불필요) |
 | `conversation_window_size` | 12 | 대화 윈도우 크기 |
-| `RAG_PASSIVE_NO_TOOL_SEARCH_ENABLED` | true | 무도구 대화에서 bounded 얕은 기억 검색 1회 허용. 관련도 임계값과 인스턴스 격리는 그대로 적용 |
+| `RAG_PASSIVE_NO_TOOL_SEARCH_ENABLED` | true | 정상 의미 라우터가 실패한 무도구 fallback에서만 bounded 얕은 기억 검색 1회 허용. 관련도 임계값과 인스턴스 격리는 그대로 적용 |
 
 ---
 

@@ -355,7 +355,7 @@ sequenceDiagram
     Note over AI: 5. Discord history 한 번 조회
     AI->>Intent: route_tools(query, history)
     Intent->>LLMR: call_routing_lane_target(도구 계약 + 최근 대화)
-    LLMR-->>Intent: {intent, needs_memory, context_digest, tools}
+    LLMR-->>Intent: {intent, needs_memory, needs_fortune_context, context_digest, tools}
     Intent-->>AI: ToolRoutingDecision
 
     Note over AI: 6. 도구 실행 → ToolsCog 위임
@@ -366,12 +366,13 @@ sequenceDiagram
     opt needs_memory=true
         Note over AI: 7. 오래된 기억만 선택 검색
         AI->>RAG: search(query, channel_id, user_id)
-        RAG-->>AI: 관련 장기 기억
+        Note over RAG: 관련도 gate + 겹치는 원문 블록 제거 + 최대 3개
+        RAG-->>AI: 다양화된 관련 장기 기억
     end
 
     Note over AI: 8. 응답 생성
 
-    AI->>LLMM: call_main_llm(<br/>persona + tool results + digest<br/>+ 최신 원문 + 선택 RAG)
+    AI->>LLMM: call_main_llm(<br/>persona + tool results + digest<br/>+ 최신 원문 + 선택 RAG<br/>+ 요청 시에만 동의된 운세)
     LLMM-->>AI: Discord 규격 최종 응답
 
     Note over AI: 9. 응답 전송

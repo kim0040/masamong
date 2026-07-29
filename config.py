@@ -1299,6 +1299,22 @@ SEMANTIC_ROUTER_MAX_TOKENS = min(
         ),
     ),
 )
+# 긴 대화 압축본까지 같은 JSON 응답에 담을 때만 더 넉넉한 출력 상한을
+# 허용한다. 평상시 라우팅은 위의 작은 상한을 그대로 써 지연·비용을 늘리지
+# 않고, 한국어 digest가 중간에 잘려 JSON 전체가 무효가 되는 경우만 막는다.
+SEMANTIC_ROUTER_COMPACTION_MAX_TOKENS = min(
+    ROUTING_LLM_MAX_TOKENS,
+    max(
+        SEMANTIC_ROUTER_MAX_TOKENS,
+        as_int(
+            load_config_value(
+                'SEMANTIC_ROUTER_COMPACTION_MAX_TOKENS',
+                768,
+            ),
+            768,
+        ),
+    ),
+)
 
 # 레인2: 최종 답변/요약/명령어 생성
 LLM_MAIN_PRIMARY_PROVIDER = normalize_llm_provider(

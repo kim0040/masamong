@@ -340,7 +340,7 @@ sequenceDiagram
     Note over AI: 5. Fetch Discord history once
     AI->>Intent: route_tools(query, history)
     Intent->>LLMR: call_routing_lane_target(tool contract + recent turns)
-    LLMR-->>Intent: {intent, needs_memory, context_digest, tools}
+    LLMR-->>Intent: {intent, needs_memory, needs_fortune_context, context_digest, tools}
     Intent-->>AI: ToolRoutingDecision
 
     Note over AI: 6. Tool Execution → delegate to ToolsCog
@@ -351,12 +351,13 @@ sequenceDiagram
     opt needs_memory=true
         Note over AI: 7. Selective search of older memory
         AI->>RAG: search(query, channel_id, user_id)
-        RAG-->>AI: relevant long-term memory
+        Note over RAG: relevance gate + overlapping-source dedupe + at most 3 blocks
+        RAG-->>AI: diversified relevant long-term memory
     end
 
     Note over AI: 8. Response Generation
 
-    AI->>LLMM: call_main_llm(<br/>persona + tool results + digest<br/>+ recent verbatim + optional RAG)
+    AI->>LLMM: call_main_llm(<br/>persona + tool results + digest<br/>+ recent verbatim + optional RAG<br/>+ consented fortune only when requested)
     LLMM-->>AI: final Discord-safe response
 
     Note over AI: 9. Send Response
