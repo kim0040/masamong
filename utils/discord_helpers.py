@@ -108,7 +108,7 @@ class DiscordProgress:
                     return
                 elapsed_seconds = max(1, int(time.monotonic() - self.started_at))
                 await self._edit(
-                    f"{self.current_text}\n⏱️ {elapsed_seconds}초째 안전하게 처리 중입니다."
+                    f"{self.current_text}\n⏱️ {elapsed_seconds}초째 하고 있어요. 조금만 더 기다려주세요."
                 )
         except asyncio.CancelledError:
             raise

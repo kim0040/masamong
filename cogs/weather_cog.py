@@ -362,7 +362,7 @@ class WeatherCog(commands.Cog):
         location_name, nx, ny = config.DEFAULT_LOCATION_NAME, config.DEFAULT_NX, config.DEFAULT_NY
         coords = await coords_utils.get_coords_from_db(self.bot.db, user_original_query.lower())
         if coords: location_name, nx, ny = coords['name'], str(coords['nx']), str(coords['ny'])
-        status_msg = await ctx.send(f"🌤️ `{location_name}`의 날씨 정보를 가져오는 중이야...")
+        status_msg = await ctx.send(f"🌤️ `{location_name}` 날씨를 확인하는 중이에요...")
         
         # [NEW] Weekly Weather Logic (Short-term + Mid-term)
         if "이번주" in user_original_query or "주간" in user_original_query:

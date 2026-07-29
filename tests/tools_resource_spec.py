@@ -134,7 +134,9 @@ async def test_image_generation_queue_wait_is_bounded(monkeypatch):
     finally:
         cog._image_generation_lock.release()
 
-    assert "대기열" in result["error"]
+    # 내부 용어가 아니라, 지금 밀려 있으니 다시 요청하라는 뜻이 전달돼야 한다.
+    assert "다른 그림을 그리고 있어서" in result["error"]
+    assert "다시 불러주세요" in result["error"]
 
 
 @pytest.mark.asyncio
@@ -200,7 +202,9 @@ async def test_image_provider_is_not_called_when_quota_reservation_fails(monkeyp
 
     result = await cog._generate_image_exclusive("safe prompt", 42)
 
-    assert "사용량" in result["error"]
+    # 예약에 실패했으면 그리기를 시작하지 않았다는 사실이 사용자에게 보여야 한다.
+    assert "남은 횟수를 확인하지 못해서" in result["error"]
+    assert "시작하지 않았어요" in result["error"]
 
 
 @pytest.mark.asyncio
@@ -368,5 +372,6 @@ async def test_image_model_contract_mismatch_never_reserves_usage(monkeypatch):
         guild_id=99,
     )
 
-    assert "사용량에 포함되지" in result["error"]
+    # 횟수가 차감되지 않았다는 점이 사용자에게 분명히 전달돼야 한다.
+    assert "횟수에서 빼지 않았" in result["error"]
     reserve.assert_not_awaited()

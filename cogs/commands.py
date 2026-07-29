@@ -62,7 +62,7 @@ class UserCommands(commands.Cog):
         """
         if not is_superadmin(ctx.author.id):
             await ctx.send(
-                "❌ 이 작업은 봇 관리자만 실행할 수 있어요."
+                "❌ 이건 봇 관리자만 쓸 수 있어요."
             )
             return
         log_filename = config.LOG_FILE_NAME
@@ -119,18 +119,18 @@ class UserCommands(commands.Cog):
         log_extra = {'guild_id': ctx.guild.id, 'author_id': ctx.author.id}
         
         if not prompt:
-            await ctx.send("❌ 그림에 대한 설명이 빠졌어요!\n**올바른 사용법**: `!이미지 <설명>`\n(예: `!이미지 우주복을 입은 햄스터`)")
+            await ctx.send("❌ 뭘 그릴지 알려주세요!\n**이렇게 써주세요**: `!이미지 <그리고 싶은 장면>`\n(예: `!이미지 우주복을 입은 햄스터`)")
             return
-        
+
         # 이미지 생성 기능 활성화 확인
         if not getattr(config, 'COMETAPI_IMAGE_ENABLED', False):
-            await ctx.send("❌ 이미지 생성 기능이 현재 관리자에 의해 비활성화되어 있어요.")
+            await ctx.send("❌ 지금은 관리자가 그림 그리기 기능을 꺼둔 상태예요.")
             return
-        
+
         # AI 핸들러 가져오기
         ai_handler = self.bot.get_cog('AIHandler')
         if not ai_handler or not ai_handler.tools_cog:
-            await ctx.send("❌ AI 시스템이 아직 준비되지 않았어요. 잠시 후 다시 시도해주세요!")
+            await ctx.send("❌ 아직 준비가 덜 됐어요. 잠시 뒤에 다시 불러주세요.")
             return
 
         # 제한을 이미 넘은 사용자는 프롬프트 최적화 LLM을 호출하지 않는다.
@@ -139,14 +139,16 @@ class UserCommands(commands.Cog):
             ctx.guild.id,
         )
         if not quota.get("allowed"):
-            await ctx.send(f"❌ {quota.get('error') or '이미지 생성 제한에 도달했어요.'}")
+            # quota/generate 쪽 문구는 이미 완결된 문장이다. 프리픽스를 덧붙이면
+            # "이미지 생성 실패: 오늘 그릴 수 있는 몫을 다 썼어요"처럼 겹쳐 읽힌다.
+            await ctx.send(f"❌ {quota.get('error') or '오늘 그릴 수 있는 몫을 다 썼어요.'}")
             return
         
         async with ctx.typing():
             status_msg = None
             try:
                 # 생성 중 메시지 전송
-                status_msg = await ctx.send(f"🎨 **'{prompt}'**\n위 설명으로 그림을 그리고 있어요... (최대 1분 30초 정도 걸릴 수 있으니 잠시만 기다려줘...)")
+                status_msg = await ctx.send(f"🎨 **'{prompt}'**\n이 장면으로 그림을 그리는 중이에요. 1분 30초쯤 걸릴 수 있어요.")
                 
                 # 1. 원문과 관련 기억을 보존한 이미지 프롬프트 구성
                 log_extra_img = {'guild_id': ctx.guild.id, 'author_id': ctx.author.id}
@@ -180,8 +182,8 @@ class UserCommands(commands.Cog):
                     await status_msg.edit(
                         content=(
                             f"🎨 **'{prompt}'**\n"
-                            "대화에서 관련된 기억을 확인하고 한 장의 그림으로 "
-                            "정리하고 있어요..."
+                            "예전 대화에서 관련된 기억을 찾아 한 장으로 "
+                            "정리하는 중이에요..."
                         )
                     )
                 
@@ -232,20 +234,20 @@ class UserCommands(commands.Cog):
                     logger.info(f"이미지 생성 성공 (명령어): user={ctx.author.id}", extra=log_extra)
                     
                 elif result.get('error'):
-                    await status_msg.edit(content=f"😅 이미지 생성 실패: {result['error']}")
+                    await status_msg.edit(content=f"😅 {result['error']}")
                 else:
-                    await status_msg.edit(content="❌ 이미지 생성 중 알 수 없는 오류가 발생했어요.")
+                    await status_msg.edit(content="❌ 그림을 그리다 문제가 생겼어요. 잠시 뒤에 다시 부탁해주세요.")
                     
             except Exception as e:
                 logger.error(f"이미지 생성 명령어 오류: {e}", exc_info=True, extra=log_extra)
                 try:
                     if status_msg is not None:
-                        await status_msg.edit(content="❌ 처리 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요!")
+                        await status_msg.edit(content="❌ 그림을 그리다 문제가 생겼어요. 잠시 뒤에 다시 부탁해주세요.")
                     else:
-                        await ctx.send("❌ 처리 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요!")
+                        await ctx.send("❌ 그림을 그리다 문제가 생겼어요. 잠시 뒤에 다시 부탁해주세요.")
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                     try:
-                        await ctx.send("❌ 처리 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요!")
+                        await ctx.send("❌ 그림을 그리다 문제가 생겼어요. 잠시 뒤에 다시 부탁해주세요.")
                     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                         logger.warning(
                             "이미지 생성 오류 안내 전송 실패",
@@ -257,14 +259,14 @@ class UserCommands(commands.Cog):
     async def generate_image_error(self, ctx: commands.Context, error):
         """`이미지` 명령어의 오류를 처리합니다."""
         if isinstance(error, commands.NoPrivateMessage):
-            await ctx.send("❌ 이 명령어는 서버 채널에서만 사용할 수 있어요!")
+            await ctx.send("❌ 그림 그리기는 서버 채널에서만 쓸 수 있어요.")
         elif isinstance(error, commands.CommandOnCooldown):
             await ctx.send(
-                f"⏳ 이미지 요청은 잠깐 쉬어가야 해요. "
-                f"{max(1, int(error.retry_after + 0.999))}초 뒤에 다시 시도해줘!"
+                f"⏳ 그림은 조금 쉬었다 그려야 해요. "
+                f"{max(1, int(error.retry_after + 0.999))}초 뒤에 다시 불러주세요."
             )
         elif isinstance(error, commands.MissingRequiredArgument):
-            await ctx.send("❌ 그림에 대한 설명이 빠졌어요!\n**사용법**: `!이미지 <설명>` (예: `!이미지 귀여운 고양이`)")
+            await ctx.send("❌ 뭘 그릴지 알려주세요!\n**이렇게 써주세요**: `!이미지 <그리고 싶은 장면>` (예: `!이미지 귀여운 고양이`)")
 
     def _consume_update_cooldown(
         self,
@@ -464,8 +466,8 @@ class UserCommands(commands.Cog):
         allowed, remaining_seconds = self._consume_update_cooldown(ctx.author.id)
         if not allowed:
             await ctx.send(
-                f"⏳ 업데이트 소식은 방금 확인했어! "
-                f"{remaining_seconds}초 뒤에 다시 불러줘."
+                f"⏳ 업데이트 소식은 방금 확인했어요. "
+                f"{remaining_seconds}초 뒤에 다시 불러주세요."
             )
             return
         
@@ -501,7 +503,7 @@ class UserCommands(commands.Cog):
 
             except Exception as e:
                 logger.error(f"업데이트 명령어 처리 중 오류: {e}", exc_info=True, extra=log_extra)
-                await ctx.send("❌ 업데이트 정보를 가져오는 중 오류가 발생했어요.")
+                await ctx.send("❌ 업데이트 소식을 가져오다 문제가 생겼어요. 잠시 뒤에 다시 불러주세요.")
 
 async def setup(bot: commands.Bot):
     """Cog를 봇에 등록하는 함수입니다."""

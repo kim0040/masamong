@@ -975,6 +975,7 @@ def test_unexecuted_future_search_promise_is_replaced_but_verified_answer_is_kep
         has_external_evidence=True,
     )
 
-    assert "실제로 확인하지 못했어요" in replaced
+    # 검색을 약속하는 대신, 확인되지 않았다는 사실을 그대로 밝혀야 한다.
+    assert "지금 확인이 안 됐어요" in replaced
     assert "찾아볼게" not in replaced
     assert kept == promise

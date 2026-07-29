@@ -83,7 +83,7 @@ def test_unknown_eligibility_tells_user_to_check_the_original():
     text = _all_text(build_item_embed(item, today=TODAY))
 
     assert "확인 필요" in text
-    assert "원문을 직접 확인" in text
+    assert "원문을 꼭 확인" in text
 
 
 def test_short_or_image_only_body_is_disclosed():
@@ -95,7 +95,7 @@ def test_short_or_image_only_body_is_disclosed():
     text = _all_text(build_item_embed(item, today=TODAY))
 
     assert "본문 확인" in text
-    assert "이미지 중심" in text
+    assert "본문이 대부분 이미지" in text
     assert "원문 이미지와 첨부파일" in text
 
 

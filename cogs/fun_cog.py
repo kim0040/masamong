@@ -347,7 +347,7 @@ class FunCog(commands.Cog):
         참고:
         - 대화 기록이 충분히 쌓여 있어야 합니다.
         """
-        status_msg = await ctx.send("📋 대화 내용을 분석해서 요약 중이야...")
+        status_msg = await ctx.send("📋 최근 대화를 읽고 요약하는 중이에요...")
         await self.execute_summarize(ctx.channel, ctx.author, status_msg=status_msg)
 
 async def setup(bot: commands.Bot):

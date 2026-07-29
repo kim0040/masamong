@@ -809,8 +809,8 @@ class ToolsCog(commands.Cog):
         except asyncio.TimeoutError:
             return {
                 "error": (
-                    "지금 다른 이미지를 그리고 있어 대기열이 가득 찼어요. "
-                    "잠시 후 다시 시도해줘!"
+                    "지금 다른 그림을 그리고 있어서 순서를 못 잡았어요. "
+                    "조금 뒤에 다시 불러주세요."
                 )
             }
         try:
@@ -843,8 +843,8 @@ class ToolsCog(commands.Cog):
                 "allowed": False,
                 "remaining": 0,
                 "error": (
-                    f"이미지 생성 제한에 도달했어요. "
-                    f"{reset_hours}시간 후에 다시 시도해줘!"
+                    f"오늘 그릴 수 있는 그림을 다 썼어요. "
+                    f"{reset_hours}시간 뒤에 다시 부탁해주세요."
                 ),
             }
 
@@ -857,8 +857,8 @@ class ToolsCog(commands.Cog):
                 "remaining": 0,
                 "global_remaining": 0,
                 "error": (
-                    "오늘 마사몽이 생성할 수 있는 이미지가 다 끝났어... "
-                    "내일 다시 불러줘!"
+                    "오늘 마사몽이 그릴 수 있는 몫을 다 썼어요. "
+                    "내일 다시 불러주세요."
                 ),
             }
 
@@ -872,8 +872,8 @@ class ToolsCog(commands.Cog):
                 "remaining": 0,
                 "guild_remaining": 0,
                 "error": (
-                    "이 서버의 오늘 이미지 생성 한도에 도달했어요. "
-                    "내일 다시 시도해 주세요."
+                    "이 서버에서 오늘 그릴 수 있는 몫을 다 썼어요. "
+                    "내일 다시 부탁해주세요."
                 ),
             }
 
@@ -914,13 +914,18 @@ class ToolsCog(commands.Cog):
         # 1. 이미지 생성 기능 활성화 확인
         if not getattr(config, 'COMETAPI_IMAGE_ENABLED', False):
             logger.warning("이미지 생성 기능이 비활성화되어 있습니다.", extra=log_extra)
-            return {"error": "이미지 생성 기능이 현재 비활성화되어 있어요."}
+            return {"error": "지금은 그림 그리기 기능이 꺼져 있어요."}
 
         # 2. API 키 확인
         api_key = getattr(config, 'COMETAPI_IMAGE_API_KEY', None) or getattr(config, 'COMETAPI_KEY', None)
         if not api_key:
             logger.error("COMETAPI_IMAGE_API_KEY(COMETAPI_KEY fallback 포함)가 설정되지 않았습니다.", extra=log_extra)
-            return {"error": "이미지 생성 API 키가 설정되지 않았어요."}
+            return {
+                "error": (
+                    "그림 그리기 준비가 아직 안 돼 있어요. "
+                    "관리자가 설정을 확인해야 해서, 지금은 다시 시도해도 똑같아요."
+                )
+            }
 
         # 3. 프롬프트 안전성 검사 (NSFW 차단)
         is_safe, blocked_keyword = self._is_prompt_safe(prompt)
@@ -930,7 +935,7 @@ class ToolsCog(commands.Cog):
                 bool(blocked_keyword),
                 extra=log_extra,
             )
-            return {"error": "요청한 이미지를 생성할 수 없어요. 부적절한 내용이 포함되어 있는 것 같아요."}
+            return {"error": "이건 그리기 어려운 내용이에요. 다른 장면으로 부탁해주세요."}
 
         # 이 구현은 Gemini native generateContent 응답만 파싱한다. OpenAI 이미지
         # 모델명을 같은 endpoint에 넣으면 404가 나고 사용량만 예약될 수 있으므로
@@ -950,15 +955,16 @@ class ToolsCog(commands.Cog):
             )
             return {
                 "error": (
-                    "이미지 모델 설정이 호출 방식과 맞지 않아 생성을 중단했어요. "
-                    "이번 요청은 이미지 사용량에 포함되지 않습니다."
+                    "그림 그리기 설정에 문제가 있어서 시작하지 못했어요. "
+                    "이번 건 횟수에서 빼지 않았으니 안심하세요. "
+                    "관리자가 확인해야 해요."
                 )
             }
 
         # 4~5. user/global quota를 lock 내부에서 최종 확인한다.
         quota = await self.check_image_quota(user_id, guild_id)
         if not quota.get("allowed"):
-            return {"error": str(quota.get("error") or "이미지 생성 제한에 도달했어요.")}
+            return {"error": str(quota.get("error") or "오늘 그릴 수 있는 몫을 다 썼어요.")}
         user_remaining = int(quota.get("remaining") or 0)
 
         # provider가 실패하거나 빈 응답을 반환해도 실제 비용 시도는 발생한다.
@@ -970,8 +976,8 @@ class ToolsCog(commands.Cog):
         ):
             return {
                 "error": (
-                    "이미지 사용량을 안전하게 예약하지 못해 생성을 중단했어요. "
-                    "잠시 후 다시 시도해줘!"
+                    "남은 횟수를 확인하지 못해서 그리기를 시작하지 않았어요. "
+                    "잠시 뒤에 다시 불러주세요."
                 )
             }
         remaining_after_attempt = max(0, user_remaining - 1)
@@ -1046,7 +1052,12 @@ class ToolsCog(commands.Cog):
                             len(error_text),
                             extra=log_extra,
                         )
-                        return {"error": f"API 서버가 오류를 반환했습니다. ({resp.status})"}
+                        return {
+                            "error": (
+                                "그림 그리는 쪽에서 문제가 생겼어요. "
+                                "잠시 뒤에 다시 부탁해주세요."
+                            )
+                        }
                     
                     raw_response = await resp.read()
                     # 12MB 이미지의 base64와 작은 JSON metadata를 포함할
@@ -1107,18 +1118,18 @@ class ToolsCog(commands.Cog):
             )
             return {
                 "error": (
-                    f"이미지 생성이 {config.IMAGE_GENERATION_TIMEOUT_SECONDS}초를 "
-                    "초과해 중단되었습니다. 이번 시도는 사용량에 포함됩니다."
+                    f"{config.IMAGE_GENERATION_TIMEOUT_SECONDS}초가 넘도록 그림이 "
+                    "안 나와서 멈췄어요. 아쉽지만 이번 것도 횟수에는 들어가요."
                 )
             }
         except Exception as e:
             err_msg = str(e)
             logger.error(f"이미지 생성 중 예외: {err_msg}", exc_info=True, extra=log_extra)
             if "SAFETY" in err_msg.upper() or "sensitive" in err_msg.lower():
-                return {"error": "요청한 내용을 그릴 수 없어요! 부적절한 내용이 감지되어 차단되었습니다."}
+                return {"error": "이건 그리기 어려운 내용이에요. 다른 장면으로 부탁해주세요."}
             if "429" in err_msg or "quota" in err_msg.lower():
-                return {"error": "이미지 생성 요청이 너무 많아요. 잠시 후에 다시 시도해줘!"}
-            return {"error": "이미지 생성 중 예상치 못한 오류가 발생했어요."}
+                return {"error": "그림 요청이 한꺼번에 몰렸어요. 조금 뒤에 다시 불러주세요."}
+            return {"error": "그림을 그리다 문제가 생겼어요. 잠시 뒤에 다시 부탁해주세요."}
 
 
 async def setup(bot: commands.Bot):
