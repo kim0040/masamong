@@ -42,6 +42,20 @@ def test_cli_defaults_to_read_only_and_requires_strong_mutation_flag():
         health.parse_args(["--write-check"])
 
 
+def test_memory_probe_uses_relevant_sentence_not_bare_keyword():
+    queries = health._memory_probe_queries(
+        [
+            {
+                "summary_text": "철수가 다음 모임 장소로 한옥 카페를 제안했다.",
+                "keyword_json": '["철수", "카페"]',
+            }
+        ],
+        limit=1,
+    )
+
+    assert queries == ["철수가 다음 모임 장소로 한옥 카페를 제안했다."]
+
+
 @pytest.mark.asyncio
 async def test_prompt_injection_probe_matches_current_message_contract():
     result = await health._run_prompt_injection_check(channel_id=123)
