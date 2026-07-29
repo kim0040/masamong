@@ -430,6 +430,11 @@ def _check_profile(
     # env 파일 밖(예: systemd Environment=)에만 있으면 전환 후 조용히 사라진다.
     # 기동 시점에도 config가 같은 검사를 하지만, 배포 전에 먼저 드러내는 편이 낫다.
     if profile in {"masamo", "general"}:
+        if env.get("BM25_AUTO_REBUILD_ENABLED", "").lower() not in FALSE_VALUES:
+            errors.append(
+                f"{label}: 저사양 운영에서는 BM25_AUTO_REBUILD_ENABLED=false를 "
+                "env 파일에 명시해야 합니다."
+            )
         lane_key = "LLM_MAIN_PRIMARY_API_KEY"
         if not env.get(lane_key, "") and not env.get("COMETAPI_KEY", ""):
             errors.append(
@@ -455,6 +460,16 @@ def _check_profile(
         if linkup_active and not env.get("LINKUP_API_KEY", ""):
             errors.append(
                 f"{label}: WEB_SEARCH_PROVIDER=linkup인데 LINKUP_API_KEY가 없습니다."
+            )
+        image_enabled = env.get("COMETAPI_IMAGE_ENABLED", "true").lower() in TRUE_VALUES
+        image_key = env.get("COMETAPI_IMAGE_API_KEY", "") or env.get(
+            "COMETAPI_KEY",
+            "",
+        )
+        if image_enabled and _is_placeholder(image_key):
+            errors.append(
+                f"{label}: 이미지 생성을 켰지만 COMETAPI_IMAGE_API_KEY 또는 "
+                "COMETAPI_KEY가 유효하지 않습니다."
             )
     if profile == "masamo" and env.get(
         "MASAMONG_GUILD_SETTINGS_MODE", ""

@@ -364,6 +364,7 @@ LLM_CALL_TIMEOUT_SECONDS=120
 EMBEDDING_MAX_CONCURRENCY=1
 TIDB_STARTER_FREE_PLAN_MODE=true
 TOKENIZERS_PARALLELISM=false
+BM25_AUTO_REBUILD_ENABLED=false
 ```
 
 ---
@@ -386,8 +387,9 @@ TOKENIZERS_PARALLELISM=false
   --expected-profile masamo --expected-db masamong
 ```
 
-`scripts/smoke_*.py`는 실제 API를 한 번씩 호출해 비용이 생기므로 오프라인 테스트에서
-제외돼 있다. 필요할 때만 직접 실행한다.
+`scripts/smoke_*.py`는 실제 API를 호출해 비용이 생길 수 있으므로 오프라인
+테스트에서 제외돼 있다. 실행 전 각 스크립트의 `--help`와 최대 호출 수를 확인한다.
+의미 대화 smoke처럼 여러 시나리오를 검사하는 스크립트는 한 번보다 많이 호출한다.
 
 ---
 
@@ -399,7 +401,7 @@ TOKENIZERS_PARALLELISM=false
 | [UML_SPEC.ko.md](UML_SPEC.ko.md) | 클래스·시퀀스 다이어그램 |
 | [INSTANCE_SEPARATION.ko.md](INSTANCE_SEPARATION.ko.md) | 마사모/일반 분리와 전환 |
 | [DEPLOYMENT.md](../DEPLOYMENT.md) | 마이그레이션, timer, 롤백 |
-| [SETTINGS_GUIDE.md](SETTINGS_GUIDE.md) | 설정 키 전체 |
+| [SETTINGS_GUIDE.md](SETTINGS_GUIDE.md) | 운영 설정과 프로필 예제 |
 | [SCHOOL_NOTICE.ko.md](SCHOOL_NOTICE.ko.md) | 학교 공지 설계와 계약 |
 | [TRANSFER_NOTICE.ko.md](TRANSFER_NOTICE.ko.md) | 편입 공지 설계 |
 | [RAG_ANALYSIS.ko.md](RAG_ANALYSIS.ko.md) | 기억 회수 실측과 원인 분석 |

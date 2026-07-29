@@ -98,12 +98,81 @@ class ToolsCog(commands.Cog):
             return "장소 검색 중 오류" in str(result)
         return False
 
+    @staticmethod
+    def result_has_external_evidence(tool_name: str, result) -> bool:
+        """도구 결과가 최종 답변의 외부 근거로 실제 사용 가능한지 판정합니다.
+
+        일부 레거시 도구는 정상 반환 타입이 문자열이고, 실패도 예외가 아닌 오류
+        문자열로 반환합니다. 회로 차단에서는 입력 부족을 provider 장애로 세지
+        않더라도, 이런 결과를 검증된 자료로 승격해서는 안 됩니다.
+        """
+        if tool_name == "get_market_snapshot":
+            return bool(
+                isinstance(result, dict)
+                and result.get("status") == "success"
+                and result.get("indices")
+            )
+        if tool_name == "get_weather_forecast":
+            if isinstance(result, dict):
+                return bool(
+                    not result.get("error")
+                    and (
+                        result.get("current_weather") != "정보 없음"
+                        or result.get("forecast_items")
+                    )
+                )
+            text = str(result or "").strip()
+            return bool(text) and not any(
+                marker in text
+                for marker in (
+                    "알 수 없습니다",
+                    "정보 없음",
+                    "API 오류",
+                    "시간 초과",
+                    "준비되지 않았",
+                    "가져오지 못",
+                )
+            )
+        if tool_name == "get_stock_price":
+            text = str(result or "").strip()
+            return bool(re.search(r"\d", text)) and not any(
+                marker in text
+                for marker in (
+                    "조회 실패",
+                    "찾을 수 없",
+                    "파악하지 못",
+                    "가져올 수 없",
+                    "가져오는 중 오류",
+                    "API 키",
+                    "API 서버",
+                    "설정되지 않았",
+                    "네트워크 오류",
+                    "데이터 처리 오류",
+                    "알 수 없는 오류",
+                )
+            )
+        if tool_name == "search_for_place":
+            text = str(result or "").strip()
+            return bool(text) and not any(
+                marker in text
+                for marker in (
+                    "검색 결과가 없",
+                    "검색 중 오류",
+                    "API 키",
+                    "설정되지 않았",
+                )
+            )
+        return bool(result)
+
     async def execute_guarded(self, tool_name: str, operation):
         """cooldown·half-open을 적용해 실제 사용자 요청에서만 자동 복구합니다."""
         if not self.tool_health.begin_attempt(tool_name):
             raise ToolTemporarilyUnavailable(tool_name)
         try:
             result = await operation()
+        except asyncio.CancelledError:
+            self.tool_health.abandon_attempt(tool_name)
+            raise
         except Exception:
             self.tool_health.record_failure(tool_name)
             raise

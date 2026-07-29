@@ -40,11 +40,12 @@ async def get_stock_info(ticker: str) -> Dict[str, Any]:
         def _fetch():
             """yfinance Ticker에서 시세/정보를 동기적으로 조회합니다."""
             stock = yf.Ticker(ticker)
-            # Try to get fast info first
+            # 기업 상세 조회는 가격 한 건에 비해 비싸지만, 현재 출력 계약에서
+            # 회사명·통화·산업·설명을 사용하므로 한 번만 가져온다.
             info = {}
             try:
                 info = stock.info
-            except:
+            except Exception:
                 pass
                 
             price = None
@@ -53,9 +54,13 @@ async def get_stock_info(ticker: str) -> Dict[str, Any]:
             # Fetch Price
             try:
                 price = stock.fast_info.last_price
-            except:
+            except Exception:
                 # Fallback to history
-                hist = stock.history(period="1d")
+                hist = stock.history(
+                    period="5d",
+                    timeout=10,
+                    raise_errors=True,
+                )
                 if not hist.empty:
                     price = hist['Close'].iloc[-1]
             
@@ -65,7 +70,7 @@ async def get_stock_info(ticker: str) -> Dict[str, Any]:
                 prev_close = stock.fast_info.previous_close
                 if price and prev_close:
                     change_p = ((price - prev_close) / prev_close) * 100
-            except:
+            except Exception:
                 pass
 
             return {
@@ -118,6 +123,7 @@ async def get_market_snapshot(region: str = "global") -> Dict[str, Any]:
             auto_adjust=False,
             progress=False,
             threads=False,
+            timeout=10,
         )
         if frame is None or frame.empty:
             return {"error": "주요 시장 지수 데이터가 비어 있습니다."}

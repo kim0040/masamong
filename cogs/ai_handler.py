@@ -93,6 +93,9 @@ class AIHandler(commands.Cog):
     _FORTUNE_PROMPT_MAX_CHARS = 1_200
     _RAG_PROMPT_MAX_CHARS = 5_000
     _PROMPT_OMISSION_MARKER = "\n…(문자 예산에 맞춰 일부 생략)…\n"
+    _USER_COOLDOWN_MAX_ENTRIES = 4_096
+    _PROACTIVE_COOLDOWN_MAX_ENTRIES = 2_048
+    _EMOJI_CACHE_MAX_GUILDS = 512
 
     def __init__(self, bot: commands.Bot):
         """AIHandler 초기화 — LLM 클라이언트, 임베딩 스토어, 검색 엔진 등 코어 컴포넌트를 설정합니다."""
@@ -511,6 +514,15 @@ class AIHandler(commands.Cog):
                 else:
                     all_emojis.append(f"- {emoji.name}: <:{emoji.name}:{emoji.id}>")
             self._emoji_cache[guild.id] = (all_emojis, now)
+            if len(self._emoji_cache) > self._EMOJI_CACHE_MAX_GUILDS:
+                oldest_guilds = sorted(
+                    self._emoji_cache,
+                    key=lambda guild_id: self._emoji_cache[guild_id][1],
+                )[
+                    : len(self._emoji_cache) - self._EMOJI_CACHE_MAX_GUILDS
+                ]
+                for guild_id in oldest_guilds:
+                    self._emoji_cache.pop(guild_id, None)
         
         if not all_emojis:
             return ""
@@ -2425,6 +2437,21 @@ class AIHandler(commands.Cog):
                     lambda: method(**parameters),
                 )
                 self._debug(f"[도구:{tool_name}] 결과: {self._truncate_for_debug(result)}", log_extra)
+                if not self.tools_cog.result_has_external_evidence(
+                    tool_name,
+                    result,
+                ):
+                    logger.info(
+                        "도구 결과에 검증 가능한 자료가 없어 오류로 정규화: %s",
+                        tool_name,
+                        extra=log_extra,
+                    )
+                    return {
+                        "error": (
+                            "외부 제공처에서 이 요청을 뒷받침할 자료를 "
+                            "확인하지 못했습니다."
+                        )
+                    }
                 if not isinstance(result, dict):
                     return {"result": str(result)}
                 return result
@@ -2603,28 +2630,45 @@ class AIHandler(commands.Cog):
         
         # 쿨다운 갱신
         self.ai_user_cooldowns[user_id] = now
+        if len(self.ai_user_cooldowns) > self._USER_COOLDOWN_MAX_ENTRIES:
+            oldest_users = sorted(
+                self.ai_user_cooldowns,
+                key=self.ai_user_cooldowns.__getitem__,
+            )[
+                : len(self.ai_user_cooldowns)
+                - self._USER_COOLDOWN_MAX_ENTRIES
+            ]
+            for stale_user_id in oldest_users:
+                self.ai_user_cooldowns.pop(stale_user_id, None)
         # ========== 안전장치 검사 완료 ==========
         
         user_query = self._prepare_user_query(message, base_log_extra)
         if not user_query:
             return
 
-        # 5. DM Rate Limiting Check (New) - 순차 실행 (단일 커넥션 공유)
+        # 5. DM 사용자·전역 제한을 한 트랜잭션으로 함께 예약한다.
         if not message.guild:
-            # 5-1. 사용자별 1:1 제한 (3시간 5회) + 5-2. 전역 일일 DM 제한
-            dm_limit_result = await db_utils.check_dm_message_limit(self.bot.db, user_id)
-            global_dm_allowed = await db_utils.check_global_dm_limit(self.bot.db)
-            allowed, reset_time = dm_limit_result
+            allowed, reason, reset_time = await db_utils.reserve_dm_message(
+                self.bot.db,
+                user_id,
+            )
             if not allowed:
-                 await message.channel.send(
-                     f"⛔ 오늘 나눌 수 있는 DM 대화를 다 썼어요.\n1:1 대화는 5시간에 30번까지예요.\n🕒 다시 쓸 수 있는 시각: {reset_time}"
-                 )
-                 return
-            
-            if not global_dm_allowed:
-                await message.channel.send(
-                    "⛔ 오늘 DM으로 받을 수 있는 양을 다 썼어요.\n내일 다시 찾아와줘! 서버 채널에서는 그대로 이야기할 수 있어요."
-                )
+                if reason == "user_limit":
+                    await message.channel.send(
+                        "⛔ 지금 DM 대화 한도에 도달했어요.\n"
+                        "1:1 대화는 5시간에 30번까지예요.\n"
+                        f"🕒 다시 쓸 수 있는 시각: {reset_time}"
+                    )
+                elif reason == "global_limit":
+                    await message.channel.send(
+                        "⛔ 오늘 DM으로 받을 수 있는 양을 다 썼어요.\n"
+                        "내일 다시 찾아와줘! 서버 채널에서는 그대로 이야기할 수 있어요."
+                    )
+                else:
+                    await message.channel.send(
+                        "지금은 DM 사용량을 안전하게 확인하지 못해 요청을 시작하지 "
+                        "않았어요. 잠시 뒤 다시 불러주세요."
+                    )
                 return
 
         trace_id = uuid.uuid4().hex[:8]
@@ -3107,8 +3151,16 @@ class AIHandler(commands.Cog):
                                 )
                             try:
                                 await status_msg.delete()
-                            except:
-                                pass
+                            except (
+                                discord.NotFound,
+                                discord.Forbidden,
+                                discord.HTTPException,
+                            ):
+                                logger.debug(
+                                    "AI 상태 메시지를 삭제하지 못했습니다.",
+                                    exc_info=True,
+                                    extra=log_extra,
+                                )
                             # 분석 데이터 로깅 (순차 실행: 단일 커넥션 공유)
                             await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
                             await db_utils.log_api_call(self.bot.db, "llm_global")
@@ -3167,8 +3219,19 @@ class AIHandler(commands.Cog):
             await progress.stop()
             try:
                 await status_msg.edit(content=config.MSG_AI_ERROR)
-            except:
-                await message.channel.send(config.MSG_AI_ERROR)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                try:
+                    await message.channel.send(config.MSG_AI_ERROR)
+                except (
+                    discord.NotFound,
+                    discord.Forbidden,
+                    discord.HTTPException,
+                ):
+                    logger.warning(
+                        "AI 오류 안내 메시지 전송 실패",
+                        exc_info=True,
+                        extra=log_extra,
+                    )
         finally:
             await progress.stop()
             self._debug(f"--- 에이전트 세션 종료 trace_id={trace_id}", log_extra)
@@ -3250,6 +3313,19 @@ class AIHandler(commands.Cog):
 
             if response and "YES" in response.text.strip().upper():
                 self.proactive_cooldowns[message.channel.id] = now
+                if (
+                    len(self.proactive_cooldowns)
+                    > self._PROACTIVE_COOLDOWN_MAX_ENTRIES
+                ):
+                    oldest_channels = sorted(
+                        self.proactive_cooldowns,
+                        key=self.proactive_cooldowns.__getitem__,
+                    )[
+                        : len(self.proactive_cooldowns)
+                        - self._PROACTIVE_COOLDOWN_MAX_ENTRIES
+                    ]
+                    for stale_channel_id in oldest_channels:
+                        self.proactive_cooldowns.pop(stale_channel_id, None)
                 return True
         except Exception as e:
             logger.error(f"게이트키퍼 AI 실행 중 오류: {e}", exc_info=True, extra=log_extra)

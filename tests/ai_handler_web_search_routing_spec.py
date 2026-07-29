@@ -551,6 +551,66 @@ async def test_execute_tool_rejects_disabled_tool():
     assert "비활성화" in result.get("error", "")
 
 
+@pytest.mark.asyncio
+async def test_execute_tool_does_not_promote_failure_text_to_evidence():
+    handler = _build_handler_without_init()
+
+    class _DummyTools:
+        async def get_stock_price(self, **_parameters):
+            return "'AAPL' 조회 실패: 시세 정보를 가져올 수 없습니다."
+
+        async def execute_guarded(self, _tool_name, operation):
+            return await operation()
+
+        @staticmethod
+        def result_has_external_evidence(tool_name, result):
+            from cogs.tools_cog import ToolsCog
+
+            return ToolsCog.result_has_external_evidence(tool_name, result)
+
+    handler.tools_cog = _DummyTools()
+
+    result = await handler._execute_tool(
+        {
+            "tool_to_use": "get_stock_price",
+            "parameters": {"symbol": "AAPL"},
+        },
+        guild_id=1,
+        user_query="애플 주가 알려줘",
+        channel_id=2,
+        user_id=3,
+    )
+
+    assert "error" in result
+    assert "result" not in result
+
+
+def test_external_evidence_predicate_rejects_empty_or_error_results():
+    from cogs.tools_cog import ToolsCog
+
+    assert (
+        ToolsCog.result_has_external_evidence(
+            "get_stock_price",
+            "'AAPL' 조회 실패: 시세 정보를 가져올 수 없습니다.",
+        )
+        is False
+    )
+    assert (
+        ToolsCog.result_has_external_evidence(
+            "get_stock_price",
+            "AAPL 현재가: 215.32 USD (+1.20%)",
+        )
+        is True
+    )
+    assert (
+        ToolsCog.result_has_external_evidence(
+            "get_market_snapshot",
+            {"error": "provider unavailable"},
+        )
+        is False
+    )
+
+
 def test_finance_disambiguation_does_not_treat_apple_music_as_finance():
     handler = _build_handler_without_init()
 

@@ -28,6 +28,31 @@ async def api_log_db():
         await db.close()
 
 
+@pytest_asyncio.fixture
+async def dm_limit_db():
+    db = await aiosqlite.connect(":memory:")
+    await db.executescript(
+        """
+        CREATE TABLE dm_usage_logs (
+            user_id INTEGER PRIMARY KEY,
+            usage_count INTEGER NOT NULL,
+            window_start_at TEXT NOT NULL,
+            reset_at TEXT NOT NULL
+        );
+        CREATE TABLE system_counters (
+            counter_name TEXT PRIMARY KEY,
+            counter_value INTEGER NOT NULL,
+            last_reset_at TEXT
+        );
+        """
+    )
+    await db.commit()
+    try:
+        yield db
+    finally:
+        await db.close()
+
+
 @pytest.mark.asyncio
 async def test_api_rate_limit_allows_usage_below_both_windows(
     api_log_db,
@@ -222,3 +247,108 @@ async def test_concurrent_llm_reservations_cannot_cross_user_limit(
         "SELECT COUNT(*) FROM api_call_log WHERE api_type = 'llm:user:33'"
     ) as cursor:
         assert int((await cursor.fetchone())[0]) == 1
+
+
+@pytest.mark.asyncio
+async def test_dm_reservation_increments_user_and_global_together(dm_limit_db):
+    allowed, reason, reset_time = await db_utils.reserve_dm_message(
+        dm_limit_db,
+        42,
+    )
+
+    async with dm_limit_db.execute(
+        "SELECT usage_count FROM dm_usage_logs WHERE user_id = 42"
+    ) as cursor:
+        user_count = int((await cursor.fetchone())[0])
+    async with dm_limit_db.execute(
+        "SELECT counter_value FROM system_counters"
+    ) as cursor:
+        global_count = int((await cursor.fetchone())[0])
+
+    assert (allowed, reason, reset_time) == (True, None, None)
+    assert user_count == 1
+    assert global_count == 1
+
+
+@pytest.mark.asyncio
+async def test_dm_user_limit_rejection_does_not_consume_global_slot(
+    dm_limit_db,
+    monkeypatch,
+):
+    monkeypatch.setattr(db_utils, "DM_LIMIT_COUNT", 1)
+    now = datetime.now(timezone.utc)
+    await dm_limit_db.execute(
+        """
+        INSERT INTO dm_usage_logs (
+            user_id, usage_count, window_start_at, reset_at
+        ) VALUES (?, 1, ?, ?)
+        """,
+        (
+            42,
+            now.isoformat(),
+            (now + timedelta(hours=5)).isoformat(),
+        ),
+    )
+    await dm_limit_db.commit()
+
+    allowed, reason, reset_time = await db_utils.reserve_dm_message(
+        dm_limit_db,
+        42,
+    )
+    async with dm_limit_db.execute(
+        "SELECT COUNT(*) FROM system_counters"
+    ) as cursor:
+        global_rows = int((await cursor.fetchone())[0])
+
+    assert allowed is False
+    assert reason == "user_limit"
+    assert reset_time
+    assert global_rows == 0
+
+
+@pytest.mark.asyncio
+async def test_dm_global_limit_rejection_does_not_consume_user_slot(
+    dm_limit_db,
+    monkeypatch,
+):
+    monkeypatch.setattr(db_utils, "DM_GLOBAL_LIMIT", 1)
+    today_key = (
+        "dm_daily_global_"
+        + datetime.now(db_utils.KST).strftime("%Y-%m-%d")
+    )
+    await dm_limit_db.execute(
+        """
+        INSERT INTO system_counters (
+            counter_name, counter_value, last_reset_at
+        ) VALUES (?, 1, ?)
+        """,
+        (today_key, datetime.now(timezone.utc).isoformat()),
+    )
+    await dm_limit_db.commit()
+
+    allowed, reason, reset_time = await db_utils.reserve_dm_message(
+        dm_limit_db,
+        42,
+    )
+    async with dm_limit_db.execute(
+        "SELECT COUNT(*) FROM dm_usage_logs"
+    ) as cursor:
+        user_rows = int((await cursor.fetchone())[0])
+
+    assert (allowed, reason, reset_time) == (
+        False,
+        "global_limit",
+        None,
+    )
+    assert user_rows == 0
+
+
+@pytest.mark.asyncio
+async def test_dm_reservation_fails_closed_when_usage_store_is_missing():
+    db = await aiosqlite.connect(":memory:")
+    try:
+        result = await db_utils.reserve_dm_message(db, 42)
+    finally:
+        await db.close()
+
+    assert result == (False, "usage_store_error", None)

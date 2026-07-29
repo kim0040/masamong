@@ -168,11 +168,6 @@ profiles/*.yml
 # 프로젝트 고유 제외 항목
 # =============================================================================
 
-# 배포/기여/계획 문서 (로컬 전용)
-docs/CHANGELOG.md
-docs/CONTRIBUTING.md
-docs/QUICKSTART.md
-docs/README.en.md
 examples/
 
 # GitHub 템플릿 (로컬 전용)

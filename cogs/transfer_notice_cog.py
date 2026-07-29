@@ -1240,8 +1240,22 @@ class TransferNoticeCog(commands.Cog):
             try:
                 await asyncio.wait_for(self._delivery_tick(), timeout=45)
             except asyncio.TimeoutError:
+                try:
+                    await self.bot.db.rollback()
+                except Exception:
+                    logger.critical(
+                        "편입 공지 tick 시간초과 후 rollback도 실패했습니다.",
+                        exc_info=True,
+                    )
                 logger.error("편입 공지 전달 tick이 45초를 초과했습니다.")
             except Exception:
+                try:
+                    await self.bot.db.rollback()
+                except Exception:
+                    logger.critical(
+                        "편입 공지 tick 실패 후 rollback도 실패했습니다.",
+                        exc_info=True,
+                    )
                 logger.error("편입 공지 전달 tick 실패", exc_info=True)
 
     @delivery_task.before_loop

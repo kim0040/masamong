@@ -769,6 +769,7 @@ class ReMasamongBot(commands.Bot):
                     await self.db.commit()
                     logger.info("guild_settings 테이블에 language 컬럼을 추가했습니다.")
                 except Exception:
+                    await self.db.rollback()
                     pass  # 이미 존재하면 무시
             else:
                 try:
@@ -778,6 +779,7 @@ class ReMasamongBot(commands.Bot):
                     await self.db.commit()
                     logger.info("guild_settings 테이블에 language 컬럼을 추가했습니다.")
                 except Exception:
+                    await self.db.rollback()
                     pass  # 이미 존재하면 무시
 
             # locations 테이블이 비어있거나 구형 데이터(예: 2만개 미만 또는 주요 별칭 누락)일 경우 재시딩합니다.
@@ -816,11 +818,11 @@ class ReMasamongBot(commands.Bot):
         except aiosqlite.OperationalError as e:
             # 테이블이 아직 존재하지 않는 경우 등
             logger.warning(f"데이터베이스 마이그레이션 중 오류 발생 (무시 가능): {e}")
+            try:
+                await self.db.rollback()
+            except Exception:
+                logger.error("마이그레이션 실패 후 rollback에도 실패했습니다.", exc_info=True)
             if config.REMOTE_DB_STRICT_MODE:
-                try:
-                    await self.db.rollback()
-                except Exception:
-                    logger.error("마이그레이션 실패 후 rollback에도 실패했습니다.", exc_info=True)
                 raise
         except Exception as e:
             logger.error(f"데이터베이스 마이그레이션 중 심각한 오류 발생: {e}", exc_info=True)

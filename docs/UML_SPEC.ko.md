@@ -1,1061 +1,374 @@
-# 마사몽 UML 상세 분석 문서
+# 마사몽 UML 명세
 
-> **버전**: 2.0.0 | **언어**: Python 3.10+ | **작성일**: 2026-04-30
+이 문서는 현재 구현의 구조와 핵심 시퀀스를 Mermaid로 표현한다. 운영 원격 경로에는
+BM25 구성요소가 없으며 의미 임베딩 검색만 표시한다.
 
-본 문서는 마사몽 Discord 봇의 소프트웨어 아키텍처를 UML 표기법과 Mermaid 다이어그램으로 상세하게 분석한 기술 문서입니다.
-
----
-
-## 목차
-
-1. [컨테이너 다이어그램 (C4 Level 2)](#1-컨테이너-다이어그램-c4-level-2)
-2. [컴포넌트 다이어그램](#2-컴포넌트-다이어그램)
-3. [클래스 다이어그램](#3-클래스-다이어그램)
-4. [시퀀스 다이어그램](#4-시퀀스-다이어그램)
-5. [액티비티 다이어그램](#5-액티비티-다이어그램)
-6. [상태 다이어그램](#6-상태-다이어그램)
-7. [ER 다이어그램](#7-er-entity-relationship-다이어그램)
-
----
-
-## 1. 컨테이너 다이어그램 (C4 Level 2)
+## 전체 컴포넌트
 
 ```mermaid
 flowchart TB
-    subgraph DiscordPlatform["Discord 플랫폼"]
-        Guilds["서버 (Guilds)"]
-        DMs["DM"]
-    end
+    Discord["Discord Gateway / REST"]
+    Main["MasamongBot<br/>main.py"]
+    Events["Events Cog"]
+    AI["AIHandler"]
+    Intent["IntentAnalyzer"]
+    LLM["LLMClient"]
+    Tools["ToolsCog"]
+    Health["ToolHealthRegistry"]
+    RAG["RAGManager"]
+    Search["HybridSearchEngine<br/>semantic-only in production"]
+    Privacy["PrivacyCog"]
+    Feature["Weather / Fortune / School / Transfer / Fun Cogs"]
+    DB["TiDBConnection"]
+    TiDB[("Profile TiDB")]
+    KMA["KMA"]
+    SearchAPI["Linkup / legacy search"]
+    Market["Market providers"]
+    Comet["CometAPI"]
+    Notice["School / transfer one-shot jobs"]
+    Local[("Masamo-only notice stores")]
 
-    subgraph BotProcess["🐍 마사몽 Bot Process (Python)"]
-        direction TB
-
-        Entrypoint["main.py<br/>ReMasamongBot"]
-        Config["config.py<br/>설정 로드"]
-        Logger["logger_config.py<br/>KST 로깅"]
-
-        subgraph CogLayer["Cog 확장 레이어"]
-            AIHandler["AIHandler<br/>AI 파이프라인"]
-            ToolsCog["ToolsCog<br/>외부 도구"]
-            WeatherCog["WeatherCog<br/>날씨/알림"]
-            FortuneCog["FortuneCog<br/>운세"]
-            ActivityCog["ActivityCog<br/>활동/랭킹"]
-            FunCog["FunCog<br/>요약/유틸"]
-            PollCog["PollCog<br/>투표"]
-            SettingsCog["SettingsCog<br/>슬래시 설정"]
-            EventsCog["EventsCog<br/>이벤트"]
-            Maintenance["MaintenanceCog<br/>백그라운드"]
-            Proactive["ProactiveAssistant<br/>선제적 참여"]
-            HelpCog["HelpCog<br/>도움말"]
-        end
-
-        subgraph UtilsLayer["유틸리티 레이어"]
-            LLMClient["LLMClient<br/>LLM 레인 라우팅"]
-            IntentAnalyzer["IntentAnalyzer<br/>의도 분석"]
-            RAGManager["RAGManager<br/>메모리 관리"]
-            Embeddings["embeddings.py<br/>벡터 저장소"]
-            HybridSearch["hybrid_search.py<br/>하이브리드 검색"]
-            LinkupSearch["linkup_search.py<br/>웹 검색"]
-            Weather["weather.py<br/>KMA 클라이언트"]
-            Fortune["fortune.py<br/>운세 계산"]
-        end
-
-        subgraph ApiHandlers["API 핸들러"]
-            FinnhubClient["finnhub.py"]
-            YFinanceHandler["yfinance_handler.py"]
-            KRXClient["krx.py"]
-            ExchangeRate["exchange_rate.py"]
-            KakaoClient["kakao.py"]
-        end
-
-        subgraph DBLayer["데이터베이스 레이어"]
-            CompatDB["compat_db.py<br/>TiDB/SQLite 어댑터"]
-            SchemaSQL["schema.sql"]
-            SchemaTiDB["schema_tidb.sql"]
-        end
-
-        Entrypoint --> Config
-        Entrypoint --> Logger
-        Entrypoint --> CogLayer
-        CogLayer --> UtilsLayer
-        UtilsLayer --> ApiHandlers
-        CogLayer --> DBLayer
-        UtilsLayer --> DBLayer
-    end
-
-    subgraph ExternalAPIs["외부 API 서비스"]
-        Comet["CometAPI"]
-        GCP["Google Gemini"]
-        KMAAPI["KMA"]
-        FinnAPI["Finnhub"]
-        Yahoo["yfinance"]
-        KRXAPI["KRX"]
-        EximAPI["EximBank"]
-        LinkupAPI["Linkup"]
-        KakaoAPI["Kakao Local"]
-    end
-
-    subgraph DataStores["데이터 저장소"]
-        TiDBCloud["TiDB Cloud<br/>aws ap-northeast-1"]
-        LocalSQLite["SQLite<br/>(로컬 파일)"]
-        HuggingFace["HuggingFace Cache<br/>(~/.cache)"]
-    end
-
-    Guilds -->|"Gateway"| Entrypoint
-    DMs -->|"Gateway"| Entrypoint
-
-    LLMClient -->|"Inference"| Comet
-    LLMClient -->|"Fallback"| GCP
-    Weather -->|"날씨"| KMAAPI
-    ApiHandlers -->|"금융"| FinnAPI
-    ApiHandlers -->|"금융"| Yahoo
-    ApiHandlers -->|"금융"| KRXAPI
-    ApiHandlers -->|"금융"| EximAPI
-    LinkupSearch -->|"검색"| LinkupAPI
-    ApiHandlers -->|"장소"| KakaoAPI
-
-    DBLayer -->|"운영"| TiDBCloud
-    DBLayer -->|"개발"| LocalSQLite
-    Embeddings -->|"모델"| HuggingFace
+    Discord --> Main
+    Main --> Events
+    Main --> AI
+    Main --> Privacy
+    Main --> Feature
+    Events --> AI
+    AI --> Intent
+    AI --> Tools
+    AI --> RAG
+    AI --> LLM
+    Intent --> LLM
+    Tools --> Health
+    Tools --> KMA
+    Tools --> SearchAPI
+    Tools --> Market
+    Tools --> Comet
+    RAG --> Search
+    RAG --> DB
+    Privacy --> DB
+    Feature --> DB
+    DB --> TiDB
+    Notice --> Local
+    Feature --> Local
 ```
 
----
-
-## 2. 컴포넌트 다이어그램
-
-```mermaid
-graph TB
-    subgraph MainModule["main.py"]
-        Bot["ReMasamongBot<br/>(commands.Bot)"]
-        OnMessage["on_message()<br/>메시지 라우터"]
-        SetupHook["setup_hook()<br/>DB + Cog 초기화"]
-    end
-
-    subgraph AIHandlerMod["cogs/ai_handler.py"]
-        ProcessAgent["process_agent_message()<br/>AI 파이프라인 진입점"]
-        MentionCheck["_message_has_valid_mention()<br/>멘션 검증"]
-        AddHistory["add_message_to_history()<br/>대화 기록 저장"]
-    end
-
-    subgraph IntentModule["utils/intent_analyzer.py"]
-        Analyze["route_tools()<br/>의미 라우팅"]
-        LLMAnalyze["routing lane 호출<br/>도구·기억·digest 판단"]
-        ToolPlan["_sanitize_tool_plan()<br/>계약·상한 검증"]
-        Emergency["_emergency_routing_decision()<br/>provider 장애 fallback"]
-    end
-
-    subgraph LLMModule["utils/llm_client.py"]
-        LaneRouter["get_lane_targets()<br/>레인 타깃 선택"]
-        PrimaryCall["call_primary()<br/>Primary 호출"]
-        FallbackCall["call_fallback()<br/>Fallback 호출"]
-        RateLimiter["_check_rate_limit()<br/>Rate Limit"]
-        PromptFilter["_filter_prompt_leak()<br/>프롬프트 누출 방지"]
-    end
-
-    subgraph RAGModule["utils/rag_manager.py"]
-        StoreMsg["store_message()<br/>메시지 저장"]
-        BuildWindow["_build_window()<br/>윈도우 생성"]
-        GenMemory["_generate_memory()<br/>구조화 메모리"]
-        SearchRAG["search()<br/>RAG 검색"]
-    end
-
-    subgraph SearchModule["utils/hybrid_search.py"]
-        EmbSearch["_embedding_search()<br/>임베딩 검색"]
-        BM25Search["_bm25_search()<br/>BM25 검색"]
-        RRF["_rrf_fusion()<br/>RRF 융합"]
-        Rerank["_rerank()<br/>재순위화"]
-    end
-
-    subgraph ToolsModule["cogs/tools_cog.py"]
-        WeatherTool["get_weather()"]
-        StockTool["get_stock_info()"]
-        WebSearch["web_search()"]
-        PlaceSearch["search_for_place()"]
-        ImageGen["generate_image()"]
-    end
-
-    subgraph DBModule["database/compat_db.py"]
-        TiDBAdapter["TiDBConnection<br/>(PyMySQL 기반)"]
-        SQLiteAdapter["aiosqlite<br/>(네이티브)"]
-    end
-
-    OnMessage --> ProcessAgent
-    ProcessAgent --> MentionCheck
-    ProcessAgent --> Analyze
-    ProcessAgent --> SearchRAG
-    ProcessAgent --> PrimaryCall
-    
-    Analyze --> LLMAnalyze
-    LLMAnalyze --> ToolPlan
-    LLMAnalyze -. "provider/JSON 실패" .-> Emergency
-    Emergency --> ToolPlan
-
-    ToolPlan --> ToolsModule
-
-    PrimaryCall --> LaneRouter
-    PrimaryCall --> RateLimiter
-    PrimaryCall --> PromptFilter
-    LaneRouter --> FallbackCall
-
-    SearchRAG --> EmbSearch
-    SearchRAG --> BM25Search
-    EmbSearch --> RRF
-    BM25Search --> RRF
-    RRF --> Rerank
-
-    StoreMsg --> BuildWindow
-    BuildWindow --> GenMemory
-
-    Bot --> TiDBAdapter
-    Bot --> SQLiteAdapter
-```
-
----
-
-## 3. 클래스 다이어그램
-
-### 4.1 핵심 클래스 구조
+## 핵심 클래스
 
 ```mermaid
 classDiagram
-    class ReMasamongBot {
-        +Connection db
-        +str db_path
-        +set locked_users
-        +_migrate_db()
-        +_table_exists(table_name) bool
+    class MasamongBot {
+        +db
         +setup_hook()
-        +on_message(message)
+        +on_ready()
         +close()
+        +is_ai_channel_allowed(guild_id, channel_id)
     }
-
     class AIHandler {
-        +Bot bot
-        +LLMClient llm_client
-        +IntentAnalyzer intent_analyzer
-        +RAGManager rag_manager
-        +DiscordEmbeddingStore discord_store
-        +KakaoEmbeddingStore kakao_store
-        +HybridSearchEngine search_engine
-        +BM25IndexManager bm25_manager
-        +Reranker reranker
-        +ToolsCog tools_cog
-        +bool is_ready
         +process_agent_message(message)
-        +_message_has_valid_mention(message) bool
-        +add_message_to_history(message)
-        +_execute_tool(tool_name, parameters) dict
-        +_compose_main_prompt(context) str
-        +_save_embedding(message)
+        +should_proactively_respond(message)
+        -_route_tools(query, history)
+        -_get_rag_context(...)
+        -_execute_tool(...)
+        -_compose_main_prompt(...)
     }
-
-    class LLMClient {
-        +Connection _db
-        +dict _openai_clients
-        +dict _gemini_compat_clients
-        +bool use_cometapi
-        +bool gemini_configured
-        +bool debug_enabled
-        +get_lane_targets(lane) list
-        +can_use_direct_gemini() bool
-        +call_routing_llm(prompt, system) dict
-        +call_main_llm(prompt, system, history) str
-        +_get_openai_client(base_url, key) AsyncOpenAI
-        +_get_gemini_compat_client(base_url, key)
-        +_check_rate_limit() bool
-        +_filter_prompt_leak(text) str
-    }
-
     class IntentAnalyzer {
-        +Connection db
-        +LLMClient llm_client
-        +float auto_search_cooldown
-        +route_tools(query, history) ToolRoutingDecision
-        +_parse_routing_json(raw) dict
-        +_emergency_routing_decision(query) ToolRoutingDecision
-        +_sanitize_tool_plan(plan) list
-        +_needs_web_search(query, rag_score) bool
+        +analyze(query, history)
+        -_sanitize_tool_plan(...)
+        -_detect_tools_by_keyword(query)
+        -_mark_auto_web_search_used(message)
     }
-
+    class LLMClient {
+        +generate_content(system, user, log_extra)
+        +fast_generate_text(prompt, model, log_extra)
+        +safe_generate_content(model, prompt, log_extra)
+        -_run_bounded_provider_call(factory, lane, log_extra)
+        -_reserve_request_budget(log_extra, feature)
+    }
+    class ToolsCog {
+        +execute_tool(name, parameters, context)
+        +execute_guarded(provider, operation)
+        +result_has_external_evidence(name, result)
+    }
+    class ToolHealthRegistry {
+        +begin_attempt(provider)
+        +record_success(provider)
+        +record_failure(provider)
+        +abandon_attempt(provider)
+    }
     class RAGManager {
-        +Connection db
-        +DiscordEmbeddingStore discord_store
-        +str embedding_model_name
-        +int window_size
-        +int stride
-        +store_message(message)
-        +_build_window(channel_id) bool
-        +_generate_memory(window) dict
-        +search(query, channel_id, scope) list
-        +_compute_embedding(text) list
-        +archive_old_messages(cutoff_days) int
-    }
-
-    class HybridSearchEngine {
-        +SentenceTransformer model
-        +float similarity_threshold
-        +float strong_threshold
-        +bool chunking_enabled
-        +QueryRewriter rewriter
-        +Reranker reranker
-        +search(query, channel_id, top_n) list
-        +_embedding_search(embedding, top_n) list
-        +_bm25_search(tokens, top_n) list
-        +_rrf_fusion(emb_results, bm25_results) list
-        +_rerank(query, candidates) list
-    }
-
-    class ToolsCog {
-        +Bot bot
-        +AIHandler ai_handler
-        +get_weather_forecast(location, day_offset) str
-        +get_stock_price(symbol, stock_name, user_query) str
-        +get_krw_exchange_rate(currency_code) str
-        +search_for_place(query) dict
-        +web_search(query) dict
-        +generate_image(prompt) dict
-        +web_search_rag(query) dict
-    }
-
-    class TiDBConnection {
-        +PyMySQL connection
-        +str backend
-        +execute(query, params) cursor
-        +executemany(query, params)
-        +executescript(script)
-        +commit()
+        +add_message_to_history(message)
+        +search_memory(...)
         +close()
+        -_update_conversation_windows(message)
+    }
+    class HybridSearchEngine {
+        +search(query, guild_id, channel_id, user_id, deep_search)
+        -_embedding_candidates(...)
+        -_gate_by_relevance(query, entries, deep_search)
+        -_dedupe_overlapping_entries(entries)
+    }
+    class TiDBConnection {
+        +execute(sql, params)
+        +executemany(sql, values)
+        +commit()
+        +rollback()
+        +close()
+        -_enter_transaction_gate(starts_transaction)
+        -_rollback_abandoned_transaction(owner)
     }
 
-    class DiscordEmbeddingStore {
-        +Connection db
-        +str table_name
-        +str backend
-        +store_embedding(message_id, embedding, metadata)
-        +search(embedding, filters, top_n) list
-        +delete(message_id)
-    }
-
-    class KakaoEmbeddingStore {
-        +Connection db
-        +str table_name
-        +str backend
-        +search(embedding, room_key, top_n) list
-        +store_chunk(chunk_id, room_key, embedding, metadata)
-    }
-
-    ReMasamongBot "1" --> "1..*" AIHandler : loads as Cog
-    ReMasamongBot "1" --> "1" TiDBConnection : db
-    AIHandler "1" --> "1" LLMClient
-    AIHandler "1" --> "1" IntentAnalyzer
-    AIHandler "1" --> "1" RAGManager
-    AIHandler "1" --> "1" HybridSearchEngine
-    AIHandler "1" --> "0..1" ToolsCog : injected
-    AIHandler "1" --> "1" DiscordEmbeddingStore
-    AIHandler "1" --> "1" KakaoEmbeddingStore
-    IntentAnalyzer "1" --> "1" LLMClient : uses routing lane
-    RAGManager "1" --> "1" DiscordEmbeddingStore
-    HybridSearchEngine "1" --> "1" DiscordEmbeddingStore
-    HybridSearchEngine "1" --> "1" KakaoEmbeddingStore
+    MasamongBot --> AIHandler
+    AIHandler --> IntentAnalyzer
+    AIHandler --> LLMClient
+    AIHandler --> ToolsCog
+    AIHandler --> RAGManager
+    ToolsCog --> ToolHealthRegistry
+    RAGManager --> HybridSearchEngine
+    RAGManager --> TiDBConnection
+    LLMClient --> TiDBConnection
 ```
 
-### 4.2 Cog 의존성 관계
-
-```mermaid
-classDiagram
-    class AIHandler {
-        +process_agent_message()
-    }
-    class ToolsCog {
-        +get_weather()
-        +get_stock_info()
-        +web_search()
-    }
-    class WeatherCog {
-        +check_rain_alerts()
-        +send_greeting()
-        +check_earthquake()
-    }
-    class FortuneCog {
-        +calculate_fortune()
-        +send_morning_briefing()
-    }
-    class ActivityCog {
-        +record_message()
-        +get_ranking()
-        -ai_handler
-    }
-    class FunCog {
-        +summarize_channel()
-        -ai_handler
-    }
-    class PollCog {
-        +create_poll()
-    }
-    class SettingsCog {
-        +set_ai()
-        +set_persona()
-    }
-    class MaintenanceCog {
-        +archive_task()
-    }
-
-    AIHandler --> ToolsCog : 도구 실행 위임
-    ActivityCog --> AIHandler : injected (랭킹 연동)
-    FunCog --> AIHandler : injected (요약 연동)
-    WeatherCog --> ToolsCog : 날씨 도구
-```
-
----
-
-## 4. 시퀀스 다이어그램
-
-### 5.1 전체 메시지 처리 흐름
+## 일반 대화 시퀀스
 
 ```mermaid
 sequenceDiagram
-    actor User as 👤 유저
-    participant Discord as Discord Gateway
-    participant Bot as ReMasamongBot
-    participant Activity as ActivityCog
+    actor User
+    participant Discord
     participant AI as AIHandler
     participant Intent as IntentAnalyzer
-    participant Routing as LLMClient<br/>(Routing Lane)
-    participant Tools as ToolsCog
     participant RAG as RAGManager
-    participant Main as LLMClient<br/>(Main Lane)
+    participant Tools
+    participant LLM
 
-    User->>Discord: 메시지 전송
-    Discord->>Bot: on_message(message)
-
-    alt 봇 메시지
-        Bot-->>Bot: return (무시)
-    else 사용자 메시지
-        Bot->>Activity: record_message(message)
-        Activity-->>Bot: 활동 기록 완료
-
-        alt ! 커맨드
-            Bot->>Bot: process_commands(message)
-        else AI 메시지
-            Bot->>AI: add_message_to_history(message)
-            AI-->>Bot: 기록 저장 완료
-
-            alt AI 준비 안됨
-                Bot-->>Bot: return
-            else 채널 비허용
-                Bot-->>Bot: return
-            else 멘션 없음 (서버)
-                Bot-->>Bot: return
-            else 사용자 잠금
-                Bot-->>Bot: return
-            end
-
-            Bot->>AI: process_agent_message(message)
-
-            AI->>Intent: route_tools(query, history)
-            Intent->>Routing: call_routing_llm(prompt, system)
-            Routing-->>Intent: JSON (intent, needs_memory, needs_fortune_context, context_digest, tools)
-            Intent-->>AI: ToolRoutingDecision
-
-            alt 도구 필요
-                loop 각 도구
-                    AI->>Tools: execute_tool(tool_name, params)
-                    Tools-->>AI: tool_result
-                end
-            end
-
-            opt needs_memory=true
-                AI->>RAG: search(query, channel_id)
-                RAG-->>AI: 관련도·원문 중복 제거된 RAG context
-            end
-
-            AI->>Main: call_main_llm(tool results, digest, recent turns, optional RAG, requested fortune)
-            Main-->>AI: 최종 응답 텍스트
-
-            AI->>Discord: reply(message, response)
-        end
+    User->>Discord: @마사몽 질문 또는 DM
+    Discord->>AI: process_agent_message
+    AI->>AI: cooldown / spam / DM quota
+    AI->>Discord: 진행 상태 메시지
+    AI->>Discord: 최근 기록 1회 조회
+    AI->>Intent: query + selected history
+    Intent->>LLM: routing lane 1회
+    LLM-->>Intent: JSON decision
+    Intent-->>AI: tool plan + memory flags + digest
+    opt memory requested or shallow fallback
+        AI->>RAG: scoped semantic search
+        RAG-->>AI: gated memory blocks
     end
+    loop sanitized tool plan, max 3
+        AI->>Tools: execute tool
+        Tools-->>AI: structured result or error
+    end
+    alt verified direct renderer is sufficient
+        AI->>AI: render evidence directly
+    else synthesis required
+        AI->>LLM: bounded main lane
+        LLM-->>AI: final text
+    end
+    AI->>Discord: edit/split normalized response
 ```
 
-### 5.2 듀얼 레인 LLM 라우팅 흐름
+## RAG 시퀀스
 
 ```mermaid
 sequenceDiagram
-    actor Caller as 호출자
-    participant Client as LLMClient
-    participant Config as config.py
-    participant CometAPIPrimary as CometAPI<br/>(Primary)
-    participant CometAPIFallback as CometAPI<br/>(Fallback)
-    participant GeminiDirect as Gemini<br/>(직접 호출)
+    participant AI
+    participant Search as HybridSearchEngine
+    participant DiscordStore
+    participant KakaoStore
+    participant Reranker
 
-    Caller->>Client: call_routing_llm(prompt, system)
-    Client->>Config: get_lane_targets("routing")
-    Config-->>Client: [primary, fallback] targets
-
-    Client->>Client: _check_rate_limit()
-    alt Rate Limit 초과
-        Client-->>Caller: Error: Rate limited
+    AI->>Search: search(query, guild, channel, user, deep)
+    Search->>Search: build variants<br/>shallow = original only
+    par scoped Discord candidates
+        Search->>DiscordStore: vector query or bounded scan
+        DiscordStore-->>Search: semantic candidates
+    and allowed Kakao candidates
+        Search->>KakaoStore: mapped-server query
+        KakaoStore-->>Search: semantic candidates
     end
-
-    Client->>CometAPIPrimary: chat.completions.create(model, messages)
-    alt Primary 성공
-        CometAPIPrimary-->>Client: response
-        Client->>Client: _filter_prompt_leak(response)
-        Client-->>Caller: parsed JSON response
-    else Primary 실패
-        Client->>Client: log warning
-
-        alt Fallback 설정됨
-            Client->>CometAPIFallback: chat.completions.create(model, messages)
-            alt Fallback 성공
-                CometAPIFallback-->>Client: response
-                Client-->>Caller: parsed JSON response
-            else Fallback 실패
-                alt 직접 Gemini 허용
-                    Client->>GeminiDirect: generate_content()
-                    GeminiDirect-->>Client: response
-                    Client-->>Caller: parsed response
-                else
-                    Client-->>Caller: Error: All lanes failed
-                end
-            end
-        else
-            Client-->>Caller: Error: Primary failed, no fallback
-        end
+    Search->>Search: identity/scope alignment
+    Search->>Search: absolute gate 0.61 or 0.58
+    Search->>Search: relative floor + overlap dedupe
+    opt reranker enabled
+        Search->>Reranker: rerank gated candidates
+        Reranker-->>Search: reordered candidates
     end
+    Search-->>AI: at most 3 blocks
 ```
 
-### 5.3 RAG 검색 파이프라인
+## 외부 사실 확인 시퀀스
 
 ```mermaid
 sequenceDiagram
-    actor User as 👤 유저
-    participant AI as AIHandler
-    participant RAG as RAGManager
-    participant Hybrid as HybridSearchEngine
-    participant Emb as EmbeddingSearch
-    participant BM25 as BM25Search
-    participant Rewriter as QueryRewriter
-    participant Reranker as Reranker
+    participant AI
+    participant Tools
+    participant Health as ToolHealthRegistry
+    participant Provider
+    participant MainLLM
 
-    User->>AI: 메시지 ("서울 날씨 어때?")
-    AI->>RAG: search(query, channel_id, scope="channel")
-    RAG->>Hybrid: search(query, channel_id, top_n=8)
-    
-    Hybrid->>Rewriter: expand_query(query)
-    Rewriter-->>Hybrid: [원본, 변형1, 변형2]
-
-    par 임베딩 검색 (병렬)
-        Hybrid->>Emb: search(embedding, top_n=8)
-        Emb-->>Hybrid: embedding_results (Top 8)
-    and BM25 검색 (병렬)
-        Hybrid->>BM25: search(tokens, top_n=8)
-        BM25-->>Hybrid: bm25_results (Top 8)
-    end
-
-    Hybrid->>Hybrid: _rrf_fusion(emb_results, bm25_results)
-    Note over Hybrid: RRF score = 1/(k + rank)<br/>k=60, embedding_weight=0.55<br/>bm25_weight=0.45
-
-    opt Rerank 활성화
-        Hybrid->>Reranker: rerank(query, fused_candidates)
-        Reranker-->>Hybrid: reranked (Cross-Encoder)
-    end
-
-    Hybrid-->>RAG: 최종 검색 결과 (Top 5)
-    RAG-->>AI: RAG context
-
-    opt RAG 점수 낮고 검색어 감지
-        AI->>AI: _needs_web_search(query, rag_score)
-        alt 웹 검색 필요
-            AI->>AI: Linkup / DuckDuckGo 검색 추가
+    AI->>Tools: execute requested provider
+    Tools->>Health: begin_attempt
+    alt circuit open
+        Health-->>Tools: reject
+        Tools-->>AI: explicit unavailable error
+    else admitted
+        Tools->>Provider: bounded network request
+        alt success with evidence
+            Provider-->>Tools: payload
+            Tools->>Health: record_success
+            Tools-->>AI: evidence result
+        else failure or cancellation
+            Provider-->>Tools: error
+            Tools->>Health: record_failure / abandon_attempt
+            Tools-->>AI: normalized error
         end
     end
-```
-
-### 5.4 외부 도구 실행 흐름
-
-```mermaid
-sequenceDiagram
-    actor User as 👤 유저
-    participant AI as AIHandler
-    participant Intent as IntentAnalyzer
-    participant Tools as ToolsCog
-    participant Weather as weather.py
-    participant KMA as 기상청 KMA
-    participant Search as Linkup/ DDG
-    participant Image as CometAPI Image
-
-    User->>AI: "애플 주가랑 내일 서울 날씨 알려줘"
-    AI->>Intent: route_tools(query, recent_history)
-    Intent-->>AI: tools: [<br/>  {tool: "get_weather_forecast", params: {location: "서울", day_offset: 1}},<br/>  {tool: "web_search", params: {query: "애플 최신 주가"}}<br/>]
-
-    par 날씨 도구 실행
-        AI->>Tools: get_weather_forecast(location="서울", day_offset=1)
-        Tools->>Weather: get_weather_forecast("서울", "내일")
-        Weather->>Weather: coords.convert_to_grid("서울")
-        Weather->>KMA: VilageFcstInfoService API
-        KMA-->>Weather: 기온, 강수확률, 하늘상태
-        Weather-->>Tools: formatted weather data
-        Tools-->>AI: weather_result
-    and 최신 금융 근거 검색
-        AI->>Tools: web_search(query="애플 최신 주가")
-        Tools->>Search: bounded search
-        Search-->>Tools: cited source context
-        Tools-->>AI: web_result
-    end
-
-    AI->>AI: 결과 취합 → Main Lane LLM 프롬프트 구성
-    AI-->>User: "애플 현재 $182.63 (+1.2%)<br/>내일 서울: 맑음, 최저 12°C / 최고 22°C"
-```
-
-### 5.5 배경 알림 루프 (WeatherCog)
-
-```mermaid
-sequenceDiagram
-    participant Cog as WeatherCog
-    participant KMA as 기상청 KMA
-    participant Discord as Discord
-    participant AI as AIHandler
-
-    loop 10분 간격
-        Cog->>Cog: _check_rain_alert()
-
-        Cog->>KMA: 초단기예보 조회 (등록된 모든 지역)
-        KMA-->>Cog: 강수 확률, 강수 형태, 예상 강수량
-
-        alt 강수 예보 감지
-            Cog->>AI: 날씨 요약 생성 요청
-            AI-->>Cog: 강수 알림 메시지
-            Cog->>Discord: 알림 채널에 메시지 전송
-        end
-    end
-
-    loop 아침/저녁
-        Cog->>Cog: _send_greeting()
-
-        alt 설정된 시간
-            Cog->>KMA: 당일 날씨 요약 조회
-            KMA-->>Cog: 날씨 데이터
-            Cog->>AI: 인사말 + 날씨 요약 생성
-            AI-->>Cog: 인사 메시지
-            Cog->>Discord: 인사 채널에 전송
-        end
-    end
-
-    loop 지진 모니터링
-        Cog->>KMA: 지진 통보문 조회
-        KMA-->>Cog: 지진 목록
-
-        alt 국내 M≥4.0 신규 지진
-            Cog->>Discord: 지진 알림 (응급)
-        end
+    alt no verified evidence for external fact
+        AI-->>AI: block unsupported answer
+    else evidence exists
+        AI->>MainLLM: evidence-bound synthesis
+        MainLLM-->>AI: response
     end
 ```
 
----
-
-## 5. 액티비티 다이어그램
-
-### 6.1 메시지 처리 활동 흐름
-
-```mermaid
-flowchart TD
-    Start([메시지 수신]) --> CheckBot{작성자가 봇?}
-    CheckBot -->|Yes| Done([종료])
-    CheckBot -->|No| RecordActivity[활동 기록<br/>ActivityCog.record_message]
-
-    RecordActivity --> CheckCmd{! 프리픽스?}
-    CheckCmd -->|Yes| ProcessCmd[process_commands<br/>명령어 처리]
-    ProcessCmd --> Done
-
-    CheckCmd -->|No| AddHistory[대화 기록 저장<br/>add_message_to_history]
-
-    AddHistory --> CheckAIReady{AI 준비 완료?}
-    CheckAIReady -->|No| Done
-    CheckAIReady -->|Yes| CheckChannel{채널 허용?<br/>DM은 자동 통과}
-    CheckChannel -->|No| Done
-    CheckChannel -->|Yes| CheckMention{멘션 검증<br/>서버: @멘션 필수<br/>DM: 불필요}
-    CheckMention -->|실패| Done
-
-    CheckMention -->|통과| CheckLock{사용자 잠금?<br/>대화형 커맨드 중}
-    CheckLock -->|Yes| Done
-    CheckLock -->|No| ValidateInput[입력 검증 및 정제<br/>text_cleaner]
-
-    ValidateInput --> IntentAnalysis[1단계: 의도 분석<br/>IntentAnalyzer.analyze]
-
-    IntentAnalysis --> HasTools{도구 필요?}
-
-    HasTools -->|Yes| ExecuteTools[2단계: 도구 실행<br/>ToolsCog 호출]
-    ExecuteTools --> CollectResults[도구 결과 수집]
-
-    HasTools -->|No| CheckMemory{needs_memory?}
-    CollectResults --> CheckMemory
-    CheckMemory -->|Yes| RAGSearch[선택적 장기기억 검색<br/>RAGManager.search]
-    CheckMemory -->|No| BuildPrompt[프롬프트 구성<br/>페르소나 + 도구결과 + digest + 최신 원문]
-    RAGSearch --> BuildPrompt
-
-    BuildPrompt --> GenResponse[3단계: 응답 생성<br/>Main Lane LLM 호출]
-
-    GenResponse --> CheckSuccess{생성 성공?}
-    CheckSuccess -->|Yes| FormatResponse[응답 포맷팅<br/>data_formatters]
-    CheckSuccess -->|No| GenFallback[Fallback LLM 시도]
-    GenFallback --> FormatSuccess{생성 성공?}
-    FormatSuccess -->|Yes| FormatResponse
-    FormatSuccess -->|No| Done
-
-    FormatResponse --> SendMessage[Discord 메시지 전송]
-
-    SendMessage --> SaveEmbedding[임베딩 비동기 저장<br/>asyncio.create_task]
-    SaveEmbedding --> Done
-```
-
-### 6.2 의도 분석 상세 활동
-
-```mermaid
-flowchart TD
-    Start([의미 라우팅 시작]) --> BuildPrompt[도구 계약 + 현재 요청 + 최근 대화]
-    BuildPrompt --> NeedDigest{오래된 구간이<br/>압축 임계치 초과?}
-    NeedDigest -->|Yes| AddDigest[같은 호출에 압축 대상 포함]
-    NeedDigest -->|No| CallRouting
-    AddDigest --> CallRouting[Routing lane 1회 호출<br/>gpt-5.4-nano]
-    CallRouting --> ParseJSON[JSON 추출·파싱]
-    ParseJSON --> Valid{계약 유효?}
-    Valid -->|Yes| Sanitize[도구 allowlist·개수·파라미터 상한<br/>이름만 있는 신원 질문은 scoped memory 우선]
-    Valid -->|No| Emergency[제한된 키워드 장애 fallback]
-    Sanitize --> Decision[ToolRoutingDecision<br/>tools + needs_memory + needs_fortune_context + digest]
-    Emergency --> Decision
-    Decision --> Done([라우팅 완료])
-```
-
----
-
-## 6. 상태 다이어그램
-
-### 7.1 봇 라이프사이클
+## LLM 호출 상태
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Initializing: asyncio.run(main())
-    
-    Initializing --> ConfigLoading: main.py 실행
-    ConfigLoading --> TokenCheck: config.py 로드
-    
-    TokenCheck --> TokenError: TOKEN 없음
-    TokenError --> [*]: sys.exit(1)
-    
-    TokenCheck --> BotCreation: ReMasamongBot 생성
-    BotCreation --> DBConnect: setup_hook() 진입
-    
-    DBConnect --> DBError: 연결 실패
-    DBError --> [*]: 종료
-    
-    DBConnect --> Migration: _migrate_db()
-    Migration --> CogLoading: Cog 순차 로드
-    
-    state CogLoading {
-        [*] --> LoadWeather: weather_cog
-        LoadWeather --> LoadTools: tools_cog
-        LoadTools --> LoadEvents: events
-        LoadEvents --> LoadCommands: commands
-        LoadCommands --> LoadAI: ai_handler
-        LoadAI --> LoadFun: fun_cog
-        LoadFun --> LoadActivity: activity_cog
-        LoadActivity --> LoadPoll: poll_cog
-        LoadPoll --> LoadSettings: settings_cog
-        LoadSettings --> LoadMaint: maintenance_cog
-        LoadMaint --> LoadProactive: proactive_assistant
-        LoadProactive --> LoadFortune: fortune_cog
-        LoadFortune --> LoadHelp: help_cog
-        LoadHelp --> [*]
-    }
-
-    CogLoading --> DepInjection: 의존성 주입
-    DepInjection --> Ready: bot.start(token)
-    
-    Ready --> Running: Discord Gateway 연결 완료
-    
-    state Running {
-        [*] --> Listening: 이벤트 대기
-        Listening --> Processing: on_message 수신
-        Processing --> Listening: 응답 전송 완료
-        
-        Listening --> BackgroundTasks: 백그라운드 태스크
-        BackgroundTasks --> Listening: 알림/아카이빙
-        
-        Listening --> Reconnecting: 연결 끊김 감지
-        Reconnecting --> Listening: 재연결 성공
-    }
-
-    Running --> ShuttingDown: KeyboardInterrupt / 오류
-    ShuttingDown --> DBClose: bot.close()
-    DBClose --> [*]: 프로세스 종료
+    [*] --> Budget
+    Budget --> Blocked: quota store error or limit
+    Budget --> Admission: reserved
+    Admission --> Saturated: slot timeout
+    Admission --> Calling: semaphore acquired
+    Calling --> Success: valid response
+    Calling --> Failed: provider error
+    Calling --> TimedOut: call timeout
+    Failed --> Fallback: non-timeout and fallback configured
+    Fallback --> Success
+    Fallback --> Failed
+    TimedOut --> [*]: no overlapping fallback
+    Saturated --> [*]
+    Blocked --> [*]
+    Success --> [*]
+    Failed --> [*]
 ```
 
-### 7.2 AI 처리 상태
+## TiDB 트랜잭션 소유권
 
 ```mermaid
-stateDiagram-v2
-    [*] --> Idle: 대기 중
-    
-    Idle --> Validating: 메시지 수신
-    Validating --> Idle: 검증 실패 (멘션/채널/잠금)
-    
-    Validating --> Analyzing: 검증 통과
-    Analyzing --> ToolExecuting: 도구 필요
-    Analyzing --> RAGSearching: 일반 대화
-    
-    ToolExecuting --> ToolError: 도구 실행 실패
-    ToolError --> ToolExecuting: Fallback 도구
-    
-    ToolExecuting --> RAGSearching: 도구 결과 수집 완료
-    
-    RAGSearching --> WebSearching: RAG 부족 + 검색어 감지
-    WebSearching --> Generating: 웹 검색 결과 추가
-    
-    RAGSearching --> Generating: RAG 컨텍스트 주입
-    
-    Generating --> LLMError: LLM 호출 실패
-    LLMError --> Generating: Fallback LLM
-    LLMError --> Idle: 모든 레인 실패
-    
-    Generating --> Responding: 응답 생성 완료
-    Responding --> Storing: 임베딩 비동기 저장
-    Storing --> Idle: 처리 완료
+sequenceDiagram
+    participant A as Discord Task A
+    participant DB as TiDBConnection
+    participant B as Discord Task B
+    participant TiDB
+
+    A->>DB: first write
+    DB->>DB: acquire transaction gate<br/>owner = Task A
+    DB->>TiDB: execute
+    B->>DB: SELECT or write
+    Note over B,DB: waits; cannot enter A transaction
+    A->>DB: second write
+    DB->>TiDB: execute
+    alt normal
+        A->>DB: commit
+        DB->>TiDB: COMMIT
+    else A cancelled/exits
+        DB->>TiDB: automatic ROLLBACK
+    end
+    DB-->>B: release gate
 ```
 
----
-
-## 7. ER (Entity-Relationship) 다이어그램
+## 개인정보 동의 버튼
 
 ```mermaid
-erDiagram
-    guild_settings {
-        bigint guild_id PK "서버 ID"
-        boolean ai_enabled "AI 활성화 여부"
-        text ai_allowed_channels "허용 채널 JSON"
-        float proactive_response_probability "선제 응답 확률"
-        int proactive_response_cooldown "선제 응답 쿨다운(초)"
-        text persona_text "커스텀 페르소나"
-        text created_at "생성 시간"
-        text updated_at "수정 시간"
-    }
+sequenceDiagram
+    actor User
+    participant Discord
+    participant View as ConsentView
+    participant DB
+    participant Feature
 
-    user_profiles {
-        bigint user_id PK "사용자 ID"
-        text birth_date "생년월일 (YYYY-MM-DD)"
-        text birth_time "출생 시간 (HH:MM)"
-        text gender "성별 (M/F)"
-        boolean is_lunar "음력 여부"
-        boolean subscription_active "운세 구독 여부"
-        text subscription_time "구독 발송 시간"
-        text pending_payload "미리 생성된 브리핑"
-        text last_fortune_sent "마지막 운세 발송일"
-        text last_fortune_content "마지막 운세 내용"
-        text birth_place "출생 지역"
-        text created_at "생성 시간"
-    }
-
-    user_activity {
-        bigint user_id PK "사용자 ID"
-        bigint guild_id PK "서버 ID"
-        int message_count "메시지 수"
-        text last_active_at "마지막 활동 시간"
-    }
-
-    user_activity_log {
-        bigint message_id PK "메시지 ID"
-        bigint guild_id "서버 ID"
-        bigint channel_id "채널 ID"
-        bigint user_id "사용자 ID"
-        text created_at "생성 시간"
-    }
-
-    conversation_history {
-        bigint message_id PK "메시지 ID"
-        bigint guild_id "서버 ID"
-        bigint channel_id "채널 ID"
-        bigint user_id "사용자 ID"
-        text user_name "사용자 이름"
-        text content "메시지 내용"
-        boolean is_bot "봇 여부"
-        text created_at "생성 시간"
-        blob embedding "임베딩 벡터"
-    }
-
-    conversation_windows {
-        bigint window_id PK "윈도우 ID (AUTO)"
-        bigint guild_id "서버 ID"
-        bigint channel_id "채널 ID"
-        bigint start_message_id "시작 메시지 ID"
-        bigint end_message_id "종료 메시지 ID"
-        int message_count "메시지 수"
-        text messages_json "메시지 JSON"
-        text anchor_timestamp "기준 타임스탬프"
-        text created_at "생성 시간"
-    }
-
-    conversation_history_archive {
-        bigint message_id PK "메시지 ID"
-        bigint guild_id "서버 ID"
-        bigint channel_id "채널 ID"
-        bigint user_id "사용자 ID"
-        text user_name "사용자 이름"
-        text content "메시지 내용"
-        boolean is_bot "봇 여부"
-        text created_at "생성 시간"
-        blob embedding "임베딩 벡터"
-    }
-
-    discord_memory_entries {
-        bigint id PK "엔트리 ID (AUTO)"
-        text memory_id UK "메모리 UUID"
-        text anchor_message_id "기준 메시지 ID"
-        text server_id "서버 ID"
-        text channel_id "채널 ID"
-        text owner_user_id "소유 유저 ID"
-        text owner_user_name "소유 유저 이름"
-        text memory_scope "스코프 (channel/user)"
-        text memory_type "메모리 타입"
-        text summary_text "요약 텍스트"
-        text memory_text "메모리 본문"
-        text raw_context "원본 컨텍스트"
-        text source_message_ids "소스 메시지 ID 목록"
-        text speaker_names "발화자 목록"
-        text keyword_json "키워드 JSON"
-        text timestamp "타임스탬프"
-        blob embedding "임베딩 벡터"
-    }
-
-    kakao_chunks {
-        bigint id PK "청크 ID (AUTO)"
-        text room_key "방 키"
-        text source_room_label "방 라벨"
-        bigint chunk_id "청크 번호"
-        bigint session_id "세션 ID"
-        text start_date "시작 날짜"
-        int message_count "메시지 수"
-        text summary "요약"
-        text text_long "전체 텍스트"
-        vector embedding "Vector(384)"
-    }
-
-    locations {
-        text name PK "지역명"
-        int nx "격자 X 좌표"
-        int ny "격자 Y 좌표"
-    }
-
-    api_call_log {
-        bigint id PK "로그 ID (AUTO)"
-        text api_type "API 타입"
-        text called_at "호출 시간"
-    }
-
-    system_counters {
-        text counter_name PK "카운터명"
-        bigint counter_value "카운터 값"
-        text last_reset_at "마지막 리셋 시간"
-    }
-
-    analytics_log {
-        bigint log_id PK "로그 ID (AUTO)"
-        text log_timestamp "로그 시간"
-        text event_type "이벤트 타입"
-        text guild_id "서버 ID"
-        text user_id "사용자 ID"
-        text details "상세 정보 JSON"
-    }
-
-    linkup_usage_log {
-        bigint id PK "로그 ID (AUTO)"
-        text used_at "사용 시간"
-        text endpoint "엔드포인트 (search/fetch)"
-        text depth "검색 깊이"
-        boolean render_js "JS 렌더링 여부"
-        float cost_eur "비용 (EUR)"
-    }
-
-    dm_usage_logs {
-        bigint user_id PK "사용자 ID"
-        int usage_count "사용 횟수"
-        text window_start_at "윈도우 시작 시간"
-        text reset_at "리셋 예정 시간"
-    }
-
-    user_preferences {
-        bigint user_id PK "사용자 ID"
-        text preference_type PK "설정 타입"
-        text preference_value "설정 값"
-        text updated_at "수정 시간"
-    }
-
-    discord_chat_embeddings {
-        bigint id PK "엔트리 ID (AUTO)"
-        text message_id UK "메시지 ID"
-        text server_id "서버 ID"
-        text channel_id "채널 ID"
-        text user_id "사용자 ID"
-        text user_name "사용자 이름"
-        text message "메시지 내용"
-        text timestamp "타임스탬프"
-        blob embedding "임베딩 벡터"
-    }
-
-    %% Relations
-    guild_settings ||--o{ user_activity : "has members in"
-    user_profiles ||--o| user_preferences : "has"
-    conversation_history ||--o{ conversation_windows : "forms"
-    conversation_history ||--o{ conversation_history_archive : "archived to"
-    conversation_history ||--o{ user_activity_log : "tracks"
-    conversation_windows ||--o{ discord_memory_entries : "summarized into"
-    conversation_history ||--o{ discord_chat_embeddings : "embedded as"
+    User->>Discord: 동의합니다 클릭
+    Discord->>View: interaction
+    View->>Discord: defer(ephemeral)
+    View->>DB: current policy consent UPSERT/history
+    DB-->>View: commit success
+    View->>Discord: follow-up confirmation
+    opt original action callback
+        View->>Feature: resume once
+    end
 ```
 
----
+## 학교 공지 등록·수집·전달
 
-## 부록: 주요 데이터 흐름 요약
+```mermaid
+sequenceDiagram
+    actor User
+    participant Cog as SchoolNoticeCog
+    participant Consent
+    participant Router as Profile parser/LLM
+    participant Batch as 05:00 one-shot
+    participant Site as Public school site
+    participant Store as Masamo notice store
+
+    User->>Cog: 자연어 학교·과정·학년·관심사
+    Cog->>Consent: current scope check
+    Cog->>Router: bounded canonicalization
+    Router-->>Cog: canonical draft
+    Cog-->>User: 이해한 값 확인
+    User->>Cog: 맞아 / 수정 / 취소
+    alt confirmed
+        Cog->>Store: profile version/hash save
+        Cog->>Batch: one-school initial subprocess
+    end
+    Note over Batch: daily 05:00, sequential, bounded
+    Batch->>Store: active school source IDs only
+    Batch->>Site: list pages without user data
+    Batch->>Site: candidate detail pages
+    Batch->>Store: revisioned per-user digest
+    Cog->>Store: due digest + profile snapshot validation
+    alt relevant items
+        Cog-->>User: configured-time DM
+    else empty
+        Cog-->>Cog: send nothing
+    end
+```
+
+## 지진 편집
+
+```mermaid
+sequenceDiagram
+    participant Loop as 60s KMA loop
+    participant DB
+    participant Discord
+
+    Loop->>DB: load occurrence watermark
+    Loop->>Loop: fetch and sort new KMA notices
+    Loop->>DB: persist new watermark before send
+    alt new incident
+        Loop->>Discord: send formal incident message
+        Loop->>DB: persist channel message ID
+    else same time/distance incident
+        Loop->>DB: load original message ID
+        Loop->>Discord: PATCH original message
+    end
+    Note over Loop,Discord: timeout/permission errors do not send duplicates
+```
+
+## 배포 구조
 
 ```mermaid
 flowchart LR
-    subgraph Input["📥 입력"]
-        DiscordMsg["Discord Message"]
-        SlashCmd["Slash Command"]
-        TextCmd["! Command"]
-    end
-
-    subgraph Pipeline["⚙️ 파이프라인"]
-        direction TB
-        A[Message Router<br/>on_message] --> B[Intent<br/>Analysis]
-        B --> C[Tool<br/>Execution]
-        C --> D[Response<br/>Generation]
-    end
-
-    subgraph Knowledge["🧠 지식"]
-        RAGStore["RAG<br/>conversation_history<br/>discord_memory_entries"]
-        KakaoStore["Kakao<br/>kakao_chunks"]
-        WebResults["Web Search<br/>Linkup / DDG"]
-    end
-
-    subgraph Output["📤 출력"]
-        TextResponse["텍스트 응답"]
-        ImageResponse["이미지 생성"]
-        ChartResponse["차트 (matplotlib)"]
-    end
-
-    subgraph Monitoring["📊 모니터링"]
-        APILog["api_call_log"]
-        Analytics["analytics_log"]
-        DiscordLog["Discord #logs 채널"]
-    end
-
-    Input --> Pipeline
-    Pipeline --> Knowledge
-    Knowledge --> Pipeline
-    Pipeline --> Output
-    Pipeline --> Monitoring
+    Git["Git release SHA"] --> Release["/srv/masamong/releases/SHA"]
+    Release --> Current["/srv/masamong/current symlink"]
+    EnvM["/etc/masamong/masamo.env"] --> ServiceM["masamong-masamo.service"]
+    EnvG["/etc/masamong/general.env"] --> ServiceG["masamong-general.service"]
+    Current --> ServiceM
+    Current --> ServiceG
+    ServiceM --> DBM[("TiDB masamong")]
+    ServiceG --> DBG[("TiDB masamong_general")]
+    TimerS["05:00 school timer"] --> BatchS["school one-shot"]
+    TimerT["05:35 transfer timer"] --> BatchT["transfer one-shot"]
+    BatchS --> LocalM[("/var/lib/masamong/masamo/notice")]
+    BatchT --> LocalT[("/var/lib/masamong/masamo/transfer_notice")]
 ```
-
----
-
-> **문서 업데이트**: 마지막 갱신 2026-04-30  
-> **참조**: 이 문서는 [ARCHITECTURE.md](ARCHITECTURE.ko.md), [README.md](../README.md)와 함께 읽는 것을 권장합니다.

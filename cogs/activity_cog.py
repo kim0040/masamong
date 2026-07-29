@@ -5,7 +5,6 @@
 
 import discord
 from discord.ext import commands
-import aiosqlite
 import asyncio
 import io
 from datetime import datetime, timedelta, timezone
@@ -75,7 +74,15 @@ class ActivityCog(commands.Cog):
             )
             await self.bot.db.commit()
 
-        except aiosqlite.Error as e:
+        except Exception as e:
+            try:
+                await self.bot.db.rollback()
+            except Exception:
+                logger.critical(
+                    "활동 기록 실패 후 rollback도 실패했습니다.",
+                    exc_info=True,
+                    extra=log_extra,
+                )
             logger.error(f"활동 기록 중 데이터베이스 오류 발생: {e}", exc_info=True, extra=log_extra)
 
     @staticmethod
@@ -215,7 +222,7 @@ class ActivityCog(commands.Cog):
                 server_total = await cursor.fetchone()
                 total_msgs, total_users = server_total if server_total else (0, 0)
 
-        except aiosqlite.Error as e:
+        except Exception as e:
             logger.error(f"랭킹 조회 중 데이터베이스 오류 발생: {e}", exc_info=True, extra=log_extra)
             await ctx.send(config.MSG_CMD_ERROR)
             return
@@ -312,7 +319,12 @@ class ActivityCog(commands.Cog):
                     status_msg,
                     final_response,
                 )
-            except:
+            except Exception:
+                logger.warning(
+                    "랭킹 상태 메시지 수정 실패, 분할 전송으로 전환",
+                    exc_info=True,
+                    extra=log_extra,
+                )
                 await send_split_message(ctx, final_response)
 
 async def setup(bot: commands.Bot):

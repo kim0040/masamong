@@ -628,6 +628,13 @@ class WeatherCog(commands.Cog):
             )
             await self.bot.db.commit()
         except Exception as exc:
+            try:
+                await self.bot.db.rollback()
+            except Exception:
+                logger.critical(
+                    "지진 중복 방지 시각 저장 실패 후 rollback도 실패했습니다.",
+                    exc_info=True,
+                )
             # 전송 자체를 막으면 실제 경보를 놓치므로, 저장 실패 시에는 현재
             # 프로세스의 watermark만 유지하고 정직하게 운영 로그를 남긴다.
             logger.error(
@@ -715,6 +722,13 @@ class WeatherCog(commands.Cog):
             )
             await self.bot.db.commit()
         except Exception as exc:
+            try:
+                await self.bot.db.rollback()
+            except Exception:
+                logger.critical(
+                    "지진 현황 메시지 ID 저장 실패 후 rollback도 실패했습니다.",
+                    exc_info=True,
+                )
             logger.error(
                 "지진 현황 메시지 ID 저장 실패(인메모리 편집은 계속): "
                 "incident=%s channel=%s error=%s",

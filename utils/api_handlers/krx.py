@@ -113,8 +113,9 @@ async def get_stock_price(stock_name: str) -> str | None:
     공공데이터포털(KRX) API로 주식 정보를 조회하고, LLM 친화적인 문자열로 반환합니다.
     [수정] API 조회 실패 시 웹 검색을 통해 종목명을 찾아 재시도하는 기능 추가.
     """
-    if not config.GO_DATA_API_KEY_KR or config.GO_DATA_API_KEY_KR == 'YOUR_GO_DATA_API_KEY_KR':
-        logger.error("공공데이터포털 API 키(GO_DATA_API_KEY_KR)가 설정되지 않았습니다.")
+    api_key = str(config.KRX_API_KEY or "").strip()
+    if not api_key or api_key == "YOUR_KRX_API_KEY":
+        logger.error("공공데이터포털 API 키(KRX_API_KEY)가 설정되지 않았습니다.")
         return f"주식 정보를 조회할 수 없습니다 (API 키 미설정)."
 
     # 1. Normalize from alias map (fast path)
@@ -131,15 +132,20 @@ async def get_stock_price(stock_name: str) -> str | None:
             "numOfRows": "1", 
             "basDt": today_str
         }
-        url = f"{config.KRX_BASE_URL}?serviceKey={config.GO_DATA_API_KEY_KR}"
+        url = f"{config.KRX_BASE_URL}?serviceKey={api_key}"
         
         log_params = params.copy() # 로그에는 전체 파라미터를 보여주되, 키는 숨깁니다.
         log_params["serviceKey"] = "[REDACTED]"
         logger.info(f"KRX API 요청: URL='{config.KRX_BASE_URL}', Params='{log_params}'")
 
-        # Use a session that forces TLSv1.2 for compatibility with data.go.kr
-        with http.get_insecure_session() as session:
-            response = await asyncio.to_thread(session.get, url, params=params, timeout=10, verify=True)
+        # data.go.kr 호환용 TLS 1.2 세션을 사용하되 인증서 검증은 유지한다.
+        with http.get_tlsv12_session() as session:
+            response = await asyncio.to_thread(
+                session.get,
+                url,
+                params=params,
+                timeout=10,
+            )
         response.raise_for_status()
         try:
             data = response.json()

@@ -50,6 +50,17 @@ class FunCog(commands.Cog):
     def update_cooldown(self, channel_id: int):
         """지정된 채널의 키워드 트리거 쿨다운을 현재 시간으로 갱신합니다."""
         self.keyword_cooldowns[channel_id] = datetime.now()
+        max_channels = max(
+            1,
+            int(getattr(config, "FUN_COOLDOWN_MAX_CHANNELS", 1_024)),
+        )
+        if len(self.keyword_cooldowns) > max_channels:
+            overflow = len(self.keyword_cooldowns) - max_channels
+            for stale_channel_id in sorted(
+                self.keyword_cooldowns,
+                key=self.keyword_cooldowns.__getitem__,
+            )[:overflow]:
+                self.keyword_cooldowns.pop(stale_channel_id, None)
         logger.debug(f"FunCog: 채널({channel_id})의 키워드 응답 쿨다운이 갱신되었습니다.")
 
     def _trim_summary_cache(self):

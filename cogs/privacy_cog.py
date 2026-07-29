@@ -540,8 +540,22 @@ class PrivacyCog(commands.Cog):
             try:
                 await asyncio.wait_for(self._legacy_prompt_tick(), timeout=35)
             except asyncio.TimeoutError:
+                try:
+                    await self.bot.db.rollback()
+                except Exception:
+                    logger.critical(
+                        "기존 동의 요청 시간초과 후 rollback도 실패했습니다.",
+                        exc_info=True,
+                    )
                 logger.error("기존 활성 구독자 동의 요청 tick이 35초를 초과했습니다.")
             except Exception:
+                try:
+                    await self.bot.db.rollback()
+                except Exception:
+                    logger.critical(
+                        "기존 동의 요청 실패 후 rollback도 실패했습니다.",
+                        exc_info=True,
+                    )
                 logger.error("기존 활성 구독자 동의 요청 tick 실패", exc_info=True)
 
     @legacy_consent_prompt_task.before_loop

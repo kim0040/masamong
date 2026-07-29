@@ -44,7 +44,21 @@ _ANALYTICS_METADATA_FIELDS = frozenset(
 _LINKUP_SCHEMA_READY_ATTR = "_masamong_linkup_usage_table_ready"
 _LINKUP_SCHEMA_LOCK_ATTR = "_masamong_linkup_usage_table_lock"
 _API_BUDGET_RESERVATION_LOCK = asyncio.Lock()
+_DM_BUDGET_RESERVATION_LOCK = asyncio.Lock()
 _SAFE_BUDGET_FEATURE_RE = re.compile(r"[^a-z0-9_.:-]+")
+
+
+async def _rollback_after_write_error(db: Any, operation: str) -> None:
+    """실패한 쓰기가 다음 commit에 섞이지 않도록 현재 트랜잭션을 정리합니다."""
+    try:
+        await db.rollback()
+    except Exception as rollback_error:
+        logger.critical(
+            "%s 실패 후 rollback도 실패했습니다: %s",
+            operation,
+            rollback_error,
+            exc_info=True,
+        )
 
 
 def _analytics_details_for_storage(details: dict[str, Any]) -> dict[str, Any]:
@@ -82,6 +96,7 @@ async def log_analytics(db: aiosqlite.Connection, event_type: str, details: dict
         )
         await db.commit()
     except Exception as e:
+        await _rollback_after_write_error(db, f"분석 로그({event_type}) 기록")
         logger.error(f"분석 로그({event_type}) 기록 중 오류: {e}", exc_info=True)
 
 async def get_guild_setting(db: aiosqlite.Connection, guild_id: int, setting_name: str, default: Any = None) -> Any:
@@ -125,6 +140,7 @@ async def set_guild_setting(db: aiosqlite.Connection, guild_id: int, setting_nam
         await db.execute(query, (guild_id, value, now_iso, now_iso))
         await db.commit()
     except Exception as e:
+        await _rollback_after_write_error(db, f"서버 설정({setting_name}) 저장")
         logger.error(f"서버 설정({setting_name}) 저장 중 DB 오류: {e}", exc_info=True, extra={'guild_id': guild_id})
         raise
 
@@ -175,6 +191,7 @@ async def log_api_call(db: aiosqlite.Connection, api_type: str):
         await db.execute("INSERT INTO api_call_log (api_type, called_at) VALUES (?, ?)", (api_type, datetime.now(timezone.utc).isoformat()))
         await db.commit()
     except Exception as e:
+        await _rollback_after_write_error(db, f"API 호출({api_type}) 기록")
         logger.error(f"API 호출 기록 중 DB 오류 ({api_type}): {e}", exc_info=True)
 
 
@@ -465,6 +482,7 @@ async def _ensure_linkup_usage_table(db: aiosqlite.Connection):
             await db.commit()
             setattr(db, _LINKUP_SCHEMA_READY_ATTR, True)
         except Exception as e:
+            await _rollback_after_write_error(db, "Linkup 사용량 테이블 보장")
             logger.error(f"Linkup 사용량 테이블 보장 중 오류: {e}", exc_info=True)
             raise
 
@@ -696,6 +714,7 @@ async def prune_user_activity_log(db: aiosqlite.Connection, retention_days: int)
         await db.commit()
         logger.info("user_activity_log 보존정책 적용 완료: %d일 이전 삭제 (cutoff=%s)", retention_days, cutoff)
     except Exception as e:
+        await _rollback_after_write_error(db, "user_activity_log 보존정책 적용")
         logger.error(f"user_activity_log 정리 중 DB 오류: {e}", exc_info=True)
 
 
@@ -862,7 +881,7 @@ async def log_image_generation(
 # ========== DM Rate Limiting (New) ==========
 
 async def check_dm_message_limit(db: aiosqlite.Connection, user_id: int) -> tuple[bool, str]:
-    """DM 1:1 대화 제한을 확인합니다. (3시간당 5회)
+    """DM 1:1 대화 제한을 확인합니다. (현재 기본값: 5시간당 30회)
     
     Returns:
         (허용 여부, 안내 메시지용 리셋 시간 문자열 or None)
@@ -912,9 +931,10 @@ async def check_dm_message_limit(db: aiosqlite.Connection, user_id: int) -> tupl
         return False, reset_kst
             
     except Exception as e:
+        await _rollback_after_write_error(db, f"DM 사용자 제한 기록(user_id={user_id})")
         logger.error(f"DM 제한 확인 중 오류 (user_id={user_id}): {e}", exc_info=True)
-        # 오류 시 통과 (서비스 가용성 우선)
-        return True, None
+        # 레거시 호출자도 사용량 저장소 장애 시 provider 비용을 발생시키지 않는다.
+        return False, None
 
 async def check_global_dm_limit(db: aiosqlite.Connection) -> bool:
     """
@@ -960,8 +980,152 @@ async def check_global_dm_limit(db: aiosqlite.Connection) -> bool:
         return True
         
     except Exception as e:
+        await _rollback_after_write_error(db, "전역 DM 제한 기록")
         logger.error(f"전역 DM 제한 확인 중 오류: {e}", exc_info=True)
-        return True # 오류 시 차단보다는 허용 (가용성)
+        return False
+
+
+async def reserve_dm_message(
+    db: aiosqlite.Connection,
+    user_id: int,
+) -> tuple[bool, str | None, str | None]:
+    """사용자·전역 DM 할당량을 한 트랜잭션에서 함께 예약합니다.
+
+    Returns:
+        ``(allowed, reason, reset_time_kst)``. ``reason``은
+        ``user_limit``, ``global_limit``, ``usage_store_error`` 중 하나입니다.
+
+    사용자 한도만 먼저 차감하거나 전역 한도만 먼저 차감한 뒤 다른 한도에서
+    거절되는 비대칭을 피합니다. 단일 프로세스의 공유 DB 연결에서는 lock이
+    check→두 UPDATE→commit 전체를 직렬화합니다. 저장소 오류는 비용 안전을 위해
+    fail-closed로 처리합니다.
+    """
+    normalized_user_id = int(user_id)
+    async with _DM_BUDGET_RESERVATION_LOCK:
+        try:
+            now = datetime.now(timezone.utc)
+            now_text = now.isoformat()
+            today_key = f"dm_daily_global_{datetime.now(KST).strftime('%Y-%m-%d')}"
+
+            async with db.execute(
+                """
+                SELECT usage_count, reset_at
+                FROM dm_usage_logs
+                WHERE user_id = ?
+                """,
+                (normalized_user_id,),
+            ) as cursor:
+                user_row = await cursor.fetchone()
+            async with db.execute(
+                """
+                SELECT counter_value
+                FROM system_counters
+                WHERE counter_name = ?
+                """,
+                (today_key,),
+            ) as cursor:
+                global_row = await cursor.fetchone()
+
+            user_count = 0
+            reset_at = now + timedelta(hours=DM_LIMIT_WINDOW_HOURS)
+            window_expired = True
+            if user_row:
+                user_count = max(0, int(user_row[0] or 0))
+                try:
+                    reset_at = datetime.fromisoformat(str(user_row[1]))
+                    if reset_at.tzinfo is None:
+                        reset_at = reset_at.replace(tzinfo=timezone.utc)
+                    window_expired = now >= reset_at.astimezone(timezone.utc)
+                except (TypeError, ValueError):
+                    # 손상된 reset 값은 사용자를 영구 차단하지 않고 새 윈도우로
+                    # 교체한다. 기존 행을 삭제하지 않는다.
+                    window_expired = True
+
+            if window_expired:
+                user_count = 0
+                reset_at = now + timedelta(hours=DM_LIMIT_WINDOW_HOURS)
+
+            global_count = (
+                max(0, int(global_row[0] or 0))
+                if global_row
+                else 0
+            )
+            if user_count >= DM_LIMIT_COUNT:
+                return (
+                    False,
+                    "user_limit",
+                    reset_at.astimezone(KST).strftime("%H:%M"),
+                )
+            if global_count >= DM_GLOBAL_LIMIT:
+                return False, "global_limit", None
+
+            reset_text = reset_at.isoformat()
+            backend = str(getattr(db, "backend", config.DB_BACKEND))
+            if user_row:
+                if window_expired:
+                    await db.execute(
+                        """
+                        UPDATE dm_usage_logs
+                        SET usage_count = 1, window_start_at = ?, reset_at = ?
+                        WHERE user_id = ?
+                        """,
+                        (now_text, reset_text, normalized_user_id),
+                    )
+                else:
+                    # 정상 윈도우에서는 원래 시작·종료 시각을 그대로 보존한다.
+                    await db.execute(
+                        """
+                        UPDATE dm_usage_logs
+                        SET usage_count = usage_count + 1
+                        WHERE user_id = ?
+                        """,
+                        (normalized_user_id,),
+                    )
+            else:
+                await db.execute(
+                    """
+                    INSERT INTO dm_usage_logs (
+                        user_id, usage_count, window_start_at, reset_at
+                    ) VALUES (?, 1, ?, ?)
+                    """,
+                    (normalized_user_id, now_text, reset_text),
+                )
+
+            if backend == "tidb":
+                global_query = """
+                    INSERT INTO system_counters (
+                        counter_name, counter_value, last_reset_at
+                    ) VALUES (?, 1, ?)
+                    ON DUPLICATE KEY UPDATE
+                        counter_value = counter_value + 1,
+                        last_reset_at = VALUES(last_reset_at)
+                """
+            else:
+                global_query = """
+                    INSERT INTO system_counters (
+                        counter_name, counter_value, last_reset_at
+                    ) VALUES (?, 1, ?)
+                    ON CONFLICT(counter_name) DO UPDATE SET
+                        counter_value = counter_value + 1,
+                        last_reset_at = excluded.last_reset_at
+                """
+            await db.execute(global_query, (today_key, now_text))
+            await db.commit()
+            return True, None, None
+        except Exception as exc:
+            try:
+                await db.rollback()
+            except Exception:
+                logger.critical(
+                    "DM 사용량 예약 실패 후 rollback도 실패했습니다.",
+                    exc_info=True,
+                )
+            logger.error(
+                "DM 사용자·전역 사용량 원자 예약 실패: %s",
+                exc,
+                exc_info=True,
+            )
+            return False, "usage_store_error", None
 
 async def check_fortune_daily_limit(db: aiosqlite.Connection, user_id: int) -> tuple[bool, int]:
     """

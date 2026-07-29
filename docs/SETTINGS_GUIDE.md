@@ -2,7 +2,10 @@
 
 > **빠른 시작**: [QUICKSTART.md](QUICKSTART.md) | **배포**: [DEPLOYMENT.md](../DEPLOYMENT.md)
 
-이 가이드는 마사몽 봇을 처음 설정하는 사용자를 위한 상세한 설정 문서입니다.
+이 가이드는 마사몽 봇을 처음 설정하는 사용자를 위한 운영 설정 문서입니다.
+`config.py`가 내부 기본값의 최종 기준이고, `.env.example` 및
+`profiles/*.env.example`이 실행 프로필의 기준 예제입니다. 여기서는 운영자가
+선택해야 하는 공개 설정면을 설명하며 내부 조정 상수까지 전부 나열하지는 않습니다.
 
 ---
 
@@ -319,12 +322,18 @@ TIDB_STARTER_FREE_PLAN_MODE=true
 TIDB_STARTER_USAGE_WARNING_RATIO=0.8
 STRUCTURED_MEMORY_QUERY_LIMIT=384
 STRUCTURED_MEMORY_FALLBACK_QUERY_LIMIT=768
+BM25_AUTO_REBUILD_ENABLED=false
 ```
 
 무료 플랜 모드는 큰 구조화 기억 BLOB 후보 조회를 위 값으로 제한한다. 기존 데이터를
 삭제하거나 자동 압축하지 않는다. TiDB Cloud Starter의 무료 한도는 행 저장소 5GiB,
 열 저장소 5GiB, 월 5천만 RU다. SQL RU 이력은 당일 및 네트워크 egress가 누락될 수 있어
 Cloud 콘솔의 **Usage this month**가 최종 기준이다.
+
+운영 RAG는 의미 임베딩과 선택적 TiDB 벡터 검색을 사용한다. BM25/FTS5 관련 호환
+코드는 남아 있어도 `config.py`가 검색 관리자를 생성하지 않으며, 명시적 운영
+프로필은 `BM25_AUTO_REBUILD_ENABLED=false`가 아니면 검증에 실패한다. 따라서
+저사양 서버에서 BM25 인덱스 생성·조회·자동 재구축이 실행되지 않는다.
 
 ```bash
 MASAMONG_ENV_FILE=/etc/masamong/masamo.env \

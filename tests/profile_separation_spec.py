@@ -109,6 +109,7 @@ def _write_env(path: Path, *, profile: str, token: str, database: str, db_user: 
                     else "MASAMONG_DISCORD_MAX_MESSAGES=100"
                 ),
                 "TOKENIZERS_PARALLELISM=false",
+                "BM25_AUTO_REBUILD_ENABLED=false",
                 # 명시적 프로필은 상속 환경을 쓰지 않으므로 켜 둔 기능의
                 # 자격증명이 env 파일 안에 있어야 한다.
                 f"COMETAPI_KEY={profile}-real-cometapi-key",
@@ -123,7 +124,6 @@ def _write_env(path: Path, *, profile: str, token: str, database: str, db_user: 
                             "ENABLE_EARTHQUAKE_ALERT=false",
                             "FORTUNE_MORNING_BRIEFING_ENABLED=false",
                             "RAG_ARCHIVING_ENABLED=false",
-                            "BM25_AUTO_REBUILD_ENABLED=false",
                         ]
                     )
                 ),
@@ -823,6 +823,18 @@ def test_validator_flags_placeholder_credentials(tmp_path):
     errors, _ = validate(masamo, general)
 
     assert any("KMA_API_KEY" in error and "placeholder" in error for error in errors)
+
+
+def test_validator_requires_bm25_disabled_for_low_spec_profiles(tmp_path):
+    masamo, general = _valid_pair(tmp_path)
+    _drop_line(masamo, "BM25_AUTO_REBUILD_ENABLED=")
+
+    errors, _ = validate(masamo, general)
+
+    assert any(
+        "masamo.env" in error and "BM25_AUTO_REBUILD_ENABLED=false" in error
+        for error in errors
+    )
 
 
 def test_validator_accepts_missing_weather_key_when_cog_is_disabled(tmp_path):

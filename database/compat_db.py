@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import ssl
 import time
+import weakref
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -19,6 +21,9 @@ except ModuleNotFoundError:  # pragma: no cover
     DictCursor = None  # type: ignore
 
 import aiosqlite
+
+
+logger = logging.getLogger(__name__)
 
 
 class CompatDBError(aiosqlite.Error):
@@ -304,7 +309,16 @@ class TiDBConnection:
         self.settings = settings
         self.row_factory = aiosqlite.Row
         self._conn: Any = None
+        # ``_lock``은 PyMySQL 패킷 단위 직렬화만 담당한다. autocommit=False인
+        # 단일 연결에서 execute와 commit 사이에 다른 Discord task가 끼어들면
+        # 서로의 쓰기를 함께 commit/rollback할 수 있으므로, 논리 트랜잭션 전체를
+        # 별도 gate로 묶는다.
         self._lock = asyncio.Lock()
+        self._transaction_gate = asyncio.Lock()
+        self._transaction_owner: asyncio.Task[Any] | None = None
+        self._transaction_owner_callbacks: weakref.WeakSet[
+            asyncio.Task[Any]
+        ] = weakref.WeakSet()
         self.backend = "tidb"
         self._connected_at_monotonic: float | None = None
         self._transaction_dirty = False
@@ -371,6 +385,64 @@ class TiDBConnection:
             await asyncio.to_thread(self._reconnect_sync)
             return
 
+    async def _enter_transaction_gate(self, *, starts_transaction: bool) -> bool:
+        """현재 task에 단일 연결 사용권을 부여한다.
+
+        읽기는 한 문장 동안만 gate를 잡고, 쓰기는 명시적 commit/rollback까지
+        소유권을 유지한다. 반환값은 이 호출이 새로 gate를 획득했는지 나타낸다.
+        """
+        task = asyncio.current_task()
+        if task is not None and self._transaction_owner is task:
+            return False
+
+        await self._transaction_gate.acquire()
+        if starts_transaction and task is not None:
+            self._transaction_owner = task
+            # scheduler/background loop처럼 같은 task가 계속 쓰기를 수행해도
+            # done callback을 트랜잭션마다 누적하지 않는다.
+            if task not in self._transaction_owner_callbacks:
+                self._transaction_owner_callbacks.add(task)
+                task.add_done_callback(self._handle_transaction_owner_done)
+        return True
+
+    def _release_transaction_gate(self, task: asyncio.Task[Any] | None) -> None:
+        """소유권과 gate를 함께 해제한다."""
+        if task is not None and self._transaction_owner is task:
+            self._transaction_owner = None
+        if self._transaction_gate.locked():
+            self._transaction_gate.release()
+
+    def _handle_transaction_owner_done(self, task: asyncio.Task[Any]) -> None:
+        """commit 없이 끝난 task의 미확정 쓰기를 비동기로 되돌린다."""
+        self._transaction_owner_callbacks.discard(task)
+        if self._transaction_owner is not task:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - 이벤트 루프 종료 구간
+            return
+        loop.create_task(self._rollback_abandoned_transaction(task))
+
+    async def _rollback_abandoned_transaction(
+        self,
+        owner: asyncio.Task[Any],
+    ) -> None:
+        if self._transaction_owner is not owner:
+            return
+        try:
+            async with self._lock:
+                if self._conn is not None and self._transaction_dirty:
+                    try:
+                        await asyncio.to_thread(self._conn.rollback)
+                    except Exception:
+                        logger.exception(
+                            "종료된 task의 TiDB 트랜잭션 롤백에 실패했습니다."
+                        )
+                self._transaction_dirty = False
+        finally:
+            if self._transaction_owner is owner:
+                self._release_transaction_gate(owner)
+
     async def _execute_buffered(self, query: str, params: Iterable[Any] | None = None) -> BufferedCursor:
         """SQL을 TiDB 문법으로 변환 후 실행하고 BufferedCursor로 결과를 반환합니다.
 
@@ -379,37 +451,46 @@ class TiDBConnection:
         sql = rewrite_sql_for_tidb(query)
         bind = tuple(params or ())
         retry_safe = _is_safe_read_retry(sql)
-        async with self._lock:
-            await self._ensure_connected_locked()
-            # 실행 도중 오류가 나더라도 서버가 문장의 일부 또는 DDL의 implicit
-            # commit을 반영했을 수 있다. 성공 뒤가 아니라 실행 전에 dirty로
-            # 표시해야 다음 호출의 선제 재연결로 미확정 트랜잭션을 버리지 않는다.
-            if not retry_safe:
-                self._transaction_dirty = True
-            try:
-                result = await asyncio.to_thread(self._execute_sync, sql, bind)
-                return result
-            except Exception as exc:
-                if self._is_retryable_disconnect(exc):
-                    transaction_was_dirty = self._transaction_dirty
-                    try:
-                        await asyncio.to_thread(self._reconnect_sync)
-                    except Exception as retry_exc:  # pragma: no cover
-                        raise CompatOperationalError(str(retry_exc)) from retry_exc
-                    if retry_safe and not transaction_was_dirty:
+        acquired_gate = await self._enter_transaction_gate(
+            starts_transaction=not retry_safe
+        )
+        try:
+            async with self._lock:
+                await self._ensure_connected_locked()
+                # 실행 도중 오류가 나더라도 서버가 문장의 일부 또는 DDL의 implicit
+                # commit을 반영했을 수 있다. 성공 뒤가 아니라 실행 전에 dirty로
+                # 표시해야 다음 호출의 선제 재연결로 미확정 트랜잭션을 버리지 않는다.
+                if not retry_safe:
+                    self._transaction_dirty = True
+                try:
+                    result = await asyncio.to_thread(self._execute_sync, sql, bind)
+                    return result
+                except Exception as exc:
+                    if self._is_retryable_disconnect(exc):
+                        transaction_was_dirty = self._transaction_dirty
                         try:
-                            return await asyncio.to_thread(
-                                self._execute_sync,
-                                sql,
-                                bind,
-                            )
+                            await asyncio.to_thread(self._reconnect_sync)
                         except Exception as retry_exc:  # pragma: no cover
                             raise CompatOperationalError(str(retry_exc)) from retry_exc
-                    raise CompatOperationalError(
-                        "연결 단절 시 쓰기 또는 진행 중 트랜잭션은 결과가 불확실하여 "
-                        "자동 재실행하지 않았습니다."
-                    ) from exc
-                raise CompatOperationalError(str(exc)) from exc
+                        if retry_safe and not transaction_was_dirty:
+                            try:
+                                return await asyncio.to_thread(
+                                    self._execute_sync,
+                                    sql,
+                                    bind,
+                                )
+                            except Exception as retry_exc:  # pragma: no cover
+                                raise CompatOperationalError(str(retry_exc)) from retry_exc
+                        raise CompatOperationalError(
+                            "연결 단절 시 쓰기 또는 진행 중 트랜잭션은 결과가 불확실하여 "
+                            "자동 재실행하지 않았습니다."
+                        ) from exc
+                    raise CompatOperationalError(str(exc)) from exc
+        finally:
+            # 읽기는 문장 종료와 함께 해제한다. 쓰기는 commit/rollback까지 현재
+            # task가 소유하며, task 자체가 끝나면 done callback이 rollback한다.
+            if retry_safe and acquired_gate:
+                self._release_transaction_gate(None)
 
     def _execute_sync(self, sql: str, params: tuple[Any, ...]) -> BufferedCursor:
         """PyMySQL 커서로 SQL을 동기 실행하고 결과를 BufferedCursor로 래핑합니다."""
@@ -432,6 +513,7 @@ class TiDBConnection:
         values = [tuple(item) for item in seq_of_params]
         if not values:
             return
+        await self._enter_transaction_gate(starts_transaction=True)
         async with self._lock:
             await self._ensure_connected_locked()
             # 드라이버가 큰 batch를 여러 문장으로 나눈 뒤 후반부에서 실패할 수
@@ -465,46 +547,70 @@ class TiDBConnection:
         """현재 트랜잭션을 커밋합니다. 연결 끊김 시 CompatOperationalError를 발생시킵니다."""
         if self._conn is None:
             return
-        async with self._lock:
-            await self._ensure_connected_locked()
-            try:
-                await asyncio.to_thread(self._conn.commit)
-                self._transaction_dirty = False
-            except Exception as exc:  # pragma: no cover
-                if self._is_retryable_disconnect(exc):
-                    await asyncio.to_thread(self._reconnect_sync)
-                    raise CompatOperationalError(
-                        "커밋 중 연결이 끊어져 결과가 불확실합니다. 멱등성 키나 "
-                        "read-back 확인 없이 작업 전체를 자동 재시도하면 안 됩니다."
-                    ) from exc
-                raise CompatOperationalError(str(exc)) from exc
+        task = asyncio.current_task()
+        acquired_gate = await self._enter_transaction_gate(starts_transaction=False)
+        try:
+            async with self._lock:
+                await self._ensure_connected_locked()
+                try:
+                    await asyncio.to_thread(self._conn.commit)
+                    self._transaction_dirty = False
+                except Exception as exc:  # pragma: no cover
+                    if self._is_retryable_disconnect(exc):
+                        await asyncio.to_thread(self._reconnect_sync)
+                        raise CompatOperationalError(
+                            "커밋 중 연결이 끊어져 결과가 불확실합니다. 멱등성 키나 "
+                            "read-back 확인 없이 작업 전체를 자동 재시도하면 안 됩니다."
+                        ) from exc
+                    raise CompatOperationalError(str(exc)) from exc
+        finally:
+            if self._transaction_owner is task:
+                self._release_transaction_gate(task)
+            elif acquired_gate:
+                self._release_transaction_gate(None)
 
     async def rollback(self) -> None:
         """현재 트랜잭션을 롤백합니다."""
         if self._conn is None:
             return
-        async with self._lock:
-            await self._ensure_connected_locked()
-            try:
-                await asyncio.to_thread(self._conn.rollback)
-                self._transaction_dirty = False
-            except Exception as exc:  # pragma: no cover
-                if self._is_retryable_disconnect(exc):
-                    await asyncio.to_thread(self._reconnect_sync)
-                    raise CompatOperationalError(
-                        "롤백 중 연결이 끊어졌습니다. 연결은 복구되었지만 작업 재시도가 필요합니다."
-                    ) from exc
-                raise CompatOperationalError(str(exc)) from exc
+        task = asyncio.current_task()
+        acquired_gate = await self._enter_transaction_gate(starts_transaction=False)
+        try:
+            async with self._lock:
+                await self._ensure_connected_locked()
+                try:
+                    await asyncio.to_thread(self._conn.rollback)
+                    self._transaction_dirty = False
+                except Exception as exc:  # pragma: no cover
+                    if self._is_retryable_disconnect(exc):
+                        await asyncio.to_thread(self._reconnect_sync)
+                        raise CompatOperationalError(
+                            "롤백 중 연결이 끊어졌습니다. 연결은 복구되었지만 작업 재시도가 필요합니다."
+                        ) from exc
+                    raise CompatOperationalError(str(exc)) from exc
+        finally:
+            if self._transaction_owner is task:
+                self._release_transaction_gate(task)
+            elif acquired_gate:
+                self._release_transaction_gate(None)
 
     async def close(self) -> None:
         """TiDB 연결을 안전하게 종료합니다."""
         if self._conn is None:
             return
-        async with self._lock:
-            await asyncio.to_thread(self._conn.close)
-        self._conn = None
-        self._connected_at_monotonic = None
-        self._transaction_dirty = False
+        task = asyncio.current_task()
+        acquired_gate = await self._enter_transaction_gate(starts_transaction=False)
+        try:
+            async with self._lock:
+                await asyncio.to_thread(self._conn.close)
+            self._conn = None
+            self._connected_at_monotonic = None
+            self._transaction_dirty = False
+        finally:
+            if self._transaction_owner is task:
+                self._release_transaction_gate(task)
+            elif acquired_gate:
+                self._release_transaction_gate(None)
 
 
 async def connect_main_db(backend: str, *, sqlite_path: str | None = None, tidb_settings: TiDBSettings | None = None):

@@ -1,5 +1,10 @@
 """외부 도구 circuit breaker와 자동 복구 경계."""
 
+import asyncio
+
+import pytest
+
+from cogs.tools_cog import ToolsCog
 from utils.tool_health import ToolHealthRegistry
 
 
@@ -28,3 +33,21 @@ def test_tool_circuits_are_isolated():
 
     assert health.is_available("stock", now=11) is False
     assert health.is_available("weather", now=11) is True
+
+
+@pytest.mark.asyncio
+async def test_cancelled_half_open_probe_does_not_lock_tool_forever():
+    """요청 취소는 provider 실패가 아니며 다음 복구 probe를 막아서도 안 된다."""
+    health = ToolHealthRegistry(failure_threshold=1, cooldown_seconds=1)
+    health.record_failure("weather", now=10)
+
+    cog = ToolsCog.__new__(ToolsCog)
+    cog.tool_health = health
+
+    async def cancelled_operation():
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await cog.execute_guarded("weather", cancelled_operation)
+
+    assert health.begin_attempt("weather", now=12) is True
