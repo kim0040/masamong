@@ -133,7 +133,7 @@
 
 ---
 
-## 3단계 — 서버측 벡터 검색 · 코드 준비 완료, 서버 적용 대기
+## 3단계 — 서버측 벡터 검색 · Masamo 적용 완료
 
 ### 무엇을 바꾸나
 
@@ -254,7 +254,7 @@ FROM discord_memory_entries;
 **3-e. 읽기 경로 + 기능 플래그**
 
 ```dotenv
-STRUCTURED_MEMORY_VECTOR_SEARCH_ENABLED=false   # 기본 꺼짐
+STRUCTURED_MEMORY_VECTOR_SEARCH_ENABLED=false   # 새 인스턴스 기본값
 STRUCTURED_MEMORY_VECTOR_TOP_K=32
 ```
 
@@ -279,6 +279,25 @@ Masamo는 전체 커버리지를 확인한 뒤에만 켠다. General은 현재 �
 - 오프라인: 벡터 경로와 기존 경로가 **같은 코퍼스**에서 같은 상위 결과를 내는지
 - 운영: 2-c의 커버리지 + Usage 패널 RU 관찰 최소 3일
 - 롤백: 플래그만 끄면 즉시 원복. 열과 데이터는 남는다
+
+### 2026-07-29 Masamo 운영 적용 결과
+
+- 기능 검증 SHA: `b1cb1ca4a69b447ac1c8aab9972259671c11d160`
+- 기존 BLOB: **23,100행 / 35,481,600바이트**, 차원 불일치 0
+- 새 `embedding_vec`: 미백필 0, 런타임 신규 기억도 BLOB·VECTOR 동시 기록
+- 운영 설정: `STRUCTURED_MEMORY_VECTOR_SEARCH_ENABLED=true`,
+  `STRUCTURED_MEMORY_VECTOR_TOP_K=32`
+- 강제 read-only 헬스체크: 메인 DB, 384차원 임베딩, Discord 저장소,
+  Discord 벡터 RAG, Kakao RAG, 프롬프트 격리 **전부 PASS**
+- 벡터 상태: `vector_mode_expected=true`,
+  `vector_coverage_complete=true`, `vector_search_failed=false`
+- 서비스: 단일 프로세스, systemd 재시작 0회, 지진 60초 모니터와
+  학교/편입 타이머 유지
+- TiDB 논리 사용량: 약 **29.55MB / 5GiB (0.55%)**
+
+월 RU는 SQL에서 최신 값을 제공하지 않아 TiDB Cloud의 **Usage this month**가
+최종 기준이다. 현재 하루 약 7회 검색을 기준으로 한 추정은 월 3.6만 RU,
+무료 50M RU의 약 0.07%다. 새 경로는 LLM 호출을 추가하지 않는다.
 
 ---
 
@@ -387,7 +406,7 @@ BM25 대신 TiDB의 전문 검색이나 `keyword_json` 기반 필터를 쓰는 �
 |---|---|---|---|---|
 | 1 | 스코프 정렬 제거 | 회수율 0.04 → **0.35** | 없음 | **완료** |
 | 2 | 정밀도 (게이트·상한) | 잡담 주입 6.6개 → **0개** | 낮음 | **완료** |
-| 3 | 서버측 벡터 검색 | 회수율 0.35 → **1.00** | 운영 DDL | **코드 완료, 서버 적용 대기** |
+| 3 | 서버측 벡터 검색 | 회수율 0.35 → **1.00** | 운영 DDL | **Masamo 적용·검증 완료** |
 | 4 | 죽은 fallback 제거 | 없음 (청소) | 낮음 | 아무 때나 |
 | 5 | 기억 단위 품질 | 간접 (지금 33행) | 낮음 | 아무 때나 |
 | 6 | 대화 창 복구 · 어휘 검색 | 회수한 기억의 문맥 | 중간 | 3단계 후 |
