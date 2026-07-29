@@ -414,22 +414,21 @@ class FortuneCog(commands.Cog):
                 )
             except asyncio.TimeoutError:
                 await ctx.send(
-                    "⏰ 입력 시간이 초과되어 등록을 종료했습니다. "
-                    "`!운세 등록`으로 다시 시작해주세요."
+                    "⏰ 시간이 지나서 등록을 닫았어요. `!운세 등록`으로 다시 시작해주세요."
                 )
                 return False, None
 
             raw_value = message.content.strip()
             if raw_value.lower() in _CANCEL_INPUTS:
-                await ctx.send("등록을 취소했습니다. 입력한 내용은 저장하지 않았습니다.")
+                await ctx.send("등록을 취소했어요. 입력한 내용은 저장하지 않았어요.")
                 return False, None
             try:
                 return True, parser(raw_value)
             except ValueError as exc:
                 if attempt >= REGISTRATION_MAX_ATTEMPTS:
                     await ctx.send(
-                        f"❌ {exc}\n입력 오류가 {REGISTRATION_MAX_ATTEMPTS}회 "
-                        "누적되어 등록을 종료했습니다. 저장된 내용은 없습니다."
+                        f"❌ {exc}\n{REGISTRATION_MAX_ATTEMPTS}번 잘못 입력해서 "
+                        "등록을 닫았어요. 저장된 건 없어요."
                     )
                     return False, None
                 await ctx.send(f"❌ {exc}")
@@ -541,19 +540,19 @@ class FortuneCog(commands.Cog):
             # DB 저장 (기본적으로 구독은 비활성화 상태로 저장)
             if not await self._has_fortune_consent(ctx.author.id):
                 await ctx.send(
-                    "개인정보 동의가 등록 도중 철회되어 입력 내용을 저장하지 않았습니다."
+                    "개인정보 동의가 등록 도중 철회되어 입력 내용을 저장하지 않았어요."
                 )
                 return
             await self._save_user_profile(ctx.author.id, birth_date, birth_time, gender, birth_place)
             await ctx.send(
-                f"✅ 정보 등록이 완료되었습니다!\n"
-                f"이제 언제든 `!운세` 명령어로 오늘의 운세를 확인하실 수 있습니다.\n\n"
-                f"🔔 **매일 아침 운세 브리핑**을 받고 싶다면 `!운세 구독 [시간]` (예: `!운세 구독 07:30`)을 입력해주세요!"
+                "✅ 등록 끝났어요!\n"
+                "이제 `!운세`로 언제든 오늘의 운세를 볼 수 있어요.\n\n"
+                "🔔 **매일 아침 운세 브리핑**을 받고 싶다면 `!운세 구독 [시간]`을 보내주세요. (예: `!운세 구독 07:30`)"
             )
             
         except Exception as e:
             logger.error(f"운세 등록 중 오류: {e}", exc_info=True)
-            await ctx.send("❌ 등록 중 오류가 발생했습니다.")
+            await ctx.send("❌ 등록 중 오류가 발생했어요.")
         finally:
             # [Safety Lock Release] 작업 종료 후 반드시 잠금 해제
             self.bot.locked_users.discard(ctx.author.id)
@@ -618,7 +617,7 @@ class FortuneCog(commands.Cog):
         """
         # DM 체크
         if ctx.guild:
-            await ctx.reply("⚠️ 개인 정보 보호를 위해 이 명령어는 DM에서만 사용할 수 있습니다.")
+            await ctx.reply("⚠️ 개인 정보 보호를 위해 이 명령어는 DM에서만 사용할 수 있어요.")
             return
 
         try:
@@ -639,14 +638,11 @@ class FortuneCog(commands.Cog):
              )
              await self.bot.db.commit()
              await ctx.send(
-                 "🗑️ 운세 프로필·구독 설정·생성 대기 내용·운세 컨텍스트를 "
-                 "삭제하고 운세 개인정보 동의를 철회했습니다.\n"
-                 "일반 Discord 대화와 서버 기록은 변경하지 않았습니다. "
-                 "동의·철회 증빙용 감사 이력은 별도 보관됩니다."
+                 "🗑️ 운세 정보와 구독 설정을 모두 지우고 동의도 철회했어요.\n평소 대화와 서버 기록은 그대로예요. 동의·철회 기록은 그대로 남아요."
              )
         except Exception as e:
              logger.error(f"운세 정보 삭제 중 오류: {e}", exc_info=True)
-             await ctx.send("❌ 삭제 중 오류가 발생했습니다.")
+             await ctx.send("❌ 삭제 중 오류가 발생했어요.")
 
     @fortune.command(name='구독', aliases=['구독시간', '알림시간'])
     async def fortune_subscribe(self, ctx: commands.Context, time_str: str):
@@ -661,10 +657,10 @@ class FortuneCog(commands.Cog):
         """
         # DM 체크
         if ctx.guild:
-            await ctx.reply("⚠️ 구독 설정은 DM에서만 가능합니다.")
+            await ctx.reply("⚠️ 구독 설정은 DM에서만 가능해요.")
             return
         if not config.FORTUNE_MORNING_BRIEFING_ENABLED:
-            await ctx.send("ℹ️ 이 마사몽 인스턴스에서는 자동 아침 운세 구독을 운영하지 않습니다.")
+            await ctx.send("ℹ️ 여기서는 자동 아침 운세 구독을 운영하지 않아요.")
             return
 
         if time_str in ["취소", "해제", "off", "cancel", "중단", "비활성", "비활성화"]:
@@ -774,10 +770,10 @@ class FortuneCog(commands.Cog):
                  # 애플리케이션 검사 직후 발생한 철회 경합까지 fail-closed한다.
                  await self._send_fortune_consent_prompt(ctx)
                  return
-             await ctx.send(f"✅ 구독이 활성화되었습니다! 매일 아침 `{time_str}`에 브리핑을 보내드릴게요.")
+             await ctx.send(f"✅ 구독이 활성화됐어요! 매일 아침 `{time_str}`에 브리핑을 보내드릴게요.")
         except Exception as e:
              logger.error(f"구독 설정 중 오류: {e}", exc_info=True)
-             await ctx.send("❌ 설정 변경 중 오류가 발생했습니다.")
+             await ctx.send("❌ 설정 변경 중 오류가 발생했어요.")
 
     @fortune.command(name='구독취소')
     async def fortune_unsubscribe(self, ctx: commands.Context):
@@ -796,10 +792,10 @@ class FortuneCog(commands.Cog):
                  (ctx.author.id,)
              )
              await self.bot.db.commit()
-             await ctx.send("🔕 오늘의 운세 브리핑 구독이 취소되었습니다. (등록된 정보는 유지됩니다.)")
+             await ctx.send("🔕 오늘의 운세 브리핑 구독이 취소됐어요. (등록된 정보는 그대로 남아요.)")
         except Exception as e:
              logger.error(f"구독 취소 중 오류: {e}", exc_info=True)
-             await ctx.send("❌ 구독 취소 중 오류가 발생했습니다.")
+             await ctx.send("❌ 구독 취소 중 오류가 발생했어요.")
 
     @commands.command(name='구독', aliases=['구독시간', '알림시간'])
     async def global_subscribe(self, ctx: commands.Context, time_str: str):
@@ -1241,8 +1237,8 @@ class FortuneCog(commands.Cog):
             # 3. AI 핸들러 호출
             ai_handler = self.bot.get_cog('AIHandler')
             if not ai_handler:
-                if status_msg: await status_msg.edit(content="AI 모듈을 불러올 수 없습니다.")
-                else: await ctx.send("AI 모듈을 불러올 수 없습니다.")
+                if status_msg: await status_msg.edit(content="AI 모듈을 불러올 수 없어요.")
+                else: await ctx.send("AI 모듈을 불러올 수 없어요.")
                 return
             
             # 모델명 매핑 (환경변수/설정으로 오버라이드 가능)
@@ -1517,13 +1513,7 @@ class FortuneCog(commands.Cog):
             embed = discord.Embed(
                 title="🌌 오늘의 별자리 운세",
                 description=(
-                    "**내 별자리 운세를 보고 싶다면?**\n"
-                    "👉 `!운세 등록` 으로 생년월일을 알려주세요! (자동으로 인식됩니다)\n\n"
-                    "**특정 별자리를 보고 싶다면?**\n"
-                    "👉 `!별자리 <이름>` (예: `!별자리 물병자리`)\n\n"
-                    "**12별자리 순위가 궁금하다면?**\n"
-                    "👉 `!별자리 순위`\n\n"
-                    "**목록**: 양, 황소, 쌍둥이, 게, 사자, 처녀\n천칭, 전갈, 사수, 염소, 물병, 물고기"
+                    "**내 별자리 운세를 보고 싶다면?**\n👉 `!운세 등록` 으로 생년월일을 알려주세요! (자동으로 인식돼요)\n\n**특정 별자리를 보고 싶다면?**\n👉 `!별자리 <이름>` (예: `!별자리 물병자리`)\n\n**12별자리 순위가 궁금하다면?**\n👉 `!별자리 순위`\n\n**목록**: 양, 황소, 쌍둥이, 게, 사자, 처녀\n천칭, 전갈, 사수, 염소, 물병, 물고기"
                 ),
                 color=0x6a0dad
             )
@@ -1573,8 +1563,7 @@ class FortuneCog(commands.Cog):
             await ctx.send(embed=embed)
         elif outcome == "limit":
             await ctx.send(
-                "🌙 오늘의 별자리 AI 생성 상한에 도달했습니다. "
-                "이미 생성된 별자리 결과는 계속 확인할 수 있어요."
+                "🌙 오늘 만들 수 있는 별자리 운세를 다 썼어요. 이미 생성된 별자리 결과는 계속 확인할 수 있어요."
             )
         elif outcome in {"busy", "user_busy"}:
             await ctx.send(
@@ -1583,8 +1572,7 @@ class FortuneCog(commands.Cog):
             )
         else:
             await ctx.send(
-                "별들의 순위를 매기는 중 오류가 발생했습니다. "
-                "잠시 후 다시 시도해주세요."
+                "별자리 순위를 매기다가 문제가 생겼어요. 잠시 후 다시 시도해주세요."
             )
 
     async def _show_zodiac_fortune(
@@ -1687,8 +1675,7 @@ class FortuneCog(commands.Cog):
                  await ctx.send(embed=embed)
         elif outcome == "limit":
             await ctx.send(
-                "🌙 오늘의 별자리 AI 생성 상한에 도달했습니다. "
-                "이미 생성된 별자리 결과는 계속 확인할 수 있어요."
+                "🌙 오늘 만들 수 있는 별자리 운세를 다 썼어요. 이미 생성된 별자리 결과는 계속 확인할 수 있어요."
             )
         elif outcome in {"busy", "user_busy"}:
             await ctx.send(

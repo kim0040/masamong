@@ -1719,8 +1719,75 @@ STRUCTURED_MEMORY_SIMILARITY_THRESHOLD = as_float(
 )
 RAG_STRONG_SIMILARITY_THRESHOLD = as_float(EMBED_CONFIG.get("strong_similarity_threshold"), 0.72)
 RAG_DEBUG_ENABLED = as_bool(load_config_value('RAG_DEBUG_ENABLED', EMBED_CONFIG.get("debug_enabled", False)))
-RAG_HYBRID_TOP_K = int(EMBED_CONFIG.get("hybrid_top_k", 8))
+RAG_HYBRID_TOP_K = int(EMBED_CONFIG.get("hybrid_top_k", 3))
 RAG_EMBEDDING_TOP_N = int(EMBED_CONFIG.get("embedding_top_n", 14))
+# 기억을 프롬프트에 넣을지 결정하는 최종 관문.
+#
+# E5 코사인은 절대 척도가 아니라서 관련 없는 한국어 문장끼리도 0.5~0.6이 나온다.
+# 기존 0.5 임계값은 사실상 전부 통과였고, 운영 기억으로 실측했을 때 "ㅇㅇ",
+# "안녕", "고마워" 같은 잡담에도 기억이 6~14개씩 주입됐다. 회수 범위를 넓힐수록
+# 더 심해진다.
+#
+# 순수 semantic 점수 실측 분포(기억 질문 12개 / 잡담 16개):
+#   0.60 → 잡담 2건 통과      0.61 → 잡담 0건, 질문 11/12 통과
+#   0.62 → 질문 10/12         0.70 → 질문 3/12
+# 두 조건에서 모두 성립하는 0.61을 기본값으로 둔다.
+RAG_MEMORY_GATE_SCORE = as_float(
+    load_config_value("RAG_MEMORY_GATE_SCORE", EMBED_CONFIG.get("memory_gate_score")),
+    0.61,
+)
+# 명시적으로 과거 기억을 묻는 요청은 일반 잡담보다 recall을 우선한다. 게이트는
+# 어휘·본인 가산점이 섞이지 않은 순수 semantic similarity에 적용한다.
+RAG_EXPLICIT_MEMORY_GATE_SCORE = as_float(
+    load_config_value(
+        "RAG_EXPLICIT_MEMORY_GATE_SCORE",
+        EMBED_CONFIG.get("explicit_memory_gate_score"),
+    ),
+    0.58,
+)
+RAG_MEMORY_GATE_SCORE = max(-1.0, min(1.0, RAG_MEMORY_GATE_SCORE))
+RAG_EXPLICIT_MEMORY_GATE_SCORE = max(
+    -1.0,
+    min(1.0, RAG_EXPLICIT_MEMORY_GATE_SCORE),
+)
+# 최고 점수 대비 이 비율 밑은 버린다. 절대 임계값만으로는 "가장 관련 있는 하나"와
+# "그럭저럭 비슷한 열 개"를 구분하지 못한다. 0.94에서 평균 4.6개(중앙값 1개)가
+# 남고, 위 top_k가 다시 자른다.
+RAG_MEMORY_RELATIVE_FLOOR = as_float(
+    load_config_value(
+        "RAG_MEMORY_RELATIVE_FLOOR", EMBED_CONFIG.get("memory_relative_floor")
+    ),
+    0.94,
+)
+RAG_MEMORY_RELATIVE_FLOOR = max(
+    0.0,
+    min(1.0, RAG_MEMORY_RELATIVE_FLOOR),
+)
+# 프롬프트에 넣을 기억 블록의 절대 상한.
+#
+# `RAG_HYBRID_TOP_K`는 각 인스턴스의 embedding config 파일에서 오므로, 이미
+# 배포된 서버의 값(8)을 코드 기본값으로 낮출 수 없다. 이 상한은 config 파일과
+# 무관하게 적용돼서, 서버의 설정 파일을 고치지 않아도 새 동작이 적용된다.
+# 서버측 벡터 검색. 기본 꺼짐 — `embedding_vec` 열이 있고 백필이 끝난 인스턴스
+# 에서만 켠다. 열이 없으면 코드가 알아서 기존 최신순 경로로 내려간다.
+# 준비: scripts/apply_memory_vector_column.py --expected-profile <PROFILE>
+#       --expected-db <DB> --apply --confirm "ADD COPY VECTOR COLUMN TO <DB>"
+STRUCTURED_MEMORY_VECTOR_SEARCH_ENABLED = as_bool(
+    load_config_value("STRUCTURED_MEMORY_VECTOR_SEARCH_ENABLED", "false")
+)
+# 벡터 검색이 켜지면 시간이 아니라 유사도로 자르므로 후보를 많이 받을 이유가 없다.
+STRUCTURED_MEMORY_VECTOR_TOP_K = max(
+    8,
+    min(
+        as_int(load_config_value("STRUCTURED_MEMORY_VECTOR_TOP_K", None), 32),
+        128,
+    ),
+)
+RAG_MEMORY_MAX_BLOCKS = as_int(
+    load_config_value("RAG_MEMORY_MAX_BLOCKS", EMBED_CONFIG.get("memory_max_blocks")),
+    3,
+)
+RAG_MEMORY_MAX_BLOCKS = max(1, min(8, RAG_MEMORY_MAX_BLOCKS))
 RAG_BM25_TOP_N = int(EMBED_CONFIG.get("bm25_top_n", 8))
 RAG_RRF_K = float(EMBED_CONFIG.get("rrf_constant", 60))
 RAG_QUERY_REWRITE_ENABLED = as_bool(

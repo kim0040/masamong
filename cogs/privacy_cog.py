@@ -73,14 +73,14 @@ class ConsentDecisionView(ReliableView):
         # 저장하지 않고 실제 DM을 누른 당사자의 ID를 사용한다.
         if getattr(interaction, "guild", None) is not None:
             await interaction.response.send_message(
-                "개인정보 동의는 마사몽과의 DM에서만 진행할 수 있습니다.",
+                "개인정보 동의는 마사몽 DM에서만 할 수 있어요.",
                 ephemeral=True,
             )
             return False
         if self._user_id is None or int(interaction.user.id) == self._user_id:
             return True
         await interaction.response.send_message(
-            "이 동의 버튼은 명령을 실행한 사용자만 누를 수 있습니다.",
+            "이 버튼은 명령을 부른 사람만 누를 수 있어요.",
             ephemeral=True,
         )
         return False
@@ -121,7 +121,7 @@ class ConsentDecisionView(ReliableView):
                 exc_info=True,
             )
             await interaction.followup.send(
-                "동의 상태를 저장하지 못했습니다. 잠시 후 다시 시도해주세요.",
+                "동의 상태를 저장하지 못했어요. 잠시 뒤 다시 해주세요.",
                 ephemeral=True,
             )
             return
@@ -158,8 +158,7 @@ class ConsentDecisionView(ReliableView):
                     exc_info=True,
                 )
                 await interaction.followup.send(
-                    "동의는 정상 저장했지만 기능을 이어서 시작하지 못했습니다. "
-                    "`!메뉴`에서 다시 선택해주세요.",
+                    "동의는 저장했는데 기능을 바로 열지 못했어요. `!메뉴`에서 다시 골라주세요.",
                     ephemeral=True,
                 )
 
@@ -172,8 +171,8 @@ class ConsentDecisionView(ReliableView):
             rendered_view = self
         await interaction.response.edit_message(
             content=(
-                f"동의하지 않았습니다. **{policy.display_name}** 개인정보는 "
-                "새로 수집하거나 기존 프로필에서 이용하지 않습니다."
+                f"동의하지 않았어요. **{policy.display_name}** 개인정보는 "
+                "새로 모으지도, 이미 있는 걸 쓰지도 않아요."
             ),
             view=rendered_view,
         )
@@ -666,13 +665,13 @@ class PrivacyCog(commands.Cog):
                 ctx.author.id,
                 exc_info=True,
             )
-            await ctx.send("철회 상태를 저장하지 못했습니다. 잠시 후 다시 시도해주세요.")
+            await ctx.send("철회 상태를 저장하지 못했어요. 잠시 뒤 다시 해주세요.")
             return
 
         if withdrawn is None:
             await ctx.send(
-                f"ℹ️ **{policy.display_name}** 개인정보에 동의한 기록이 없어 "
-                "새 철회 기록을 만들지 않았습니다.",
+                f"ℹ️ **{policy.display_name}** 개인정보에 동의한 적이 없어서 "
+                "따로 철회 기록을 남기지 않았어요.",
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             return
@@ -683,11 +682,11 @@ class PrivacyCog(commands.Cog):
             TRANSFER_NOTICE_SCOPE: "`!편입 삭제`",
         }[policy.scope]
         await ctx.send(
-            f"✅ **{policy.display_name}** 개인정보 동의를 철회했습니다.\n"
-            "지금부터 기존 프로필 조회·개인화 처리·자동 발송을 중단합니다. "
-            "기존 누적 데이터와 구독/활성 설정은 자동 삭제하지 않아 재동의 시 그대로 재개됩니다.\n"
-            f"데이터도 삭제하려면 {delete_command}를 별도로 실행해주세요. "
-            "동의·철회 증빙용 감사 이력은 삭제 명령 후에도 별도 보관됩니다.",
+            f"✅ **{policy.display_name}** 개인정보 동의를 철회했어요.\n"
+            "지금부터 저장된 정보를 쓰지 않고 자동 발송도 멈춰요. "
+            "쌓인 데이터와 구독 설정은 지우지 않아서, 다시 동의하면 그대로 이어져요.\n"
+            f"데이터까지 지우려면 {delete_command}를 따로 실행해주세요. "
+            "동의·철회 기록은 삭제 후에도 그대로 남아요.",
             allowed_mentions=discord.AllowedMentions.none(),
         )
 

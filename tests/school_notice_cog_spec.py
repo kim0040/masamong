@@ -1404,7 +1404,7 @@ async def test_delete_removes_delivery_runs_but_preserves_consent_audit(
             (USER_ID, SCHOOL_NOTICE_SCOPE),
         ) as cursor:
             assert (await cursor.fetchone())[0] >= 2
-        assert any("감사 이력은 보존" in str(item["content"]) for item in ctx.messages)
+        assert any("동의·철회 기록은 그대로" in str(item["content"]) for item in ctx.messages)
     finally:
         await db.close()
 
@@ -1487,7 +1487,7 @@ async def test_bare_notice_command_opens_unified_dashboard(
         assert len(ctx.messages) == 1
         message = ctx.messages[0]
         assert message["embed"].title == "🎓 학교 공지"
-        assert "05:00" in message["embed"].description
+        assert "새벽 5시" in message["embed"].description
         labels = {
             child.label
             for child in message["view"].children

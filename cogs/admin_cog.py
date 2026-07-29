@@ -62,9 +62,7 @@ async def _admin_embed(
     embed = discord.Embed(
         title="⚙️ 마사몽 간편 설정",
         description=(
-            "이 화면은 이 봇 인스턴스의 최고 관리자에게만 보여요. "
-            "서비스 운영에 영향을 주는 모델·DB·수집 주기·말투 설정은 "
-            "Discord에서 바꿀 수 없습니다."
+            "이 화면은 봇 관리자에게만 보여요. 모델·DB·확인 주기·말투 같은 운영 설정은 Discord에서 바꿀 수 없어요."
         ),
         color=0x66CCFF,
     )
@@ -89,7 +87,7 @@ async def _admin_embed(
             value=(
                 f"- 서버 AI: **{server_state}**\n"
                 f"- 현재 채널: **{channel_state}**\n"
-                f"- 적용 범위: `{config.INSTANCE_NAME}` 인스턴스의 현재 서버"
+                f"- 적용 범위: `{config.INSTANCE_NAME}` 봇의 지금 이 서버"
             ),
             inline=False,
         )
@@ -105,13 +103,12 @@ async def _admin_embed(
     embed.add_field(
         name="바꿀 수 있는 항목",
         value=(
-            "현재 서버의 AI 응답 켜기·끄기, 현재 채널 응답 켜기·끄기, "
-            "초대 링크 열기만 제공합니다."
+            "현재 서버의 AI 응답 켜기·끄기, 현재 채널 응답 켜기·끄기, 초대 링크 열기만 제공해요."
         ),
         inline=False,
     )
     embed.set_footer(
-        text="일반용과 마사모용 설정은 인스턴스 이름으로 나누어 저장됩니다."
+        text="일반용과 마사모용 설정은 따로 저장돼요."
     )
     return embed
 
@@ -150,7 +147,7 @@ class AdminPanelView(ReliableView):
         ):
             return True
         await interaction.response.send_message(
-            "이 설정 화면은 현재 인스턴스의 최고 관리자만 사용할 수 있어요.",
+            "이 설정 화면은 이 봇의 관리자만 사용할 수 있어요.",
             ephemeral=True,
         )
         return False
@@ -180,13 +177,13 @@ class AdminPanelView(ReliableView):
         except Exception:
             logger.error("최고 관리자 서버 AI 설정 변경 실패", exc_info=True)
             await interaction.followup.send(
-                "설정을 저장하지 못했어요. 기존 설정은 그대로 유지됩니다.",
+                "설정을 저장하지 못했어요. 기존 설정은 그대로예요.",
                 ephemeral=True,
             )
             return
         state = "다시 켰어요" if enabled else "잠시 껐어요"
         await interaction.followup.send(
-            f"현재 서버의 AI 응답을 **{state}**. 다른 서버와 봇 인스턴스에는 영향이 없어요.",
+            f"현재 서버의 AI 응답을 **{state}**. 다른 서버에는 영향이 없어요.",
             ephemeral=True,
         )
 
@@ -216,7 +213,7 @@ class AdminPanelView(ReliableView):
         except Exception:
             logger.error("최고 관리자 채널 AI 설정 변경 실패", exc_info=True)
             await interaction.followup.send(
-                "설정을 저장하지 못했어요. 기존 설정은 그대로 유지됩니다.",
+                "설정을 저장하지 못했어요. 기존 설정은 그대로예요.",
                 ephemeral=True,
             )
             return
@@ -342,7 +339,7 @@ class AdminCog(commands.Cog):
         """통합 메뉴에서 최고 관리자 전용 패널을 비공개로 엽니다."""
         if not is_superadmin(interaction.user.id):
             await interaction.response.send_message(
-                "이 인스턴스에서는 사용할 수 없는 메뉴예요.",
+                "여기서는 사용할 수 없는 메뉴예요.",
                 ephemeral=True,
             )
             return
@@ -358,7 +355,7 @@ class AdminCog(commands.Cog):
     async def admin(self, ctx: commands.Context) -> None:
         if not is_superadmin(ctx.author.id):
             await ctx.send(
-                "이 인스턴스에서는 사용할 수 없는 메뉴예요.",
+                "여기서는 사용할 수 없는 메뉴예요.",
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             return
@@ -385,7 +382,7 @@ class AdminCog(commands.Cog):
     @commands.command(name="초대", aliases=["invitebot"], hidden=True)
     async def invite(self, ctx: commands.Context) -> None:
         if not is_superadmin(ctx.author.id):
-            await ctx.send("이 인스턴스에서는 사용할 수 없는 메뉴예요.")
+            await ctx.send("여기서는 사용할 수 없는 메뉴예요.")
             return
         url = _invite_url(self.bot)
         if not url:

@@ -117,7 +117,7 @@ async def test_auto_migrate_false_allows_writes_without_becoming_read_only(
 
 
 @pytest.mark.asyncio
-async def test_memory_lookup_isolates_servers_and_prioritizes_current_user(
+async def test_memory_lookup_isolates_servers_and_other_users(
     tmp_path,
     monkeypatch,
 ):
@@ -191,12 +191,16 @@ async def test_memory_lookup_isolates_servers_and_prioritizes_current_user(
         channel_id=100,
         user_id=7,
     )
-    messages = [row["message"] for row in rows]
+    messages = {row["message"] for row in rows}
 
-    assert messages == [
+    # 같은 서버의 공용 기억과 현재 사용자 본인 기억만 회수한다. 순서는 최신순이며
+    # 본인 기억 우대는 SQL이 아니라 _score_discord_rows의 유사도 가산으로 한다.
+    # SQL에서 본인 범위를 앞세우면 활성 사용자의 본인 기억만으로 LIMIT이 소진돼
+    # 공용 대화 기억을 영원히 회수할 수 없다(memory_scope_window_spec 참고).
+    assert messages == {
         "현재 사용자는 파전을 좋아함",
         "이 서버의 공용 여행 이야기",
-    ]
+    }
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,7 @@
 """학교 공지 digest JSON을 검증해 타입이 있는 객체로 변환합니다.
 
 digest는 마사몽 봇이 아니라 별도 batch 프로세스가 만든 파일이므로, 이 모듈은
-파일 내용을 신뢰하지 않고 계약(docs/SCHOOL_NOTICE_INTEGRATION_PLAN.ko.md 12장)을
+파일 내용을 신뢰하지 않고 계약(docs/SCHOOL_NOTICE.ko.md 12장)을
 전부 확인한 뒤에만 통과시킵니다. 계약이 깨진 digest를 조용히 부분 렌더링하면
 사용자에게 잘못된 마감이나 자격 판정을 보여줄 수 있어 전달 자체를 중단합니다.
 """

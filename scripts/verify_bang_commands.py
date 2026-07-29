@@ -305,7 +305,9 @@ async def case_fun_summary_fallback() -> None:
         guild=DummyGuild(3),
     )
     await cog.summarize.callback(cog, ctx)
-    assert "준비되지 않았습니다" in (ctx.channel.messages[-1].content or "")
+    assert "지금은 대화 요약을 쓸 수 없어요" in (
+        ctx.channel.messages[-1].content or ""
+    )
 
 
 async def case_activity_ranking_fallback() -> None:

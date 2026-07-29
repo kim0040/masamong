@@ -2400,13 +2400,13 @@ class AIHandler(commands.Cog):
             allowed, reset_time = dm_limit_result
             if not allowed:
                  await message.channel.send(
-                     f"⛔ 일일 대화량이 초과되었습니다.\n마사몽과의 1:1 대화는 5시간당 30회로 제한됩니다.\n🕒 해제 예정 시각: {reset_time}"
+                     f"⛔ 오늘 나눌 수 있는 DM 대화를 다 썼어요.\n1:1 대화는 5시간에 30번까지예요.\n🕒 다시 쓸 수 있는 시각: {reset_time}"
                  )
                  return
             
             if not global_dm_allowed:
                 await message.channel.send(
-                    "⛔ 죄송합니다. 오늘 마사몽이 처리할 수 있는 DM 총량을 초과했습니다.\n내일 다시 이용해 주세요! (서버 채널에서는 계속 이용 가능합니다)"
+                    "⛔ 오늘 DM으로 받을 수 있는 양을 다 썼어요.\n내일 다시 찾아와줘! 서버 채널에서는 그대로 이야기할 수 있어요."
                 )
                 return
 

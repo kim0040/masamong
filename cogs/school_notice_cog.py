@@ -258,8 +258,7 @@ class FeedbackView(ReliableView):
         await interaction.response.defer(ephemeral=True, thinking=True)
         if not await self._cog._has_school_notice_consent(interaction.user.id):
             await interaction.followup.send(
-                "학교 공지 개인정보 동의가 철회되었거나 현재 정책에 대한 재동의가 "
-                "필요합니다. DM에서 `!개인정보 동의 학교공지`를 실행해주세요.",
+                "학교 공지 개인정보 동의가 풀려 있어요. DM에서 `!개인정보 동의 학교공지`를 한 번 눌러주시면 이어서 진행할게요.",
                 ephemeral=True,
             )
             return
@@ -273,7 +272,7 @@ class FeedbackView(ReliableView):
             )
         except ConsentRequiredError:
             await interaction.followup.send(
-                "동의 상태가 변경되어 피드백을 저장하지 않았습니다.",
+                "동의 상태가 바뀌어서 피드백은 저장하지 않았어요.",
                 ephemeral=True,
             )
             return
@@ -285,7 +284,7 @@ class FeedbackView(ReliableView):
                 exc_info=True,
             )
             await interaction.followup.send(
-                "피드백을 저장하지 못했습니다. 잠시 후 다시 눌러주세요.",
+                "피드백을 저장하지 못했어요. 잠시 뒤 다시 눌러주세요.",
                 ephemeral=True,
             )
             return
@@ -344,7 +343,7 @@ class SchoolNoticeDashboardView(ReliableView):
         if int(interaction.user.id) == self.user_id:
             return True
         await interaction.response.send_message(
-            "이 메뉴는 명령을 실행한 사용자만 사용할 수 있습니다.",
+            "이 메뉴는 명령을 부른 사람만 쓸 수 있어요.",
             ephemeral=True,
         )
         return False
@@ -361,7 +360,7 @@ class SchoolNoticeDashboardView(ReliableView):
         _button: discord.ui.Button,
     ) -> None:
         await interaction.response.send_message(
-            "학교 공지 설정 대화를 아래에서 시작합니다.",
+            "아래에서 학교 공지 설정을 시작할게요.",
             ephemeral=True,
         )
         await self.cog.begin_profile_setup(
@@ -382,7 +381,7 @@ class SchoolNoticeDashboardView(ReliableView):
         _button: discord.ui.Button,
     ) -> None:
         await interaction.response.send_message(
-            "최근 맞춤 공지를 아래에서 확인합니다.",
+            "최근 맞춤 공지를 아래에 정리했어요.",
             ephemeral=True,
         )
         await SchoolNoticeCog.school_notice.callback(self.cog, self.ctx, 1)
@@ -399,7 +398,7 @@ class SchoolNoticeDashboardView(ReliableView):
         _button: discord.ui.Button,
     ) -> None:
         await interaction.response.send_message(
-            "최근 공개 게시판 확인 상태를 아래에서 보여드릴게요.",
+            "최근 학교 공지 확인 상태를 아래에서 보여드릴게요.",
             ephemeral=True,
         )
         await self.cog.send_collection_status(self.ctx)
@@ -454,7 +453,7 @@ class SchoolNoticeDashboardView(ReliableView):
         _button: discord.ui.Button,
     ) -> None:
         await interaction.response.send_message(
-            "학교 공지 알림 상태를 변경합니다.",
+            "학교 공지 알림을 켜거나 끌 수 있어요.",
             ephemeral=True,
         )
         command = SchoolNoticeCog.disable if self.enabled else SchoolNoticeCog.enable
@@ -491,20 +490,19 @@ class SchoolNoticeTimeModal(ReliableModal, title="학교 공지 알림 시간"):
             )
         except ConsentRequiredError:
             await interaction.followup.send(
-                "개인정보 동의가 철회되었거나 재동의가 필요합니다. "
-                "`!메뉴`에서 다시 시작해주세요.",
+                "개인정보 동의가 철회되었거나 재동의가 필요해요. `!메뉴`에서 다시 시작해주세요.",
                 ephemeral=True,
             )
             return
         except SchoolProfileError as exc:
             await interaction.followup.send(
-                f"알림 시각을 이해하지 못했습니다: {exc}",
+                f"알림 시각을 이해하지 못했어요: {exc}",
                 ephemeral=True,
             )
             return
         await interaction.followup.send(
-            f"✅ 학교 공지 알림을 매일 `{normalized}`(한국 시간)로 설정했습니다. "
-            "관련 공지가 없으면 DM을 보내지 않습니다.",
+            f"✅ 학교 공지 알림을 매일 `{normalized}`(한국 시간)로 맞췄어요. "
+            "맞는 공지가 없으면 DM도 보내지 않아요.",
             ephemeral=True,
         )
 
@@ -610,9 +608,7 @@ class SchoolNoticeCog(commands.Cog):
         if existing is not None and not existing.done():
             return True
         status_message = await ctx.reply(
-            "🔎 처음 등록한 학교의 공개 게시판을 한 번 확인하고 있어요.\n"
-            "학교 사이트에는 Discord ID·학과·학년·관심사 등 사용자 정보를 "
-            "보내지 않습니다. 결과가 있으면 이 DM에서 이어서 알려드릴게요.",
+            "🔎 방금 등록한 학교의 공지를 한 번 확인하고 있어요.\n학교 사이트에는 여러분 정보를 하나도 보내지 않아요. 결과가 있으면 이 DM에서 이어서 알려드릴게요.",
             allowed_mentions=discord.AllowedMentions.none(),
         )
         task = asyncio.create_task(
@@ -842,7 +838,7 @@ class SchoolNoticeCog(commands.Cog):
     ) -> None:
         """명령·버튼·자연어 진입이 공유하는 단일 프로필 설정 흐름."""
         if not config.SCHOOL_NOTICE_ENABLED:
-            await ctx.reply("ℹ️ 이 인스턴스에서는 학교 공지 기능을 운영하지 않습니다.")
+            await ctx.reply("ℹ️ 여기서는 학교 공지 기능을 운영하지 않아요.")
             return
         if ctx.guild:
             await ctx.reply("⚠️ 개인화 학교 공지 설정은 DM에서 진행해주세요.")
@@ -988,9 +984,7 @@ class SchoolNoticeCog(commands.Cog):
         row = await self._profile_row(ctx.author.id)
         if row is None:
             await ctx.reply(
-                "등록된 학교 공지 정보가 없습니다. DM에서 "
-                "`!공지 등록 전북대 소프트웨어공학과 3학년, 오전 9시 알림`처럼 "
-                "자연스럽게 말씀해주세요."
+                "아직 등록된 학교가 없어요. DM에서 `!공지 등록 전북대 소프트웨어공학과 3학년, 오전 9시 알림`처럼 편하게 말해주시면 돼요."
             )
             return None
         return row
@@ -1680,18 +1674,17 @@ class SchoolNoticeCog(commands.Cog):
             active_initial = int(ctx.author.id) in self._initial_collection_tasks
             await ctx.reply(
                 (
-                    "🔎 첫 공개 게시판 확인을 진행 중입니다."
+                    "🔎 지금 처음으로 학교 공지를 확인하고 있어요."
                     if active_initial
-                    else "아직 완료된 공개 게시판 확인 기록이 없습니다."
+                    else "아직 확인이 끝난 기록이 없어요."
                 )
-                + "\n등록 학교만 확인하며, 다음 정기 수집은 매일 05:00(한국 시간)입니다. "
-                "학교 사이트에는 사용자 프로필을 보내지 않습니다."
+                + "\n등록 학교만 확인하며, 다음 확인은 매일 새벽 5시예요. 학교 사이트에는 여러분 정보를 보내지 않아요."
             )
             return
         try:
             run_date = date.fromisoformat(str(run_row[0]))
         except ValueError:
-            await ctx.reply("⚠️ 최근 수집 상태의 날짜를 안전하게 읽지 못했습니다.")
+            await ctx.reply("⚠️ 최근 확인 상태의 날짜를 제대로 읽지 못했어요.")
             return
         status = str(run_row[1])
         collection_status = str(run_row[2] or "unknown")
@@ -1747,8 +1740,7 @@ class SchoolNoticeCog(commands.Cog):
         """설정 상태와 자주 쓰는 동작을 한 화면에 모아 보여준다."""
         if ctx.guild:
             await ctx.reply(
-                "🎓 학교 공지는 개인정보가 포함될 수 있어 DM에서 설정합니다. "
-                "마사몽에게 DM으로 `학교 공지 설정`이라고 보내주세요."
+                "🎓 학교 공지는 개인정보가 포함될 수 있어 DM에서 설정해요. 마사몽에게 DM으로 `학교 공지 설정`이라고 보내주세요."
             )
             return
         consented = await self._has_school_notice_consent(ctx.author.id)
@@ -1765,10 +1757,7 @@ class SchoolNoticeCog(commands.Cog):
         embed = discord.Embed(
             title="🎓 학교 공지",
             description=(
-                "학교·과정·학년만 필수이며, 캠퍼스·학과·관심사는 원하는 경우에만 "
-                "말하면 됩니다. 내용을 확인한 뒤에만 저장합니다.\n"
-                "첫 등록 직후 공개 게시판을 한 번 확인하고, 이후 등록한 학교만 "
-                "05:00(한국 시간)에 수집합니다."
+                "학교·과정·학년만 알려주시면 되고, 캠퍼스·학과·관심사는 원할 때만 말해주세요. 확인받은 뒤에만 저장해요.\n등록하면 바로 한 번 확인하고, 이후에는 등록한 학교만 매일 새벽 5시에 확인해요."
             ),
             color=0x4F8EF7,
         )
@@ -1785,8 +1774,7 @@ class SchoolNoticeCog(commands.Cog):
         embed.add_field(
             name="개인정보 보호",
             value=(
-                "학교 사이트에는 Discord ID·학과·학년·관심사를 보내지 않습니다. "
-                "관련 공지가 없으면 DM도 보내지 않습니다."
+                "학교 사이트에는 여러분 정보를 하나도 보내지 않아요. 맞는 공지가 없으면 DM도 보내지 않아요."
             ),
             inline=False,
         )
@@ -1814,13 +1802,13 @@ class SchoolNoticeCog(commands.Cog):
     async def school_notice(self, ctx: commands.Context, page: int = 0) -> None:
         """가장 최근 성공/부분 성공 digest의 요청 페이지를 보여줍니다."""
         if not config.SCHOOL_NOTICE_ENABLED:
-            await ctx.reply("ℹ️ 이 마사몽 인스턴스에서는 학교 공지 기능을 운영하지 않습니다.")
+            await ctx.reply("ℹ️ 여기서는 학교 공지 기능을 운영하지 않아요.")
             return
         if page == 0:
             await self.send_dashboard(ctx)
             return
         if ctx.guild:
-            await ctx.reply("⚠️ 개인화 학교 공지는 DM에서만 확인할 수 있습니다.")
+            await ctx.reply("⚠️ 개인화 학교 공지는 DM에서만 확인할 수 있어요.")
             return
         profile_row = await self._require_profile(ctx)
         if profile_row is None:
@@ -1839,8 +1827,7 @@ class SchoolNoticeCog(commands.Cog):
             row = await cursor.fetchone()
         if row is None:
             await ctx.reply(
-                "아직 완료된 학교 공지 수집 결과가 없습니다. "
-                "등록 학교만 한국 시간 05시에 수집합니다."
+                "아직 확인이 끝난 결과가 없어요. 등록한 학교만 매일 새벽 5시에 확인해요."
             )
             return
         try:
@@ -1852,12 +1839,11 @@ class SchoolNoticeCog(commands.Cog):
             )
             if readiness == "profile_stale":
                 await ctx.reply(
-                    "학교 공지 정보를 바꾼 뒤 아직 새로 수집하지 않았습니다. "
-                    "오늘 05시 수집 이후 최신 조건으로 확인해주세요."
+                    "설정을 바꾼 뒤로 아직 새로 확인한 게 없어요. 내일 새벽 5시 확인이 끝나면 바뀐 조건으로 보여드릴게요."
                 )
                 return
             if readiness != "ready":
-                await ctx.reply("⚠️ 최근 학교 공지 수집 상태를 확인할 수 없습니다.")
+                await ctx.reply("⚠️ 최근 학교 공지 확인 상태를 확인할 수 없어요.")
                 return
             digest = await asyncio.to_thread(
                 self.load_user_digest,
@@ -1865,12 +1851,12 @@ class SchoolNoticeCog(commands.Cog):
                 digest_date,
             )
         except (ValueError, DigestContractError):
-            await ctx.reply("⚠️ 최근 학교 공지 결과를 안전하게 읽을 수 없습니다.")
+            await ctx.reply("⚠️ 최근 학교 공지 결과를 제대로 읽을 수 없어요.")
             return
         if digest.is_empty and not (
             digest.collection_health and digest.collection_health.has_problem
         ):
-            await ctx.reply("최근 수집 결과에는 내 조건에 맞는 공지가 없습니다.")
+            await ctx.reply("이번엔 조건에 맞는 공지가 없었어요.")
             return
         if page < 1:
             await ctx.reply("페이지는 1 이상의 숫자로 입력해주세요. 예: `!공지 2`")
@@ -1880,7 +1866,7 @@ class SchoolNoticeCog(commands.Cog):
         page_count = max(1, (len(visible) + page_size - 1) // page_size)
         if page > page_count:
             await ctx.reply(
-                f"해당 페이지가 없습니다. 최근 결과는 총 {page_count}페이지입니다."
+                f"해당 페이지가 없어요. 최근 결과는 총 {page_count}페이지예요."
             )
             return
         start = (page - 1) * page_size
@@ -1906,8 +1892,7 @@ class SchoolNoticeCog(commands.Cog):
             )
             if readiness != "ready":
                 await ctx.reply(
-                    "학교 공지 정보가 바뀌어 이전 조건의 나머지 결과는 "
-                    "보내지 않았습니다. 다음 05시 수집 이후 다시 확인해주세요."
+                    "설정이 바뀌어서 예전 조건의 남은 결과는 보내지 않았어요. 내일 새벽 5시 확인 이후 다시 확인해주세요."
                 )
                 return
             if index == 0:
@@ -2154,7 +2139,7 @@ class SchoolNoticeCog(commands.Cog):
             )
         except asyncio.TimeoutError:
             await ctx.reply(
-                "⌛ 입력 시간이 지나 등록을 종료했습니다. 저장된 내용은 없습니다."
+                "⌛ 시간이 지나서 등록 대화를 닫았어요. 저장된 건 없으니 편할 때 다시 시작해주세요."
             )
             return None
         return str(getattr(message, "content", "") or "").strip()
@@ -2186,7 +2171,7 @@ class SchoolNoticeCog(commands.Cog):
         """한 사용자당 한 세션, 유한 보정, 확인 뒤에만 canonical 값을 저장."""
         user_id = int(ctx.author.id)
         if user_id in self._profile_sessions:
-            await ctx.reply("⚠️ 이미 학교 공지 등록/수정을 진행 중입니다.")
+            await ctx.reply("⚠️ 이미 등록을 진행하고 있어요. 위쪽 대화를 이어서 진행해주세요.")
             return
         now_monotonic = time.monotonic()
         self._profile_session_started_at = {
@@ -2204,7 +2189,7 @@ class SchoolNoticeCog(commands.Cog):
                 - (now_monotonic - last_started)
             )
             await ctx.reply(
-                f"⚠️ 방금 등록/수정을 진행했습니다. 약 {max(1, remaining)}초 뒤 "
+                f"⚠️ 방금 등록/수정을 진행했어요. 약 {max(1, remaining)}초 뒤 "
                 "다시 시도해주세요."
             )
             return
@@ -2244,7 +2229,7 @@ class SchoolNoticeCog(commands.Cog):
                         if pending_text is None:
                             return
                     if pending_text.casefold() in _CANCEL_WORDS:
-                        await ctx.reply("학교 공지 등록을 취소했습니다. 저장된 내용은 없습니다.")
+                        await ctx.reply("등록을 취소했어요. 저장된 건 없어요.")
                         return
                     try:
                         draft = await self._initial_profile_draft(
@@ -2258,12 +2243,11 @@ class SchoolNoticeCog(commands.Cog):
                         revisions += 1
                         if revisions >= max_revisions:
                             await ctx.reply(
-                                "정보를 확정하지 못해 등록을 종료했습니다. "
-                                "저장된 내용은 없습니다."
+                                "필요한 내용을 다 파악하지 못해서 등록을 멈췄어요. 저장된 건 없어요."
                             )
                             return
                         await ctx.reply(
-                            f"아직 정보를 이해하지 못했습니다: {exc}\n"
+                            f"아직 정보를 이해하지 못했어요: {exc}\n"
                             "학교 이름과 과정·학년을 포함해 다시 말씀해주세요. "
                             "`취소`라고 해도 됩니다."
                         )
@@ -2273,8 +2257,7 @@ class SchoolNoticeCog(commands.Cog):
                     draft = self._canonical_existing_profile(current_profile)
                 except SchoolProfileError:
                     await ctx.reply(
-                        "기존 프로필 형식을 안전하게 읽지 못했습니다. "
-                        "`!공지 삭제` 후 다시 등록해주세요."
+                        "저장해둔 설정을 읽지 못했어요. `!공지 삭제`로 지우고 다시 등록해주세요."
                     )
                     return
                 if initial_text.strip():
@@ -2289,7 +2272,7 @@ class SchoolNoticeCog(commands.Cog):
                         return
                     except SchoolProfileError as exc:
                         revisions += 1
-                        await ctx.reply(f"수정 내용을 이해하지 못했습니다: {exc}")
+                        await ctx.reply(f"수정 내용을 이해하지 못했어요: {exc}")
 
             while True:
                 await ctx.reply(build_confirmation_summary(draft))
@@ -2298,7 +2281,7 @@ class SchoolNoticeCog(commands.Cog):
                     return
                 normalized = answer.casefold().strip()
                 if normalized in _CANCEL_WORDS:
-                    await ctx.reply("학교 공지 등록/수정을 취소했습니다. 저장된 내용은 없습니다.")
+                    await ctx.reply("취소했어요. 저장된 건 없어요.")
                     return
                 if normalized in _CONFIRM_WORDS:
                     missing = missing_profile_fields(draft)
@@ -2306,13 +2289,12 @@ class SchoolNoticeCog(commands.Cog):
                         revisions += 1
                         if revisions >= max_revisions:
                             await ctx.reply(
-                                "필수 정보를 확정하지 못해 종료했습니다. "
-                                "저장된 내용은 없습니다."
+                                "꼭 필요한 내용이 빠져서 등록을 멈췄어요. 저장된 건 없어요."
                             )
                             return
                         await ctx.reply(
                             "아직 " + ", ".join(missing)
-                            + " 정보가 필요합니다. 자연스럽게 덧붙여주세요."
+                            + " 정보가 필요해요. 자연스럽게 덧붙여주세요."
                         )
                         continue
                     # 세션 도중 철회된 경우 provider 호출뿐 아니라 저장도 막는다.
@@ -2341,20 +2323,19 @@ class SchoolNoticeCog(commands.Cog):
                         )
                     )
                     await ctx.reply(
-                        "✅ 확인한 학교 공지 정보를 저장했습니다.\n"
+                        "✅ 말씀해주신 대로 저장했어요.\n"
                         + (
-                            "아직 유효한 수집 기록이 없어 등록 학교의 공개 게시판을 "
-                            "지금 첫 확인합니다. "
+                            "아직 확인한 기록이 없어서 지금 바로 한 번 확인할게요. "
                             if run_initial_now
                             else (
-                                "첫 수집은 다음 05:00(한국 시간)에 진행합니다. "
+                                "첫 확인은 다음 05:00(한국 시간)에 진행해요. "
                                 if upsert_result.needs_initial_collection
                                 else ""
                             )
                         )
-                        + "이후에는 등록한 학교만 매일 05:00(한국 시간)에 확인하고, "
-                        f"새롭거나 수정된 관련 공지가 있을 때 {final_profile['delivery_time']}에 "
-                        "알려드립니다. 관련 공지가 없으면 DM을 보내지 않습니다."
+                        + "이후에는 등록한 학교만 매일 새벽 5시에 확인하고, "
+                        f"새 공지나 바뀐 공지가 있으면 {final_profile['delivery_time']}에 "
+                        "알려드릴게요. 맞는 공지가 없으면 DM도 보내지 않아요."
                     )
                     if run_initial_now:
                         await self._schedule_initial_collection(
@@ -2365,7 +2346,7 @@ class SchoolNoticeCog(commands.Cog):
 
                 if revisions >= max_revisions:
                     await ctx.reply(
-                        "수정 횟수 제한에 도달해 종료했습니다. 저장된 내용은 없습니다."
+                        "고쳐 말한 횟수가 다 차서 여기서 멈출게요. 저장된 건 없어요."
                     )
                     return
                 if not await self._has_school_notice_consent(user_id):
@@ -2382,7 +2363,7 @@ class SchoolNoticeCog(commands.Cog):
                     return
                 except SchoolProfileError as exc:
                     await ctx.reply(
-                        f"수정 내용을 이해하지 못했습니다: {exc}\n"
+                        f"수정 내용을 이해하지 못했어요: {exc}\n"
                         "학교·과정·학년·관심사·알림 시각 중 바꿀 내용을 다시 말씀해주세요."
                     )
                 finally:
@@ -2613,11 +2594,11 @@ class SchoolNoticeCog(commands.Cog):
             )
             return
         except SchoolProfileError as exc:
-            await ctx.reply(f"❌ 알림 시각이 올바르지 않습니다: {exc}")
+            await ctx.reply(f"❌ 알림 시각이 올바르지 않아요: {exc}")
             return
         await ctx.reply(
-            f"✅ 학교 공지 알림을 매일 `{delivery_time}`(한국 시간)로 설정했습니다. "
-            "관련 공지가 없으면 DM을 보내지 않습니다."
+            f"✅ 학교 공지 알림을 매일 `{delivery_time}`(한국 시간)로 맞췄어요. "
+            "맞는 공지가 없으면 DM도 보내지 않아요."
         )
 
     @school_notice.command(name="중지")
@@ -2628,7 +2609,7 @@ class SchoolNoticeCog(commands.Cog):
         if row is None:
             return
         if not row["enabled"]:
-            await ctx.reply("학교 공지 전달은 이미 중지되어 있습니다.")
+            await ctx.reply("학교 공지 알림은 이미 꺼져 있어요.")
             return
         if not await self._has_school_notice_consent(ctx.author.id):
             await self._send_school_notice_consent_prompt(ctx)
@@ -2638,7 +2619,7 @@ class SchoolNoticeCog(commands.Cog):
             (int(ctx.author.id),),
         )
         await self.bot.db.commit()
-        await ctx.reply("✅ 학교 공지 전달을 중지했습니다. `!공지 재개`로 다시 켤 수 있습니다.")
+        await ctx.reply("✅ 학교 공지 알림을 껐어요. `!공지 재개`로 다시 켤 수 있어요.")
 
     @school_notice.command(name="재개")
     @commands.dm_only()
@@ -2648,7 +2629,7 @@ class SchoolNoticeCog(commands.Cog):
         if row is None:
             return
         if row["enabled"]:
-            await ctx.reply("학교 공지 전달은 이미 사용 중입니다.")
+            await ctx.reply("학교 공지 알림은 이미 켜져 있어요.")
             return
         if not await self._has_school_notice_consent(ctx.author.id):
             await self._send_school_notice_consent_prompt(ctx)
@@ -2658,7 +2639,7 @@ class SchoolNoticeCog(commands.Cog):
             (int(ctx.author.id),),
         )
         await self.bot.db.commit()
-        await ctx.reply("✅ 학교 공지 전달을 다시 시작합니다.")
+        await ctx.reply("✅ 학교 공지 알림을 다시 켰어요.")
 
     @school_notice.command(name="삭제")
     @commands.dm_only()
@@ -2672,8 +2653,7 @@ class SchoolNoticeCog(commands.Cog):
         )
         if lock_descriptor is None:
             await ctx.reply(
-                "⚠️ 지금 학교 공지를 수집 중이라 안전하게 삭제할 수 없습니다. "
-                "수집이 끝난 뒤 다시 시도해주세요."
+                "⚠️ 지금 학교 공지를 확인하는 중이라 삭제할 수 없어요. 잠시 뒤 다시 해주세요."
             )
             return
         try:
@@ -2710,8 +2690,7 @@ class SchoolNoticeCog(commands.Cog):
                     exc_info=True,
                 )
                 await ctx.reply(
-                    "❌ 학교 공지 개인정보를 삭제하지 못했습니다. "
-                    "동의는 철회 상태로 유지되며, 잠시 후 삭제를 다시 시도해주세요."
+                    "❌ 학교 공지 정보를 지우지 못했어요. 동의는 철회된 상태로 두고, 잠시 뒤 다시 시도해주세요."
                 )
                 return
 
@@ -2728,17 +2707,12 @@ class SchoolNoticeCog(commands.Cog):
                     ",".join(cleanup_errors),
                 )
                 await ctx.reply(
-                    "⚠️ 운영 DB의 학교 공지 프로필·피드백·전달 기록은 삭제했고 동의도 "
-                    "철회했습니다. 다만 로컬 파생 파일 일부를 정리하지 못해 운영자 확인이 "
-                    "필요합니다. 동의·철회 감사 이력은 보존됩니다."
+                    "⚠️ 학교 공지 설정·피드백·발송 기록을 지우고 동의도 철회했어요. 다만 일부 파일을 정리하지 못했어요. 운영자가 한 번 확인해야 해요. 동의·철회 기록은 그대로 남아요."
                 )
                 return
 
             await ctx.reply(
-                "🗑️ 학교 공지 프로필·피드백·전달/실행 기록과 사용자별 파생 파일을 "
-                "삭제하고 개인정보 동의를 철회했습니다.\n"
-                "동의·철회 감사 이력은 보존되며, 일반 Discord 대화와 서버 기록은 "
-                "변경하지 않았습니다."
+                "🗑️ 학교 공지 설정·피드백·발송 기록과 관련 데이터를 모두 지우고 동의도 철회했어요.\n동의·철회 기록은 그대로 남고, 평소 대화와 서버 기록은 그대로예요."
             )
         finally:
             await asyncio.to_thread(_release_batch_lock, lock_descriptor)
@@ -2766,15 +2740,15 @@ class SchoolNoticeCog(commands.Cog):
                 return
             muted = sorted({str(row[0]) for row in rows})
             if not muted:
-                await ctx.reply("현재 음소거한 주제가 없습니다. `!공지 음소거 <주제>`로 숨길 수 있습니다.")
+                await ctx.reply("숨겨둔 주제가 없어요. `!공지 음소거 <주제>`로 안 보이게 할 수 있어요.")
                 return
             await ctx.reply(
                 "음소거한 주제: " + ", ".join(muted)
-                + "\n`!공지 음소거해제 <주제>`로 되돌릴 수 있습니다."
+                + "\n`!공지 음소거해제 <주제>`로 되돌릴 수 있어요."
             )
             return
         if len(topic) > 80 or any(ord(character) < 32 for character in topic):
-            await ctx.reply("❌ 음소거 주제는 80자 이내의 한 줄로 입력해주세요.")
+            await ctx.reply("❌ 숨길 주제는 한 줄, 80자 안으로 적어주세요.")
             return
         await self.record_feedback(
             user_id=ctx.author.id,
@@ -2798,7 +2772,7 @@ class SchoolNoticeCog(commands.Cog):
             return
         topic = topic.strip()
         if not topic:
-            await ctx.reply("❌ 해제할 주제를 입력해주세요.")
+            await ctx.reply("❌ 어떤 주제를 다시 볼지 알려주세요.")
             return
         if not await self._has_school_notice_consent(ctx.author.id):
             await self._send_school_notice_consent_prompt(ctx)
@@ -2812,9 +2786,9 @@ class SchoolNoticeCog(commands.Cog):
         )
         await self.bot.db.commit()
         if int(getattr(cursor, "rowcount", 0) or 0) > 0:
-            await ctx.reply(f"✅ `{topic}` 음소거를 해제했습니다.")
+            await ctx.reply(f"✅ `{topic}` 음소거를 해제했어요.")
         else:
-            await ctx.reply(f"`{topic}`은 현재 음소거 목록에 없습니다.")
+            await ctx.reply(f"`{topic}`은 현재 음소거 목록에 없어요.")
 
 
 def _digest_with_items(digest: Digest, items) -> Digest:
