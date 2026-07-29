@@ -24,6 +24,15 @@ _MIXED_TRANSFER_RE = re.compile(r"(?:대학\s*)?편입(?:학|생)?")
 _MIXED_EXCLUDE_RE = re.compile(
     r"(?:대학원|외국인|재외국민|계약학과|대학원대학)"
 )
+_TITLE_TRAILING_METADATA_RE = re.compile(
+    r"(?:"
+    r"\s*(?:[|ㅣ]\s*)?(?:(?:작성|등록)일)\s*[:：]?\s*"
+    r"20\d{2}[.\-/]\d{1,2}[.\-/]\d{1,2}"
+    r"|"
+    r"\s*(?:[|ㅣ]\s*)?조회수?\s*[:：]?\s*[\d,]+"
+    r")+\s*$",
+    re.IGNORECASE,
+)
 _DROP_QUERY_KEYS = {
     "page",
     "pageno",
@@ -57,6 +66,19 @@ class TransferNoticeItem:
 
 def normalize_inline(value: str | None) -> str:
     return _SPACE_RE.sub(" ", str(value or "")).strip()
+
+
+def normalize_notice_title(value: str | None) -> str:
+    """목록 제목 뒤의 작성일·조회수처럼 변하는 표시값을 제거한다."""
+    normalized = normalize_inline(value)
+    return _TITLE_TRAILING_METADATA_RE.sub("", normalized).strip()
+
+
+def listing_fingerprint(title: str, url: str) -> str:
+    """사용자에게 의미 있는 목록 제목과 정규 URL만 변경 판정에 사용한다."""
+    return hashlib.sha256(
+        f"{normalize_notice_title(title)}\n{url}".encode("utf-8")
+    ).hexdigest()
 
 
 def _canonical_url(base_url: str, raw_href: str) -> str | None:
@@ -172,7 +194,7 @@ def parse_transfer_list(
             continue
         if source.href_regex and not re.search(source.href_regex, href):
             continue
-        title = _title(link, source)
+        title = normalize_notice_title(_title(link, source))
         if not _looks_like_notice(title, source):
             continue
         url = _canonical_url(source.list_url, href)
@@ -183,9 +205,7 @@ def parse_transfer_list(
         external_id = hashlib.sha256(url.encode("utf-8")).hexdigest()[:24]
         if external_id in seen:
             continue
-        fingerprint = hashlib.sha256(
-            f"{title}\n{url}".encode("utf-8")
-        ).hexdigest()
+        fingerprint = listing_fingerprint(title, url)
         items.append(
             TransferNoticeItem(
                 source_id=source.source_id,

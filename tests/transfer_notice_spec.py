@@ -10,6 +10,7 @@ from scripts.apply_transfer_notice_schema import TABLE_COLUMNS, schema_statement
 from transfer_notice.catalog import load_transfer_sources
 from transfer_notice.parsing import (
     TransferNoticeItem,
+    listing_fingerprint,
     parse_transfer_detail,
     parse_transfer_list,
 )
@@ -119,6 +120,69 @@ def test_mixed_board_rejects_unrelated_and_foreign_admissions_links():
 
     assert [item.title for item in items] == ["2026학년도 편입학 모집요강"]
     assert items[0].url.startswith("https://www.cku.ac.kr/")
+
+
+def test_dynamic_list_metadata_does_not_change_title_or_fingerprint():
+    source = load_transfer_sources()["yonsei_mirae"]
+    template = """
+    <a href="/mirae/admission/html/transfer/noticeView.asp?BBS_NO=42">
+      [편입학] 2027학년도 편입학 모집요강
+      작성일: 2026/07/29 ㅣ 조회수 : {views}
+    </a>
+    """
+
+    first, first_warnings = parse_transfer_list(template.format(views="1,203"), source)
+    second, second_warnings = parse_transfer_list(template.format(views="1,207"), source)
+
+    assert first_warnings == second_warnings == []
+    assert len(first) == len(second) == 1
+    assert first[0].title == "[편입학] 2027학년도 편입학 모집요강"
+    assert second[0].title == first[0].title
+    assert second[0].fingerprint == first[0].fingerprint
+
+
+def test_legacy_dynamic_title_is_normalized_without_replay(tmp_path):
+    store = TransferNoticeStore(tmp_path / "core.db")
+    url = "https://example.ac.kr/notice/same"
+    noisy_title = (
+        "2027학년도 편입학 모집요강 "
+        "작성일: 2026/07/29 ㅣ 조회수 : 1203"
+    )
+    clean_title = "2027학년도 편입학 모집요강"
+    legacy = TransferNoticeItem(
+        source_id="s",
+        university="테스트대학교",
+        external_id="same",
+        title=noisy_title,
+        url=url,
+        published_date="2026-07-29",
+        fingerprint="legacy-noisy-fingerprint",
+    )
+    try:
+        store.upsert_source_items(
+            "s",
+            [legacy],
+            observed_at="2026-07-29T01:00:00+00:00",
+        )
+        normalized = replace(
+            legacy,
+            title=clean_title,
+            fingerprint=listing_fingerprint(clean_title, url),
+        )
+
+        changes, _ = store.upsert_source_items(
+            "s",
+            [normalized],
+            observed_at="2026-07-29T02:00:00+00:00",
+        )
+        latest = store.latest_items()[0]
+
+        assert changes == []
+        assert latest["title"] == clean_title
+        assert latest["fingerprint"] == normalized.fingerprint
+        assert latest["revision"] == 1
+    finally:
+        store.close()
 
 
 def test_first_success_is_baseline_and_never_notifies_historical_rows(tmp_path):
