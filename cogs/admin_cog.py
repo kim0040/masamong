@@ -159,13 +159,14 @@ class AdminPanelView(ReliableView):
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         if interaction.guild_id is None:
-            await interaction.followup.send("서버 안에서 열어야 바꿀 수 있어요.", ephemeral=True)
+            await interaction.edit_original_response(
+                content="서버 안에서 열어야 바꿀 수 있어요."
+            )
             return
         cog = _settings_cog(self.bot)
         if cog is None:
-            await interaction.followup.send(
-                "설정 기능을 불러오지 못했어요. 잠시 뒤 다시 시도해 주세요.",
-                ephemeral=True,
+            await interaction.edit_original_response(
+                content="설정 기능을 불러오지 못했어요. 잠시 뒤 다시 시도해 주세요.",
             )
             return
         try:
@@ -176,15 +177,13 @@ class AdminPanelView(ReliableView):
             )
         except Exception:
             logger.error("최고 관리자 서버 AI 설정 변경 실패", exc_info=True)
-            await interaction.followup.send(
-                "설정을 저장하지 못했어요. 기존 설정은 그대로예요.",
-                ephemeral=True,
+            await interaction.edit_original_response(
+                content="설정을 저장하지 못했어요. 기존 설정은 그대로예요.",
             )
             return
         state = "다시 켰어요" if enabled else "잠시 껐어요"
-        await interaction.followup.send(
-            f"현재 서버의 AI 응답을 **{state}**. 다른 서버에는 영향이 없어요.",
-            ephemeral=True,
+        await interaction.edit_original_response(
+            content=f"현재 서버의 AI 응답을 **{state}**. 다른 서버에는 영향이 없어요.",
         )
 
     async def _set_channel(
@@ -194,13 +193,14 @@ class AdminPanelView(ReliableView):
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         if interaction.guild_id is None or interaction.channel_id is None:
-            await interaction.followup.send("서버 채널 안에서 열어야 바꿀 수 있어요.", ephemeral=True)
+            await interaction.edit_original_response(
+                content="서버 채널 안에서 열어야 바꿀 수 있어요."
+            )
             return
         cog = _settings_cog(self.bot)
         if cog is None:
-            await interaction.followup.send(
-                "설정 기능을 불러오지 못했어요. 잠시 뒤 다시 시도해 주세요.",
-                ephemeral=True,
+            await interaction.edit_original_response(
+                content="설정 기능을 불러오지 못했어요. 잠시 뒤 다시 시도해 주세요.",
             )
             return
         try:
@@ -212,15 +212,13 @@ class AdminPanelView(ReliableView):
             )
         except Exception:
             logger.error("최고 관리자 채널 AI 설정 변경 실패", exc_info=True)
-            await interaction.followup.send(
-                "설정을 저장하지 못했어요. 기존 설정은 그대로예요.",
-                ephemeral=True,
+            await interaction.edit_original_response(
+                content="설정을 저장하지 못했어요. 기존 설정은 그대로예요.",
             )
             return
         state = "응답하도록 바꿨어요" if enabled else "응답하지 않도록 바꿨어요"
-        await interaction.followup.send(
-            f"이 채널에서는 이제 마사몽이 **{state}**.",
-            ephemeral=True,
+        await interaction.edit_original_response(
+            content=f"이 채널에서는 이제 마사몽이 **{state}**.",
         )
 
     @discord.ui.button(label="새로고침", style=discord.ButtonStyle.secondary, emoji="🔄")
@@ -230,10 +228,9 @@ class AdminPanelView(ReliableView):
         _button: discord.ui.Button,
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
-        await interaction.followup.send(
+        await interaction.edit_original_response(
             embed=await _admin_embed(self.bot, self.ctx),
             view=AdminPanelView(self.bot, self.ctx),
-            ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
@@ -307,10 +304,9 @@ class AdminLauncherView(ReliableView):
         _button: discord.ui.Button,
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
-        await interaction.followup.send(
+        await interaction.edit_original_response(
             embed=await _admin_embed(self.bot, self.ctx),
             view=AdminPanelView(self.bot, self.ctx),
-            ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
@@ -344,10 +340,9 @@ class AdminCog(commands.Cog):
             )
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
-        await interaction.followup.send(
+        await interaction.edit_original_response(
             embed=await _admin_embed(self.bot, ctx),
             view=AdminPanelView(self.bot, ctx),
-            ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
         )
 

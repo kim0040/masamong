@@ -27,8 +27,9 @@ class DiscordProgress:
     """긴 Discord 작업의 상태를 낮은 빈도로 갱신합니다.
 
     단계가 빠르게 바뀌어도 매번 API를 호출하지 않고 최신 단계만 보존합니다.
-    작업이 오래 걸리면 heartbeat가 일정 간격으로 경과 시간을 보여줘 사용자가
-    멈춘 것으로 오해하지 않게 합니다. 상태 표시 실패는 본 작업을 실패시키지
+    지원되는 채널에서는 Discord의 기본 입력 중 애니메이션을 함께 켜고, 작업이
+    오래 걸리면 heartbeat가 일정 간격으로 경과 시간을 보여줘 사용자가 멈춘
+    것으로 오해하지 않게 합니다. 상태 표시 실패는 본 작업을 실패시키지
     않습니다.
     """
 
@@ -39,6 +40,7 @@ class DiscordProgress:
         initial_text: str,
         min_update_interval_seconds: float = 2.5,
         heartbeat_seconds: float = 12.0,
+        native_typing_max_seconds: float = 300.0,
     ) -> None:
         self.message = message
         self.current_text = normalize_discord_text(initial_text)
@@ -47,14 +49,38 @@ class DiscordProgress:
             float(min_update_interval_seconds),
         )
         self.heartbeat_seconds = max(5.0, float(heartbeat_seconds))
+        # Discord.py의 native typing context는 닫을 때까지 5초 간격으로
+        # 신호를 보낸다. 본 작업의 timeout/finally와 별개로 표시 신호 자체에도
+        # 상한을 둬, 외부 호출이 비정상적으로 멈춰도 무한 keepalive가 되지 않는다.
+        self.native_typing_max_seconds = max(
+            10.0,
+            min(900.0, float(native_typing_max_seconds)),
+        )
         self.started_at = time.monotonic()
         self.last_edit_at = self.started_at
         self._task: asyncio.Task | None = None
+        self._typing_context = None
+        self._typing_expired = False
         self._stopped = False
         self._edit_lock = asyncio.Lock()
 
     async def start(self) -> "DiscordProgress":
-        if self._task is None and not self._stopped:
+        if self._stopped:
+            return self
+        if self._typing_context is None and not self._typing_expired:
+            channel = getattr(self.message, "channel", None)
+            typing_factory = getattr(channel, "typing", None)
+            if callable(typing_factory):
+                try:
+                    typing_context = typing_factory()
+                    await typing_context.__aenter__()
+                except Exception:
+                    # 입력 중 표시는 장식적 보조 기능이다. 권한·연결 문제로
+                    # 실패해도 상태 메시지와 본 작업은 그대로 진행한다.
+                    pass
+                else:
+                    self._typing_context = typing_context
+        if self._task is None:
             self._task = asyncio.create_task(
                 self._heartbeat_loop(),
                 name="discord-progress-heartbeat",
@@ -78,13 +104,34 @@ class DiscordProgress:
         """heartbeat를 멈춥니다. 여러 번 호출해도 안전합니다."""
         self._stopped = True
         task, self._task = self._task, None
-        if task is None or task.done():
-            return
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        await self._close_native_typing()
+
+    async def _close_native_typing(self) -> None:
+        typing_context, self._typing_context = self._typing_context, None
+        if typing_context is not None:
+            try:
+                await typing_context.__aexit__(None, None, None)
+            except Exception:
+                # Discord 입력 중 표시 종료 실패도 본 작업의 성공 여부와
+                # 무관하며, 클라이언트 표시 자체가 짧은 TTL 뒤 사라진다.
+                pass
+
+    async def _expire_native_typing_if_needed(
+        self,
+        elapsed_seconds: float,
+    ) -> bool:
+        if elapsed_seconds < self.native_typing_max_seconds:
+            return False
+        self._typing_expired = True
+        await self._close_native_typing()
+        return True
 
     async def _edit(self, content: str) -> bool:
         async with self._edit_lock:
@@ -107,6 +154,7 @@ class DiscordProgress:
                 if self._stopped:
                     return
                 elapsed_seconds = max(1, int(time.monotonic() - self.started_at))
+                await self._expire_native_typing_if_needed(elapsed_seconds)
                 await self._edit(
                     f"{self.current_text}\n⏱️ {elapsed_seconds}초째 하고 있어요. 조금만 더 기다려주세요."
                 )

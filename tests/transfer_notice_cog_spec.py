@@ -73,6 +73,9 @@ async def _make_cog(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "TRANSFER_NOTICE_DELIVERY_MAX_ATTEMPTS", 3)
     monkeypatch.setattr(config, "TRANSFER_NOTICE_DELIVERY_RETRY_MINUTES", 5)
     monkeypatch.setattr(config, "TRANSFER_NOTICE_MAX_ITEMS_PER_DM", 10)
+    # 전달 자체를 검증하는 테스트가 실행 시각(특히 KST 자정~09시)에 따라
+    # 흔들리지 않게 만든다. 시각 게이트는 별도 경계 테스트에서 검증한다.
+    monkeypatch.setattr(config, "TRANSFER_NOTICE_DEFAULT_DELIVERY_TIME", "00:00")
     bot = _FakeBot(db)
     return TransferNoticeCog(bot), bot, db
 
@@ -243,6 +246,33 @@ async def test_canceled_or_withdrawn_subscription_is_never_selected(
         await cog._set_enabled(USER_ID, True)
         await withdraw_consent(db, USER_ID, TRANSFER_NOTICE_SCOPE)
         assert await cog._subscriber_rows("2099-01-01T00:00:00+00:00") == []
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_subscriber_is_selected_only_at_or_after_personal_delivery_time(
+    tmp_path,
+    monkeypatch,
+):
+    cog, _bot, db = await _make_cog(tmp_path, monkeypatch)
+    try:
+        await grant_consent(db, USER_ID, TRANSFER_NOTICE_SCOPE)
+        await cog._save_subscription(USER_ID, {"kangwon"})
+        await cog.update_delivery_time(USER_ID, "09:00")
+
+        before = await cog._subscriber_rows(
+            "2099-01-01T00:00:00+00:00",
+            current_time="08:59",
+        )
+        due = await cog._subscriber_rows(
+            "2099-01-01T00:00:00+00:00",
+            current_time="09:00",
+        )
+
+        assert before == []
+        assert len(due) == 1
+        assert due[0][3] == "09:00"
     finally:
         await db.close()
 
