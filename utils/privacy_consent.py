@@ -181,10 +181,21 @@ def all_policies() -> tuple[ConsentPolicy, ...]:
 
 
 def format_policy_notice(scope: str) -> str:
-    """사용자에게 보여줄 버전·본문·명시 동의 방법을 구성한다."""
+    """사용자에게 보여줄 버전·본문·명시 동의 방법을 구성한다.
+
+    제목 줄만 굵게 처리한다. 예전에는 본문 전체를 ``**...**``로 감쌌는데
+    Discord의 굵게 표시는 줄바꿈을 넘어 적용돼, 가장 꼼꼼히 읽어야 할
+    고지 전문이 통째로 굵은 글씨로 나왔다.
+
+    ``policy.notice`` 문자열 자체는 절대 바꾸지 않는다. 본문이 한 글자라도
+    달라지면 ``notice_hash``가 바뀌어 기존 동의가 모두 무효가 되고
+    구독자 전원이 재동의해야 한다. 여기서는 표시 형식만 손본다.
+    """
     policy = get_policy(scope)
+    heading, _, body = policy.notice.partition("\n")
+    rendered_notice = f"**{heading}**\n{body}" if body else f"**{heading}**"
     return (
-        f"**{policy.notice}**\n\n"
+        f"{rendered_notice}\n\n"
         f"정책 버전: `{policy.version}`\n"
         "아래 **동의합니다** 버튼을 직접 눌러야 동의가 기록됩니다. "
         "버튼을 누르기 전에는 개인정보를 수집하거나 기존 프로필을 이용하지 않습니다."

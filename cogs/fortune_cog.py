@@ -410,7 +410,7 @@ class FortuneCog(commands.Cog):
         for attempt in range(1, REGISTRATION_MAX_ATTEMPTS + 1):
             await ctx.send(
                 f"{prompt}\n"
-                f"`취소`를 입력하면 등록을 중단합니다. "
+                f"`취소`라고 보내면 등록을 멈춰요. "
                 f"({attempt}/{REGISTRATION_MAX_ATTEMPTS})"
             )
             try:
@@ -463,7 +463,7 @@ class FortuneCog(commands.Cog):
         """
         if ctx.invoked_subcommand is None:
             # 기존 !운세 (check_fortune) 로직 호출
-            status_msg = await ctx.send("🔮 운세를 살펴보는 중이야...")
+            status_msg = await ctx.send("🔮 오늘 운세를 살펴보는 중이에요...")
             await self._check_fortune_logic(ctx, option, status_msg=status_msg)
 
     @fortune.command(name='등록')
@@ -493,7 +493,7 @@ class FortuneCog(commands.Cog):
             registration_users = set()
             self._registration_users = registration_users
         if ctx.author.id in registration_users:
-            await ctx.send("⚠️ 이미 운세 등록을 진행 중입니다.")
+            await ctx.send("⚠️ 이미 운세 등록을 진행 중이에요. 위쪽 대화를 이어서 답해주세요.")
             return
         registration_users.add(ctx.author.id)
 
@@ -700,7 +700,7 @@ class FortuneCog(commands.Cog):
             return
 
         if not TIME_PATTERN.match(time_str):
-            await ctx.send("❌ 올바른 시간 형식이 아닙니다. `HH:MM` (24시간제)로 입력해주세요.\n혹시 구독을 취소하시려면 `!구독 취소`라고 입력해주세요.")
+            await ctx.send("❌ 시간 형식을 알아듣지 못했어요. `07:30`처럼 24시간제로 적어주세요.\n구독을 취소하려면 `!운세 구독 취소`라고 보내주세요.")
             return
         
         # 5분 여유 확인
@@ -860,7 +860,7 @@ class FortuneCog(commands.Cog):
         # !이번달 운세 <- 이렇게 띄어쓰기 한 경우 처리
         if arg and arg not in ['운세']:
              return # 다른 명령어일 수 있음
-        status_msg = await ctx.send("📅 이번달 운세를 분석 중이야...")
+        status_msg = await ctx.send("📅 이번 달 운세를 살펴보는 중이에요...")
         await self._check_fortune_logic(ctx, mode='month', status_msg=status_msg)
 
     @commands.command(name='올해운세', aliases=['올해', '신년운세'])
@@ -878,7 +878,7 @@ class FortuneCog(commands.Cog):
         # !올해 운세 <- 띄어쓰기 대응
         if arg and arg not in ['운세']:
              return
-        status_msg = await ctx.send("🗓️ 올해 운세를 살펴보는 중이야...")
+        status_msg = await ctx.send("🗓️ 올해 운세를 살펴보는 중이에요...")
         await self._check_fortune_logic(ctx, mode='year', status_msg=status_msg)
 
     def _fortune_lock_for_user(self, user_id: int) -> asyncio.Lock:

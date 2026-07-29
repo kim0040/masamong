@@ -183,7 +183,7 @@ def build_item_embed(
     if item.needs_manual_check:
         embed.add_field(
             name="확인 필요",
-            value="자격 조건을 확정할 수 없었습니다. 신청 전에 원문을 직접 확인하세요.",
+            value="지원 자격을 확실하게 판단하지 못했어요. 신청 전에 원문을 꼭 확인해주세요.",
             inline=False,
         )
 
@@ -194,9 +194,9 @@ def build_item_embed(
         embed.add_field(
             name="본문 확인",
             value=(
-                "학교 게시글의 본문이 이미지 중심이거나 공개 HTML 텍스트가 짧습니다. "
-                "제목·게시판 분류를 바탕으로 표시했으므로 원문 이미지와 첨부파일을 "
-                "직접 확인하세요."
+                "이 공지는 본문이 대부분 이미지라 글자로 읽을 내용이 거의 없었어요. "
+                "제목과 게시판 분류만 보고 정리한 거라, 원문 이미지와 첨부파일을 "
+                "꼭 직접 확인해주세요."
             ),
             inline=False,
         )

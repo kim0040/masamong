@@ -201,7 +201,7 @@ async def case_image_missing_prompt() -> None:
     )
     await cog.generate_image_command.callback(cog, ctx, prompt=None)
     assert ctx.channel.messages, "응답 메시지가 없음"
-    assert "설명이 빠졌" in (ctx.channel.messages[-1].content or "")
+    assert "뭘 그릴지" in (ctx.channel.messages[-1].content or "")
 
 
 async def case_image_disabled() -> None:
@@ -219,7 +219,7 @@ async def case_image_disabled() -> None:
     finally:
         config.COMETAPI_IMAGE_ENABLED = prev
     assert ctx.channel.messages, "응답 메시지가 없음"
-    assert "비활성화" in (ctx.channel.messages[-1].content or "")
+    assert "꺼둔 상태" in (ctx.channel.messages[-1].content or "")
 
 
 async def case_image_success() -> None:
@@ -319,7 +319,7 @@ async def case_activity_ranking_fallback() -> None:
         guild=DummyGuild(3),
     )
     await cog.ranking.callback(cog, ctx)
-    assert "AI가 아직 준비되지 않았어요" in (ctx.channel.messages[-1].content or "")
+    assert "준비가 아직 안 됐어요" in (ctx.channel.messages[-1].content or "")
 
 
 async def case_weather_routing() -> None:
@@ -481,7 +481,7 @@ async def case_delete_log() -> None:
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
-    assert "지웠다" in (channel.messages[-1].content or "")
+    assert "지웠어요" in (channel.messages[-1].content or "")
 
 
 async def _run_case(name: str, fn: Callable[[], Coroutine[Any, Any, None]]) -> CaseResult:

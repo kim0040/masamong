@@ -23,6 +23,7 @@ from collections import deque
 import config
 from logger_config import logger
 from utils import db as db_utils
+from cogs.help_cog import localized_command_usage
 
 if TYPE_CHECKING:
     from .ai_handler import AIHandler
@@ -134,18 +135,21 @@ class EventListeners(commands.Cog):
             # 필수 인자 누락
             prefix = ctx.clean_prefix or config.COMMAND_PREFIX or "!"
             cmd_name = ctx.command.qualified_name if ctx.command else "명령어"
-            signature = ctx.command.signature if ctx.command else ""
-            usage = f"{prefix}{cmd_name} {signature}"
+            usage = (
+                localized_command_usage(ctx.command, prefix)
+                if ctx.command
+                else f"{prefix}{cmd_name}"
+            )
             await ctx.send(
-                "⚠️ 명령어를 완성하지 못했어요!\n"
-                f"**올바른 사용법**: `{usage}`\n"
-                f"(도움말이 필요하면 `{prefix}도움 {cmd_name}`을 입력해보세요)"
+                "⚠️ 뒤에 들어갈 내용이 빠졌어요.\n"
+                f"**이렇게 써주세요**: `{usage}`\n"
+                f"(더 자세히 보려면 `{prefix}도움 {cmd_name}`)"
             )
             return
 
         if isinstance(error, commands.BadArgument):
             # 인자 변환 실패 (예: 숫자가 필요한데 문자 입력)
-            await ctx.send("⚠️ 입력을 알아듣지 못했어요. 형식을 한 번만 확인해주세요.")
+            await ctx.send("⚠️ 입력한 내용을 알아듣지 못했어요. 형식을 다시 한번 확인해주세요.")
             return
 
         if isinstance(error, commands.CheckFailure):

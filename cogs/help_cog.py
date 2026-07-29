@@ -10,6 +10,42 @@ from utils.admin_policy import is_superadmin
 from utils.discord_interactions import ReliableModal, ReliableView
 from utils.discord_helpers import clip_discord_text
 
+# 명령 시그니처는 discord.py가 파이썬 인자 이름을 그대로 노출한다. 한국어
+# 명령어에 `[profile_text]` 같은 영어 변수명이 붙으면 무엇을 넣으라는 건지
+# 알 수 없어서, 사용자에게 보일 이름으로 바꿔준다. 매핑이 없는 인자는 원래
+# 이름을 그대로 두고, 안내가 아예 사라지지는 않게 한다.
+_PARAM_LABELS = {
+    "profile_text": "학교·학년 설명",
+    "correction_text": "고칠 내용",
+    "location_query": "지역",
+    "period_arg": "기간",
+    "prompt": "그리고 싶은 장면",
+    "question": "투표 질문",
+    "choices": "선택지",
+    "topic": "주제",
+    "value": "시각",
+    "page": "페이지",
+    "command": "명령어",
+    "member": "사람",
+    "filename": "파일 이름",
+}
+
+
+def localized_command_usage(command, prefix: str) -> str:
+    """`!공지 등록 <학교·학년 설명>`처럼 실제로 입력 가능한 사용법을 만든다."""
+    parts: list[str] = []
+    for name, param in command.clean_params.items():
+        label = _PARAM_LABELS.get(name, name)
+        if param.kind is param.VAR_POSITIONAL:
+            parts.append(f"[{label}...]")
+        elif param.required:
+            parts.append(f"<{label}>")
+        else:
+            parts.append(f"[{label}]")
+    # qualified_name을 써야 하위 명령이 `!등록`처럼 존재하지 않는 형태로 안내되지 않는다.
+    return " ".join([f"{prefix}{command.qualified_name}", *parts]).strip()
+
+
 class MasamongHelpCommand(commands.HelpCommand):
     """
     마사몽 전용 커스텀 도움말 커맨드입니다.
@@ -81,8 +117,8 @@ class MasamongHelpCommand(commands.HelpCommand):
                 embed = discord.Embed(
                     title="📖 사용 설명서 · 계속",
                     description=(
-                        f"명령어는 `{prefix}`로 시작합니다. "
-                        f"처음이라면 `{prefix}메뉴`를 이용하세요."
+                        f"명령어는 `{prefix}`로 시작해요. "
+                        f"처음이라면 `{prefix}메뉴`를 눌러보세요."
                     ),
                     color=0x66ccff,
                 )
@@ -102,7 +138,7 @@ class MasamongHelpCommand(commands.HelpCommand):
         prefix = self.context.clean_prefix or "!"
         embed = discord.Embed(
             title=clip_discord_text(
-                f"📘 명령어 가이드: {prefix}{command.name}",
+                f"📘 명령어 가이드: {prefix}{command.qualified_name}",
                 256,
             ),
             description=clip_discord_text(
@@ -124,11 +160,12 @@ class MasamongHelpCommand(commands.HelpCommand):
             )
             
         # 사용법(Usage) 표시
-        signature = command.signature if command.signature else ""
-        usage = f"{prefix}{command.name} {signature}".rstrip()
         embed.add_field(
             name="📝 사용법",
-            value=clip_discord_text(f"`{usage}`", 1024),
+            value=clip_discord_text(
+                f"`{localized_command_usage(command, prefix)}`",
+                1024,
+            ),
             inline=False,
         )
         
@@ -392,59 +429,59 @@ class MasamongHomeView(ReliableView):
         guides = {
             "ai": (
                 "💬 **AI 대화·검색**\n"
-                "- 서버: 마사몽을 멘션하고 자연스럽게 질문\n"
-                "- DM: 멘션 없이 바로 질문\n"
-                "- 최신 정보가 필요하면 `최신 자료를 검색해서 출처와 함께 알려줘`처럼 요청\n"
-                "- 처리 중에는 단계와 경과 시간이 한 메시지에서 갱신됩니다."
+                "- 서버: 마사몽을 멘션하고 편하게 질문하세요\n"
+                "- DM: 멘션 없이 바로 물어보면 돼요\n"
+                "- 최신 정보가 필요하면 `최신 자료를 검색해서 출처와 함께 알려줘`처럼 요청하세요\n"
+                "- 답을 만드는 동안에는 지금 뭘 하고 있는지 계속 알려드려요."
             ),
             "weather": (
                 "🌦️ **날씨·재난**\n"
                 f"- `{prefix}날씨 서울`, `{prefix}날씨 내일 부산`, "
                 f"`{prefix}날씨 이번주 제주`\n"
-                "- 지진은 기상청 발표 후 약 1분 주기로 확인하며 공통 공식 문구만 사용\n"
-                "- 같은 지진군의 후속 이벤트는 기존 Discord 메시지를 수정해 누적 표시"
+                "- 지진은 기상청 발표를 1분마다 확인해서 발표 문구 그대로 알려드려요\n"
+                "- 비슷한 시간·장소에서 이어지는 지진은 새 알림 대신 기존 알림을 고쳐서 모아 보여드려요"
             ),
             "school": (
                 "🎓 **학교 공지**\n"
-                "- DM에서 **학교 공지** 버튼을 누르거나 `학교 공지 설정`이라고 말하기\n"
-                "- 학교·과정·학년만 필수, 나머지는 선택\n"
-                "- 첫 등록 직후 한 번 확인, 이후 매일 05시 수집\n"
-                f"- 상태 확인: `{prefix}공지 상태` · 저장 정보: `{prefix}공지 정보`"
+                "- DM에서 **학교 공지** 버튼을 누르거나 `학교 공지 설정`이라고 말해보세요\n"
+                "- 학교·과정·학년만 알려주면 되고, 나머지는 원할 때만 말해주세요\n"
+                "- 등록하면 바로 한 번 확인하고, 이후에는 매일 새벽 5시에 확인해요\n"
+                f"- 확인 상태 보기: `{prefix}공지 상태` · 저장된 내 설정: `{prefix}공지 정보`"
             ),
             "transfer": (
                 "📚 **편입 공지**\n"
-                f"- DM에서 `{prefix}편입`을 실행하고 관심 대학 1~20곳 선택\n"
-                "- 매일 05:35에 선택한 대학의 공식 입학처와 필요한 상세 본문 확인\n"
-                "- 새 글이나 제목 수정이 있을 때만 활성 구독자에게 DM\n"
+                f"- DM에서 `{prefix}편입`을 실행하고 관심 대학을 최대 20곳까지 골라주세요\n"
+                "- 매일 새벽 5시 35분에 고른 대학의 공식 입학처를 확인해요\n"
+                "- 새 글이 올라오거나 제목이 바뀐 경우에만 DM으로 알려드려요\n"
                 f"- 최근 보기: `{prefix}편입 최근` · 취소: "
                 f"`{prefix}편입 구독취소` · 재개: `{prefix}편입 재개`\n"
-                "- 지원 자격과 반영 기준은 원문 모집요강에서 최종 확인해 주세요."
+                "- 지원 자격과 반영 기준은 학교의 공식 모집요강에서 꼭 확인해주세요."
             ),
             "fortune": (
                 "🔮 **운세**\n"
                 f"- 오늘: `{prefix}운세` · 상세: `{prefix}운세 상세`\n"
                 f"- 등록: `{prefix}운세 등록` · 아침 알림: `{prefix}운세 구독 08:00`\n"
                 f"- 월간/연간: `{prefix}이번달운세`, `{prefix}올해운세`\n"
-                "- 개인정보는 고지 후 본인이 동의 버튼을 눌러야 이용합니다."
+                "- 생년월일은 안내를 읽고 직접 동의 버튼을 눌러야 저장해요."
             ),
             "creative": (
                 "🎨 **이미지·요약**\n"
                 f"- 이미지: `{prefix}이미지 우주복을 입은 고양이` (서버 전용)\n"
                 f"- 최근 대화 요약: `{prefix}요약` (서버 전용)\n"
-                "- 긴 작업은 상태 메시지를 유지하고 완료되면 같은 자리에 결과를 표시합니다."
+                "- 오래 걸리는 일은 진행 상황을 보여주다가 같은 자리에 결과를 띄워드려요."
             ),
             "community": (
                 "🗳️ **랭킹·투표**\n"
                 f"- `{prefix}랭킹 오늘`, `{prefix}랭킹 이번주`, `{prefix}랭킹 전체`\n"
                 f"- `{prefix}투표 \"점심 메뉴\" \"국밥\" \"라멘\"`\n"
-                "- 랭킹은 현재 채널 범위이며, 투표의 공백 포함 항목은 큰따옴표로 묶습니다."
+                "- 랭킹은 명령을 쓴 **그 채널만** 집계해요. 투표 항목에 띄어쓰기가 있으면 큰따옴표로 묶어주세요."
             ),
             "admin": (
                 "⚙️ **간편 설정**\n"
-                f"- `{prefix}관리`: 현재 서버 AI와 현재 채널 응답 켜기·끄기\n"
+                f"- `{prefix}관리`: 지금 서버와 지금 채널의 응답 켜기·끄기\n"
                 "- 초대 링크 열기\n"
-                "- 현재 인스턴스의 최고 관리자에게만 표시\n"
-                "- 모델·DB·수집 주기·말투 같은 운영 설정은 Discord에서 변경하지 않습니다."
+                "- 이 봇의 관리자에게만 보여요\n"
+                "- 모델·저장소·확인 주기·말투 같은 운영 설정은 Discord에서 바꿀 수 없어요."
             ),
             "privacy": (
                 "🔐 **개인정보 관리**\n"
@@ -452,17 +489,17 @@ class MasamongHomeView(ReliableView):
                 f"- 철회: `{prefix}개인정보 철회 운세` / "
                 f"`{prefix}개인정보 철회 학교공지` / "
                 f"`{prefix}개인정보 철회 편입공지`\n"
-                f"- 기능 데이터 삭제: `{prefix}운세 삭제` / `{prefix}공지 삭제` / "
+                f"- 데이터까지 삭제: `{prefix}운세 삭제` / `{prefix}공지 삭제` / "
                 f"`{prefix}편입 삭제`\n"
-                "- 철회와 삭제는 다르며, 일반 Discord 대화·서버 기록은 그대로 유지됩니다."
+                "- 철회는 그만 쓰는 것, 삭제는 지우는 것이에요. 평소 대화와 서버 기록은 그대로 남아요."
             ),
             "dm_only": (
                 "🔒 **DM 전용 기능**\n"
-                "- 학교 공지 등록·수정·삭제와 편입 공지 구독은 개인 DM에서만 가능합니다.\n"
-                "- 운세 프로필 등록·상세 운세·아침 알림도 DM에서 진행합니다.\n"
+                "- 학교 공지 등록·수정·삭제와 편입 공지 구독은 DM에서만 할 수 있어요.\n"
+                "- 운세 등록·상세 운세·아침 알림도 DM에서 진행해요.\n"
                 "- 마사몽 프로필을 열어 **메시지 보내기**를 누른 뒤 "
-                f"`{prefix}메뉴`를 입력하세요.\n"
-                "- 서버 메뉴에서는 실수로 개인 설정이 공개되지 않도록 해당 버튼이 비활성화됩니다."
+                f"`{prefix}메뉴`를 입력해보세요.\n"
+                "- 서버 메뉴에서는 개인 설정이 실수로 공개되지 않도록 이 버튼들을 잠가둬요."
             ),
         }
         await interaction.response.send_message(
@@ -524,7 +561,7 @@ class MasamongHomeView(ReliableView):
         if self.ctx.guild:
             prefix = self.ctx.clean_prefix or config.COMMAND_PREFIX or "!"
             await interaction.response.send_message(
-                "개인 편입 공지 구독은 DM에서 설정합니다. 마사몽에게 DM으로 "
+                "편입 공지 구독은 DM에서 설정해요. 마사몽에게 DM으로 "
                 f"`{prefix}편입`을 보내주세요.",
                 ephemeral=True,
             )
@@ -669,10 +706,10 @@ def _category_embed(ctx: commands.Context, category: str) -> discord.Embed:
             "학교·편입",
             "내게 필요한 공지만 골라 DM으로 알려드려요.",
             (
-                "- 학교 공지: 학교·학과·학년·관심사에 맞춰 확인\n"
-                "- 편입 공지: 선택한 대학의 공식 입학처를 확인\n"
-                "- 수집: 매일 05:00부터 순차 진행\n"
-                "- 알림: 관련 새 글이 있을 때만 설정 시각에 DM"
+                "- 학교 공지: 학교·학과·학년·관심사에 맞춰 골라드려요\n"
+                "- 편입 공지: 고른 대학의 공식 입학처를 확인해요\n"
+                "- 확인 시각: 매일 새벽 5시부터 차례로\n"
+                "- 알림: 나와 맞는 새 글이 있을 때만 정한 시각에 DM"
             ),
         ),
         "ai": (
@@ -689,10 +726,10 @@ def _category_embed(ctx: commands.Context, category: str) -> discord.Embed:
             "날씨·재난",
             "기상청 자료를 우선해 날씨와 재난 정보를 전해요.",
             (
-                "- 현재·내일·주간 날씨 조회\n"
-                "- 지진 발표는 약 1분마다 확인\n"
-                "- 후속 발표는 기존 메시지에 이어서 정리\n"
-                "- 재난 알림은 공통 공식 문체로 표시"
+                "- 지금·내일·이번 주 날씨를 확인해요\n"
+                "- 지진 발표는 1분마다 확인해요\n"
+                "- 이어지는 지진은 기존 알림에 모아서 정리해요\n"
+                "- 재난 알림은 어느 서버에서나 기상청 발표 문구 그대로 나가요"
             ),
         ),
         "fortune": (
@@ -727,12 +764,12 @@ def _category_embed(ctx: commands.Context, category: str) -> discord.Embed:
         ),
         "admin": (
             "간편 설정",
-            "현재 인스턴스의 최고 관리자에게만 보여요.",
+            "이 봇의 관리자에게만 보여요.",
             (
-                "- 현재 서버 AI 응답 켜기·끄기\n"
-                "- 현재 채널 응답 켜기·끄기\n"
+                "- 지금 서버의 AI 응답 켜기·끄기\n"
+                "- 지금 채널의 응답 켜기·끄기\n"
                 "- 마사몽 초대 링크\n"
-                "- 모델·DB·수집·말투 같은 운영 설정은 변경 불가"
+                "- 모델·저장소·확인 주기·말투 같은 운영 설정은 여기서 바꿀 수 없어요"
             ),
         ),
         "help": (

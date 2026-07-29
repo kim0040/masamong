@@ -53,6 +53,7 @@ import io
 import uuid
 from logger_config import logger
 from utils import db as db_utils
+from utils.constants import DM_LIMIT_COUNT, DM_LIMIT_WINDOW_HOURS
 from utils.llm_client import LLMClient
 from utils.intent_analyzer import IntentAnalyzer
 from utils.tool_health import ToolTemporarilyUnavailable
@@ -109,6 +110,10 @@ class AIHandler(commands.Cog):
         # 같은 메시지에서 빠른 추가/취소 이벤트가 겹쳐도 최종 반응 수와
         # 본문 표시 상태가 어긋나지 않도록 메시지별로 직렬화한다.
         self._news_source_locks: Dict[int, asyncio.Lock] = {}
+        # 서버별 말투 폴백 캐시: {guild_id: 그 서버에 설정된 채널 config}
+        # 설정을 새로 만들지 않고 이미 있는 값을 재사용만 하므로,
+        # 다른 서버의 guild_id로는 절대 조회되지 않는다.
+        self._guild_channel_config_cache: Dict[int, dict] = {}
         self.gemini_configured = False
         self.api_call_lock = asyncio.Lock()
         # [저사양 보호] 전역 AI 처리 동시성 제한.
@@ -688,14 +693,15 @@ class AIHandler(commands.Cog):
         await progress.stop()
 
         if image_error:
-            response_text = f"이미지를 만들지 못했어요: {image_error}"
+            # image_error는 이미 완결된 안내 문장이다. 접두어를 덧붙이지 않는다.
+            response_text = f"😅 {image_error}"
             await status_msg.edit(content=response_text)
             return response_text
 
         if not image_data:
             response_text = (
-                "이미지 생성 결과를 확인하지 못했어요. "
-                "잠시 후 다시 시도해 주세요."
+                "그림이 제대로 나오지 않았어요. "
+                "잠시 뒤에 다시 부탁해주세요."
             )
             await status_msg.edit(content=response_text)
             return response_text
@@ -1113,7 +1119,7 @@ class AIHandler(commands.Cog):
 
         # LLM 요약 실패 시에도 출처는 본문에 강제 노출하지 않고 같은
         # 반응 캐시 경로로 보낸다.
-        fallback = f"자료를 찾긴 했는데 요약에 실패했어. 참고 자료야:\n\n{news_context}"
+        fallback = f"자료는 찾았는데 정리가 잘 안 됐어요. 찾은 내용 그대로 보여드릴게요.\n\n{news_context}"
         return {"result": fallback, "source_urls": news_result.get("source_urls", [])}
 
 
@@ -1614,6 +1620,36 @@ class AIHandler(commands.Cog):
             return True
         return False
 
+    def _guild_scoped_channel_config(self, guild_id: int) -> dict:
+        """같은 서버에 이미 설정된 채널의 말투를 서버 기본값으로 물려줍니다.
+
+        말투는 ``prompts.json``에 채널 단위로만 저장된다. 관리자가 ``!관리``로
+        아직 등록하지 않은 채널의 응답을 켜면 그 채널만 전역 기본 말투로
+        답해, 같은 서버 안에서 마사몽의 인격이 갈라졌다.
+
+        설정 파일을 바꾸거나 새 말투를 만들지 않는다. 이미 그 서버에 설정된
+        채널의 persona/rules를 그대로 재사용할 뿐이라 운영자가 지정한 값이
+        무시되거나 사라지지 않는다. 조회 조건이 ``guild_id`` 일치이므로 다른
+        서버의 말투는 어떤 경로로도 섞이지 않는다.
+        """
+        cached = self._guild_channel_config_cache.get(guild_id)
+        if cached:
+            return cached
+        get_channel = getattr(self.bot, "get_channel", None)
+        if not callable(get_channel):
+            return {}
+        for configured_id, meta in config.CHANNEL_AI_CONFIG.items():
+            channel = get_channel(int(configured_id))
+            channel_guild_id = getattr(getattr(channel, "guild", None), "id", None)
+            if channel_guild_id is None:
+                # 아직 Discord 캐시가 채워지지 않은 채널은 건너뛴다. 실패를
+                # 캐시하면 기동 직후 조회가 영구히 기본값으로 굳는다.
+                continue
+            if int(channel_guild_id) == int(guild_id):
+                self._guild_channel_config_cache[guild_id] = meta
+                return meta
+        return {}
+
     def _get_channel_system_prompt(
         self,
         channel_id: int | None,
@@ -1624,11 +1660,15 @@ class AIHandler(commands.Cog):
         if guild_id is None:
             # Discord DM 채널에도 고유 channel_id가 있으므로 guild 유무로 판별한다.
             return (
-                "너는 사용자의 개인 비서이자 친구인 '마사몽'이야. "
-                "항상 친절하고 도움이 되는 태도로 대화해. "
+                "너는 사용자의 오랜 친구인 '마사몽'이야. "
+                "격식 차리지 말고 편하게, 하지만 물어본 건 제대로 챙겨서 답해. "
                 "반말과 존댓말을 섞어서 친근하게 대해줘."
             )
-        channel_config = config.CHANNEL_AI_CONFIG.get(channel_id, {})
+        channel_config = config.CHANNEL_AI_CONFIG.get(channel_id)
+        if not channel_config:
+            # 설정된 채널이면 그 값이 항상 우선한다. 여기는 미등록 채널만 온다.
+            channel_config = self._guild_scoped_channel_config(guild_id)
+        channel_config = channel_config or {}
         guild_persona = None
         persona_getter = getattr(self.bot, "get_guild_persona", None)
         if callable(persona_getter):
@@ -2205,8 +2245,9 @@ class AIHandler(commands.Cog):
         """LLM/뉴스 검증 실패 시 직접 조회된 지수만 안전하게 렌더링합니다."""
         if not snapshot or not snapshot.get("indices"):
             return (
-                "최신 금융 자료를 신뢰할 수 있게 확인하지 못했어요. "
-                "잘못된 수치나 소식을 추측해서 답하지 않을게요. 잠시 뒤 다시 시도해 주세요."
+                "지금 시세를 제대로 확인하지 못했어요. "
+                "숫자는 잘못 말하면 안 되니까 여기까지만 할게요. "
+                "잠시 뒤에 다시 물어봐 주세요."
             )
 
         lines = ["📊 **주요 지수 · 최신 확인값**"]
@@ -2295,9 +2336,9 @@ class AIHandler(commands.Cog):
         if not any(re.search(pattern, text) for pattern in promise_patterns):
             return text
         return (
-            "지금은 이 내용을 뒷받침할 외부 자료를 실제로 확인하지 못했어요. "
-            "검색하지 않은 상태에서 추측하거나, 나중에 확인하겠다고만 말하지 않을게요. "
-            "확인 가능한 검색이 연결되면 근거와 함께 답하겠습니다."
+            "이건 자료를 찾아봐야 하는데 지금 확인이 안 됐어요. "
+            "모르는 걸 지어내긴 싫어서 여기까지만 할게요. "
+            "잠시 뒤에 다시 물어봐 주세요."
         )
 
     @staticmethod
@@ -2470,8 +2511,7 @@ class AIHandler(commands.Cog):
                     )
                     return {
                         "error": (
-                            "외부 제공처에서 이 요청을 뒷받침할 자료를 "
-                            "확인하지 못했습니다."
+                            "이 요청을 뒷받침할 자료를 찾지 못했어요."
                         )
                     }
                 if not isinstance(result, dict):
@@ -2485,13 +2525,13 @@ class AIHandler(commands.Cog):
                 )
                 return {
                     "error": (
-                        "외부 데이터 제공처 응답이 불안정해 이 도구를 잠시 쉬고 "
-                        "있습니다. 잠시 뒤 요청하면 자동으로 다시 확인합니다."
+                        "자료를 가져오는 쪽이 계속 실패해서 잠깐 쉬는 중이에요. "
+                        "잠시 뒤에 다시 물어보면 자동으로 다시 확인해요."
                     )
                 }
             except Exception as e:
                 logger.error(f"도구 '{tool_name}' 실행 중 예기치 않은 오류: {e}", exc_info=True, extra=log_extra)
-                return {"error": "도구 실행 중 예상치 못한 오류가 발생했습니다."}
+                return {"error": "자료를 확인하다 문제가 생겼어요."}
 
         if tool_name == "generate_image":
             try:
@@ -2537,7 +2577,7 @@ class AIHandler(commands.Cog):
                 }
             except Exception as e:
                 logger.error(f"이미지 생성 도구 실행 중 오류: {e}", exc_info=True, extra=log_extra)
-                return {"error": "이미지 생성 중 오류가 발생했습니다."}
+                return {"error": "그림을 그리다 문제가 생겼어요."}
 
         return {"error": f"'{tool_name}' 도구는 현재 비활성화되어 있습니다."}
 
@@ -2642,12 +2682,12 @@ class AIHandler(commands.Cog):
         global_daily_count = daily_counts.get("llm_global", 0)
         if user_daily_count >= config.USER_DAILY_LLM_LIMIT:
             logger.warning(f"사용자 {user_id} 일일 LLM 제한 도달 ({user_daily_count}/{config.USER_DAILY_LLM_LIMIT})", extra=base_log_extra)
-            await message.channel.send("오늘 너무 많이 물어봤어! 내일 다시 물어봐~ 😅")
+            await message.channel.send("오늘은 좀 많이 물어봤어요! 내일 다시 찾아와주세요 😅")
             return
         
         if global_daily_count >= config.GLOBAL_DAILY_LLM_LIMIT:
             logger.warning(f"글로벌 일일 LLM 제한 도달 ({global_daily_count}/{config.GLOBAL_DAILY_LLM_LIMIT})", extra=base_log_extra)
-            await message.channel.send("오늘 할 수 있는 대화가 다 끝났어... 내일 봐! 😢")
+            await message.channel.send("오늘 할 수 있는 대화를 다 썼어요. 내일 다시 봬요 😢")
             return
         
         # 쿨다운 갱신
@@ -2677,19 +2717,20 @@ class AIHandler(commands.Cog):
             if not allowed:
                 if reason == "user_limit":
                     await message.channel.send(
-                        "⛔ 지금 DM 대화 한도에 도달했어요.\n"
-                        "1:1 대화는 5시간에 30번까지예요.\n"
+                        "⛔ 지금은 DM 대화 한도까지 왔어요.\n"
+                        f"1:1 대화는 {DM_LIMIT_WINDOW_HOURS}시간에 "
+                        f"{DM_LIMIT_COUNT}번까지예요.\n"
                         f"🕒 다시 쓸 수 있는 시각: {reset_time}"
                     )
                 elif reason == "global_limit":
                     await message.channel.send(
-                        "⛔ 오늘 DM으로 받을 수 있는 양을 다 썼어요.\n"
-                        "내일 다시 찾아와줘! 서버 채널에서는 그대로 이야기할 수 있어요."
+                        "⛔ 오늘 DM으로 나눌 수 있는 대화를 다 썼어요.\n"
+                        "내일 다시 찾아와주세요. 서버 채널에서는 그대로 이야기할 수 있어요."
                     )
                 else:
                     await message.channel.send(
-                        "지금은 DM 사용량을 안전하게 확인하지 못해 요청을 시작하지 "
-                        "않았어요. 잠시 뒤 다시 불러주세요."
+                        "남은 대화 횟수를 확인하지 못해서 아직 시작하지 않았어요. "
+                        "잠시 뒤에 다시 불러주세요."
                     )
                 return
 
@@ -2944,9 +2985,9 @@ class AIHandler(commands.Cog):
                     )
                     if finance_request
                     else (
-                        "확인에 필요한 외부 자료를 가져오지 못했어요. "
-                        "모르는 내용을 추측하거나 사실처럼 만들지는 않을게요. "
-                        "잠시 뒤 다시 물어봐 주세요."
+                        "이건 자료를 찾아봐야 하는데 지금 확인이 안 됐어요. "
+                        "모르는 걸 지어내긴 싫어서 여기까지만 할게요. "
+                        "잠시 뒤에 다시 물어봐 주세요."
                     )
                 )
                 logger.warning(
@@ -2961,8 +3002,8 @@ class AIHandler(commands.Cog):
                 guarded_response = self._format_market_snapshot_fallback(
                     market_snapshot_result,
                     note=(
-                        "관련 뉴스 검색은 완료되지 않아 확인된 지수만 표시했어요. "
-                        "뉴스 내용은 추측하지 않았습니다."
+                        "관련 뉴스는 못 가져와서 확인된 지수만 정리했어요. "
+                        "뉴스 내용은 따로 지어내지 않았어요."
                     ),
                 )
                 logger.warning(
@@ -3239,7 +3280,7 @@ class AIHandler(commands.Cog):
                 )
             else:
                 await progress.stop()
-                await status_msg.edit(content="미안해, 답변을 생성하는 데 실패했어. 😢")
+                await status_msg.edit(content="미안해요, 답을 만들다 막혔어요. 잠시 뒤에 다시 물어봐 주세요 😢")
 
         except Exception as e:
             logger.error(f"에이전트 처리 중 최상위 오류: {e}", exc_info=True, extra=log_extra)

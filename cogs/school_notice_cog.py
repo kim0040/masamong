@@ -710,8 +710,8 @@ class SchoolNoticeCog(commands.Cog):
                     await progress.stop()
                     await status_message.edit(
                         content=(
-                            "학교 공지 동의가 철회되어 초기 확인을 중단했습니다. "
-                            "학교 사이트에는 사용자 정보를 보내지 않았습니다."
+                            "학교 공지 동의가 철회돼서 첫 확인을 멈췄어요. "
+                            "학교 사이트에는 회원님 정보를 보내지 않았어요."
                         ),
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
@@ -816,8 +816,8 @@ class SchoolNoticeCog(commands.Cog):
             try:
                 await status_message.edit(
                     content=(
-                        "⚠️ 등록은 저장했지만 첫 공개 게시판 확인 중 오류가 발생했습니다. "
-                        "무한 재시도하지 않으며 다음 05시 정기 수집에서 확인합니다."
+                        "⚠️ 등록은 저장했는데, 첫 게시판 확인에서 문제가 생겼어요. "
+                        "계속 다시 시도하지는 않고 내일 새벽 5시 확인 때 다시 볼게요."
                     ),
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
@@ -1226,7 +1226,7 @@ class SchoolNoticeCog(commands.Cog):
                 # 뒤 항목이 실패해도 이미 성공한 공지는 다음 재시도에서 빠진다.
                 await user.send(
                     content=(
-                        "아래 피드백은 다음 맞춤 공지에 반영됩니다. "
+                        "아래 피드백은 다음 맞춤 공지에 반영할게요. "
                         f"해당하는 버튼을 하나만 눌러주세요. · {item.title[:80]}"
                     ),
                     embeds=[build_item_embed(item, today=_as_kst().date())],
@@ -1846,7 +1846,7 @@ class SchoolNoticeCog(commands.Cog):
             )
             if readiness == "profile_stale":
                 await ctx.reply(
-                    "설정을 바꾼 뒤로 아직 새로 확인한 게 없어요. 내일 새벽 5시 확인이 끝나면 바뀐 조건으로 보여드릴게요."
+                    "설정을 바꾼 뒤로는 아직 확인한 게 없어요. 내일 새벽 5시가 지나면 바뀐 조건으로 보여드릴게요."
                 )
                 return
             if readiness != "ready":
@@ -1899,7 +1899,7 @@ class SchoolNoticeCog(commands.Cog):
             )
             if readiness != "ready":
                 await ctx.reply(
-                    "설정이 바뀌어서 예전 조건의 남은 결과는 보내지 않았어요. 내일 새벽 5시 확인 이후 다시 확인해주세요."
+                    "설정을 바꾸셔서, 예전 조건으로 골라둔 나머지 공지는 보내지 않았어요. 내일 새벽 5시가 지난 뒤에 다시 봐주세요."
                 )
                 return
             if index == 0:
@@ -2353,7 +2353,7 @@ class SchoolNoticeCog(commands.Cog):
 
                 if revisions >= max_revisions:
                     await ctx.reply(
-                        "고쳐 말한 횟수가 다 차서 여기서 멈출게요. 저장된 건 없어요."
+                        "고쳐 말할 수 있는 횟수를 다 써서 여기서 멈출게요. 저장된 건 없어요."
                     )
                     return
                 if not await self._has_school_notice_consent(user_id):
@@ -2580,7 +2580,7 @@ class SchoolNoticeCog(commands.Cog):
             if row is None:
                 return
             await ctx.reply(
-                f"현재 알림 시각은 `{row['delivery_time']}`입니다. "
+                f"지금 알림 시각은 `{row['delivery_time']}`이에요. "
                 "`!공지 시간 09:00`처럼 입력하거나 `!공지` 메뉴의 "
                 "**알림 시간** 버튼을 눌러주세요."
             )
@@ -2714,7 +2714,9 @@ class SchoolNoticeCog(commands.Cog):
                     ",".join(cleanup_errors),
                 )
                 await ctx.reply(
-                    "⚠️ 학교 공지 설정·피드백·발송 기록을 지우고 동의도 철회했어요. 다만 일부 파일을 정리하지 못했어요. 운영자가 한 번 확인해야 해요. 동의·철회 기록은 그대로 남아요."
+                    "⚠️ 학교 공지 설정·피드백·발송 기록을 지우고 동의도 철회했어요.\n"
+                    "다만 일부가 완전히 지워지지 않아서 관리자가 확인할 예정이에요. "
+                    "더 하실 일은 없어요. 동의·철회 기록은 그대로 남아요."
                 )
                 return
 

@@ -135,15 +135,15 @@ class ConsentDecisionView(ReliableView):
             rendered_view = self
         await interaction.edit_original_response(
             content=(
-                f"✅ **{policy.display_name}** 개인정보 처리에 동의했습니다. "
+                f"✅ **{policy.display_name}** 개인정보 처리에 동의했어요. "
                 f"(정책 `{policy.version}`)\n"
                 + (
                     "요청하신 기능을 이어서 진행할게요. "
                     if self._on_granted is not None
-                    else "이제 원하는 기능을 바로 사용할 수 있습니다. "
+                    else "이제 원하는 기능을 바로 쓸 수 있어요. "
                 )
                 + f"언제든 `!개인정보 철회 {consent_command_name(policy.scope)}`로 "
-                "향후 이용을 중단할 수 있습니다."
+                "그만 쓸 수 있어요."
             ),
             view=rendered_view,
         )

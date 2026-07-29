@@ -1042,7 +1042,7 @@ class ReMasamongBot(commands.Bot):
                     extra={"guild_id": guild_id, "channel_id": channel_id},
                 )
                 await message.channel.send(
-                    "학교 공지 설정을 시작하지 못했습니다. 잠시 후 `!공지` 메뉴에서 "
+                    "학교 공지 설정을 시작하지 못했어요. 잠시 뒤 `!공지` 메뉴에서 "
                     "다시 시도해주세요."
                 )
                 return
@@ -1105,7 +1105,7 @@ class ReMasamongBot(commands.Bot):
             )
             try:
                 await message.channel.send(
-                    "지금 요청이 몰려 있어 잠시 쉬고 있어. 몇 초 뒤 다시 불러줘!"
+                    "지금 요청이 몰려서 잠깐 쉬고 있어요. 몇 초 뒤에 다시 불러주세요."
                 )
             except discord.HTTPException:
                 pass

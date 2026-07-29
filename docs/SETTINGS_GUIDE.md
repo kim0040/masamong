@@ -266,14 +266,19 @@ RAG(Retrieval-Augmented Generation) 시스템의 설정입니다.
 
 ## 5. 다국어 설정
 
-마사몽은 한국어(ko), 영어(en), 일본어(ja)를 지원합니다.
+> **현재 상태: 마사몽의 사용자 대면 언어는 한국어입니다.**
+> `locales/`에 ko·en·ja 파일이 있지만, 실제로 번역이 적용되는 문구는
+> `config.py`가 `_locale_msg()`로 노출한 소수(날씨 오류, AI/명령 오류, 로그
+> 삭제 안내)뿐입니다. 나머지 Discord 문구 400여 개는 각 Cog에 한국어로
+> 직접 적혀 있어 `MASAMONG_LANG`을 바꿔도 한국어로 나갑니다.
+> `MASAMONG_LANG=en`을 운영에서 쓰면 **한국어와 영어가 섞여 나옵니다.**
 
 ### 5.1 전역 언어 설정
 
 `.env` 파일에서 설정:
 
 ```env
-MASAMONG_LANG=ko  # ko, en, ja 중 선택
+MASAMONG_LANG=ko  # 운영에서 실질적으로 지원하는 값은 ko
 ```
 
 ### 5.2 운영 중 언어 변경
@@ -281,21 +286,16 @@ MASAMONG_LANG=ko  # ko, en, ja 중 선택
 언어는 프로필 env에 고정한다. Discord 명령으로 서버별 언어를 바꾸지 않으므로,
 `MASAMONG_LANG`을 변경한 새 release를 검증·재시작한다.
 
-### 5.3 새 언어 추가
+### 5.3 다른 언어를 실제로 지원하려면
 
-`locales/` 디렉토리에 새 JSON 파일을 생성합니다:
+파일을 번역하는 것만으로는 부족하다. 순서는 다음과 같다.
 
-```bash
-# 예: 프랑스어 추가
-cp locales/en.json locales/fr.json
-# fr.json을 번역하여 수정
-```
-
-그 후 `utils/locale.py`의 `SUPPORTED_LANGUAGES`에 추가:
-
-```python
-SUPPORTED_LANGUAGES = {"ko", "en", "ja", "fr"}
-```
+1. `locales/<lang>.json`을 만들고 번역한다.
+2. `utils/locale.py`의 `SUPPORTED_LANGUAGES`에 코드를 추가한다.
+3. **`config.py`에 `MSG_* = _locale_msg("MSG_*")` 배선을 추가한다.**
+   현재 `locales/ko.json`의 37개 키 중 12개만 배선돼 있다.
+4. **각 Cog의 한국어 하드코딩 문구를 해당 `config.MSG_*` 참조로 바꾼다.**
+   3~4단계를 건너뛰면 언어를 바꿔도 대부분 한국어로 나온다.
 
 ---
 
@@ -385,7 +385,8 @@ MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
 
 ### Q: 언어를 변경하고 싶어요
 
-- 현재 프로필 env에서 `MASAMONG_LANG=en`으로 바꾸고 검증 후 재시작
+- 지금은 한국어만 실질적으로 지원합니다. `MASAMONG_LANG`을 바꿔도 일부 오류
+  문구만 번역되고 나머지는 한국어로 나갑니다. 자세한 절차는 [5.3](#53-다른-언어를-실제로-지원하려면) 참고
 
 ### Q: 새 서버에 봇을 초대했어요
 

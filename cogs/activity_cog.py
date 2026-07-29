@@ -184,7 +184,7 @@ class ActivityCog(commands.Cog):
     async def ranking(self, ctx: commands.Context, *, period_arg: str = ""):
         """서버 내 활동 순위와 상세 통계를 보여줍니다. (`오늘`/`이번주`/`이번달`/`전체`)"""
         if not self.ai_handler:
-            await ctx.send("랭킹을 발표할 AI가 아직 준비되지 않았어요. 잠시 후 다시 시도해주세요.")
+            await ctx.send("랭킹을 발표할 준비가 아직 안 됐어요. 잠시 뒤에 다시 불러주세요.")
             return
 
         log_extra = {'guild_id': ctx.guild.id, 'author_id': ctx.author.id}
@@ -229,8 +229,8 @@ class ActivityCog(commands.Cog):
 
         if not top_users:
             await ctx.send(
-                f"이 채널은 `{period_label}` 기준으로 집계할 활동 데이터가 아직 없어요. "
-                "기간을 바꿔서 `!랭킹 전체`로도 확인해봐!"
+                f"이 채널에는 `{period_label}` 동안 쌓인 활동 기록이 아직 없어요. "
+                "기간을 넓혀서 `!랭킹 전체`로도 확인해보세요."
             )
             return
 
@@ -279,9 +279,9 @@ class ActivityCog(commands.Cog):
                 )
                 chart_filename = f"masamong_activity_ranking_{ctx.guild.id}_{ctx.channel.id}.png"
                 await ctx.send(file=discord.File(io.BytesIO(chart_bytes), filename=chart_filename))
-                chart_delivery_status = (
-                    f"랭킹 차트 이미지를 먼저 전송 완료 (파일명: {chart_filename})"
-                )
+                # 파일명에는 guild/channel ID가 들어간다. LLM 컨텍스트에 넣으면
+                # 그대로 채널에 옮겨 적을 수 있으므로 상태만 알려준다.
+                chart_delivery_status = "랭킹 차트 이미지를 이 메시지 바로 위에 먼저 올렸음"
             except Exception as chart_exc:
                 logger.warning(
                     f"랭킹 차트 이미지 생성 실패: {chart_exc}",
@@ -299,7 +299,7 @@ class ActivityCog(commands.Cog):
             }
 
             # 브리핑 작성 중 상태 메시지 표시
-            status_msg = await ctx.send("📝 랭킹 데이터를 분석해서 재치있는 브리핑을 준비 중이야...")
+            status_msg = await ctx.send("📝 랭킹을 정리해서 브리핑을 준비하는 중이에요...")
 
             response_text = await self.ai_handler.generate_creative_text(
                 channel=ctx.channel,
@@ -309,7 +309,7 @@ class ActivityCog(commands.Cog):
             )
 
             if not response_text or response_text in [config.MSG_AI_ERROR, config.MSG_CMD_ERROR]:
-                final_response = f"**🏆 서버 수다왕 랭킹 리포트 🏆**\n\n{ranking_data_str}\n\n📊 {server_stat_str}"
+                final_response = f"**🏆 이 채널 수다왕 랭킹 🏆**\n\n{ranking_data_str}\n\n📊 {server_stat_str}"
             else:
                 final_response = response_text
 
