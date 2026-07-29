@@ -735,13 +735,13 @@ class SchoolNoticeCog(commands.Cog):
                 if delivery_status == "sent":
                     final_message = (
                         "✅ 첫 확인을 마쳤습니다. 현재 조건에 맞는 공지를 이 DM에 "
-                        "이어 보냈어요.\n앞으로는 등록 학교만 매일 23:00(한국 시간)에 "
+                        "이어 보냈어요.\n앞으로는 등록 학교만 매일 05:00(한국 시간)에 "
                         "확인하고, 새롭거나 수정된 관련 공지만 설정 시각에 알려드립니다."
                     )
                 elif delivery_status == "nothing_to_send":
                     final_message = (
                         "✅ 첫 확인을 마쳤습니다. 현재 조건에 맞는 새 공지는 없어요.\n"
-                        "앞으로는 등록 학교만 매일 23:00(한국 시간)에 확인하며, "
+                        "앞으로는 등록 학교만 매일 05:00(한국 시간)에 확인하며, "
                         "관련 공지가 없으면 DM을 보내지 않습니다."
                     )
                 elif delivery_status in {"consent_required", "profile_stale"}:
@@ -753,19 +753,19 @@ class SchoolNoticeCog(commands.Cog):
                     final_message = (
                         "공개 게시판 첫 확인은 끝났지만 결과 전달을 완료하지 못했습니다. "
                         "같은 공지를 중복 전송하지 않으며, `!공지 상태`에서 확인하거나 "
-                        "다음 23시 정기 수집을 기다려주세요."
+                        "다음 05시 정기 수집을 기다려주세요."
                     )
             elif return_code == 3:
                 final_message = (
                     "정기 수집과 겹쳐 첫 확인을 바로 끝내지 못했습니다. "
-                    "무한 재시도하지 않고 중단했으며, 다음 23시 정기 수집에서 "
+                    "무한 재시도하지 않고 중단했으며, 다음 05시 정기 수집에서 "
                     "등록 학교를 안전하게 확인합니다."
                 )
             else:
                 final_message = (
                     "⚠️ 등록은 정상적으로 저장했지만 첫 공개 게시판 확인을 완료하지 "
                     "못했습니다. 사용자 정보는 학교 사이트에 보내지 않았고, "
-                    "다음 23시 정기 수집에서 다시 확인합니다."
+                    "다음 05시 정기 수집에서 다시 확인합니다."
                 )
             await status_message.edit(
                 content=final_message,
@@ -791,7 +791,7 @@ class SchoolNoticeCog(commands.Cog):
                 await status_message.edit(
                     content=(
                         "⚠️ 등록은 저장했지만 첫 공개 게시판 확인 중 오류가 발생했습니다. "
-                        "무한 재시도하지 않으며 다음 23시 정기 수집에서 확인합니다."
+                        "무한 재시도하지 않으며 다음 05시 정기 수집에서 확인합니다."
                     ),
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
@@ -1494,7 +1494,7 @@ class SchoolNoticeCog(commands.Cog):
         if (
             profile_updated_at > finished_at
         ):
-            # 23시 수집 뒤 학교/조건을 바꾼 사용자에게 옛 프로필 digest를
+            # 05시 수집 뒤 학교/조건을 바꾼 사용자에게 옛 프로필 digest를
             # 새 프로필 결과인 것처럼 보내지 않는다.
             return "profile_stale"
         return "ready"
@@ -1640,7 +1640,7 @@ class SchoolNoticeCog(commands.Cog):
                     if active_initial
                     else "아직 완료된 공개 게시판 확인 기록이 없습니다."
                 )
-                + "\n등록 학교만 확인하며, 다음 정기 수집은 매일 23:00(한국 시간)입니다. "
+                + "\n등록 학교만 확인하며, 다음 정기 수집은 매일 05:00(한국 시간)입니다. "
                 "학교 사이트에는 사용자 프로필을 보내지 않습니다."
             )
             return
@@ -1684,13 +1684,13 @@ class SchoolNoticeCog(commands.Cog):
             )
         if readiness == "profile_stale":
             lines.append(
-                "- 현재 설정이 이 결과 뒤에 바뀌었습니다. 다음 23시 수집부터 새 조건을 적용합니다."
+                "- 현재 설정이 이 결과 뒤에 바뀌었습니다. 다음 05시 수집부터 새 조건을 적용합니다."
             )
         elif readiness != "ready" and status in {"succeeded", "partial"}:
             lines.append("- 현재 설정과 결과의 일치 여부를 확인할 수 없어 전달하지 않습니다.")
         lines.extend(
             (
-                "- 다음 정기 수집: 매일 23:00 (한국 시간)",
+                "- 다음 정기 수집: 매일 05:00 (한국 시간)",
                 "- 자동 DM: 새롭거나 수정된 관련 공지가 있을 때만 전송",
             )
         )
@@ -1724,7 +1724,7 @@ class SchoolNoticeCog(commands.Cog):
                 "학교·과정·학년만 필수이며, 캠퍼스·학과·관심사는 원하는 경우에만 "
                 "말하면 됩니다. 내용을 확인한 뒤에만 저장합니다.\n"
                 "첫 등록 직후 공개 게시판을 한 번 확인하고, 이후 등록한 학교만 "
-                "23:00(한국 시간)에 수집합니다."
+                "05:00(한국 시간)에 수집합니다."
             ),
             color=0x4F8EF7,
         )
@@ -1791,7 +1791,7 @@ class SchoolNoticeCog(commands.Cog):
         if row is None:
             await ctx.reply(
                 "아직 완료된 학교 공지 수집 결과가 없습니다. "
-                "등록 학교만 한국 시간 23시에 수집합니다."
+                "등록 학교만 한국 시간 05시에 수집합니다."
             )
             return
         try:
@@ -1804,7 +1804,7 @@ class SchoolNoticeCog(commands.Cog):
             if readiness == "profile_stale":
                 await ctx.reply(
                     "학교 공지 정보를 바꾼 뒤 아직 새로 수집하지 않았습니다. "
-                    "오늘 23시 수집 이후 최신 조건으로 확인해주세요."
+                    "오늘 05시 수집 이후 최신 조건으로 확인해주세요."
                 )
                 return
             if readiness != "ready":
@@ -1858,7 +1858,7 @@ class SchoolNoticeCog(commands.Cog):
             if readiness != "ready":
                 await ctx.reply(
                     "학교 공지 정보가 바뀌어 이전 조건의 나머지 결과는 "
-                    "보내지 않았습니다. 오늘 23시 수집 이후 다시 확인해주세요."
+                    "보내지 않았습니다. 다음 05시 수집 이후 다시 확인해주세요."
                 )
                 return
             if index == 0:
@@ -2298,12 +2298,12 @@ class SchoolNoticeCog(commands.Cog):
                             "지금 첫 확인합니다. "
                             if run_initial_now
                             else (
-                                "첫 수집은 다음 23:00(한국 시간)에 진행합니다. "
+                                "첫 수집은 다음 05:00(한국 시간)에 진행합니다. "
                                 if upsert_result.needs_initial_collection
                                 else ""
                             )
                         )
-                        + "이후에는 등록한 학교만 매일 23:00(한국 시간)에 확인하고, "
+                        + "이후에는 등록한 학교만 매일 05:00(한국 시간)에 확인하고, "
                         f"새롭거나 수정된 관련 공지가 있을 때 {final_profile['delivery_time']}에 "
                         "알려드립니다. 관련 공지가 없으면 DM을 보내지 않습니다."
                     )
@@ -2459,7 +2459,7 @@ class SchoolNoticeCog(commands.Cog):
         lines.append("- 전달 상태: " + ("사용 중" if row["enabled"] else "중지됨"))
         lines.append(
             "- 수집/전달: 첫 등록 때 즉시 1회 확인, 이후 등록 학교만 매일 "
-            "23:00 수집 → 다음 알림 시각 전달"
+            "05:00 수집 → 다음 알림 시각 전달"
         )
         if not await self._has_school_notice_consent(ctx.author.id):
             await self._send_school_notice_consent_prompt(ctx)

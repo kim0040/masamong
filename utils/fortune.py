@@ -156,7 +156,20 @@ class FortuneCalculator:
                 )
             
             # 1. 오늘의 사주 (일진)
-            saju_info = self._get_saju_palja(now_kst.year, now_kst.month, now_kst.day)
+            daily_saju_info = self._get_saju_palja(
+                now_kst.year,
+                now_kst.month,
+                now_kst.day,
+            )
+            birth_year, birth_month, birth_day = map(
+                int,
+                birth_date.split("-"),
+            )
+            natal_saju_info = self._get_saju_palja(
+                birth_year,
+                birth_month,
+                birth_day,
+            )
             
             # 2. 오늘의 점성술 (Transit Chart)
             astro_info = self._get_astrology_chart(now_kst)
@@ -169,7 +182,8 @@ class FortuneCalculator:
                 f"Time: {now_kst.strftime('%Y-%m-%d %H:%M')}\n"
                 f"UserBirth: {birth_date} "
                 f"{birth_time if birth_time else '[time not provided]'}\n"
-                f"Saju: {saju_info}\n"
+                f"NatalSaju: {natal_saju_info}\n"
+                f"DailySaju: {daily_saju_info}\n"
                 f"Astro: {astro_info}\n"
             )
             

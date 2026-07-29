@@ -86,6 +86,7 @@ class DailyNoticeJob:
         max_binary_bytes: int = 20_000_000,
         refresh_attachments: bool = False,
         respect_robots: bool = True,
+        collect_sources: bool = True,
     ) -> None:
         if not 1 <= max_details_per_source <= 30:
             raise ValueError("max_details_per_source는 1~30이어야 합니다.")
@@ -116,6 +117,7 @@ class DailyNoticeJob:
         self.max_binary_bytes = max_binary_bytes
         self.refresh_attachments = refresh_attachments
         self.respect_robots = respect_robots
+        self.collect_sources = bool(collect_sources)
 
     async def run(self) -> DailyRunResult:
         run_id = self.repository.start_job("school_notice_daily", self.run_date)
@@ -129,11 +131,99 @@ class DailyNoticeJob:
         http_requests = 0
 
         try:
-            async with AsyncFetcher(
-                max_requests=self.max_http_requests,
-                max_binary_bytes=self.max_binary_bytes,
-                respect_robots=self.respect_robots,
-            ) as fetcher:
+            if self.collect_sources:
+                async with AsyncFetcher(
+                    max_requests=self.max_http_requests,
+                    max_binary_bytes=self.max_binary_bytes,
+                    min_request_interval_seconds=0.25,
+                    respect_robots=self.respect_robots,
+                ) as fetcher:
+                    for source in self.sources:
+                        stats: dict[str, Any] = {
+                            "list_candidates": 0,
+                            "selected": 0,
+                            "details_succeeded": 0,
+                            "details_failed": 0,
+                            "parser_warnings": [],
+                            "errors": [],
+                        }
+                        source_stats[source.source_id] = stats
+                        try:
+                            listing = await fetcher.fetch_text(
+                                source.list_url,
+                                allowed_hosts=source.allowed_hosts,
+                            )
+                            candidates, warnings = parse_list(listing.text, source)
+                            stats["list_candidates"] = len(candidates)
+                            stats["parser_warnings"] = warnings
+                            if len(candidates) < source.validation.min_list_items:
+                                stats["errors"].append(
+                                    "minimum_list_contract_failed:"
+                                    f"{len(candidates)}<{source.validation.min_list_items}"
+                                )
+                            selected = select_detail_candidates(
+                                candidates,
+                                self.max_details_per_source,
+                            )
+                            stats["selected"] = len(selected)
+                        except Exception as exc:
+                            stats["errors"].append(
+                                str(exc)
+                                if isinstance(exc, FetchError)
+                                else f"{type(exc).__name__}:{exc}"
+                            )
+                            continue
+
+                        for candidate in selected:
+                            try:
+                                detail = await fetcher.fetch_text(
+                                    candidate.url,
+                                    allowed_hosts=source.allowed_hosts,
+                                )
+                                notice = parse_detail(detail.text, source, candidate)
+                                existing_payload = self.repository.existing_notice_payload(
+                                    source.source_id,
+                                    candidate.external_id,
+                                )
+                                if (
+                                    existing_payload
+                                    and not self.refresh_attachments
+                                    and existing_payload.get("base_content_hash")
+                                    == notice.base_content_hash
+                                ):
+                                    previous = notice_from_dict(existing_payload)
+                                    notice = replace(
+                                        notice,
+                                        attachment_extractions=(
+                                            previous.attachment_extractions
+                                        ),
+                                        content_hash=previous.content_hash,
+                                    )
+                                elif self.max_attachments_per_notice:
+                                    notice = await enrich_notice_attachments(
+                                        notice,
+                                        source,
+                                        fetcher,
+                                        max_attachments=self.max_attachments_per_notice,
+                                    )
+                                persisted = self.repository.upsert_notice(
+                                    source.school_id,
+                                    notice,
+                                )
+                                changes_by_id[persisted.notice_id] = persisted.change
+                                change_counts[persisted.change] += 1
+                                stats["details_succeeded"] += 1
+                            except Exception as exc:
+                                stats["details_failed"] += 1
+                                stats["errors"].append(
+                                    f"{candidate.external_id}:"
+                                    f"{type(exc).__name__}:{exc}"
+                                )
+                    http_requests = fetcher.request_count
+            else:
+                # 같은 학교의 첫 프로필이 이미 이 실행에서 상세 페이지를
+                # 수집·저장했다. 공개 snapshot과 분석 캐시를 재사용하고 사용자별
+                # 점수/digest만 계산해 동일 학교를 사람 수만큼 다시 크롤링하지 않는다.
                 for source in self.sources:
                     stats: dict[str, Any] = {
                         "list_candidates": 0,
@@ -142,80 +232,9 @@ class DailyNoticeJob:
                         "details_failed": 0,
                         "parser_warnings": [],
                         "errors": [],
+                        "reused_snapshot": True,
                     }
                     source_stats[source.source_id] = stats
-                    try:
-                        listing = await fetcher.fetch_text(
-                            source.list_url,
-                            allowed_hosts=source.allowed_hosts,
-                        )
-                        candidates, warnings = parse_list(listing.text, source)
-                        stats["list_candidates"] = len(candidates)
-                        stats["parser_warnings"] = warnings
-                        if len(candidates) < source.validation.min_list_items:
-                            stats["errors"].append(
-                                "minimum_list_contract_failed:"
-                                f"{len(candidates)}<{source.validation.min_list_items}"
-                            )
-                        selected = select_detail_candidates(
-                            candidates,
-                            self.max_details_per_source,
-                        )
-                        stats["selected"] = len(selected)
-                    except Exception as exc:
-                        stats["errors"].append(
-                            str(exc)
-                            if isinstance(exc, FetchError)
-                            else f"{type(exc).__name__}:{exc}"
-                        )
-                        continue
-
-                    for candidate in selected:
-                        try:
-                            detail = await fetcher.fetch_text(
-                                candidate.url,
-                                allowed_hosts=source.allowed_hosts,
-                            )
-                            notice = parse_detail(detail.text, source, candidate)
-                            existing_payload = self.repository.existing_notice_payload(
-                                source.source_id,
-                                candidate.external_id,
-                            )
-                            if (
-                                existing_payload
-                                and not self.refresh_attachments
-                                and existing_payload.get("base_content_hash")
-                                == notice.base_content_hash
-                            ):
-                                previous = notice_from_dict(existing_payload)
-                                notice = replace(
-                                    notice,
-                                    attachment_extractions=(
-                                        previous.attachment_extractions
-                                    ),
-                                    content_hash=previous.content_hash,
-                                )
-                            elif self.max_attachments_per_notice:
-                                notice = await enrich_notice_attachments(
-                                    notice,
-                                    source,
-                                    fetcher,
-                                    max_attachments=self.max_attachments_per_notice,
-                                )
-                            persisted = self.repository.upsert_notice(
-                                source.school_id,
-                                notice,
-                            )
-                            changes_by_id[persisted.notice_id] = persisted.change
-                            change_counts[persisted.change] += 1
-                            stats["details_succeeded"] += 1
-                        except Exception as exc:
-                            stats["details_failed"] += 1
-                            stats["errors"].append(
-                                f"{candidate.external_id}:"
-                                f"{type(exc).__name__}:{exc}"
-                            )
-                http_requests = fetcher.request_count
 
             feedback_events = self.repository.feedback_events(
                 str(self.profile["user_key"])

@@ -136,11 +136,25 @@ class DummyBot:
 
 
 class FakeToolsCog:
-    async def check_image_quota(self, _user_id: int) -> dict[str, Any]:
+    async def check_image_quota(
+        self,
+        _user_id: int,
+        _guild_id: int | None = None,
+    ) -> dict[str, Any]:
         return {"allowed": True, "remaining": 10}
 
-    async def generate_image(self, *, prompt: str, user_id: int) -> dict[str, Any]:
-        return {"image_data": b"fake-image", "remaining": 9}
+    async def generate_image(
+        self,
+        *,
+        prompt: str,
+        user_id: int,
+        guild_id: int | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "image_data": b"fake-image",
+            "mime_type": "image/png",
+            "remaining": 9,
+        }
 
 
 class FakeAIHandler:
@@ -151,7 +165,17 @@ class FakeAIHandler:
     async def get_ai_completion(self, prompt: str, *, system_role: str | None = None) -> str:
         return "- 테스트 업데이트 1\n- 테스트 업데이트 2"
 
-    async def _generate_image_prompt(self, prompt: str, _log_extra: dict) -> str:
+    async def _get_rag_context(self, *_args, **_kwargs):
+        return "", [], 0.0, []
+
+    async def _generate_image_prompt(
+        self,
+        prompt: str,
+        _log_extra: dict,
+        *,
+        rag_context: str = "",
+    ) -> str:
+        _ = rag_context
         return prompt
 
 

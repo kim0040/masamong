@@ -30,11 +30,22 @@ class DeepSeekSettings:
 
     @classmethod
     def from_environment(cls) -> "DeepSeekSettings":
+        shared_comet_key = os.environ.get("COMETAPI_KEY", "").strip()
+        api_key = (
+            os.environ.get("SCHOOL_NOTICE_LLM_API_KEY", "").strip()
+            or shared_comet_key
+            or os.environ.get("DEEPSEEK_API_KEY", "").strip()
+        )
+        default_base_url = (
+            os.environ.get("COMETAPI_BASE_URL", "").strip()
+            if shared_comet_key
+            else ""
+        ) or "https://api.deepseek.com"
         return cls(
-            api_key=os.environ.get("DEEPSEEK_API_KEY", "").strip(),
+            api_key=api_key,
             base_url=os.environ.get(
                 "SCHOOL_NOTICE_LLM_BASE_URL",
-                "https://api.deepseek.com",
+                default_base_url,
             ).rstrip("/"),
             model=os.environ.get(
                 "SCHOOL_NOTICE_LLM_MODEL",

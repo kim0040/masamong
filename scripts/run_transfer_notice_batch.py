@@ -30,6 +30,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout-seconds", type=float, default=900.0)
     parser.add_argument("--request-timeout-seconds", type=float, default=20.0)
     parser.add_argument("--max-retries", type=int, default=1)
+    parser.add_argument("--max-details-per-source", type=int, default=3)
+    parser.add_argument("--min-request-interval-seconds", type=float, default=0.35)
     return parser
 
 
@@ -40,6 +42,8 @@ async def _run(args: argparse.Namespace) -> dict:
         output_dir=args.output_dir,
         request_timeout_seconds=args.request_timeout_seconds,
         max_retries=args.max_retries,
+        max_details_per_source=args.max_details_per_source,
+        min_request_interval_seconds=args.min_request_interval_seconds,
     )
     return await asyncio.wait_for(
         collector.run(),

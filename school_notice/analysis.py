@@ -514,10 +514,17 @@ class AnalyzerService:
         provider = "rules"
         model = "deterministic-v1"
         version = f"{ANALYZER_VERSION}:rules"
+        failure_version: str | None = None
         if self.llm_client is not None and self.llm_client.configured:
             provider = "deepseek"
             model = self.llm_client.model
             version = f"{ANALYZER_VERSION}:{model}"
+            # 공급자 장애 fallback은 같은 공지·모델·날짜마다 한 번만
+            # 시도한다. 같은 학교를 구독한 사용자 수만큼 실패 호출이
+            # 증폭되지 않되, 다음 날에는 정상 복구 여부를 다시 확인한다.
+            failure_version = (
+                f"{ANALYZER_VERSION}:{model}:fallback:{run_date.isoformat()}"
+            )
 
         cached = self.repository.get_analysis(
             notice_id,
@@ -526,6 +533,14 @@ class AnalyzerService:
         )
         if cached is not None:
             return cached
+        if failure_version is not None:
+            cached_failure = self.repository.get_analysis(
+                notice_id,
+                notice.content_hash,
+                failure_version,
+            )
+            if cached_failure is not None:
+                return cached_failure
 
         rules = rule_analysis(notice)
         analysis = rules
@@ -547,8 +562,9 @@ class AnalyzerService:
                     ],
                 }
                 provider = "rules_fallback"
-                model = "deterministic-v1"
-                version = f"{ANALYZER_VERSION}:rules-fallback"
+                version = failure_version or (
+                    f"{ANALYZER_VERSION}:rules-fallback:{run_date.isoformat()}"
+                )
 
         self.repository.save_analysis(
             notice_id=notice_id,

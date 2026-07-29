@@ -48,9 +48,9 @@ def _write_env(path: Path, *, profile: str, token: str, database: str, db_user: 
                 ),
                 f"DISCORD_BOT_TOKEN={token}",
                 (
-                    "MASAMONG_EXPECTED_DISCORD_BOT_USER_ID=replace-with-current-masamo-bot-user-id"
+                    "MASAMONG_EXPECTED_DISCORD_BOT_USER_ID=111111111111111111"
                     if profile == "masamo"
-                    else "MASAMONG_EXPECTED_DISCORD_BOT_USER_ID=replace-with-current-masamo-bot-user-id"
+                    else "MASAMONG_EXPECTED_DISCORD_BOT_USER_ID=222222222222222222"
                 ),
                 f"MASAMONG_COMMAND_PREFIX={'!' if profile == 'masamo' else '?'}",
                 "MASAMONG_DB_BACKEND=tidb",
@@ -582,8 +582,8 @@ def test_same_expected_discord_bot_identity_is_rejected(tmp_path):
     )
     general.write_text(
         general.read_text(encoding="utf-8").replace(
-            "MASAMONG_EXPECTED_DISCORD_BOT_USER_ID=replace-with-current-masamo-bot-user-id",
-            "MASAMONG_EXPECTED_DISCORD_BOT_USER_ID=replace-with-current-masamo-bot-user-id",
+            "MASAMONG_EXPECTED_DISCORD_BOT_USER_ID=222222222222222222",
+            "MASAMONG_EXPECTED_DISCORD_BOT_USER_ID=111111111111111111",
         ),
         encoding="utf-8",
     )

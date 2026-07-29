@@ -335,6 +335,7 @@ CREATE TABLE IF NOT EXISTS transfer_notice_subscriptions (
     user_id BIGINT PRIMARY KEY,
     schools_json TEXT NOT NULL,
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    delivery_time VARCHAR(5) NOT NULL DEFAULT '09:00',
     created_at VARCHAR(64) NOT NULL,
     updated_at VARCHAR(64) NOT NULL
 );

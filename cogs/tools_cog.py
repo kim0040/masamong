@@ -15,6 +15,7 @@ import re
 import aiohttp
 import asyncio
 import importlib
+import json
 
 import config
 from logger_config import logger
@@ -323,7 +324,13 @@ class ToolsCog(commands.Cog):
             
         return f"'{query}'에 대한 통합 검색 결과 (Kakao):\n\n" + "\n\n".join(output_parts)
 
-    async def web_search_rag(self, query: str) -> dict:
+    async def web_search_rag(
+        self,
+        query: str,
+        *,
+        guild_id: int | None = None,
+        user_id: int | None = None,
+    ) -> dict:
         """
         범용 탐색 RAG 파이프라인을 실행합니다.
         - 기본: Linkup (`utils/linkup_search.py`)
@@ -338,6 +345,22 @@ class ToolsCog(commands.Cog):
             }
             또는 {"status": "error", "message": str}
         """
+        allowed, reason = await db_utils.reserve_web_search_call(
+            self.bot.db,
+            guild_id=guild_id,
+            user_id=user_id,
+        )
+        if not allowed:
+            return {
+                "status": "error",
+                "message": (
+                    f"웹 검색 사용량 한도에 도달했습니다"
+                    f" ({reason or '사용량 한도'}). 잠시 후 다시 시도해 주세요."
+                ),
+                "failure_kind": "rate_limited",
+                "fallback_safe": False,
+            }
+
         provider = str(getattr(config, "WEB_SEARCH_PROVIDER", "legacy") or "legacy").strip().lower()
         prefer_linkup = provider == "linkup"
 
@@ -437,7 +460,13 @@ class ToolsCog(commands.Cog):
         """하위 호환용 별칭. 기존 호출은 web_search_rag()로 위임합니다."""
         return await self.web_search_rag(query)
 
-    async def web_search(self, query: str) -> str:
+    async def web_search(
+        self,
+        query: str,
+        *,
+        guild_id: int | None = None,
+        user_id: int | None = None,
+    ) -> str:
         """
         웹 검색을 수행합니다.
         우선 web_search_rag()를 사용하고, 실패 시 Google/Kakao 레거시 경로로 폴백합니다.
@@ -449,7 +478,11 @@ class ToolsCog(commands.Cog):
         """
         logger.info("웹 검색 실행. query_chars=%d", len(query))
         try:
-            rag_result = await self.web_search_rag(query)
+            rag_result = await self.web_search_rag(
+                query,
+                guild_id=guild_id,
+                user_id=user_id,
+            )
             if rag_result.get("status") == "success":
                 summary = str(rag_result.get("context") or "").strip()
                 urls = rag_result.get("source_urls") or []
@@ -540,7 +573,13 @@ class ToolsCog(commands.Cog):
                 return False, keyword
         return True, None
 
-    async def generate_image(self, prompt: str, user_id: int, aspect_ratio: str = None) -> dict:
+    async def generate_image(
+        self,
+        prompt: str,
+        user_id: int,
+        aspect_ratio: str = None,
+        guild_id: int | None = None,
+    ) -> dict:
         """이미지 생성 전체를 프로세스 단위로 직렬화합니다.
 
         quota 확인과 실제 API 호출 전 사용량 예약 사이에 다른 요청이
@@ -563,11 +602,16 @@ class ToolsCog(commands.Cog):
                 prompt=prompt,
                 user_id=user_id,
                 aspect_ratio=aspect_ratio,
+                guild_id=guild_id,
             )
         finally:
             self._image_generation_lock.release()
 
-    async def check_image_quota(self, user_id: int) -> dict:
+    async def check_image_quota(
+        self,
+        user_id: int,
+        guild_id: int | None = None,
+    ) -> dict:
         """이미지 생성 가능 여부를 읽기 전용으로 확인합니다.
 
         명령 경로는 프롬프트 최적화 LLM 전에 이 메서드로 빠르게 차단하고,
@@ -602,10 +646,26 @@ class ToolsCog(commands.Cog):
                 ),
             }
 
+        guild_limited, guild_remaining = await db_utils.check_image_guild_limit(
+            self.bot.db,
+            guild_id,
+        )
+        if guild_limited:
+            return {
+                "allowed": False,
+                "remaining": 0,
+                "guild_remaining": 0,
+                "error": (
+                    "이 서버의 오늘 이미지 생성 한도에 도달했어요. "
+                    "내일 다시 시도해 주세요."
+                ),
+            }
+
         return {
             "allowed": True,
             "remaining": user_remaining,
             "global_remaining": global_remaining,
+            "guild_remaining": guild_remaining,
         }
 
     async def _generate_image_exclusive(
@@ -613,9 +673,12 @@ class ToolsCog(commands.Cog):
         prompt: str,
         user_id: int,
         aspect_ratio: str = None,
+        guild_id: int | None = None,
     ) -> dict:
-        """이미지 생성 도구입니다. 
-        설정된 Base URL에 따라 OpenAI 규격(NanoGPT 등) 혹은 Gemini 규격(CometAPI 등)으로 자동 분기합니다.
+        """이미지 생성 도구입니다.
+
+        CometAPI의 Gemini native image 응답을 사용하며, 호출 전 계층형
+        전역·서버·사용자 한도를 원자적으로 예약합니다.
 
         Args:
             prompt: 이미지 생성 프롬프트 (영문 권장)
@@ -625,7 +688,12 @@ class ToolsCog(commands.Cog):
         Returns:
             {'image_data': bytes, 'remaining': int} 또는 {'error': str}
         """
-        log_extra = {'user_id': user_id, 'prompt_chars': len(prompt or '')}
+        log_extra = {
+            'guild_id': guild_id,
+            'user_id': user_id,
+            'mode': 'image_generation',
+            'prompt_chars': len(prompt or ''),
+        }
 
         # 1. 이미지 생성 기능 활성화 확인
         if not getattr(config, 'COMETAPI_IMAGE_ENABLED', False):
@@ -649,14 +717,18 @@ class ToolsCog(commands.Cog):
             return {"error": "요청한 이미지를 생성할 수 없어요. 부적절한 내용이 포함되어 있는 것 같아요."}
 
         # 4~5. user/global quota를 lock 내부에서 최종 확인한다.
-        quota = await self.check_image_quota(user_id)
+        quota = await self.check_image_quota(user_id, guild_id)
         if not quota.get("allowed"):
             return {"error": str(quota.get("error") or "이미지 생성 제한에 도달했어요.")}
         user_remaining = int(quota.get("remaining") or 0)
 
         # provider가 실패하거나 빈 응답을 반환해도 실제 비용 시도는 발생한다.
         # API 직전에 먼저 예약하고, 기록 저장소 장애 시에는 호출하지 않는다.
-        if not await db_utils.log_image_generation(self.bot.db, user_id):
+        if not await db_utils.log_image_generation(
+            self.bot.db,
+            user_id,
+            guild_id,
+        ):
             return {
                 "error": (
                     "이미지 사용량을 안전하게 예약하지 못해 생성을 중단했어요. "
@@ -665,55 +737,57 @@ class ToolsCog(commands.Cog):
             }
         remaining_after_attempt = max(0, user_remaining - 1)
 
-        model_name = getattr(config, 'IMAGE_MODEL', 'gemini-3.1-flash-image')
+        model_name = getattr(
+            config,
+            'IMAGE_MODEL',
+            'gemini-3.1-flash-lite-image',
+        )
         base_url = str(getattr(config, 'COMETAPI_IMAGE_BASE_URL', 'https://api.cometapi.com')).rstrip("/")
-        ratio = aspect_ratio or getattr(config, 'IMAGE_ASPECT_RATIO', '1:1')
+        allowed_ratios = {
+            "1:1",
+            "2:3",
+            "3:2",
+            "3:4",
+            "4:3",
+            "4:5",
+            "5:4",
+            "9:16",
+            "16:9",
+            "21:9",
+        }
+        configured_ratio = str(
+            getattr(config, 'IMAGE_ASPECT_RATIO', '1:1')
+        ).strip()
+        ratio = str(aspect_ratio or configured_ratio).strip()
+        if ratio not in allowed_ratios:
+            ratio = configured_ratio if configured_ratio in allowed_ratios else "1:1"
 
         logger.info(
-            f"이미지 생성 시작 (Gemini-compatible): user={user_id}, model={model_name}, "
-            f"ratio={ratio}, remaining={user_remaining}",
-            extra=log_extra
+            "이미지 생성 시작 (CometAPI Gemini native): "
+            "user=%s, model=%s, ratio=%s, remaining=%s",
+            user_id,
+            model_name,
+            ratio,
+            user_remaining,
+            extra=log_extra,
         )
 
-        # 6. CometAPI 호출 (Gemini-compatible Endpoint / aiohttp)
+        # 6. CometAPI Gemini native generateContent 호출
         try:
-            # 프로토콜 판별
-            is_openai_style = "nano-gpt" in base_url.lower() or "openai" in base_url.lower() or "qwen" in model_name.lower()
-            
-            # 엔드포인트 설정
-            if is_openai_style:
-                endpoint = f"{base_url}/images/generations"
-            else:
-                endpoint = f"{base_url}/v1beta/models/{model_name}:generateContent"
-            
-            if is_openai_style:
-                # OpenAI 규격 페이로드 및 헤더
-                size_map = {"1:1": "1024x1024", "16:9": "1792x1024", "9:16": "1024x1792"}
-                target_size = size_map.get(ratio, "1024x1024")
-                payload = {
-                    "model": model_name,
-                    "prompt": prompt,
-                    "size": target_size,
-                    "n": 1,
-                    "response_format": "b64_json"
-                }
-                headers = {
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
-                }
-            else:
-                # Gemini 규격 페이로드 및 헤더
-                payload = {
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {
-                        "responseModalities": ["IMAGE"],
-                        "imageConfig": {"aspectRatio": ratio}
-                    }
-                }
-                headers = {
-                    "Content-Type": "application/json",
-                    "x-goog-api-key": api_key
-                }
+            endpoint = (
+                f"{base_url}/v1beta/models/{model_name}:generateContent"
+            )
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "responseModalities": ["TEXT", "IMAGE"],
+                    "imageConfig": {"aspectRatio": ratio},
+                },
+            }
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            }
 
             timeout = aiohttp.ClientTimeout(
                 total=config.IMAGE_GENERATION_TIMEOUT_SECONDS
@@ -730,39 +804,51 @@ class ToolsCog(commands.Cog):
                         )
                         return {"error": f"API 서버가 오류를 반환했습니다. ({resp.status})"}
                     
-                    data = await resp.json()
+                    raw_response = await resp.read()
+                    # 12MB 이미지의 base64와 작은 JSON metadata를 포함할
+                    # 수 있는 상한이다. 비정상적으로 큰 공급자 응답이 저사양
+                    # 프로세스 메모리를 고갈시키지 못하게 먼저 차단한다.
+                    if len(raw_response) > 18_000_000:
+                        raise ValueError("이미지 API 응답이 허용 크기를 초과했습니다.")
+                    data = json.loads(raw_response)
                     image_binary = None
+                    mime_type = ""
 
-                    if is_openai_style:
-                        # OpenAI 응답 파싱
-                        image_data_list = data.get("data", [])
-                        if image_data_list:
-                            image_b64 = image_data_list[0].get("b64_json")
-                            if image_b64:
-                                import base64
-                                image_binary = base64.b64decode(image_b64)
-                            else:
-                                # URL로 왔을 경우 처리
-                                image_url = image_data_list[0].get("url")
-                                if image_url:
-                                    async with session.get(image_url) as img_resp:
-                                        image_binary = await img_resp.read()
-                    else:
-                        # Gemini 응답 파싱
-                        for candidate in data.get("candidates", []):
-                            for part in candidate.get("content", {}).get("parts", []):
-                                if "inlineData" in part:
-                                    import base64
-                                    image_b64 = part["inlineData"].get("data")
-                                    if image_b64:
-                                        image_binary = base64.b64decode(image_b64)
-                                        break
-                            if image_binary: break
+                    # Gemini native 응답의 inlineData만 허용한다. 외부 URL을
+                    # 재요청하지 않아 예기치 않은 host·크기의 2차 fetch가 없다.
+                    for candidate in data.get("candidates", []):
+                        for part in candidate.get("content", {}).get("parts", []):
+                            if "inlineData" not in part:
+                                continue
+                            import base64
 
-                    if image_binary:
+                            inline_data = part["inlineData"]
+                            mime_type = str(
+                                inline_data.get("mimeType") or ""
+                            ).casefold()
+                            image_b64 = inline_data.get("data")
+                            if (
+                                image_b64
+                                and mime_type
+                                in {
+                                    "image/jpeg",
+                                    "image/png",
+                                    "image/webp",
+                                }
+                            ):
+                                image_binary = base64.b64decode(
+                                    image_b64,
+                                    validate=True,
+                                )
+                                break
+                        if image_binary:
+                            break
+
+                    if image_binary and len(image_binary) <= 12_000_000:
                         logger.info(f"이미지 생성 완료: {len(image_binary):,} bytes (Model: {model_name})", extra=log_extra)
                         return {
                             "image_data": image_binary,
+                            "mime_type": mime_type,
                             "remaining": remaining_after_attempt,
                         }
                     

@@ -7,7 +7,9 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import re
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 import discord
 from discord.ext import commands, tasks
@@ -28,6 +30,8 @@ from utils.privacy_consent import (
 TRANSFER_POLICY = get_policy(TRANSFER_NOTICE_SCOPE)
 _MAX_OUTPUT_BYTES = 2_000_000
 _DISCORD_CONTENT_LIMIT = 1_900
+KST = ZoneInfo("Asia/Seoul")
+_DELIVERY_TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
 def _utc_now() -> str:
@@ -41,6 +45,48 @@ def _safe_title(value: object, limit: int = 180) -> str:
     text = discord.utils.escape_markdown(str(value or "").strip())
     text = text.replace("\n", " ")
     return text[:limit] or "제목 없음"
+
+
+def _safe_summary(value: object, limit: int = 420) -> str:
+    text = discord.utils.escape_markdown(str(value or "").strip())
+    text = " ".join(text.split())
+    return text[:limit]
+
+
+def _normalize_delivery_time(value: object) -> str:
+    rendered = str(value or "").strip()
+    if not _DELIVERY_TIME_RE.fullmatch(rendered):
+        raise ValueError("알림 시각은 `HH:MM` 형식이어야 합니다. 예: `09:00`")
+    return rendered
+
+
+class TransferDeliveryTimeModal(discord.ui.Modal, title="편입 공지 알림 시각"):
+    delivery_time = discord.ui.TextInput(
+        label="한국 시간 (HH:MM)",
+        placeholder="09:00",
+        min_length=5,
+        max_length=5,
+    )
+
+    def __init__(self, cog: "TransferNoticeCog", user_id: int) -> None:
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.user_id = int(user_id)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            normalized = await self.cog.update_delivery_time(
+                self.user_id,
+                str(self.delivery_time),
+            )
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"✅ 편입 공지 알림 시각을 매일 **{normalized} (한국 시간)**으로 "
+            "저장했습니다.",
+            ephemeral=True,
+        )
 
 
 def _fit_notice_blocks(
@@ -118,8 +164,13 @@ class TransferSchoolSelect(discord.ui.Select):
         await self.cog._save_subscription(self.user_id, set(self.values))
         names = [self.cog.sources[item].university for item in self.values]
         selected = set(self.values)
+        saved_row = await self.cog._subscription_row(self.user_id)
         await interaction.response.edit_message(
-            embed=self.cog._dashboard_embed(selected, True),
+            embed=self.cog._dashboard_embed(
+                selected,
+                True,
+                delivery_time=(saved_row[5] if saved_row else None),
+            ),
             view=TransferDashboardView(
                 self.cog,
                 user_id=self.user_id,
@@ -188,8 +239,13 @@ class TransferDashboardView(discord.ui.View):
             set(self.cog.sources),
         )
         selected = set(self.cog.sources)
+        saved_row = await self.cog._subscription_row(self.user_id)
         await interaction.response.edit_message(
-            embed=self.cog._dashboard_embed(selected, True),
+            embed=self.cog._dashboard_embed(
+                selected,
+                True,
+                delivery_time=(saved_row[5] if saved_row else None),
+            ),
             view=TransferDashboardView(
                 self.cog,
                 user_id=self.user_id,
@@ -244,7 +300,11 @@ class TransferDashboardView(discord.ui.View):
         await self.cog._set_enabled(self.user_id, not active)
         selected = self.cog._decode_schools(row[1])
         await interaction.response.edit_message(
-            embed=self.cog._dashboard_embed(selected, not active),
+            embed=self.cog._dashboard_embed(
+                selected,
+                not active,
+                delivery_time=row[5],
+            ),
             view=TransferDashboardView(
                 self.cog,
                 user_id=self.user_id,
@@ -260,6 +320,28 @@ class TransferDashboardView(discord.ui.View):
             ),
             ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @discord.ui.button(
+        label="알림 시각",
+        style=discord.ButtonStyle.secondary,
+        emoji="⏰",
+        row=1,
+    )
+    async def delivery_time(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        row = await self.cog._subscription_row(self.user_id)
+        if row is None:
+            await interaction.response.send_message(
+                "먼저 대학을 한 곳 이상 선택해 구독을 저장해주세요.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(
+            TransferDeliveryTimeModal(self.cog, self.user_id)
         )
 
 
@@ -319,7 +401,8 @@ class TransferNoticeCog(commands.Cog):
     async def _subscription_row(self, user_id: int):
         async with self.bot.db.execute(
             """
-            SELECT user_id, schools_json, enabled, created_at, updated_at
+            SELECT user_id, schools_json, enabled, created_at, updated_at,
+                   delivery_time
             FROM transfer_notice_subscriptions
             WHERE user_id = ?
             """,
@@ -343,8 +426,9 @@ class TransferNoticeCog(commands.Cog):
         if backend == "tidb":
             query = """
                 INSERT INTO transfer_notice_subscriptions (
-                    user_id, schools_json, enabled, created_at, updated_at
-                ) VALUES (?, ?, TRUE, ?, ?)
+                    user_id, schools_json, enabled, delivery_time,
+                    created_at, updated_at
+                ) VALUES (?, ?, TRUE, ?, ?, ?)
                 ON DUPLICATE KEY UPDATE
                     schools_json = VALUES(schools_json),
                     enabled = TRUE,
@@ -353,15 +437,41 @@ class TransferNoticeCog(commands.Cog):
         else:
             query = """
                 INSERT INTO transfer_notice_subscriptions (
-                    user_id, schools_json, enabled, created_at, updated_at
-                ) VALUES (?, ?, 1, ?, ?)
+                    user_id, schools_json, enabled, delivery_time,
+                    created_at, updated_at
+                ) VALUES (?, ?, 1, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     schools_json = excluded.schools_json,
                     enabled = 1,
                     updated_at = excluded.updated_at
             """
-        await self.bot.db.execute(query, (int(user_id), payload, now, now))
+        await self.bot.db.execute(
+            query,
+            (
+                int(user_id),
+                payload,
+                config.TRANSFER_NOTICE_DEFAULT_DELIVERY_TIME,
+                now,
+                now,
+            ),
+        )
         await self.bot.db.commit()
+
+    async def update_delivery_time(self, user_id: int, value: object) -> str:
+        normalized = _normalize_delivery_time(value)
+        row = await self._subscription_row(user_id)
+        if row is None:
+            raise ValueError("먼저 편입 공지 구독을 저장해주세요.")
+        await self.bot.db.execute(
+            """
+            UPDATE transfer_notice_subscriptions
+            SET delivery_time = ?, updated_at = ?
+            WHERE user_id = ?
+            """,
+            (normalized, _utc_now(), int(user_id)),
+        )
+        await self.bot.db.commit()
+        return normalized
 
     async def _set_enabled(self, user_id: int, enabled: bool) -> None:
         await self.bot.db.execute(
@@ -450,6 +560,8 @@ class TransferNoticeCog(commands.Cog):
         self,
         selected: set[str],
         active: bool,
+        *,
+        delivery_time: object | None = None,
     ) -> discord.Embed:
         selected_names = [
             self.sources[item].university
@@ -457,18 +569,24 @@ class TransferNoticeCog(commands.Cog):
             if item in self.sources
         ]
         description = (
-            "공식 입학처 편입 게시판을 매일 23:35(KST)에 한 번 확인하고, "
-            "새 글이나 제목 수정이 감지될 때만 구독자 DM으로 알려드립니다.\n\n"
+            "공식 입학처 편입 게시판을 매일 05:35(KST)에 순차 확인하고, "
+            "새 글이나 수정이 감지될 때 상세 본문을 발췌 요약해 설정한 시각에 "
+            "구독자 DM으로 알려드립니다.\n\n"
             "**수집하지 않음:** TOEIC 점수·학력·지원 학과·실명·연락처\n"
-            "**AI 호출 없음:** 목록 확인과 알림은 규칙 기반입니다.\n"
+            "**판정 방식:** 공식 목록 제목 필터 + 변경 공지 상세 본문 확인\n"
             "**중요:** TOEIC 인정 시험·학과·환산 방식은 해마다 달라질 수 있으므로 "
             "알림의 공식 모집요강을 반드시 확인하세요."
         )
         if selected_names:
+            rendered_delivery_time = (
+                str(delivery_time or "").strip()
+                or config.TRANSFER_NOTICE_DEFAULT_DELIVERY_TIME
+            )
             description += (
                 "\n\n**현재 선택**\n"
                 + ", ".join(selected_names)
                 + f"\n상태: **{'구독 중' if active else '구독 취소됨'}**"
+                + f" · 알림: **{rendered_delivery_time} KST**"
             )
         else:
             description += "\n\n아래에서 관심 대학을 선택하면 구독이 시작됩니다."
@@ -506,7 +624,11 @@ class TransferNoticeCog(commands.Cog):
         selected = self._decode_schools(row[1]) if row else set()
         active = bool(row and row[2])
         await destination.send(
-            embed=self._dashboard_embed(selected, active),
+            embed=self._dashboard_embed(
+                selected,
+                active,
+                delivery_time=(row[5] if row else None),
+            ),
             view=TransferDashboardView(
                 self,
                 user_id=user_id,
@@ -547,7 +669,13 @@ class TransferNoticeCog(commands.Cog):
             date_text = str(item.get("published_date") or "날짜 미표기")
             blocks.append(
                 f"**{item.get('university', '대학')}** · {date_text}\n"
-                f"{_safe_title(item.get('title'))}\n<{item.get('url')}>"
+                f"{_safe_title(item.get('title'))}"
+                + (
+                    f"\n요약: {_safe_summary(item.get('detail_summary'))}"
+                    if _safe_summary(item.get("detail_summary"))
+                    else ""
+                )
+                + f"\n<{item.get('url')}>"
             )
         text, _ = _fit_notice_blocks(
             heading,
@@ -556,10 +684,17 @@ class TransferNoticeCog(commands.Cog):
         )
         return text
 
-    async def _subscriber_rows(self, generated_at: str) -> list:
+    async def _subscriber_rows(
+        self,
+        generated_at: str,
+        *,
+        current_time: str | None = None,
+    ) -> list:
+        due_time = current_time or datetime.now(KST).strftime("%H:%M")
         async with self.bot.db.execute(
             """
-            SELECT ts.user_id, ts.schools_json, ts.updated_at
+            SELECT ts.user_id, ts.schools_json, ts.updated_at,
+                   ts.delivery_time
             FROM transfer_notice_subscriptions AS ts
             JOIN privacy_consents AS pc
               ON pc.user_id = ts.user_id
@@ -571,6 +706,7 @@ class TransferNoticeCog(commands.Cog):
              AND pc.withdrawn_at IS NULL
             WHERE ts.enabled = 1
               AND ts.updated_at <= ?
+              AND ts.delivery_time <= ?
             ORDER BY ts.user_id
             """,
             (
@@ -579,6 +715,7 @@ class TransferNoticeCog(commands.Cog):
                 TRANSFER_POLICY.notice_hash,
                 CONSENT_GRANTED,
                 generated_at,
+                due_time,
             ),
         ) as cursor:
             return list(await cursor.fetchall())
@@ -813,7 +950,13 @@ class TransferNoticeCog(commands.Cog):
             blocks.append(
                 f"**{item['university']}** · {label} · "
                 f"{item.get('published_date') or '날짜 미표기'}\n"
-                f"{_safe_title(item.get('title'))}\n<{item['url']}>"
+                f"{_safe_title(item.get('title'))}"
+                + (
+                    f"\n요약: {_safe_summary(item.get('detail_summary'))}"
+                    if _safe_summary(item.get("detail_summary"))
+                    else ""
+                )
+                + f"\n<{item['url']}>"
             )
         message_text, included_count = _fit_notice_blocks(
             heading,
@@ -1054,7 +1197,8 @@ class TransferNoticeCog(commands.Cog):
         ]
         await ctx.send(
             f"📚 편입 공지: **{'구독 중' if row[2] else '구독 취소됨'}**\n"
-            f"선택 대학 {len(names)}곳: {', '.join(names)}",
+            f"선택 대학 {len(names)}곳: {', '.join(names)}\n"
+            f"알림 시각: **{row[5]} (한국 시간)**",
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
@@ -1082,6 +1226,23 @@ class TransferNoticeCog(commands.Cog):
             return
         await self._set_enabled(ctx.author.id, True)
         await ctx.send("🔔 저장된 대학 선택으로 편입 공지 구독을 재개했습니다.")
+
+    @transfer.command(name="시간", aliases=["알림시간"])
+    @commands.dm_only()
+    async def delivery_time_command(
+        self,
+        ctx: commands.Context,
+        value: str,
+    ) -> None:
+        """편입 공지 알림 시각을 한국 시간 HH:MM으로 변경합니다."""
+        try:
+            normalized = await self.update_delivery_time(ctx.author.id, value)
+        except ValueError as exc:
+            await ctx.send(str(exc))
+            return
+        await ctx.send(
+            f"⏰ 편입 공지 알림 시각을 **{normalized} (한국 시간)**으로 변경했습니다."
+        )
 
     @transfer.command(name="삭제")
     @commands.dm_only()

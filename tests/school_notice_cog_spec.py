@@ -1386,7 +1386,7 @@ async def test_bare_notice_command_opens_unified_dashboard(
         assert len(ctx.messages) == 1
         message = ctx.messages[0]
         assert message["embed"].title == "🎓 학교 공지"
-        assert "23:00" in message["embed"].description
+        assert "05:00" in message["embed"].description
         labels = {
             child.label
             for child in message["view"].children

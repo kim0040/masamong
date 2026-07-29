@@ -46,6 +46,10 @@ class TransferNoticeItem:
     url: str
     published_date: str | None
     fingerprint: str
+    detail_summary: str = ""
+    detail_text: str = ""
+    detail_fingerprint: str = ""
+    key_dates: tuple[str, ...] = ()
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -148,10 +152,10 @@ def parse_transfer_list(
     html: str,
     source: TransferSource,
 ) -> tuple[list[TransferNoticeItem], list[str]]:
-    """공식 목록의 공개 링크만 추출한다.
+    """공식 목록에서 편입 관련 공개 링크 후보를 추출한다.
 
-    상세 본문이나 첨부파일은 읽지 않는다. 알림 목적은 새 공지의 존재와 공식
-    링크를 전달하는 것이므로, 대학별 1회 목록 요청으로 제한한다.
+    상세 본문은 collector가 이 결과 중 신규·변경·최신 후보만 별도로 순차
+    요청한다. 여기서는 대학별 목록 판정과 공식 host 경계만 담당한다.
     """
     soup = BeautifulSoup(html, "html.parser")
     items: list[TransferNoticeItem] = []
@@ -200,3 +204,113 @@ def parse_transfer_list(
     if links and not items:
         warnings.append("no_transfer_notice_links")
     return items, warnings
+
+
+_DETAIL_CONTAINER_SELECTORS = (
+    "main",
+    "article",
+    ".board-view",
+    ".board_view",
+    ".view-content",
+    ".view_content",
+    ".view-cont",
+    ".view_cont",
+    ".bbs-view",
+    ".bbs_view",
+    ".board-content",
+    ".board_content",
+    "#content",
+    "#contents",
+)
+_DETAIL_DROP_SELECTORS = (
+    "script",
+    "style",
+    "noscript",
+    "nav",
+    "header",
+    "footer",
+    "form",
+    ".pagination",
+    ".breadcrumb",
+    ".share",
+    ".sns",
+)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。])\s+|\n+")
+
+
+def _detail_summary(text: str, *, limit: int = 420) -> str:
+    """공개 상세 본문에서 원문 근거가 남는 짧은 발췌 요약을 만든다."""
+    parts: list[str] = []
+    used = 0
+    for raw in _SENTENCE_SPLIT_RE.split(text):
+        sentence = normalize_inline(raw)
+        if len(sentence) < 12:
+            continue
+        if sentence in parts:
+            continue
+        remaining = limit - used
+        if remaining <= 1:
+            break
+        clipped = sentence if len(sentence) <= remaining else sentence[: remaining - 1] + "…"
+        parts.append(clipped)
+        used += len(clipped) + 1
+        if len(parts) >= 3 or used >= limit:
+            break
+    return " ".join(parts).strip()
+
+
+def parse_transfer_detail(
+    html: str,
+    item: TransferNoticeItem,
+) -> TransferNoticeItem:
+    """상세 페이지의 공개 본문을 추출해 알림용 발췌 요약을 붙인다.
+
+    대학별 마크업이 달라도 목록 제목과 가장 긴 본문 컨테이너를 근거로
+    동작한다. 추출 실패 시 제목·공식 링크 알림은 유지한다.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    for selector in _DETAIL_DROP_SELECTORS:
+        for node in soup.select(selector):
+            node.decompose()
+
+    candidates: list[tuple[int, str]] = []
+    for selector in _DETAIL_CONTAINER_SELECTORS:
+        for node in soup.select(selector):
+            text = normalize_inline(node.get_text(" ", strip=True))
+            if text:
+                candidates.append((len(text), text))
+    if candidates:
+        body = max(candidates, key=lambda pair: pair[0])[1]
+    else:
+        body = normalize_inline(soup.get_text(" ", strip=True))
+
+    # 메뉴·사이트맵을 잘못 집는 경우 무제한 저장/전송하지 않는다.
+    body = body[:12_000]
+    if len(body) < 40:
+        return item
+    key_dates = tuple(
+        dict.fromkeys(
+            f"{match.group(1)}-{int(match.group(2)):02d}-{int(match.group(3)):02d}"
+            for match in _DATE_RE.finditer(body)
+        )
+    )[:8]
+    summary = _detail_summary(body)
+    # 조회수·공통 내비게이션처럼 알림 가치가 없는 동적 문구가 상세 전체
+    # fingerprint를 매일 바꾸지 않게, 사용자에게 실제 제시할 요약과 핵심 날짜만
+    # 변경 판정에 사용한다.
+    detail_fingerprint = hashlib.sha256(
+        (summary + "\n" + "\n".join(key_dates)).encode("utf-8")
+    ).hexdigest()
+    return TransferNoticeItem(
+        source_id=item.source_id,
+        university=item.university,
+        external_id=item.external_id,
+        title=item.title,
+        url=item.url,
+        published_date=item.published_date,
+        fingerprint=item.fingerprint,
+        detail_summary=summary,
+        detail_text=body,
+        detail_fingerprint=detail_fingerprint,
+        key_dates=key_dates,
+    )

@@ -54,6 +54,7 @@ class AsyncFetcher:
         max_requests: int = 30,
         max_retries: int = 2,
         min_host_interval_seconds: float = 0.2,
+        min_request_interval_seconds: float = 0.0,
         respect_robots: bool = True,
     ) -> None:
         self.user_agent = user_agent
@@ -62,12 +63,20 @@ class AsyncFetcher:
         self.max_binary_bytes = max_binary_bytes
         self.max_requests = max_requests
         self.max_retries = max_retries
-        self.min_host_interval_seconds = min_host_interval_seconds
+        self.min_host_interval_seconds = max(0.0, float(min_host_interval_seconds))
+        # 서로 다른 학교 호스트를 순회할 때도 요청이 연달아 몰리지 않게 하는
+        # 전역 간격이다. 0이면 기존 동작을 유지한다.
+        self.min_request_interval_seconds = max(
+            0.0,
+            float(min_request_interval_seconds),
+        )
         self.respect_robots = respect_robots
         self.request_count = 0
         self.robots_notes: dict[str, str] = {}
         self._session: aiohttp.ClientSession | None = None
         self._last_request_at: dict[str, float] = {}
+        self._last_request_global_at: float | None = None
+        self._pace_lock = asyncio.Lock()
         self._robots: dict[str, RobotFileParser | None] = {}
         self._validated_dns: set[str] = set()
         self._tls12_context = ssl.create_default_context()
@@ -138,12 +147,27 @@ class AsyncFetcher:
         return host
 
     async def _pace(self, host: str) -> None:
-        previous = self._last_request_at.get(host)
-        if previous is not None:
-            remaining = self.min_host_interval_seconds - (time.monotonic() - previous)
+        # 현재 수집기는 호출 자체가 순차적이지만, 재시도나 향후 호출자가
+        # 실수로 동시 실행하더라도 간격 계산이 경합하지 않게 직렬화한다.
+        async with self._pace_lock:
+            now = time.monotonic()
+            waits: list[float] = []
+            previous = self._last_request_at.get(host)
+            if previous is not None:
+                waits.append(
+                    self.min_host_interval_seconds - (now - previous)
+                )
+            if self._last_request_global_at is not None:
+                waits.append(
+                    self.min_request_interval_seconds
+                    - (now - self._last_request_global_at)
+                )
+            remaining = max([0.0, *waits])
             if remaining > 0:
                 await asyncio.sleep(remaining)
-        self._last_request_at[host] = time.monotonic()
+            requested_at = time.monotonic()
+            self._last_request_at[host] = requested_at
+            self._last_request_global_at = requested_at
 
     async def _validate_resolved_host(self, host: str) -> None:
         if host in self._validated_dns:

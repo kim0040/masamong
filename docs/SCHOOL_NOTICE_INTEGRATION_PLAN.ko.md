@@ -1,7 +1,7 @@
 # 학교 공지 기능 설명서
 
 이 문서는 마사몽의 학교 공지 사용자 흐름, 수집 코어와의 계약, 운영 설정, 실패 처리와
-한계를 설명한다. 현재 기능과 누적 상태, 23:00 timer의 소유자는 Masamo다. General은
+한계를 설명한다. 현재 기능과 누적 상태, 05:00 timer의 소유자는 Masamo다. General은
 기본 비활성이며 나중에 사용하더라도 별도 DB·파일·timer를 가져야 한다.
 
 ## 현재 지원 범위
@@ -10,9 +10,9 @@
 - General: `SCHOOL_NOTICE_ENABLED=false`로 시작하고 Masamo 상태를 공유하지 않음
 - Discord bot: 자연어 등록·확인, 동의, profile/feedback, digest 계약 검증, Discord 전달
 - vendored `school_notice` core: 공개 학교 게시판 수집, 사실 분석, 개인화 점수, digest 생성
-- 수집 시각: 신규 프로필 확인 직후 해당 사용자만 1회, 이후 매일 `23:00` KST systemd one-shot
+- 수집 시각: 신규 프로필 확인 직후 해당 사용자만 1회, 이후 매일 `05:00` KST systemd one-shot
 - 전달 시각: 사용자별, 신규 기본 `09:00` KST
-- 전달 대상 날짜: 보통 전날 23:00 batch가 만든 digest를 다음 날 사용자 시각에 전달하고,
+- 전달 대상 날짜: 당일 05:00 batch가 만든 digest를 당일 사용자 시각에 전달하고,
   장애 복구 때는 최근 3일 안의 가장 최신 유효 결과만 제한적으로 확인
 - 관련 공지가 없으면 자동 DM을 보내지 않음
 
@@ -41,8 +41,8 @@ DM에서 `!메뉴` 또는 `!공지`의 설정 버튼을 누르거나 기능을 �
 기능 진입 도중 나온 동의 버튼을 누르면 원래 설정 흐름이 한 번만 자동으로 이어진다.
 
 운영에서 프로필 추출 LLM을 켠 경우 사용자가 등록 명령에 입력한 제한된 자연어가 외부 LLM
-제공자 한 곳에 Discord ID 없이 전달될 수 있다. 기본 수집·분석은 LLM 없이 수행한다.
-공지 분석 LLM을 운영자가 명시적으로 켠 경우에도 공개 공지 내용만 전달하고 개인 프로필은
+제공자 한 곳에 Discord ID 없이 전달될 수 있다. 등록 직후 초기 확인은 LLM 없이
+수행한다. 05:00 정기 수집의 공지 분석 LLM에는 공개 공지 내용만 전달하고 개인 프로필은
 전달하지 않는다. 학교 사이트 요청에도 Discord ID, 사용자 입력, 학과·학년·관심사 등
 개인 프로필을 넣지 않는다.
 
@@ -91,11 +91,11 @@ DM에서 `!메뉴` 또는 `!공지`의 설정 버튼을 누르거나 기능을 �
 새 프로필을 처음 확인해 저장하면 `--only-user-id`로 그 사용자 한 명만 DB에서 읽고,
 그 학교 source만 대상으로 별도 1스레드·`--no-llm --low-resource` 프로세스를 즉시 한 번
 실행한다. 최대 실행 시간과 시도 수는 설정으로 제한하며, 정기 batch lock 충돌만 한 번
-기다렸다 재시도한다. 실패·timeout 뒤 무한 재실행하지 않고 다음 23시 수집으로 넘긴다.
+기다렸다 재시도한다. 실패·timeout 뒤 무한 재실행하지 않고 다음 05시 수집으로 넘긴다.
 같은 notice/revision 전달 기록을 사용하므로 최초 결과가 뒤의 정기 수집에서 재전송되지
 않는다.
 
-23:00 KST batch는 다음 조건을 모두 만족하는 profile만 읽는다.
+05:00 KST batch는 다음 조건을 모두 만족하는 profile만 읽는다.
 
 - 현재 학교공지 정책에 동의함
 - 철회되지 않음
@@ -109,12 +109,12 @@ source ID만 core의 반복 `--source` 인자로 전달한다. 등록되지 않�
 처음 읽은 profile snapshot만 믿지 않는다. 실제 처리 직전, feedback 전후, daily 직전과
 publish 직전에 현재 동의, `enabled`, profile version과 정규화 JSON이 그대로인지 다시
 확인한다. 성공 run에는 사용한 `profile_version`과 전달 시각을 제외한 정규 프로필의
-`profile_hash`를 함께 기록한다. 다음 날 Cog도 현재 값과 정확히 일치할 때만 전달하므로,
+`profile_hash`를 함께 기록한다. 전달 Cog도 현재 값과 정확히 일치할 때만 전달하므로,
 초 단위 timestamp가 같은 순간에 설정이 바뀌어도 이전 digest를 보내지 않는다. 전달 시각만
 바꾼 경우에는 개인화 내용이 그대로이므로 이미 생성된 digest를 무효화하지 않는다. 그 사이
 사용자가 철회·중지·수정하면 결과를 공개하거나 run을 성공 기록하지 않는다.
 
-검증된 사용자별 digest는 보통 다음 날 사용자가 선택한 시각에 전달한다. bot 재시작이나
+검증된 사용자별 digest는 당일 사용자가 선택한 시각에 전달한다. bot 재시작이나
 짧은 장애 뒤에는 최근 3일 범위에서 가장 최신의 유효한 성공·부분 성공 batch만 선택한다.
 더 최신 성공 batch가 있으면 그보다 오래된 결과를 대신 보내지 않는다. 개인화 결과의
 visible item이 0건이면 전달 run만 완료 상태로 기록하고 DM은 보내지 않는다.
@@ -197,7 +197,7 @@ Discord DM
   └─ run_school_notice_batch.py --only-user-id <id> (one-shot, thread 1, no LLM)
        └─ 해당 사용자와 등록 학교 source만 즉시 한 번 확인
 
-23:00 KST systemd timer
+05:00 KST systemd timer
   └─ run_school_notice_batch.py (one-shot, thread 1)
        ├─ 동의·활성 profile 조회
        ├─ profile 학교 source만 선택
@@ -264,8 +264,9 @@ MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
 `<core-cwd>/school_notice/sources.json`을 사용한다. 날짜를 생략해도 서버 timezone에
 의존하지 않고 `Asia/Seoul` 오늘 날짜를 계산해 core `daily --date`에 항상 명시한다.
 
-기본은 `--no-llm --low-resource`다. `--use-llm`을 운영자가 명시한 경우에만 공지 분석
-LLM을 켠다.
+CLI 기본은 안전한 수동 실행을 위해 `--no-llm --low-resource`다. 등록 직후 초기 확인도
+이 모드를 사용한다. 운영 05:00 systemd service는 `--use-llm --low-resource`를 명시해
+공개 상세 본문을 분석한다.
 
 ### Feedback 선처리
 
@@ -452,7 +453,7 @@ core DB 경로는 비어 있지 않은 절대 경로여야 하고, catalog와 so
 `profiles/masamo.env.example` 및 systemd 템플릿도 같은 layout을 사용한다. 실제 서버에서
 다른 경로를 쓰면 env와 unit의 모든 절대 경로를 함께 바꾼다.
 
-23:00 수집 시각의 source of truth는 아래 systemd timer다. 봇 env의
+05:00 수집 시각의 source of truth는 아래 systemd timer다. 봇 env의
 `SCHOOL_NOTICE_DELIVERY_HOUR/MINUTE`는 신규 profile의 기본 전달 시각이며, 저장된
 사용자별 `delivery_time`이 우선한다.
 
@@ -466,7 +467,7 @@ core DB 경로는 비어 있지 않은 절대 경로여야 하고, catalog와 so
 timer:
 
 ```ini
-OnCalendar=*-*-* 23:00:00 Asia/Seoul
+OnCalendar=*-*-* 05:00:00 Asia/Seoul
 Persistent=true
 RandomizedDelaySec=0
 AccuracySec=1min
@@ -545,7 +546,7 @@ DM을 만들지 않는다. 운영자가 true로 켜면 stale 경고의 의미와
 - 미동의·철회·정책 변경 fail-closed
 - 14개 학교 별칭과 지원하지 않는 학교 거부
 - 등록 profile source만 core 명령에 포함
-- 신규 사용자 1명만 읽는 즉시 수집과 KST 23:00 timer, 다음 날 09:00/사용자 시간
+- 신규 사용자 1명만 읽는 즉시 수집과 KST 05:00 timer, 당일 09:00/사용자 시간
 - 최근 3일 복구 범위에서 최신 유효 batch만 선택
 - 빈 digest 자동 무알림
 - revision 중복 방지, 수동 페이지 조회, 자동 페이지 연속 전달과 부분 전송 후 재시도

@@ -32,7 +32,7 @@
 | 로그 | `masamo*.log` | `general*.log` |
 | 최고/등록 관리자 | Masamo 전용 env ID와 `instance_name=masamo` 행 | 별도 General env ID와 `instance_name=general` 행 |
 | 서비스 unit | `masamong-masamo.service` | `masamong-general.service` |
-| 정기 작업 | 기존 작업·학교 23:00·편입 23:35 timer 소유 | 첫 부트스트랩에는 전부 끄고 검증 뒤 필요한 작업만 소유 |
+| 정기 작업 | 기존 작업·학교 05:00·편입 05:35 timer 소유 | 첫 부트스트랩에는 전부 끄고 검증 뒤 필요한 작업만 소유 |
 | 학교 공지 | 현재 schema/core DB/digest/timer 소유 | `SCHOOL_NOTICE_ENABLED=false`, Masamo 상태 공유 금지 |
 | 편입 공지 | 현재 구독 schema/snapshot/output/timer 소유 | `TRANSFER_NOTICE_ENABLED=false`, Masamo 상태 공유 금지 |
 
@@ -154,7 +154,7 @@ General은 학교 공지를 끈 상태로 시작하며 Masamo의 학교 table, c
 
 편입 공지도 같은 원칙을 적용한다. General은 `TRANSFER_NOTICE_ENABLED=false`로 시작하고
 Masamo의 `transfer_notice_*` table, `/var/lib/masamong/masamo/transfer_notice` 또는
-23:35 timer에 접근하지 않는다. 나중에 켤 때는 General DB에 별도 additive schema를
+05:35 timer에 접근하지 않는다. 나중에 켤 때는 General DB에 별도 additive schema를
 적용하고 경로에 `general`이 독립 구성요소로 들어가는지 경계 검사로 확인한다.
 
 ## `MASAMONG_ENV_FILE` 선택 방식
@@ -406,8 +406,8 @@ General RAG는 두 프로세스 합산 RSS, thread 수, load average를 측정�
   ID만 해당 채널에 매핑해 수정하며 다른 서버의 message ID를 사용하지 않는다.
 - General 첫 배포 중 Masamo DB에는 쓰기가 0건이다.
 - 정기 운세·기상·지진·maintenance 작업의 소유자가 명확하고 중복 발송이 없다.
-- Masamo의 학교 공지 flag와 23:00 timer가 현재 batch를 소유하고 General은 비활성이다.
-- Masamo의 편입 공지 flag와 23:35 timer가 전용 snapshot을 소유하고 General은 비활성이다.
+- Masamo의 학교 공지 flag와 05:00 timer가 현재 batch를 소유하고 General은 비활성이다.
+- Masamo의 편입 공지 flag와 05:35 timer가 전용 snapshot을 소유하고 General은 비활성이다.
 - 운영 timer의 정확한 unit 이름은 `masamong-school-notice-batch.timer`와
   `masamong-transfer-notice-batch.timer`이며 `systemctl list-timers --all`에서 다음
   실행 시각을 확인한다. one-shot service가 평소 `inactive (dead)`인 것은 정상이다.

@@ -1081,109 +1081,82 @@ class DiscordEmbeddingStore:
         user_id: int | None = None,
         limit: int = 200,
     ) -> list[aiosqlite.Row]:
-        """지정한 범위의 최신 메모리 엔트리를 반환합니다."""
+        """서버/DM 경계를 지키며 공유·현재 사용자 기억을 반환합니다.
+
+        길드 메모리는 ``server_id``가 1차 격리 경계다. 새 ``guild`` 범위는
+        같은 서버의 허용 채널끼리 공유하고, 레거시 ``channel`` 범위는 생성된
+        채널에서만 읽는다. DM은 ``server_id=0``과 고유 channel_id를 모두
+        조건으로 사용해 다른 사람의 DM 기억이 섞이지 않는다.
+        """
         await self.initialize()
         user_id_str = str(user_id) if user_id is not None else None
-        if self.backend == "tidb":
+        placeholder = "%s" if self.backend == "tidb" else "?"
+        select_sql = """
+            SELECT memory_id,
+                   anchor_message_id AS message_id,
+                   owner_user_id AS user_id,
+                   owner_user_name AS user_name,
+                   memory_text AS message,
+                   summary_text,
+                   raw_context,
+                   source_message_ids,
+                   speaker_names,
+                   keyword_json,
+                   timestamp,
+                   embedding,
+                   memory_scope,
+                   memory_type
+            FROM discord_memory_entries
+        """
+        params: list[str | int] = [str(server_id)]
+        if int(server_id) == 0:
+            scope_parts = [
+                f"(channel_id = {placeholder} AND memory_scope IN ('dm', 'channel'))"
+            ]
+            params.append(str(channel_id))
             if user_id_str is not None:
-                query = """
-                    SELECT memory_id,
-                           anchor_message_id AS message_id,
-                           owner_user_id AS user_id,
-                           owner_user_name AS user_name,
-                           memory_text AS message,
-                           summary_text,
-                           raw_context,
-                           source_message_ids,
-                           speaker_names,
-                           keyword_json,
-                           timestamp,
-                           embedding,
-                           memory_scope,
-                           memory_type
-                    FROM discord_memory_entries
-                    WHERE server_id = %s
-                      AND channel_id = %s
-                      AND (memory_scope = 'channel' OR (memory_scope = 'user' AND owner_user_id = %s))
-                    ORDER BY CASE WHEN memory_scope = 'user' THEN 0 ELSE 1 END, timestamp DESC
-                    LIMIT %s
-                """
-                params: tuple[Any, ...] = (str(server_id), str(channel_id), user_id_str, int(limit))
-            else:
-                query = """
-                    SELECT memory_id,
-                           anchor_message_id AS message_id,
-                           owner_user_id AS user_id,
-                           owner_user_name AS user_name,
-                           memory_text AS message,
-                           summary_text,
-                           raw_context,
-                           source_message_ids,
-                           speaker_names,
-                           keyword_json,
-                           timestamp,
-                           embedding,
-                           memory_scope,
-                           memory_type
-                    FROM discord_memory_entries
-                    WHERE server_id = %s
-                      AND channel_id = %s
-                      AND memory_scope = 'channel'
-                    ORDER BY timestamp DESC
-                    LIMIT %s
-                """
-                params = (str(server_id), str(channel_id), int(limit))
-            rows = await asyncio.to_thread(self._tidb_exec, query, params, fetch=True)
+                scope_parts.append(
+                    f"(channel_id = {placeholder} "
+                    "AND memory_scope IN ('dm_user', 'user') "
+                    f"AND owner_user_id = {placeholder})"
+                )
+                params.extend([str(channel_id), user_id_str])
+        else:
+            scope_parts = ["memory_scope = 'guild'"]
+            scope_parts.append(
+                f"(channel_id = {placeholder} AND memory_scope = 'channel')"
+            )
+            params.append(str(channel_id))
+            if user_id_str is not None:
+                scope_parts.extend(
+                    [
+                        "(memory_scope = 'guild_user' "
+                        f"AND owner_user_id = {placeholder})",
+                        f"(channel_id = {placeholder} "
+                        "AND memory_scope = 'user' "
+                        f"AND owner_user_id = {placeholder})",
+                    ]
+                )
+                params.extend([user_id_str, str(channel_id), user_id_str])
+        params.append(int(limit))
+        query = (
+            select_sql
+            + f" WHERE server_id = {placeholder} AND ("
+            + " OR ".join(scope_parts)
+            + ") "
+            + "ORDER BY CASE WHEN memory_scope IN "
+            + "('guild_user', 'dm_user', 'user') THEN 0 ELSE 1 END, "
+            + f"timestamp DESC LIMIT {placeholder}"
+        )
+        if self.backend == "tidb":
+            rows = await asyncio.to_thread(
+                self._tidb_exec,
+                query,
+                tuple(params),
+                fetch=True,
+            )
             return rows or []
 
-        if user_id_str is not None:
-            query = """
-                SELECT memory_id,
-                       anchor_message_id AS message_id,
-                       owner_user_id AS user_id,
-                       owner_user_name AS user_name,
-                       memory_text AS message,
-                       summary_text,
-                       raw_context,
-                       source_message_ids,
-                       speaker_names,
-                       keyword_json,
-                       timestamp,
-                       embedding,
-                       memory_scope,
-                       memory_type
-                FROM discord_memory_entries
-                WHERE server_id = ?
-                  AND channel_id = ?
-                  AND (memory_scope = 'channel' OR (memory_scope = 'user' AND owner_user_id = ?))
-                ORDER BY CASE WHEN memory_scope = 'user' THEN 0 ELSE 1 END, timestamp DESC
-                LIMIT ?
-            """
-            params: list[str | int] = [str(server_id), str(channel_id), user_id_str, int(limit)]
-        else:
-            query = """
-                SELECT memory_id,
-                       anchor_message_id AS message_id,
-                       owner_user_id AS user_id,
-                       owner_user_name AS user_name,
-                       memory_text AS message,
-                       summary_text,
-                       raw_context,
-                       source_message_ids,
-                       speaker_names,
-                       keyword_json,
-                       timestamp,
-                       embedding,
-                       memory_scope,
-                       memory_type
-                FROM discord_memory_entries
-                WHERE server_id = ?
-                  AND channel_id = ?
-                  AND memory_scope = 'channel'
-                ORDER BY timestamp DESC
-                LIMIT ?
-            """
-            params = [str(server_id), str(channel_id), int(limit)]
         async with self._sqlite_connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(query, params) as cursor:

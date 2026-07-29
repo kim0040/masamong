@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import sqlite3
 from pathlib import Path
 
@@ -37,6 +38,11 @@ class TransferNoticeStore:
                 url TEXT NOT NULL,
                 published_date TEXT,
                 fingerprint TEXT NOT NULL,
+                detail_fingerprint TEXT,
+                detail_summary TEXT,
+                detail_text TEXT,
+                key_dates_json TEXT,
+                last_detail_checked_at TEXT,
                 revision INTEGER NOT NULL DEFAULT 1,
                 first_seen_at TEXT NOT NULL,
                 last_seen_at TEXT NOT NULL,
@@ -65,6 +71,26 @@ class TransferNoticeStore:
             );
             """
         )
+        # 기존 운영 SQLite는 삭제·재생성하지 않고 공개 상세 본문 열만
+        # 추가한다. NULL인 과거 행은 기존 제목/링크 기준선 그대로 유지된다.
+        existing_columns = {
+            str(row[1])
+            for row in self.connection.execute(
+                "PRAGMA table_info(transfer_notices)"
+            ).fetchall()
+        }
+        additions = {
+            "detail_fingerprint": "TEXT",
+            "detail_summary": "TEXT",
+            "detail_text": "TEXT",
+            "key_dates_json": "TEXT",
+            "last_detail_checked_at": "TEXT",
+        }
+        for column, definition in additions.items():
+            if column not in existing_columns:
+                self.connection.execute(
+                    f"ALTER TABLE transfer_notices ADD COLUMN {column} {definition}"
+                )
         self.connection.commit()
 
     def source_state(self, source_id: str) -> sqlite3.Row | None:
@@ -96,7 +122,7 @@ class TransferNoticeStore:
             for item in items:
                 previous = self.connection.execute(
                     """
-                    SELECT fingerprint, revision
+                    SELECT fingerprint, detail_fingerprint, revision
                     FROM transfer_notices
                     WHERE source_id = ? AND external_id = ?
                     """,
@@ -108,9 +134,11 @@ class TransferNoticeStore:
                         """
                         INSERT INTO transfer_notices (
                             source_id, external_id, university, title, url,
-                            published_date, fingerprint, revision,
+                            published_date, fingerprint, detail_fingerprint,
+                            detail_summary, detail_text, key_dates_json,
+                            last_detail_checked_at, revision,
                             first_seen_at, last_seen_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             item.source_id,
@@ -120,6 +148,11 @@ class TransferNoticeStore:
                             item.url,
                             item.published_date,
                             item.fingerprint,
+                            item.detail_fingerprint or None,
+                            item.detail_summary or None,
+                            item.detail_text or None,
+                            json.dumps(item.key_dates, ensure_ascii=False),
+                            observed_at if item.detail_fingerprint else None,
                             revision,
                             observed_at,
                             observed_at,
@@ -132,18 +165,35 @@ class TransferNoticeStore:
                         and (not watermark or not item.published_date or item.published_date >= watermark)
                     ):
                         payload = item.as_dict()
+                        payload.pop("detail_text", None)
                         payload.update(change_type="new", revision=revision)
                         changes.append(payload)
                 else:
                     revision = int(previous["revision"])
-                    changed = str(previous["fingerprint"]) != item.fingerprint
+                    list_changed = str(previous["fingerprint"]) != item.fingerprint
+                    previous_detail = str(previous["detail_fingerprint"] or "")
+                    detail_changed = bool(
+                        item.detail_fingerprint
+                        and previous_detail
+                        and item.detail_fingerprint != previous_detail
+                    )
+                    # 상세 본문을 처음 보강한 행은 기존 공지 재전송 사유가 아니다.
+                    changed = list_changed or detail_changed
                     if changed:
                         revision += 1
                     self.connection.execute(
                         """
                         UPDATE transfer_notices
                         SET university = ?, title = ?, url = ?, published_date = ?,
-                            fingerprint = ?, revision = ?, last_seen_at = ?
+                            fingerprint = ?,
+                            detail_fingerprint = COALESCE(?, detail_fingerprint),
+                            detail_summary = COALESCE(?, detail_summary),
+                            detail_text = COALESCE(?, detail_text),
+                            key_dates_json = COALESCE(?, key_dates_json),
+                            last_detail_checked_at = CASE
+                                WHEN ? IS NULL THEN last_detail_checked_at ELSE ?
+                            END,
+                            revision = ?, last_seen_at = ?
                         WHERE source_id = ? AND external_id = ?
                         """,
                         (
@@ -152,6 +202,16 @@ class TransferNoticeStore:
                             item.url,
                             item.published_date,
                             item.fingerprint,
+                            item.detail_fingerprint or None,
+                            item.detail_summary or None,
+                            item.detail_text or None,
+                            (
+                                json.dumps(item.key_dates, ensure_ascii=False)
+                                if item.detail_fingerprint
+                                else None
+                            ),
+                            item.detail_fingerprint or None,
+                            observed_at,
                             revision,
                             observed_at,
                             item.source_id,
@@ -160,6 +220,7 @@ class TransferNoticeStore:
                     )
                     if changed and not baseline:
                         payload = item.as_dict()
+                        payload.pop("detail_text", None)
                         payload.update(change_type="updated", revision=revision)
                         changes.append(payload)
                 if item.published_date and (
@@ -191,11 +252,53 @@ class TransferNoticeStore:
             raise
         return changes, baseline
 
+    def detail_targets(
+        self,
+        source_id: str,
+        items: list[TransferNoticeItem],
+        *,
+        limit: int = 3,
+    ) -> list[str]:
+        """새 글·목록 수정 글과 최신 한 건을 상세 확인 대상으로 고른다.
+
+        첫 성공은 과거 공지 기준선이므로 전체 상세를 읽지 않는다. 이후에도
+        source당 유한 개수만 반환해 20개 사이트를 순차 확인하는 저사양
+        collector의 HTTP/CPU 상한을 유지한다.
+        """
+        if self.source_state(source_id) is None:
+            return []
+        bounded_limit = max(1, min(5, int(limit)))
+        selected: list[str] = []
+        for index, item in enumerate(items):
+            row = self.connection.execute(
+                """
+                SELECT fingerprint, detail_fingerprint, last_detail_checked_at
+                FROM transfer_notices
+                WHERE source_id = ? AND external_id = ?
+                """,
+                (source_id, item.external_id),
+            ).fetchone()
+            is_new = row is None
+            listing_changed = bool(
+                row is not None
+                and str(row["fingerprint"]) != item.fingerprint
+            )
+            # 목록 최상단 한 건은 상세 내용만 수정되는 경우를 잡기 위해
+            # 하루 한 번 다시 확인한다. collector 자체가 하루 한 번이므로
+            # 별도 시각 계산 없이 마지막 대상 여부만 본다.
+            refresh_latest = index == 0
+            if is_new or listing_changed or refresh_latest:
+                selected.append(item.external_id)
+            if len(selected) >= bounded_limit:
+                break
+        return selected
+
     def latest_items(self, limit: int = 80) -> list[dict]:
         rows = self.connection.execute(
             """
             SELECT source_id, external_id, university, title, url,
-                   published_date, fingerprint, revision, first_seen_at
+                   published_date, fingerprint, detail_fingerprint,
+                   detail_summary, key_dates_json, revision, first_seen_at
             FROM transfer_notices
             ORDER BY
                 CASE WHEN published_date IS NULL THEN 1 ELSE 0 END,
@@ -205,7 +308,20 @@ class TransferNoticeStore:
             """,
             (max(1, min(200, int(limit))),),
         ).fetchall()
-        return [dict(row) for row in rows]
+        results: list[dict] = []
+        for row in rows:
+            payload = dict(row)
+            try:
+                decoded = json.loads(str(payload.pop("key_dates_json") or "[]"))
+            except json.JSONDecodeError:
+                decoded = []
+            payload["key_dates"] = (
+                [str(item) for item in decoded[:8]]
+                if isinstance(decoded, list)
+                else []
+            )
+            results.append(payload)
+        return results
 
     def record_run(self, payload: dict) -> None:
         self.connection.execute(

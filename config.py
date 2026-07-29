@@ -1428,6 +1428,30 @@ WEB_RAG_CONTEXT_MAX_CHARS = max(800, as_int(load_config_value('WEB_RAG_CONTEXT_M
 WEB_SEARCH_REFINE_WITH_LLM = as_bool(load_config_value('WEB_SEARCH_REFINE_WITH_LLM', 'false'))
 AUTO_WEB_SEARCH_COOLDOWN_SECONDS = max(0, as_int(load_config_value('AUTO_WEB_SEARCH_COOLDOWN_SECONDS', 90), 90))
 AUTO_WEB_SEARCH_ALLOW_SHORT_FOLLOWUP = as_bool(load_config_value('AUTO_WEB_SEARCH_ALLOW_SHORT_FOLLOWUP', 'false'))
+WEB_SEARCH_GLOBAL_RPM_LIMIT = max(
+    1,
+    as_int(load_config_value("WEB_SEARCH_GLOBAL_RPM_LIMIT", 20), 20),
+)
+WEB_SEARCH_GLOBAL_RPD_LIMIT = max(
+    1,
+    as_int(load_config_value("WEB_SEARCH_GLOBAL_RPD_LIMIT", 1000), 1000),
+)
+WEB_SEARCH_GUILD_RPM_LIMIT = max(
+    1,
+    as_int(load_config_value("WEB_SEARCH_GUILD_RPM_LIMIT", 10), 10),
+)
+WEB_SEARCH_GUILD_RPD_LIMIT = max(
+    1,
+    as_int(load_config_value("WEB_SEARCH_GUILD_RPD_LIMIT", 300), 300),
+)
+WEB_SEARCH_USER_RPM_LIMIT = max(
+    1,
+    as_int(load_config_value("WEB_SEARCH_USER_RPM_LIMIT", 4), 4),
+)
+WEB_SEARCH_USER_RPD_LIMIT = max(
+    1,
+    as_int(load_config_value("WEB_SEARCH_USER_RPD_LIMIT", 60), 60),
+)
 
 
 # CometAPI 이미지 생성 설정 (Gemini via CometAPI Gemini-compatible)
@@ -1440,8 +1464,14 @@ COMETAPI_IMAGE_BASE_URL = as_str(
     load_config_value('COMETAPI_IMAGE_BASE_URL', 'https://api.cometapi.com'),
     'https://api.cometapi.com',
 )
-# 사용 모델: 'gemini-3.1-flash-image' (preview 제외, 일반 버전)
-IMAGE_MODEL = as_str(load_config_value('IMAGE_MODEL', 'gemini-3.1-flash-image'), 'gemini-3.1-flash-image')
+# CometAPI의 Gemini native generateContent 이미지 모델.
+IMAGE_MODEL = as_str(
+    load_config_value(
+        'IMAGE_MODEL',
+        'gemini-3.1-flash-lite-image',
+    ),
+    'gemini-3.1-flash-lite-image',
+)
 # 이미지 가로세로 비율: "1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9"
 IMAGE_ASPECT_RATIO = as_str(load_config_value('IMAGE_ASPECT_RATIO', '1:1'), '1:1')
 
@@ -1457,6 +1487,10 @@ IMAGE_USER_RESET_HOURS = min(
 IMAGE_GLOBAL_DAILY_LIMIT = min(
     1_000,
     max(1, as_int(load_config_value('IMAGE_GLOBAL_DAILY_LIMIT', 50), 50)),
+)
+IMAGE_GUILD_DAILY_LIMIT = min(
+    500,
+    max(1, as_int(load_config_value('IMAGE_GUILD_DAILY_LIMIT', 30), 30)),
 )
 IMAGE_GENERATION_QUEUE_TIMEOUT_SECONDS = min(
     30,
@@ -1753,8 +1787,14 @@ STRUCTURED_USER_MEMORY_MIN_CHARS = max(4, as_int(load_config_value('STRUCTURED_U
 
 AI_INTENT_MODEL_NAME = as_str(load_config_value('AI_INTENT_MODEL_NAME', 'gemini-2.5-flash-lite'), 'gemini-2.5-flash-lite')
 AI_RESPONSE_MODEL_NAME = as_str(load_config_value('AI_RESPONSE_MODEL_NAME', 'gemini-2.5-flash'), 'gemini-2.5-flash')
-FORTUNE_MODEL_LITE = as_str(load_config_value('FORTUNE_MODEL_LITE', 'DeepSeek-V3.2-Exp-nothinking'), 'DeepSeek-V3.2-Exp-nothinking')
-FORTUNE_MODEL_PRO = as_str(load_config_value('FORTUNE_MODEL_PRO', 'DeepSeek-V3.2-Exp-thinking'), 'DeepSeek-V3.2-Exp-thinking')
+FORTUNE_MODEL_LITE = as_str(
+    load_config_value("FORTUNE_MODEL_LITE", "deepseek-v4-flash"),
+    "deepseek-v4-flash",
+)
+FORTUNE_MODEL_PRO = as_str(
+    load_config_value("FORTUNE_MODEL_PRO", "deepseek-v4-pro"),
+    "deepseek-v4-pro",
+)
 # 별자리 LLM 결과는 사용자별 정보가 아닌 KST 날짜·별자리 기준으로 공유한다.
 # 캐시/쿨다운/물리 호출 상한은 모두 잘못된 환경값으로 비활성화되지 않게
 # 안전 범위 안으로 제한한다.
@@ -1924,6 +1964,49 @@ LLM_CALL_TIMEOUT_SECONDS = min(
 # CometAPI 보호장치 (외부 LLM 과호출/과토큰 방지)
 COMETAPI_RPM_LIMIT = max(1, as_int(load_config_value('COMETAPI_RPM_LIMIT', 40), 40))
 COMETAPI_RPD_LIMIT = max(1, as_int(load_config_value('COMETAPI_RPD_LIMIT', 3000), 3000))
+# 논리 LLM 요청은 전역 한도뿐 아니라 서버/DM/사용자/기능별 한도를 모두
+# 통과해야 한다. DeepSeek의 낮은 단가를 감안해 넉넉하게 두되 한 주체가
+# 전체 할당량을 독점하거나 장애 루프가 무한 호출하지 못하게 한다.
+LLM_GUILD_RPM_LIMIT = max(
+    1,
+    as_int(load_config_value('LLM_GUILD_RPM_LIMIT', 30), 30),
+)
+LLM_GUILD_RPD_LIMIT = max(
+    1,
+    as_int(load_config_value('LLM_GUILD_RPD_LIMIT', 2000), 2000),
+)
+LLM_DM_RPM_LIMIT = max(
+    1,
+    as_int(load_config_value('LLM_DM_RPM_LIMIT', 20), 20),
+)
+LLM_DM_RPD_LIMIT = max(
+    1,
+    as_int(load_config_value('LLM_DM_RPD_LIMIT', 1000), 1000),
+)
+LLM_USER_RPM_LIMIT = max(
+    1,
+    as_int(load_config_value('LLM_USER_RPM_LIMIT', 12), 12),
+)
+LLM_USER_RPD_LIMIT = max(
+    1,
+    as_int(load_config_value('LLM_USER_RPD_LIMIT', 300), 300),
+)
+LLM_DM_USER_RPM_LIMIT = max(
+    1,
+    as_int(load_config_value('LLM_DM_USER_RPM_LIMIT', 8), 8),
+)
+LLM_DM_USER_RPD_LIMIT = max(
+    1,
+    as_int(load_config_value('LLM_DM_USER_RPD_LIMIT', 120), 120),
+)
+LLM_FEATURE_RPM_LIMIT = max(
+    1,
+    as_int(load_config_value('LLM_FEATURE_RPM_LIMIT', 35), 35),
+)
+LLM_FEATURE_RPD_LIMIT = max(
+    1,
+    as_int(load_config_value('LLM_FEATURE_RPD_LIMIT', 2500), 2500),
+)
 COMETAPI_MAX_TOKENS = max(128, as_int(load_config_value('COMETAPI_MAX_TOKENS', 2048), 2048))
 COMETAPI_SYSTEM_PROMPT_MAX_CHARS = max(400, as_int(load_config_value('COMETAPI_SYSTEM_PROMPT_MAX_CHARS', 6000), 6000))
 COMETAPI_USER_PROMPT_MAX_CHARS = max(800, as_int(load_config_value('COMETAPI_USER_PROMPT_MAX_CHARS', 20000), 20000))
@@ -2553,6 +2636,24 @@ TRANSFER_NOTICE_DELIVERY_RETRY_MINUTES = max(
             30,
         ),
     ),
+)
+TRANSFER_NOTICE_DELIVERY_HOUR = max(
+    0,
+    min(
+        23,
+        as_int(load_config_value("TRANSFER_NOTICE_DELIVERY_HOUR", 9), 9),
+    ),
+)
+TRANSFER_NOTICE_DELIVERY_MINUTE = max(
+    0,
+    min(
+        59,
+        as_int(load_config_value("TRANSFER_NOTICE_DELIVERY_MINUTE", 0), 0),
+    ),
+)
+TRANSFER_NOTICE_DEFAULT_DELIVERY_TIME = (
+    f"{TRANSFER_NOTICE_DELIVERY_HOUR:02d}:"
+    f"{TRANSFER_NOTICE_DELIVERY_MINUTE:02d}"
 )
 TRANSFER_NOTICE_MAX_ITEMS_PER_DM = max(
     1,

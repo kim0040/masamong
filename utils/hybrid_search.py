@@ -128,6 +128,7 @@ class HybridSearchEngine:
         guild_id: int,
         channel_id: int,
         user_id: int | None = None,
+        memory_user_id: int | None = None,
         recent_messages: list[str] | None = None,
     ) -> HybridSearchResult:
         """주어진 질문에 대해 하이브리드 검색을 수행합니다."""
@@ -146,6 +147,7 @@ class HybridSearchEngine:
                 guild_id=guild_id,
                 channel_id=channel_id,
                 user_id=user_id,
+                memory_user_id=memory_user_id,
                 dialogue_cache=dialogue_cache,
                 row_cache=discord_row_cache,
             )
@@ -254,6 +256,7 @@ class HybridSearchEngine:
         guild_id: int,
         channel_id: int,
         user_id: int | None,
+        memory_user_id: int | None = None,
         dialogue_cache: Dict[tuple[str, int, int], List[dict[str, Any]]] | None = None,
         row_cache: Dict[str, List[Any]] | None = None,
     ) -> List[dict[str, Any]]:
@@ -273,7 +276,11 @@ class HybridSearchEngine:
             cache["structured"] = await self.discord_store.fetch_recent_memory_entries(
                 server_id=guild_id,
                 channel_id=channel_id,
-                user_id=user_id,
+                user_id=(
+                    memory_user_id
+                    if memory_user_id is not None
+                    else user_id
+                ),
                 limit=self.structured_memory_limit,
             )
         discord_rows = cache["structured"]
@@ -308,7 +315,11 @@ class HybridSearchEngine:
                     await self.discord_store.fetch_recent_memory_entries(
                         server_id=guild_id,
                         channel_id=channel_id,
-                        user_id=user_id,
+                        user_id=(
+                            memory_user_id
+                            if memory_user_id is not None
+                            else user_id
+                        ),
                         limit=self.structured_memory_fallback_limit,
                     )
                 )
@@ -433,7 +444,10 @@ class HybridSearchEngine:
             similarity = self._cosine_similarity(query_vector, vector)
             memory_scope = row.get("memory_scope")
             memory_type = row.get("memory_type")
-            if not use_legacy_discord_rows and memory_scope == "user":
+            if (
+                not use_legacy_discord_rows
+                and memory_scope in {"user", "guild_user", "dm_user"}
+            ):
                 similarity = min(0.999999, similarity + 0.025)
             if similarity < threshold:
                 continue

@@ -35,7 +35,7 @@ class _FakeAI:
 
 
 class _QuotaBlockedTools:
-    async def check_image_quota(self, _user_id):
+    async def check_image_quota(self, _user_id, _guild_id=None):
         return {"allowed": False, "error": "테스트 한도 초과"}
 
     async def generate_image(self, **_kwargs):

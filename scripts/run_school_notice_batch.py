@@ -150,9 +150,24 @@ def parse_args() -> argparse.Namespace:
         "--date",
         help="실행 기준일 (YYYY-MM-DD). 생략 시 Asia/Seoul 오늘",
     )
-    parser.add_argument("--no-llm", action="store_true", default=True)
-    parser.add_argument("--use-llm", dest="no_llm", action="store_false")
-    parser.add_argument("--low-resource", action="store_true", default=True)
+    parser.add_argument(
+        "--no-llm",
+        action="store_true",
+        default=True,
+        help="공지 분석 LLM을 사용하지 않음(안전한 수동/초기 확인 기본값)",
+    )
+    parser.add_argument(
+        "--use-llm",
+        dest="no_llm",
+        action="store_false",
+        help="공개 공지 상세 본문 분석에 LLM 사용(운영 timer가 명시)",
+    )
+    parser.add_argument(
+        "--low-resource",
+        action="store_true",
+        default=True,
+        help="1스레드 저자원 모드(기본값)",
+    )
     parser.add_argument("--max-details-per-source", type=int)
     parser.add_argument("--max-requests", type=int)
     parser.add_argument("--max-profiles", type=int)
@@ -816,6 +831,7 @@ def build_core_command(
     source_ids: tuple[str, ...],
     run_date: date | None = None,
     selected_source_config: Path | None = None,
+    reuse_current_snapshot: bool = False,
 ) -> list[str]:
     """코어 daily 명령을 만듭니다. 날짜와 source를 항상 명시합니다."""
     if not source_ids or any(
@@ -853,6 +869,8 @@ def build_core_command(
         command.extend(["--max-details-per-source", str(args.max_details_per_source)])
     if args.max_requests:
         command.extend(["--max-requests", str(args.max_requests)])
+    if reuse_current_snapshot:
+        command.append("--reuse-current-snapshot")
     return command
 
 
@@ -1252,6 +1270,7 @@ async def _run_profile(
     run_date: date,
     deadline_monotonic: float,
     limits: BatchLimits,
+    reuse_current_snapshot: bool = False,
 ) -> tuple[dict | None, int, int]:
     """프로필 하나의 feedback과 daily를 순차 실행합니다."""
     current = await current_profile_snapshot(db, profile)
@@ -1312,6 +1331,7 @@ async def _run_profile(
             source_ids=source_ids,
             run_date=run_date,
             selected_source_config=selected_source_config,
+            reuse_current_snapshot=reuse_current_snapshot,
         )
         try:
             completed = _run_subprocess(
@@ -1436,6 +1456,10 @@ async def run_batch(args: argparse.Namespace) -> int:
         exit_code = 2 if profile_limit_hit or invalid_profiles_present else 0
         feedback_succeeded_total = 0
         feedback_failed_total = 0
+        # 학교 ID만으로 재사용 여부를 정하면 서울/ERICA처럼 같은 학교의
+        # 프로필이 서로 다른 source 조합을 요구할 때 필요한 게시판을 건너뛸
+        # 수 있다. 실제로 성공 수집한 source ID 집합을 기준으로 판단한다.
+        collected_source_ids: set[str] = set()
 
         try:
             with single_flight_lock(digest_root / ".school-notice-batch.lock"):
@@ -1449,6 +1473,12 @@ async def run_batch(args: argparse.Namespace) -> int:
                             f"  profile#{profile_index}: skipped=current-consent-or-profile"
                         )
                         continue
+                    try:
+                        _selected_config, current_source_ids = (
+                            select_profile_sources(args, current)
+                        )
+                    except SourceSelectionError:
+                        current_source_ids = ()
                     current_feedback = await pending_feedback_for_profile(db, current)
                     try:
                         summary, feedback_succeeded, feedback_failed = await _run_profile(
@@ -1461,6 +1491,12 @@ async def run_batch(args: argparse.Namespace) -> int:
                             run_date=run_date,
                             deadline_monotonic=deadline_monotonic,
                             limits=limits,
+                            reuse_current_snapshot=(
+                                bool(current_source_ids)
+                                and set(current_source_ids).issubset(
+                                    collected_source_ids
+                                )
+                            ),
                         )
                     except BatchDeadlineExceeded:
                         exit_code = 2
@@ -1488,6 +1524,8 @@ async def run_batch(args: argparse.Namespace) -> int:
                     )
                     if summary["status"] == "failed":
                         exit_code = 2
+                    elif summary["status"] == "succeeded":
+                        collected_source_ids.update(current_source_ids)
         except BatchAlreadyRunning:
             print("학교 공지 batch가 이미 실행 중입니다.", file=sys.stderr)
             return 3

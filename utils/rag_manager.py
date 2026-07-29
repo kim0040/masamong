@@ -257,6 +257,11 @@ class RAGManager:
             max_summary_chars=getattr(config, "STRUCTURED_MEMORY_MAX_SUMMARY_CHARS", 320),
             max_context_chars=getattr(config, "STRUCTURED_MEMORY_MAX_CONTEXT_CHARS", 1200),
             user_turn_min_chars=getattr(config, "STRUCTURED_USER_MEMORY_MIN_CHARS", 12),
+            # 길드에서는 같은 서버의 다른 허용 AI 채널에서도 회수할 수 있는
+            # 서버/서버-사용자 범위로 저장한다. DM은 고유 channel_id 안에서만
+            # 회수되는 별도 범위라 서버 기억과 섞이지 않는다.
+            shared_scope="guild" if guild_id else "dm",
+            user_scope="guild_user" if guild_id else "dm_user",
         )
         if not memory_units:
             return

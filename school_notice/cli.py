@@ -87,6 +87,14 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     daily.add_argument("--refresh-attachments", action="store_true")
+    daily.add_argument(
+        "--reuse-current-snapshot",
+        action="store_true",
+        help=(
+            "같은 batch에서 이미 수집한 학교 snapshot을 재사용하고 "
+            "사용자별 분석·점수·digest만 계산합니다."
+        ),
+    )
     daily.add_argument("--ignore-robots", action="store_true")
     daily.add_argument(
         "--output-dir",
@@ -218,6 +226,7 @@ async def _daily(args: argparse.Namespace) -> int:
             max_binary_bytes=max_binary_bytes,
             refresh_attachments=args.refresh_attachments,
             respect_robots=not args.ignore_robots,
+            collect_sources=not args.reuse_current_snapshot,
         )
         result = await job.run()
     print(json.dumps(result.summary_dict(), ensure_ascii=False, indent=2))
