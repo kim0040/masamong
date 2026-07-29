@@ -277,6 +277,34 @@ def _rank_keywords_from_rows(rows: Iterable[dict[str, Any]], *, limit: int) -> l
     return [token for token, _ in counter.most_common(limit)]
 
 
+def _memory_probe_queries(
+    rows: Iterable[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[str]:
+    """실제 저장 문장으로 회수 probe를 만든다.
+
+    한두 단어 키워드는 정밀도 게이트에 막히는 것이 정상이다. 헬스체크는 관련
+    기억이 있어야 하는 문장을 사용하고, 출력에는 본문 대신 fingerprint만 남긴다.
+    """
+    queries: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for field in ("summary_text", "message", "raw_context"):
+            text = " ".join(str(row.get(field) or "").split())
+            if len(text) < 8:
+                continue
+            query = text[:240]
+            if query in seen:
+                continue
+            seen.add(query)
+            queries.append(query)
+            break
+        if len(queries) >= max(1, int(limit)):
+            break
+    return queries
+
+
 async def _discover_user_id_for_scope(
     store: DiscordEmbeddingStore,
     server_id: str,
@@ -772,9 +800,14 @@ async def main() -> int:
             )
 
             user_id = await _discover_user_id_for_scope(discord_store, server_id, channel_id)
-            discord_queries = _rank_keywords_from_rows(recent_memories, limit=max(1, args.discord_probes))
+            discord_queries = _memory_probe_queries(
+                recent_memories,
+                limit=max(1, args.discord_probes),
+            )
             if not discord_queries:
-                discord_queries = ["운전면허", "걸어가라고", "오푸스", "성능"][: max(1, args.discord_probes)]
+                discord_queries = [
+                    "이 채널에서 이전에 나눈 대화 내용을 기억하는지 확인해줘"
+                ]
 
             engine = HybridSearchEngine(discord_store, None, None)
             discord_query_results: list[dict[str, Any]] = []
@@ -807,7 +840,22 @@ async def main() -> int:
                         "error": "embedding_preflight_failed",
                     }
                 )
-            search_ok = embedding_ready and all(item["entries"] > 0 for item in discord_query_results)
+            vector_mode_expected = bool(
+                getattr(config, "STRUCTURED_MEMORY_VECTOR_SEARCH_ENABLED", False)
+            )
+            vector_path_ok = (
+                not vector_mode_expected
+                or (
+                    discord_store._vector_coverage_complete is True
+                    and discord_store._vector_search_failed is False
+                )
+            )
+            search_ok = (
+                embedding_ready
+                and bool(discord_query_results)
+                and all(item["entries"] > 0 for item in discord_query_results)
+                and vector_path_ok
+            )
             _append(
                 results,
                 "discord_rag",
@@ -815,6 +863,9 @@ async def main() -> int:
                 "Discord 구조화 메모리 검색 확인" if search_ok else "Discord RAG 질의 중 회수 실패가 있습니다.",
                 queries=discord_query_results,
                 user_id=user_id,
+                vector_mode_expected=vector_mode_expected,
+                vector_coverage_complete=discord_store._vector_coverage_complete,
+                vector_search_failed=discord_store._vector_search_failed,
             )
 
         kakao_targets = (
