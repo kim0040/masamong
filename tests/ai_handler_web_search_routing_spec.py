@@ -311,6 +311,7 @@ async def test_market_news_router_cannot_skip_verified_market_tools():
         "get_market_snapshot",
         "web_search",
     ]
+    assert decision.reasoning_level == "high"
     assert decision.plan[0]["parameters"]["region"] == "kr"
     search_query = decision.plan[1]["parameters"]["query"]
     assert "대상 시장: 한국 증시" in search_query
@@ -434,6 +435,7 @@ async def test_semantic_router_compacts_only_older_history(monkeypatch):
     assert decision.context_digest == (
         "민수는 자가용을 쓰지 않기로 했고 KTX 예약은 미정이다."
     )
+    assert decision.reasoning_level == "high"
     assert "압축할 오래된 대화:" in captured["prompt"]
     assert "오래된 계획" in captured["prompt"]
     assert "최신 답변 3" in captured["prompt"]
@@ -486,6 +488,7 @@ async def test_bare_identity_question_prefers_scoped_memory_over_web():
     assert decision.plan == []
     assert decision.needs_memory is True
     assert decision.requires_external_evidence is False
+    assert decision.reasoning_level == "high"
 
 
 def test_described_or_explicitly_searched_identity_is_not_forced_local():
