@@ -59,6 +59,7 @@ from utils.llm_client import (
     LLMProviderTimeoutError,
 )
 from utils.intent_analyzer import IntentAnalyzer
+from utils.tool_health import ToolTemporarilyUnavailable
 from utils.rag_manager import RAGManager
 from utils.discord_helpers import (
     DiscordProgress,
@@ -2022,7 +2023,7 @@ Generate the optimized English image prompt:"""
 
         intent_analyzer = self._ensure_intent_analyzer()
 
-        # 금융 도구는 비활성화하고 웹 검색으로 강제 대체
+        # 환율·기업뉴스 등 전용 계약이 없는 레거시 금융 도구만 웹으로 대체한다.
         if tool_name in intent_analyzer._DEPRECATED_FINANCE_TOOLS:
             redirected_query = self._build_finance_news_query(
                 parameters.get('query')
@@ -2050,6 +2051,8 @@ Generate the optimized English image prompt:"""
 
         tool_method_requirements = {
             "get_weather_forecast": "get_weather_forecast",
+            "get_stock_price": "get_stock_price",
+            "search_for_place": "search_for_place",
             "generate_image": "generate_image",
         }
         required_method = tool_method_requirements.get(tool_name)
@@ -2069,7 +2072,11 @@ Generate the optimized English image prompt:"""
                 return search_result
             return {"error": search_result.get("error", "웹 검색을 통해 정보를 찾는 데 실패했습니다.")}
 
-        if tool_name == "get_weather_forecast":
+        if tool_name in {
+            "get_weather_forecast",
+            "get_stock_price",
+            "search_for_place",
+        }:
             try:
                 logger.info(
                     "일반 도구 실행: %s. parameter_keys=%s",
@@ -2078,11 +2085,27 @@ Generate the optimized English image prompt:"""
                     extra=log_extra,
                 )
                 self._debug(f"[도구:{tool_name}] 파라미터: {self._truncate_for_debug(parameters)}", log_extra)
-                result = await self.tools_cog.get_weather_forecast(**parameters)
+                method = getattr(self.tools_cog, tool_name)
+                result = await self.tools_cog.execute_guarded(
+                    tool_name,
+                    lambda: method(**parameters),
+                )
                 self._debug(f"[도구:{tool_name}] 결과: {self._truncate_for_debug(result)}", log_extra)
                 if not isinstance(result, dict):
                     return {"result": str(result)}
                 return result
+            except ToolTemporarilyUnavailable:
+                logger.info(
+                    "도구 cooldown으로 provider 호출 생략: %s",
+                    tool_name,
+                    extra=log_extra,
+                )
+                return {
+                    "error": (
+                        "외부 데이터 제공처 응답이 불안정해 이 도구를 잠시 쉬고 "
+                        "있습니다. 잠시 뒤 요청하면 자동으로 다시 확인합니다."
+                    )
+                }
             except Exception as e:
                 logger.error(f"도구 '{tool_name}' 실행 중 예기치 않은 오류: {e}", exc_info=True, extra=log_extra)
                 return {"error": "도구 실행 중 예상치 못한 오류가 발생했습니다."}
@@ -2370,7 +2393,13 @@ Generate the optimized English image prompt:"""
 
             if tool_plan:
                 step_label = f"{len(tool_plan)}단계" if len(tool_plan) > 1 else ""
-                tool_names_kr = {"web_search": "웹 검색", "get_weather_forecast": "날씨 조회", "generate_image": "이미지 생성"}
+                tool_names_kr = {
+                    "web_search": "웹 검색",
+                    "get_weather_forecast": "날씨 조회",
+                    "get_stock_price": "주가 조회",
+                    "search_for_place": "장소 검색",
+                    "generate_image": "이미지 생성",
+                }
                 first_tool = tool_plan[0].get('tool_to_use', '')
                 first_label = tool_names_kr.get(first_tool, first_tool)
                 await progress.update(

@@ -62,6 +62,19 @@ CREATE TABLE IF NOT EXISTS bot_admin_accounts (
     KEY idx_bot_admin_role (instance_name, role, enabled)
 );
 
+-- 최고 관리자만 조작하는 인스턴스별 서버/채널 AI override.
+CREATE TABLE IF NOT EXISTS bot_guild_controls (
+    instance_name VARCHAR(32) NOT NULL,
+    guild_id BIGINT NOT NULL,
+    ai_enabled TINYINT(1) NOT NULL DEFAULT 1,
+    enabled_channels_json LONGTEXT NOT NULL,
+    disabled_channels_json LONGTEXT NOT NULL,
+    changed_by BIGINT NOT NULL,
+    created_at VARCHAR(64) NOT NULL,
+    updated_at VARCHAR(64) NOT NULL,
+    PRIMARY KEY (instance_name, guild_id)
+);
+
 CREATE TABLE IF NOT EXISTS conversation_history (
     message_id BIGINT PRIMARY KEY,
     guild_id BIGINT NOT NULL,

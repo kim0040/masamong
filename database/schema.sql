@@ -68,6 +68,20 @@ CREATE TABLE IF NOT EXISTS bot_admin_accounts (
     PRIMARY KEY (instance_name, user_id)
 );
 
+-- 최고 관리자만 조작하는 인스턴스별 서버/채널 AI override.
+-- 같은 Discord 서버에 general/masamo가 함께 있어도 instance_name으로 격리한다.
+CREATE TABLE IF NOT EXISTS bot_guild_controls (
+    instance_name TEXT NOT NULL,
+    guild_id INTEGER NOT NULL,
+    ai_enabled INTEGER NOT NULL DEFAULT 1,
+    enabled_channels_json TEXT NOT NULL DEFAULT '[]',
+    disabled_channels_json TEXT NOT NULL DEFAULT '[]',
+    changed_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (instance_name, guild_id)
+);
+
 -- 모든 대화 내용을 순차적으로 저장하는 테이블
 CREATE TABLE IF NOT EXISTS conversation_history (
     message_id INTEGER PRIMARY KEY,

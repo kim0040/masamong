@@ -295,8 +295,32 @@ async def test_image_generation_uses_exact_gemini_native_contract(monkeypatch):
         "TEXT",
         "IMAGE",
     ]
+    assert recorded["payload"]["contents"][0]["role"] == "user"
+    assert recorded["payload"]["generationConfig"]["imageConfig"] == {
+        "aspectRatio": "1:1",
+        "imageSize": "1K",
+    }
     assert result == {
         "image_data": png,
         "mime_type": "image/png",
         "remaining": 2,
     }
+
+
+@pytest.mark.asyncio
+async def test_image_model_contract_mismatch_never_reserves_usage(monkeypatch):
+    cog = ToolsCog(_FakeBot())
+    monkeypatch.setattr(config, "COMETAPI_IMAGE_ENABLED", True)
+    monkeypatch.setattr(config, "COMETAPI_IMAGE_API_KEY", "test-key")
+    monkeypatch.setattr(config, "IMAGE_MODEL", "gpt-image-2-all")
+    reserve = AsyncMock(return_value=True)
+    monkeypatch.setattr(tools_module.db_utils, "log_image_generation", reserve)
+
+    result = await cog._generate_image_exclusive(
+        "a safe watercolor landscape",
+        42,
+        guild_id=99,
+    )
+
+    assert "사용량에 포함되지" in result["error"]
+    reserve.assert_not_awaited()

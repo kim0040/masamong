@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import discord
 import pytest
 
+import config
 from cogs.help_cog import CategoryView, MasamongHomeView, ServerMenuLauncherView
 
 
@@ -36,10 +37,26 @@ def test_home_menu_exposes_only_grouped_categories():
         "school",
         "fortune",
         "community",
-        "admin",
         "personal",
         "help",
     }
+
+
+def test_home_menu_shows_admin_only_to_configured_superadmin(monkeypatch):
+    monkeypatch.setattr(config, "SUPERADMIN_USER_IDS", frozenset({123}))
+    bot = SimpleNamespace(get_cog=lambda _name: object())
+    ctx = SimpleNamespace(
+        author=SimpleNamespace(id=123),
+        clean_prefix="!",
+        guild=SimpleNamespace(id=456),
+    )
+
+    view = MasamongHomeView(bot, ctx)
+    select = next(
+        child for child in view.children if isinstance(child, discord.ui.Select)
+    )
+
+    assert "admin" in {option.value for option in select.options}
 
 
 def test_server_school_category_disables_dm_only_actions():
@@ -141,7 +158,7 @@ async def test_category_command_defers_before_slow_command_callback():
 
     assert events[0] == (
         "defer",
-        {"ephemeral": True, "thinking": True},
+        {"ephemeral": False, "thinking": True},
     )
     assert events[1][0:2] == ("send", "완료")
-    assert events[1][2]["ephemeral"] is True
+    assert events[1][2]["ephemeral"] is False

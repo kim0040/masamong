@@ -116,12 +116,12 @@ WEB_SEARCH_USER_RPD_LIMIT=60
 MASAMONG_SUPERADMIN_USER_IDS=replace-with-current-profile-superadmin-user-id
 ```
 
-- 서버 소유자와 **서버 관리** 권한 사용자는 그 서버의 `/config`, `/persona`만 사용합니다.
-- 최고 관리자는 DM에서 `!관리 추가`, `!관리 제거`, `!관리 목록`으로 현재 인스턴스
-  관리자를 등록합니다.
-- 등록 관리자는 현재 Masamo/General 인스턴스 상태만 보고, Discord 서버 권한을 자동으로
-  얻지 않습니다.
-- `!초대`는 최고 관리자에게만 비공개 초대 버튼을 제공합니다.
+- 현재 프로필의 최고 관리자만 `!관리`와 `!초대`를 사용합니다.
+- `!관리`는 현재 서버 AI와 현재 채널 응답만 켜고 끌 수 있습니다.
+- Discord 서버 관리자 권한이나 기존 등록 관리자 행은 설정 권한을 주지 않습니다.
+- 모델·DB·수집 주기·말투는 Discord UI에서 바꿀 수 없습니다.
+- 제어 상태는 `(instance_name, guild_id)`로 저장되어 다른 서버와 프로필에 영향을 주지
+  않습니다.
 
 ### 1.5 이미지 생성 설정
 
@@ -135,7 +135,13 @@ IMAGE_GLOBAL_DAILY_LIMIT=50
 IMAGE_GUILD_DAILY_LIMIT=30
 IMAGE_USER_LIMIT=10
 IMAGE_USER_RESET_HOURS=6
+TOOL_CIRCUIT_FAILURE_THRESHOLD=2
+TOOL_CIRCUIT_COOLDOWN_SECONDS=60
 ```
+
+이미지 모델명은 Gemini native 호출 방식과 일치해야 합니다. 다른 모델명이 들어오면
+사용량 예약 전에 요청을 중단합니다. 날씨·주식·장소 API는 연속 실패 시 해당 도구만
+잠시 차단하고 cooldown 뒤 사용자 요청 한 건으로 복구를 확인합니다.
 
 ### 1.6 외부 API 설정
 
@@ -233,15 +239,10 @@ RAG(Retrieval-Augmented Generation) 시스템의 설정입니다.
 MASAMONG_LANG=ko  # ko, en, ja 중 선택
 ```
 
-### 5.2 서버별 언어 설정
+### 5.2 운영 중 언어 변경
 
-Discord에서 슬래시 명령어 사용:
-
-```
-/config language 한국어
-/config language English
-/config language 日本語
-```
+언어는 프로필 env에 고정한다. Discord 명령으로 서버별 언어를 바꾸지 않으므로,
+`MASAMONG_LANG`을 변경한 새 release를 검증·재시작한다.
 
 ### 5.3 새 언어 추가
 
@@ -326,8 +327,8 @@ MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
 ### Q: AI가 응답하지 않아요
 
 1. `COMETAPI_KEY`가 설정되어 있는지 확인
-2. `/config set_ai True` 명령어로 AI가 활성화되어 있는지 확인
-3. 해당 채널이 허용된 채널인지 확인
+2. 최고 관리자의 `!관리` 패널에서 현재 서버와 현재 채널 상태 확인
+3. 보호된 채널 설정에서 해당 채널이 허용되어 있는지 확인
 
 ### Q: 날씨 정보가 안 나와요
 
@@ -341,15 +342,14 @@ MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
 
 ### Q: 언어를 변경하고 싶어요
 
-- 전역: `.env`에서 `MASAMONG_LANG=en` 설정
-- 서버별: `/config language English` 명령어 사용
+- 현재 프로필 env에서 `MASAMONG_LANG=en`으로 바꾸고 검증 후 재시작
 
 ### Q: 새 서버에 봇을 초대했어요
 
-1. 봇 초대 후 자동으로 DB에 서버 설정이 생성됩니다
-2. `/config set_ai True`로 AI 활성화
-3. `/config channel add #채널명`으로 허용 채널 추가
-4. (선택) `/config language English`로 언어 설정
+1. 프로필의 최고 관리자가 `!초대`로 만든 최소 권한 링크를 사용합니다.
+2. 보호된 채널 설정에 새 서버 채널을 추가하고 release를 검증합니다.
+3. 필요하면 최고 관리자가 서버 안에서 `!관리`를 열어 현재 서버/채널 응답만 켭니다.
+4. 일반 서버 관리자에게는 운영 설정이나 말투 변경 권한이 표시되지 않습니다.
 
 ---
 

@@ -6,6 +6,7 @@ import discord
 from discord.ext import commands
 import config
 from logger_config import logger
+from utils.admin_policy import is_superadmin
 from utils.discord_interactions import ReliableModal, ReliableView
 from utils.discord_helpers import clip_discord_text
 
@@ -26,28 +27,16 @@ class MasamongHelpCommand(commands.HelpCommand):
         """!도움 입력 시 전체 명령어 목록 출력"""
         prefix = self.context.clean_prefix or "!"
         first_embed = discord.Embed(
-            title="📖 친절한 마사몽의 사용 설명서",
+            title="📖 마사몽 사용 안내",
             description=(
-                f"안녕하세요! 여러분의 AI 친구이자 비서, **{self.context.bot.user.display_name}**입니다. 🤖\n"
-                f"이 인스턴스의 명령어는 **`{prefix}`로 시작**합니다.\n\n"
-                f"처음이라면 `{prefix}메뉴`에서 버튼으로 기능을 골라보세요.\n\n"
-                "**💬 AI 대화**\n"
-                "- 서버: `@마사몽 할 말` (멘션으로 호출)\n"
-                "- DM: 그냥 메시지를 보내면 1:1 대화 가능\n"
-                "- 자연어로 날씨, 뉴스, 이미지 생성 등을 요청 가능\n"
-                "- 학교 공지는 DM에서 `학교 공지 설정`이라고 말하면 시작\n\n"
-                "**📋 명령어 목록**\n"
-                f"- 전체 목록: `{prefix}도움`\n"
-                f"- 자세한 설명: `{prefix}도움 <명령어>`\n"
-                f"- 별칭도 동일하게 동작합니다. (예: `{prefix}도움 help`)\n\n"
-                "**예시**\n"
-                f"- `{prefix}도움 날씨`\n"
-                f"- `{prefix}도움 운세`\n"
-                f"- `{prefix}도움 편입`\n"
-                f"- `{prefix}도움 개인정보`\n\n"
-                "⚠️ 일부 명령어는 **서버 전용/DM 전용/권한 제한**이 있습니다."
+                f"처음이라면 `{prefix}메뉴`에서 원하는 기능을 골라보세요.\n"
+                "- 서버 대화: 마사몽을 멘션하고 질문\n"
+                "- DM 대화: 멘션 없이 바로 질문\n"
+                f"- 전체 명령어: `{prefix}도움`\n"
+                f"- 자세한 사용법: `{prefix}도움 <명령어>`\n"
+                "- 개인 구독과 개인정보 설정은 DM에서만 열립니다."
             ),
-            color=0x66ccff # Sky Blue
+            color=0x66CCFF,
         )
         first_embed.set_thumbnail(
             url=(
@@ -272,15 +261,14 @@ def _build_home_embed(
     prefix = ctx.clean_prefix or config.COMMAND_PREFIX or "!"
     if server_private:
         description = (
-            "이 화면은 메뉴를 연 본인에게만 보여요. 아래에서 **기능 범주를 먼저 "
-            "선택**하면 그 범주에서 실행할 수 있는 기능만 표시됩니다. 🔒 표시는 "
-            "DM 전용이라 서버 메뉴에서는 실행되지 않습니다."
+            "이 메뉴는 나에게만 보여요. 범주를 고른 뒤 기능을 실행하면 "
+            "날씨·이미지·요약·랭킹·투표 같은 결과는 채널에 함께 표시됩니다. "
+            "개인 설정과 관리 결과는 계속 비공개로 처리합니다."
         )
     else:
         description = (
-            "아래에서 **기능 범주를 먼저 선택**하세요. 선택한 범주 안에서만 실행 "
-            "버튼과 설정을 보여드립니다. 개인정보가 필요한 기능은 동의 화면이 "
-            "이어지고, 동의 후 원래 요청도 자동으로 계속됩니다."
+            "하고 싶은 일을 범주에서 골라주세요. 개인정보가 필요한 기능은 "
+            "먼저 동의를 확인한 뒤 원래 요청을 이어갑니다."
         )
     embed = discord.Embed(
         title="🤖 마사몽 메뉴",
@@ -288,20 +276,24 @@ def _build_home_embed(
         color=0x66CCFF,
     )
     embed.add_field(
-        name="기능 범주",
+        name="무엇을 도와드릴까요?",
         value=(
             "🎓 학교·편입  ·  💬 AI·검색  ·  🌦️ 날씨·재난\n"
             "🔮 운세  ·  🗳️ 커뮤니티  ·  🔐 개인 설정\n"
-            "⚙️ 서버 관리  ·  📖 전체 도움말"
+            + (
+                "⚙️ 간편 설정  ·  "
+                if is_superadmin(ctx.author.id)
+                else ""
+            )
+            + "📖 전체 도움말"
         ),
         inline=False,
     )
     embed.add_field(
-        name="사용 방법",
+        name="이용 방법",
         value=(
-            "아래 선택 메뉴에서 범주를 고른 뒤 필요한 버튼을 누르세요.\n"
-            f"텍스트 목록이 필요하면 `{prefix}도움`, 상세 설명은 "
-            f"`{prefix}도움 <기능>`을 이용할 수 있습니다."
+            "아래에서 범주를 고르고 원하는 버튼을 누르면 됩니다.\n"
+            f"명령어 목록은 `{prefix}도움`에서 볼 수 있어요."
         ),
         inline=False,
     )
@@ -378,10 +370,10 @@ class MasamongHomeView(ReliableView):
                 description="서버 커뮤니티 편의 기능",
             ),
             discord.SelectOption(
-                label="서버 관리자 설정",
+                label="간편 설정",
                 value="admin",
                 emoji="⚙️",
-                description="AI 채널, 말투, 언어 설정",
+                description="현재 서버 AI와 채널 설정",
             ),
             discord.SelectOption(
                 label="개인정보 관리",
@@ -420,14 +412,13 @@ class MasamongHomeView(ReliableView):
                 f"- 상태 확인: `{prefix}공지 상태` · 저장 정보: `{prefix}공지 정보`"
             ),
             "transfer": (
-                "📚 **TOEIC·공인영어 편입 공지**\n"
+                "📚 **편입 공지**\n"
                 f"- DM에서 `{prefix}편입`을 실행하고 관심 대학 1~20곳 선택\n"
                 "- 매일 05:35에 선택한 대학의 공식 입학처와 필요한 상세 본문 확인\n"
                 "- 새 글이나 제목 수정이 있을 때만 활성 구독자에게 DM\n"
                 f"- 최근 보기: `{prefix}편입 최근` · 취소: "
                 f"`{prefix}편입 구독취소` · 재개: `{prefix}편입 재개`\n"
-                "- TOEIC 인정·환산·모집단위는 매년 달라질 수 있어 공식 최종 "
-                "모집요강을 반드시 확인해야 합니다."
+                "- 지원 자격과 반영 기준은 원문 모집요강에서 최종 확인해 주세요."
             ),
             "fortune": (
                 "🔮 **운세**\n"
@@ -449,13 +440,11 @@ class MasamongHomeView(ReliableView):
                 "- 랭킹은 현재 채널 범위이며, 투표의 공백 포함 항목은 큰따옴표로 묶습니다."
             ),
             "admin": (
-                "⚙️ **서버 관리자 설정**\n"
-                "- `/config set_ai`: 서버 AI 켜기/끄기\n"
-                "- `/config channel`: 응답 허용 채널 추가/제거\n"
-                "- `/config language`: 서버 언어\n"
-                "- `/persona view`, `/persona set`: 이 서버 전용 말투\n"
-                f"- 서버 관리 권한이 필요하며 다른 서버의 설정과 섞이지 않습니다.\n"
-                f"- 권한 범위 확인과 인스턴스 관리: `{prefix}관리`"
+                "⚙️ **간편 설정**\n"
+                f"- `{prefix}관리`: 현재 서버 AI와 현재 채널 응답 켜기·끄기\n"
+                "- 초대 링크 열기\n"
+                "- 현재 인스턴스의 최고 관리자에게만 표시\n"
+                "- 모델·DB·수집 주기·말투 같은 운영 설정은 Discord에서 변경하지 않습니다."
             ),
             "privacy": (
                 "🔐 **개인정보 관리**\n"
@@ -633,42 +622,42 @@ _MENU_CATEGORIES = {
     "school": {
         "label": "학교·편입",
         "emoji": "🎓",
-        "description": "학교 공지, 편입 공지, 관련 개인 설정",
+        "description": "학교·편입 공지와 알림 설정",
     },
     "ai": {
         "label": "AI·검색·창작",
         "emoji": "💬",
-        "description": "자연어 대화, 웹 검색, 이미지, 대화 요약",
+        "description": "대화, 검색, 이미지와 요약",
     },
     "weather": {
         "label": "날씨·재난",
         "emoji": "🌦️",
-        "description": "기상청 날씨와 공식 재난 안내",
+        "description": "날씨 조회와 공식 재난 안내",
     },
     "fortune": {
         "label": "운세",
         "emoji": "🔮",
-        "description": "오늘·상세·월간·연간 운세와 알림",
+        "description": "운세 조회와 아침 알림",
     },
     "community": {
         "label": "커뮤니티",
         "emoji": "🗳️",
-        "description": "랭킹, 투표, 채널 요약",
+        "description": "랭킹, 투표와 채널 요약",
     },
     "personal": {
         "label": "개인 설정",
         "emoji": "🔐",
-        "description": "개인정보 동의와 개인 알림 설정",
+        "description": "동의 상태와 개인 알림",
     },
     "admin": {
-        "label": "서버 관리",
+        "label": "간편 설정",
         "emoji": "⚙️",
-        "description": "서버별 AI 채널·언어·말투·관리자",
+        "description": "현재 서버 AI와 채널 설정",
     },
     "help": {
         "label": "전체 도움말",
         "emoji": "📖",
-        "description": "모든 명령과 사용 예시",
+        "description": "명령어와 사용 예시",
     },
 }
 
@@ -679,87 +668,83 @@ def _category_embed(ctx: commands.Context, category: str) -> discord.Embed:
     copy = {
         "school": (
             "학교·편입",
-            "등록한 학교와 선택한 편입 대학만 확인합니다.",
+            "내게 필요한 공지만 골라 DM으로 알려드려요.",
             (
-                "- 학교 공지: 첫 등록 직후 1회 확인, 이후 매일 05:00 수집\n"
-                "- 편입 공지: 공식 입학처 목록과 필요한 상세 본문을 05:35부터 "
-                "순차 확인\n"
-                "- 새롭고 본인 관심사에 맞는 공지만 설정 시각(기본 09:00)에 DM\n"
-                "- 학교·과정·학년 등 필요한 최소 정보만 저장하며 서버에서는 "
-                "개인 설정을 열 수 없습니다."
+                "- 학교 공지: 학교·학과·학년·관심사에 맞춰 확인\n"
+                "- 편입 공지: 선택한 대학의 공식 입학처를 확인\n"
+                "- 수집: 매일 05:00부터 순차 진행\n"
+                "- 알림: 관련 새 글이 있을 때만 설정 시각에 DM"
             ),
         ),
         "ai": (
             "AI·검색·창작",
-            "자연스럽게 질문하면 대화 맥락과 필요한 도구를 판단합니다.",
+            "자연스럽게 질문하면 필요한 자료와 기억을 찾아 답해요.",
             (
                 "- 서버: 마사몽을 멘션해 질문, DM: 바로 질문\n"
-                "- 최신 정보가 필요하면 웹 검색 결과와 출처를 함께 사용\n"
-                "- 기억은 현재 DM 또는 현재 서버 안에서만 찾고, 질문과 관련된 "
-                "내용만 답변·이미지에 반영\n"
-                "- 이미지 생성과 채널 요약은 아래 버튼에서 바로 실행할 수 있습니다."
+                "- 최신 정보는 검색 결과와 출처를 함께 사용\n"
+                "- 기억은 현재 DM 또는 현재 서버 안에서만 활용\n"
+                "- 이미지와 요약은 아래 버튼에서 바로 실행"
             ),
         ),
         "weather": (
             "날씨·재난",
-            "기상청 자료를 우선 사용해 현재·예보·재난 정보를 제공합니다.",
+            "기상청 자료를 우선해 날씨와 재난 정보를 전해요.",
             (
-                "- 지역과 날짜를 입력해 현재/내일/주간 날씨 조회\n"
-                "- 지진은 약 1분마다 새 기상청 발표를 확인\n"
-                "- 같은 지진군의 후속 발표는 기존 메시지를 수정해 누적\n"
-                "- 공통 재난 알림은 서버별 캐릭터 말투 없이 형식적이고 엄중하게 표시"
+                "- 현재·내일·주간 날씨 조회\n"
+                "- 지진 발표는 약 1분마다 확인\n"
+                "- 후속 발표는 기존 메시지에 이어서 정리\n"
+                "- 재난 알림은 공통 공식 문체로 표시"
             ),
         ),
         "fortune": (
             "운세",
-            "짧은 오늘 운세부터 개인정보 기반 상세 분석까지 제공합니다.",
+            "오늘 운세와 상세 흐름을 확인하고 알림도 받을 수 있어요.",
             (
-                "- 서버에서는 개인정보 없는 요약 운세만 제공\n"
-                "- DM에서는 동의 후 오늘 상세·월간·연간 운세와 아침 알림 이용\n"
-                "- 개인 운세 AI 분석은 통합 일일 제한을 적용해 반복 호출을 방지\n"
+                "- 서버: 개인정보 없는 오늘 요약\n"
+                "- DM: 동의 후 상세·월간·연간 운세\n"
+                "- 원하는 시각에 아침 운세 알림\n"
                 f"- 직접 입력: `{prefix}운세`, `{prefix}운세 등록`"
             ),
         ),
         "community": (
             "커뮤니티",
-            "현재 서버와 채널 안에서만 활동 기능을 제공합니다.",
+            "현재 서버에서 함께 쓰는 기능이에요.",
             (
-                "- 오늘/주간 활동 랭킹\n"
-                "- 찬반 또는 다중 선택 투표\n"
+                "- 오늘·주간 활동 랭킹\n"
+                "- 찬반·다중 선택 투표\n"
                 "- 최근 채널 대화 요약\n"
-                "- 다른 서버의 기록이나 말투는 섞이지 않습니다."
+                "- 결과는 현재 채널에 공개"
             ),
         ),
         "personal": (
             "개인 설정",
-            "개인정보 동의 상태와 개인 구독 설정을 한곳에서 관리합니다.",
+            "내 동의 상태와 알림 설정을 한곳에서 관리해요.",
             (
-                "- 개인정보 상태 확인 및 기능별 동의/철회\n"
-                "- 학교 공지, 편입 공지, 운세 알림 시간 설정\n"
-                "- 학교·편입 개인 설정은 DM에서만 가능\n"
-                "- 동의 철회와 기능 데이터 삭제는 구분하며 일반 대화 기록은 유지"
+                "- 기능별 개인정보 동의 상태 확인\n"
+                "- 학교·편입·운세 알림 설정\n"
+                "- 동의 철회와 기능 데이터 삭제\n"
+                "- 개인 설정은 DM에서만 이용"
             ),
         ),
         "admin": (
-            "서버 관리",
-            "이 서버에만 적용되는 설정과 관리 도구입니다.",
+            "간편 설정",
+            "현재 인스턴스의 최고 관리자에게만 보여요.",
             (
-                "- `/config set_ai`: 서버 AI 켜기/끄기\n"
-                "- `/config channel`: 응답 허용 채널\n"
-                "- `/config language`: 서버 언어\n"
-                "- `/persona view`, `/persona set`: 이 서버 전용 말투\n"
-                f"- 관리 범위 확인: `{prefix}관리` (권한 필요)"
+                "- 현재 서버 AI 응답 켜기·끄기\n"
+                "- 현재 채널 응답 켜기·끄기\n"
+                "- 마사몽 초대 링크\n"
+                "- 모델·DB·수집·말투 같은 운영 설정은 변경 불가"
             ),
         ),
         "help": (
             "전체 도움말",
-            "전체 명령 목록은 기능별 텍스트 도움말로 확인합니다.",
+            "필요한 명령과 예시를 찾아볼 수 있어요.",
             (
                 f"- 전체 목록: `{prefix}도움`\n"
                 f"- 기능 설명: `{prefix}도움 <명령어>`\n"
                 f"- 예: `{prefix}도움 공지`, `{prefix}도움 편입`, "
                 f"`{prefix}도움 운세`\n"
-                "- 이 화면의 뒤로 버튼을 누르면 다른 범주를 선택할 수 있습니다."
+                "- 뒤로 버튼을 누르면 다른 범주를 고를 수 있어요."
             ),
         ),
     }
@@ -774,8 +759,8 @@ def _category_embed(ctx: commands.Context, category: str) -> discord.Embed:
         description=subtitle,
         color=0x66CCFF,
     )
-    embed.add_field(name="이 범주에서 할 수 있는 일", value=body, inline=False)
-    embed.set_footer(text="아래 버튼으로 실행 · 뒤로를 누르면 범주 선택")
+    embed.add_field(name="이용할 수 있는 기능", value=body, inline=False)
+    embed.set_footer(text="아래 버튼으로 시작할 수 있어요.")
     return embed
 
 
@@ -786,16 +771,19 @@ class _MenuContextProxy:
         self,
         source: commands.Context,
         interaction: discord.Interaction,
+        *,
+        result_ephemeral: bool = False,
     ) -> None:
         self._source = source
         self._interaction = interaction
+        self._result_ephemeral = bool(result_ephemeral)
 
     def __getattr__(self, name):
         return getattr(self._source, name)
 
     async def send(self, content=None, **kwargs):
         kwargs.pop("ephemeral", None)
-        ephemeral = bool(self._source.guild)
+        ephemeral = self._result_ephemeral
         response = self._interaction.response
         if not response.is_done():
             await response.send_message(
@@ -839,9 +827,10 @@ class HomeCategorySelect(discord.ui.Select):
                 description=data["description"],
             )
             for key, data in _MENU_CATEGORIES.items()
+            if key != "admin" or is_superadmin(home.user_id)
         ]
         super().__init__(
-            placeholder="기능 범주를 선택하세요",
+            placeholder="무엇을 해볼까요?",
             min_values=1,
             max_values=1,
             options=options,
@@ -850,6 +839,12 @@ class HomeCategorySelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         category = self.values[0]
+        if category == "admin" and not is_superadmin(interaction.user.id):
+            await interaction.response.send_message(
+                "이 인스턴스에서는 사용할 수 없는 메뉴예요.",
+                ephemeral=True,
+            )
+            return
         await interaction.response.edit_message(
             embed=_category_embed(self.home.ctx, category),
             view=CategoryView(self.home.bot, self.home.ctx, category),
@@ -995,7 +990,9 @@ class CategoryView(ReliableView):
             ("편입 설정", "transfer_dashboard", "📚", True),
             ("운세 알림", "fortune_time", "⏰", True),
         ],
-        "admin": [],
+        "admin": [
+            ("간편 설정 열기", "admin_panel", "⚙️", False),
+        ],
         "help": [("전체 도움말 보기", "help_text", "📖", False)],
     }
 
@@ -1011,6 +1008,9 @@ class CategoryView(ReliableView):
         self.category = category
         self.user_id = int(ctx.author.id)
         self.server_mode = bool(ctx.guild)
+        if category == "admin" and not is_superadmin(self.user_id):
+            category = "help"
+            self.category = "help"
         for label, action, emoji, dm_only in self._ACTIONS.get(category, []):
             button = CategoryActionButton(
                 self,
@@ -1068,11 +1068,12 @@ class CategoryView(ReliableView):
         # 표시하지 않게 먼저 승인한다. 이후 명령의 ctx.send/edit 흐름은
         # _MenuContextProxy의 followup 메시지로 그대로 이어진다.
         if not interaction.response.is_done():
-            await interaction.response.defer(
-                ephemeral=self.server_mode,
-                thinking=True,
-            )
-        proxy = _MenuContextProxy(self.ctx, interaction)
+            await interaction.response.defer(ephemeral=False, thinking=True)
+        proxy = _MenuContextProxy(
+            self.ctx,
+            interaction,
+            result_ephemeral=False,
+        )
         await command.callback(command.cog, proxy, **kwargs)
 
     async def execute_action(
@@ -1087,6 +1088,22 @@ class CategoryView(ReliableView):
                 view=CategoryView(self.bot, self.ctx, "personal"),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
+            return
+        if action == "admin_panel":
+            if not is_superadmin(interaction.user.id):
+                await interaction.response.send_message(
+                    "이 인스턴스에서는 사용할 수 없는 메뉴예요.",
+                    ephemeral=True,
+                )
+                return
+            cog = self.bot.get_cog("AdminCog")
+            if cog is None:
+                await interaction.response.send_message(
+                    "간편 설정을 불러오지 못했어요.",
+                    ephemeral=True,
+                )
+                return
+            await cog.send_interaction_panel(interaction, self.ctx)
             return
         if action in {"school_dashboard", "transfer_dashboard"}:
             if self.server_mode:
@@ -1233,7 +1250,7 @@ class CategoryView(ReliableView):
                 )
                 return
             await interaction.response.defer(
-                ephemeral=self.server_mode,
+                ephemeral=False,
                 thinking=True,
             )
             choices = tuple(
@@ -1241,7 +1258,11 @@ class CategoryView(ReliableView):
                 for part in values.get("secondary", "").split(",")
                 if part.strip()
             )
-            proxy = _MenuContextProxy(self.ctx, interaction)
+            proxy = _MenuContextProxy(
+                self.ctx,
+                interaction,
+                result_ephemeral=False,
+            )
             await command.callback(
                 command.cog,
                 proxy,
@@ -1327,11 +1348,11 @@ class HelpCog(commands.Cog):
         if ctx.guild:
             launcher = ServerMenuLauncherView(self.bot, ctx)
             launcher_embed = discord.Embed(
-                title="🧭 마사몽 개인 메뉴",
+                title="🧭 마사몽 메뉴",
                 description=(
-                    "아래 버튼을 누르면 **호출한 사람에게만** 전체 기능 메뉴가 "
-                    "보입니다. 학교·편입 구독처럼 DM 전용인 기능은 서버 메뉴에서 "
-                    "잠겨 있어 개인 설정이 채널에 노출되지 않습니다."
+                    "아래 버튼을 누르면 메뉴는 본인에게만 보여요. 기능을 실행한 "
+                    "결과는 함께 볼 수 있도록 채널에 표시하고, 개인 설정과 관리 "
+                    "내용만 비공개로 유지합니다."
                 ),
                 color=0x66CCFF,
             )

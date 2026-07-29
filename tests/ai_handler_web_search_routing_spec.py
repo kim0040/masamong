@@ -145,7 +145,7 @@ async def test_semantic_router_controls_tool_choice_without_keyword_override():
     )
 
     assert decision.source == "llm"
-    assert decision.needs_memory is False
+    assert decision.needs_memory is True
     assert plan == [
         {
             "tool_to_use": "generate_image",
@@ -289,7 +289,7 @@ def test_detect_tools_by_keyword_place_routes_to_web_search():
     assert "맛집" in plan[0]["parameters"]["query"]
 
 
-def test_sanitize_tool_plan_filters_out_non_allowed_tools():
+def test_sanitize_tool_plan_keeps_supported_place_tool():
     handler = _build_handler_without_init()
 
     plan = handler._sanitize_tool_plan(
@@ -303,8 +303,12 @@ def test_sanitize_tool_plan_filters_out_non_allowed_tools():
         log_extra=None,
     )
 
-    assert len(plan) == 1
-    assert plan[0]["tool_to_use"] == "web_search"
+    assert {item["tool_to_use"] for item in plan} == {
+        "search_for_place",
+        "web_search",
+    }
+    place = next(item for item in plan if item["tool_to_use"] == "search_for_place")
+    assert place["parameters"]["page_size"] == 5
 
 
 def test_sanitize_tool_plan_keeps_place_web_search_even_when_rag_is_strong():
@@ -445,3 +449,11 @@ def test_discord_source_footer_is_deduplicated_and_suppresses_embeds():
         "1. <https://a.example.com>\n"
         "2. <https://b.example.com>"
     )
+
+
+def test_intent_analyzer_initializes_runtime_caches():
+    analyzer = IntentAnalyzer(None, None, None)
+
+    assert analyzer._auto_web_search_last_used == {}
+    assert analyzer.location_cache == set()
+    assert analyzer._location_cache_loaded is False

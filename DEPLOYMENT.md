@@ -93,6 +93,8 @@ Masamo는 `profiles/masamo.env.example`로 기존 env를 교체하지 않는다.
 - `MASAMONG_AUTO_MIGRATE=false`
 - `SCHOOL_NOTICE_ENABLED=true`와 Masamo 전용 digest/core DB/catalog/source 경로
 - `TRANSFER_NOTICE_ENABLED=true`와 Masamo 전용 snapshot/output/source 경로
+- 이미지 경로는 `IMAGE_MODEL=gemini-3.1-flash-lite-image`,
+  `COMETAPI_IMAGE_BASE_URL=https://api.cometapi.com`
 
 General은 `profiles/general.env.example`과 전용 JSON 예제를 새 경로로 복사하고 placeholder를
 바꾼다. Masamo prompt, Kakao mapping, DB row, 로컬 embedding data를 복사하지 않는다.
@@ -220,28 +222,48 @@ MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
 적용 뒤 새 release의 read-only 검사기로 다섯 필수 column과 기존 핵심 table 집계를
 확인한다. 최초 행은 사용자가 다음 `!요약`을 성공시킬 때만 생성된다.
 
-### 프로필별 관리자 계정 table one-shot
+### 프로필별 서버 제어 table one-shot
 
-`bot_admin_accounts`는 등록 인스턴스 관리자만 저장한다. 최고 관리자는 DB에 seed하지 않고
-프로필 env에 고정한다. table의 기본 키는 `(instance_name, user_id)`라 Masamo/General
-관리자가 섞이지 않으며, 관리자 제거 명령은 row를 삭제하지 않고 `enabled=0`으로 바꾼다.
+Discord 관리 패널은 등록 관리자나 서버 관리자 권한을 사용하지 않고, 프로필 env에
+고정한 최고 관리자만 사용한다. 현재 서버/채널 AI 제어는
+`bot_guild_controls`의 `(instance_name, guild_id)`로 분리한다. 기존
+`bot_admin_accounts`와 `guild_settings` 데이터는 삭제하지 않지만 패널 권한과 말투
+결정에는 사용하지 않는다.
 
 ```bash
 MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
-  <venv>/bin/python <new-release>/scripts/apply_admin_accounts_schema.py \
+  <venv>/bin/python <new-release>/scripts/apply_guild_controls_schema.py \
   --expected-profile masamo \
   --expected-db masamong
 
 MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
-  <venv>/bin/python <new-release>/scripts/apply_admin_accounts_schema.py \
+  <venv>/bin/python <new-release>/scripts/apply_guild_controls_schema.py \
   --expected-profile masamo \
   --expected-db masamong \
   --apply \
-  --confirm 'APPLY ADMIN ACCOUNTS SCHEMA TO profile=masamo backend=tidb database=masamong'
+  --confirm 'APPLY GUILD CONTROLS SCHEMA TO profile=masamo backend=tidb database=masamong'
 ```
 
-이 one-shot도 정확히 `CREATE TABLE IF NOT EXISTS bot_admin_accounts` 한 문장만 실행한다.
+이 one-shot도 정확히 `CREATE TABLE IF NOT EXISTS bot_guild_controls` 한 문장만 실행한다.
 기존 사용자·대화·운세·공지·기억 행을 읽거나 수정하지 않는다.
+
+새 코드에서 slash command를 제거해도 Discord 등록은 자동으로 사라지지 않는다. 현재
+프로필과 봇 application ID가 정확히 일치하는지 dry-run으로 확인한 뒤 전역 레거시
+명령을 한 번 비운다. token 값은 출력하지 않는다.
+
+```bash
+MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
+  <venv>/bin/python <new-release>/scripts/clear_legacy_application_commands.py \
+  --expected-profile masamo \
+  --expected-application-id <masamo-bot-user-id>
+
+MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
+  <venv>/bin/python <new-release>/scripts/clear_legacy_application_commands.py \
+  --expected-profile masamo \
+  --expected-application-id <masamo-bot-user-id> \
+  --apply \
+  --confirm 'CLEAR LEGACY APPLICATION COMMANDS FOR profile=masamo application_id=<masamo-bot-user-id>'
+```
 
 ### 전체 데이터 이관 도구는 이 배포에 사용하지 않는다
 
@@ -336,17 +358,32 @@ systemctl status <masamo-service> --no-pager
 - 일반 멘션 대화와 DM 대화, 중복 응답 없음
 - 명백한 도구 요청이 의도 LLM을 불필요하게 호출하지 않는지
 - 날씨, 금융/환율, 웹 검색, 본문 출처 목록, 이미지 quota
-- `!랭킹`, `!요약`, `!투표`, `!업데이트`, 설정/페르소나
+- 이미지 모델 설정을 사용량 예약 전에 검증하고, 배포 직후 아래 실호출을 정확히 한 번만
+  실행해 200·허용 MIME·12MB 이하 응답을 확인한다.
+
+```bash
+MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
+  <venv>/bin/python scripts/smoke_image_provider.py \
+  --expected-profile masamo
+
+MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
+  <venv>/bin/python scripts/smoke_image_provider.py \
+  --expected-profile masamo \
+  --run \
+  --confirm 'RUN ONE IMAGE PROVIDER SMOKE FOR profile=masamo model=gemini-3.1-flash-lite-image'
+```
+- `!랭킹`, `!요약`, `!투표`, `!업데이트`
 - `.git` 없는 release에서 `!업데이트`가 `.release-metadata.json`으로 정상 응답하는지
 - 서버 `!메뉴`의 상세 화면이 호출자에게만 보이고, 다른 사용자가 launcher를 사용할 수
-  없으며 학교·편입·개인정보 버튼이 `DM`으로 표시되어 비활성인지
+  없으며 학교·편입·개인정보 버튼이 `DM`으로 표시되어 비활성인지. 날씨·이미지·랭킹·
+  요약·투표 결과는 채널에 공개되고 개인/관리 결과만 비공개인지
 - `!요약` 뒤 재기동해도 같은 `guild_id/channel_id`의 저장 기준점부터 이어지며, 새
   메시지가 없을 때 `channel_summary_state`를 다시 쓰지 않는지
 - Masamo 최고 관리자 ID가 `!관리` 호출자 전용 패널과 `!초대` DM 버튼을 사용할 수 있는지
-- 일반 사용자는 `!관리`가 거부되고, 서버 관리자는 현재 서버 `/config`·`/persona`만
-  변경하며 다른 `guild_id` 행은 변하지 않는지
-- 최고 관리자의 DM `!관리 추가/제거/목록`이 `instance_name=masamo`에만 적용되고,
-  등록 관리자는 초대 버튼과 다른 서버 설정 권한을 얻지 않는지
+- 일반 사용자와 Discord 서버 관리자는 간편 설정 범주를 볼 수 없고 `!관리`가 거부되는지
+- 최고 관리자 변경이 `bot_guild_controls`의 현재 `instance_name/guild_id`에만
+  적용되고 모델·DB·수집 주기·말투 설정은 노출되지 않는지
+- Discord API에서 레거시 `/config`, `/persona`가 제거됐는지
 - `!개인정보` 상태, 운세/학교공지/편입공지의 동의·거부·철회 흐름
 - 운세 미동의 차단, 선택 항목 `NULL`, 개인 LLM 운세 합산 일 3회, 구독 설정
 - 기존 Discord/Kakao RAG 조회와 기존 prompt 채널
@@ -614,13 +651,15 @@ privacy table 두 개, school table 다섯 개, 편입 관련 세 table과
 - `.git` 없는 immutable release에서도 `!업데이트`가 release metadata로 응답함
 - 서버 `!메뉴` 상세는 호출자 전용이고 DM 전용 버튼은 비활성, 개인 정보 조회 없음
 - `channel_summary_state` 추가 뒤 기존 table count가 감소하지 않고 재기동 요약이 이어짐
-- Masamo/General 최고 관리자 env와 등록 관리자 행이 분리되고, 서버 관리자는 자기
-  `guild_id`만 변경하며 초대는 최고 관리자에게만 제공됨
+- Masamo/General 최고 관리자 env가 분리되고, 최고 관리자만 현재 서버/채널을 변경하며
+  초대도 최고 관리자에게만 제공됨
 - Masamo 학교 flag/Cog 활성, 05:00 KST timer 하나, 전용 writable path와 다섯 table 확인
 - 등록 프로필 source만 수집하고 관련 공지가 없을 때 무알림, 사용자별 기본 09:00 전달
 - General 학교 flag false이고 Masamo school DB/file/timer 접근 없음
 - Masamo 편입 flag/Cog 활성, 05:35 KST timer 하나, 전용 snapshot/output과 세 table 확인
 - 편입 첫 기준선 `changes=0`, 선택 대학의 새 revision만 DM, 취소/철회/과거 retry 무발송
+- 봇 중단 중 변경 event 뒤 빈 batch가 실행돼도 최근 3일 backlog가 복구되고 ledger로
+  중복 발송되지 않음
 - General 편입 flag false이고 Masamo transfer DB/file/timer 접근 없음
 - 학교·편입은 DM 전용이며 서버 명령·메뉴가 개인 설정·결과를 읽거나 표시하지 않음
 - 두 프로세스 합산 CPU/RSS가 기존 Masamo 안정성을 해치지 않음

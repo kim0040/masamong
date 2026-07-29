@@ -881,7 +881,10 @@ class SchoolNoticeCog(commands.Cog):
         if not text or not _NATURAL_NOTICE_SUBJECT_RE.search(lowered):
             return False
         try:
-            school_matches = self._school_catalog().matching_schools(text)
+            school_matches = self._school_catalog().matching_schools(
+                text,
+                allow_fuzzy=True,
+            )
         except SchoolProfileError:
             return False
         explicit_setup = lowered in {
@@ -894,7 +897,12 @@ class SchoolNoticeCog(commands.Cog):
         }
         if not explicit_setup and not _NATURAL_NOTICE_ACTION_RE.search(lowered):
             return False
-        if not school_matches and not explicit_setup:
+        if (
+            not school_matches
+            and not explicit_setup
+            and not re.search(r"학교\s*공지", lowered)
+            and not re.search(r"[가-힣]{2,10}(?:대|데)\s*공지", lowered)
+        ):
             return False
 
         ctx = await self.bot.get_context(message)

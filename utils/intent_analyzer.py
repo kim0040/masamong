@@ -76,7 +76,6 @@ class IntentAnalyzer:
     )
     _FINANCE_KEYWORDS = _STOCK_US_KEYWORDS | _STOCK_KR_KEYWORDS | _STOCK_GENERAL_KEYWORDS | _EXCHANGE_KEYWORDS
     _DEPRECATED_FINANCE_TOOLS = frozenset([
-        'get_stock_price',
         'get_krw_exchange_rate',
         'get_company_news',
         'get_exchange_rate',
@@ -84,6 +83,8 @@ class IntentAnalyzer:
     _ALLOWED_RUNTIME_TOOLS = frozenset([
         "web_search",
         "get_weather_forecast",
+        "get_stock_price",
+        "search_for_place",
         "generate_image",
     ])
     _PLACE_KEYWORDS = frozenset(['맛집', '카페', '음식점', '식당', '근처', '주변', '가볼만한', '핫플레이스'])
@@ -578,6 +579,8 @@ class IntentAnalyzer:
             "도구:\n"
             "- web_search(query): 공개 웹의 최신 사실·공식 자료·가격·일정·뉴스·후기·비교\n"
             "- get_weather_forecast(location, day_offset): 지역 날씨, 오늘 0~10일 뒤\n"
+            "- get_stock_price(symbol, user_query): 현재 주가. symbol은 알면 Yahoo 호환 티커\n"
+            "- search_for_place(query, page_size): 음식점·카페·장소의 위치 검색\n"
             "- generate_image(prompt): 사용자가 새 이미지 생성을 요청한 경우만\n"
             "도구가 불필요하면 tools=[]이며 최대 2개다. needs_memory는 제공된 최근 "
             "대화보다 오래된 Discord/Kakao 기억이 있어야 정확히 답할 때만 true다. "
@@ -648,6 +651,15 @@ class IntentAnalyzer:
                 if isinstance(needs_memory_raw, bool)
                 else not bool(plan)
             )
+            # 이미지 요청은 "아까 말한 철수", "네가 기억하는 나"처럼 짧은
+            # 지시가 많다. 검색 결과는 범위·관련도 필터를 다시 통과하므로 모든
+            # 이미지 요청에서 현재 DM/서버 기억 조회를 허용해도 무관한 기억을
+            # 프롬프트에 억지로 넣지 않는다.
+            if any(
+                item["tool_to_use"] == "generate_image"
+                for item in plan
+            ):
+                needs_memory = True
             intent = str(parsed.get("intent") or "")[:120]
             context_digest = ""
             if compaction_requested:
@@ -730,6 +742,8 @@ class IntentAnalyzer:
         per_tool_limits = {
             "web_search": min(2, max_tool_calls),
             "get_weather_forecast": 1,
+            "get_stock_price": 1,
+            "search_for_place": 1,
             "generate_image": 1,
         }
 
@@ -834,6 +848,29 @@ class IntentAnalyzer:
                         "location": location[:80],
                         "day_offset": min(10, max(0, day_offset)),
                     }
+                elif name == "get_stock_price":
+                    symbol = str(params.get("symbol") or "").strip().upper()
+                    if symbol and re.fullmatch(
+                        r"[A-Z0-9^][A-Z0-9.^=-]{0,19}",
+                        symbol,
+                    ):
+                        params = {"symbol": symbol}
+                    else:
+                        params = {"user_query": query[:300]}
+                elif name == "search_for_place":
+                    place_query_text = str(
+                        params.get("query") or query
+                    ).strip()
+                    if not place_query_text:
+                        continue
+                    try:
+                        page_size = int(params.get("page_size", 5))
+                    except (TypeError, ValueError, OverflowError):
+                        page_size = 5
+                    params = {
+                        "query": place_query_text[:200],
+                        "page_size": min(10, max(1, page_size)),
+                    }
                 elif name == "generate_image":
                     prompt_text = str(
                         params.get("prompt")
@@ -861,6 +898,29 @@ class IntentAnalyzer:
             if self._is_smalltalk_only_query(query):
                 logger.info("[도구보정] 잡담성 질의로 도구 계획을 모두 무효화합니다.", extra=log_extra)
                 return []
+
+            if name == "get_stock_price":
+                symbol = str(params.get("symbol") or "").strip().upper()
+                params = (
+                    {"symbol": symbol}
+                    if symbol
+                    and re.fullmatch(r"[A-Z0-9^][A-Z0-9.^=-]{0,19}", symbol)
+                    else {"user_query": query[:300]}
+                )
+            elif name == "search_for_place":
+                place_query_text = str(
+                    params.get("query") or query
+                ).strip()
+                if not place_query_text:
+                    continue
+                try:
+                    page_size = int(params.get("page_size", 5))
+                except (TypeError, ValueError, OverflowError):
+                    page_size = 5
+                params = {
+                    "query": place_query_text[:200],
+                    "page_size": min(10, max(1, page_size)),
+                }
 
             if name == "generate_image" and not any(kw in query_lower for kw in self._IMAGE_GEN_KEYWORDS):
                 logger.info("[도구보정] 이미지 생성 의도가 없어 generate_image 제거", extra=log_extra)

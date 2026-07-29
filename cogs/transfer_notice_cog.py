@@ -31,6 +31,8 @@ from utils.privacy_consent import (
 TRANSFER_POLICY = get_policy(TRANSFER_NOTICE_SCOPE)
 _MAX_OUTPUT_BYTES = 2_000_000
 _DISCORD_CONTENT_LIMIT = 1_900
+_DELIVERY_BACKLOG_DAYS = 3
+_MAX_EVENT_FILES = 32
 KST = ZoneInfo("Asia/Seoul")
 _DELIVERY_TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
@@ -522,12 +524,12 @@ class TransferNoticeCog(commands.Cog):
             return set()
         return {str(item) for item in decoded}
 
-    def _load_payload(self) -> dict | None:
+    def _load_payload_path(self, path: Path) -> dict | None:
         try:
-            stat = self.output_path.stat()
+            stat = path.stat()
             if stat.st_size <= 0 or stat.st_size > _MAX_OUTPUT_BYTES:
                 return None
-            payload = json.loads(self.output_path.read_text(encoding="utf-8"))
+            payload = json.loads(path.read_text(encoding="utf-8"))
             if (
                 not isinstance(payload, dict)
                 or payload.get("schema_version") != 1
@@ -548,6 +550,52 @@ class TransferNoticeCog(commands.Cog):
             return payload
         except (OSError, ValueError, json.JSONDecodeError):
             return None
+
+    def _load_payload(self) -> dict | None:
+        return self._load_payload_path(self.output_path)
+
+    def _load_delivery_payloads(self) -> list[dict]:
+        """최근 이벤트와 latest를 함께 읽어 재시작 중 놓친 변경을 복구합니다."""
+        candidates: list[dict] = []
+        event_dir = self.output_path.parent / "events"
+        try:
+            paths = sorted(
+                event_dir.glob("*.json"),
+                key=lambda path: path.name,
+                reverse=True,
+            )[:_MAX_EVENT_FILES]
+        except OSError:
+            paths = []
+        latest = self._load_payload()
+        if latest is not None:
+            candidates.append(latest)
+        for path in paths:
+            payload = self._load_payload_path(path)
+            if payload is not None:
+                candidates.append(payload)
+
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            days=_DELIVERY_BACKLOG_DAYS
+        )
+        unique: dict[str, dict] = {}
+        for payload in candidates:
+            generated_at = str(payload.get("generated_at") or "")
+            run_id = str(payload.get("run_id") or "")
+            if not generated_at or not run_id:
+                continue
+            try:
+                generated = datetime.fromisoformat(generated_at)
+                if generated.tzinfo is None:
+                    generated = generated.replace(tzinfo=timezone.utc)
+                if generated.astimezone(timezone.utc) < cutoff:
+                    continue
+            except ValueError:
+                continue
+            unique[run_id] = payload
+        return sorted(
+            unique.values(),
+            key=lambda payload: str(payload.get("generated_at") or ""),
+        )
 
     def _valid_public_item(
         self,
@@ -597,13 +645,11 @@ class TransferNoticeCog(commands.Cog):
             if item in self.sources
         ]
         description = (
-            "공식 입학처 편입 게시판을 매일 05:35(KST)에 순차 확인하고, "
-            "새 글이나 수정이 감지될 때 상세 본문을 발췌 요약해 설정한 시각에 "
-            "구독자 DM으로 알려드립니다.\n\n"
-            "**수집하지 않음:** TOEIC 점수·학력·지원 학과·실명·연락처\n"
-            "**판정 방식:** 공식 목록 제목 필터 + 변경 공지 상세 본문 확인\n"
-            "**중요:** TOEIC 인정 시험·학과·환산 방식은 해마다 달라질 수 있으므로 "
-            "알림의 공식 모집요강을 반드시 확인하세요."
+            "선택한 대학의 공식 입학처를 매일 순서대로 확인해요.\n"
+            "- 새 글이나 중요한 수정이 있을 때만 DM\n"
+            "- 목록과 필요한 상세 본문을 함께 확인\n"
+            "- 점수·학력·지원 학과·실명·연락처는 수집하지 않음\n"
+            "지원 조건은 알림에 연결된 해당 연도 모집요강에서 최종 확인해주세요."
         )
         if selected_names:
             rendered_delivery_time = (
@@ -631,7 +677,7 @@ class TransferNoticeCog(commands.Cog):
                     "있습니다. `!편입 최근`에서 마지막 확인 상태를 확인하세요."
                 )
         embed = discord.Embed(
-            title="📚 TOEIC·공인영어 편입 공지",
+            title="📚 편입 공지",
             description=description,
             color=0x2457A7,
         )
@@ -698,7 +744,7 @@ class TransferNoticeCog(commands.Cog):
         text, _ = _fit_notice_blocks(
             heading,
             blocks,
-            "TOEIC 인정·반영 방식은 알림 링크의 해당 연도 최종 모집요강을 확인하세요.",
+            "지원 조건은 공식 원문의 해당 연도 모집요강에서 최종 확인해주세요.",
         )
         return text
 
@@ -969,8 +1015,8 @@ class TransferNoticeCog(commands.Cog):
         message_text, included_count = _fit_notice_blocks(
             heading,
             blocks,
-            "TOEIC 인정 시험·점수 환산·모집단위는 해당 연도 최종 모집요강을 "
-            "반드시 확인하세요. 이 알림은 지원 자격 판정이 아닙니다.",
+            "지원 자격·반영 기준·모집단위는 해당 연도 최종 모집요강을 "
+            "확인하세요. 이 알림은 지원 가능 여부를 판정하지 않습니다.",
         )
         deferred = reserved[included_count:]
         if deferred:
@@ -1029,30 +1075,31 @@ class TransferNoticeCog(commands.Cog):
         retry_result = await self._retry_delivery_tick()
         if retry_result != "idle":
             return retry_result
-        payload = self._load_payload()
-        if payload is None or not payload["changes"]:
-            return "idle"
-        generated_at = str(payload.get("generated_at") or "")
-        if not generated_at:
-            return "invalid"
-        subscribers = await self._subscriber_rows(generated_at)
-        for row in subscribers:
-            selected = self._decode_schools(row[1])
-            items = [
-                item
-                for item in payload["changes"]
-                if item.get("source_id") in selected
-            ]
-            if not items:
+        payloads = self._load_delivery_payloads()
+        for payload in payloads:
+            if not payload["changes"]:
                 continue
-            result = await self._send_user_changes(
-                int(row[0]),
-                str(payload["run_id"]),
-                items,
-                expected_subscription_updated_at=str(row[2]),
-            )
-            if result != "none":
-                return result
+            generated_at = str(payload.get("generated_at") or "")
+            if not generated_at:
+                continue
+            subscribers = await self._subscriber_rows(generated_at)
+            for row in subscribers:
+                selected = self._decode_schools(row[1])
+                items = [
+                    item
+                    for item in payload["changes"]
+                    if item.get("source_id") in selected
+                ]
+                if not items:
+                    continue
+                result = await self._send_user_changes(
+                    int(row[0]),
+                    str(payload["run_id"]),
+                    items,
+                    expected_subscription_updated_at=str(row[2]),
+                )
+                if result != "none":
+                    return result
         return "idle"
 
     async def _retry_delivery_tick(self) -> str:
@@ -1173,7 +1220,7 @@ class TransferNoticeCog(commands.Cog):
     @commands.group(name="편입", aliases=["편입공지"], invoke_without_command=True)
     @commands.dm_only()
     async def transfer(self, ctx: commands.Context) -> None:
-        """TOEIC·공인영어 편입 공지 구독 메뉴를 엽니다. (DM 전용)"""
+        """편입 공지 구독 메뉴를 엽니다. (DM 전용)"""
         if ctx.invoked_subcommand is None:
             await self.send_dashboard(ctx)
 

@@ -1098,7 +1098,7 @@ async def test_natural_registration_requires_confirmation_and_stores_no_raw_text
     cog, bot, db = await _make_cog(tmp_path, monkeypatch)
     monkeypatch.setattr(config, "SCHOOL_NOTICE_ENABLED", True)
     ctx = _FakeContext()
-    raw_text = "비밀원문-local-parser가-모르는-학교설명"
+    raw_text = "전북데 비밀원문-local-parser가-모르는-과정설명"
     llm = _CountingProfileLLM(
         json.dumps(
             {
@@ -1233,7 +1233,7 @@ async def test_profile_session_has_hard_total_llm_call_cap(tmp_path, monkeypatch
         await SchoolNoticeCog.register.callback(
             cog,
             ctx,
-            profile_text="로컬로는 학교를 찾을 수 없는 입력",
+            profile_text="전북데 과정은 로컬로 찾을 수 없는 입력",
         )
         assert len(llm.calls) == 3
         async with db.execute(
@@ -1444,6 +1444,31 @@ async def test_natural_school_notice_request_routes_without_general_ai(
                 False,
             )
         ]
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_natural_school_notice_typo_routes_to_confirmed_setup(
+    tmp_path,
+    monkeypatch,
+):
+    cog, bot, db = await _make_cog(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "SCHOOL_NOTICE_ENABLED", True)
+    ctx = _FakeContext()
+    bot.context = ctx
+    routed = []
+
+    async def fake_begin(received_ctx, *, initial_text, prefer_existing):
+        routed.append((received_ctx, initial_text, prefer_existing))
+
+    monkeypatch.setattr(cog, "begin_profile_setup", fake_begin)
+    try:
+        handled = await cog.try_handle_natural_message(
+            _FakeMessage("전북데 소프트웨어공학가 3학년 공지 알려줘")
+        )
+        assert handled is True
+        assert routed[0][1] == "전북데 소프트웨어공학가 3학년 공지 알려줘"
     finally:
         await db.close()
 

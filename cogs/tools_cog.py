@@ -23,6 +23,7 @@ from utils.api_handlers import exchange_rate, finnhub, kakao, krx
 from utils import db as db_utils
 from utils import coords as coords_utils
 from utils import weather as weather_utils
+from utils.tool_health import ToolHealthRegistry, ToolTemporarilyUnavailable
 from .weather_cog import WeatherCog
 
 
@@ -45,8 +46,64 @@ class ToolsCog(commands.Cog):
         self._yfinance_handler = None
         self._yfinance_loader_lock = asyncio.Lock()
         self._image_generation_lock = asyncio.Lock()
+        self.tool_health = ToolHealthRegistry(
+            failure_threshold=config.TOOL_CIRCUIT_FAILURE_THRESHOLD,
+            cooldown_seconds=config.TOOL_CIRCUIT_COOLDOWN_SECONDS,
+        )
         self._cleanup_tasks: set[asyncio.Task] = set()
         logger.info("ToolsCog가 성공적으로 초기화되었습니다.")
+
+    def is_tool_available(self, tool_name: str) -> bool:
+        """라우터가 cooldown 중인 provider를 계획에서 잠시 제외할 때 사용합니다."""
+        return self.tool_health.is_available(tool_name)
+
+    @staticmethod
+    def _provider_result_failed(tool_name: str, result) -> bool:
+        """사용자 입력 부족과 실제 provider 장애를 구분합니다."""
+        if tool_name == "get_weather_forecast":
+            if isinstance(result, dict):
+                return bool(
+                    result.get("error")
+                    or (
+                        result.get("current_weather") == "정보 없음"
+                        and not result.get("forecast_items")
+                    )
+                )
+            text = str(result)
+            return any(
+                marker in text
+                for marker in ("모듈이 준비되지", "API 오류", "시간 초과")
+            )
+        if tool_name == "get_stock_price":
+            text = str(result)
+            return any(
+                marker in text
+                for marker in (
+                    "조회가 지연되어 취소",
+                    "가져오는 중 오류",
+                    "API 키",
+                    "API 서버",
+                    "설정되지 않았",
+                )
+            )
+        if tool_name == "search_for_place":
+            return "장소 검색 중 오류" in str(result)
+        return False
+
+    async def execute_guarded(self, tool_name: str, operation):
+        """cooldown·half-open을 적용해 실제 사용자 요청에서만 자동 복구합니다."""
+        if not self.tool_health.begin_attempt(tool_name):
+            raise ToolTemporarilyUnavailable(tool_name)
+        try:
+            result = await operation()
+        except Exception:
+            self.tool_health.record_failure(tool_name)
+            raise
+        if self._provider_result_failed(tool_name, result):
+            self.tool_health.record_failure(tool_name)
+        else:
+            self.tool_health.record_success(tool_name)
+        return result
 
     def cog_unload(self):
         """공유 HTTP 세션 정리."""
@@ -163,7 +220,13 @@ class ToolsCog(commands.Cog):
             ai_handler = self.bot.get_cog('AIHandler')
             ticker = None
             
-            if user_query and ai_handler:
+            direct_ticker = str(symbol or "").strip().upper()
+            if direct_ticker and re.fullmatch(
+                r"[A-Z0-9^][A-Z0-9.^=-]{0,19}",
+                direct_ticker,
+            ):
+                ticker = direct_ticker
+            elif user_query and ai_handler:
                 logger.info(
                     "yfinance 모드: 티커 추출 시도. query_chars=%d",
                     len(user_query),
@@ -545,7 +608,7 @@ class ToolsCog(commands.Cog):
             return f"'{query}'에 대한 이미지를 찾았지만, 유효한 URL이 없습니다."
         return f"'{query}' 이미지 검색 결과:\n" + "\n".join(urls)
 
-    # --- 이미지 생성 (CometAPI flux-2-flex) --- #
+    # --- 이미지 생성 (CometAPI Gemini native) --- #
     
     # NSFW 차단 키워드 목록 (선정적/혐오/폭력 콘텐츠 차단)
     # utils/constants.py의 NSFW_KEYWORDS를 사용하여 중복 제거
@@ -716,6 +779,29 @@ class ToolsCog(commands.Cog):
             )
             return {"error": "요청한 이미지를 생성할 수 없어요. 부적절한 내용이 포함되어 있는 것 같아요."}
 
+        # 이 구현은 Gemini native generateContent 응답만 파싱한다. OpenAI 이미지
+        # 모델명을 같은 endpoint에 넣으면 404가 나고 사용량만 예약될 수 있으므로
+        # provider 호출과 DB 사용량 기록보다 먼저 계약을 검증한다.
+        model_name = str(
+            getattr(
+                config,
+                "IMAGE_MODEL",
+                "gemini-3.1-flash-lite-image",
+            )
+        ).strip()
+        if model_name != "gemini-3.1-flash-lite-image":
+            logger.error(
+                "이미지 모델/호출 계약 불일치. configured_model=%s",
+                model_name,
+                extra=log_extra,
+            )
+            return {
+                "error": (
+                    "이미지 모델 설정이 호출 방식과 맞지 않아 생성을 중단했어요. "
+                    "이번 요청은 이미지 사용량에 포함되지 않습니다."
+                )
+            }
+
         # 4~5. user/global quota를 lock 내부에서 최종 확인한다.
         quota = await self.check_image_quota(user_id, guild_id)
         if not quota.get("allowed"):
@@ -737,11 +823,6 @@ class ToolsCog(commands.Cog):
             }
         remaining_after_attempt = max(0, user_remaining - 1)
 
-        model_name = getattr(
-            config,
-            'IMAGE_MODEL',
-            'gemini-3.1-flash-lite-image',
-        )
         base_url = str(getattr(config, 'COMETAPI_IMAGE_BASE_URL', 'https://api.cometapi.com')).rstrip("/")
         allowed_ratios = {
             "1:1",
@@ -778,10 +859,20 @@ class ToolsCog(commands.Cog):
                 f"{base_url}/v1beta/models/{model_name}:generateContent"
             )
             payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [{"text": prompt}],
+                    }
+                ],
                 "generationConfig": {
                     "responseModalities": ["TEXT", "IMAGE"],
-                    "imageConfig": {"aspectRatio": ratio},
+                    "imageConfig": {
+                        "aspectRatio": ratio,
+                        # Lite 모델은 현재 1K 출력 전용이다. 명시해 공급자
+                        # 기본값 변경에도 요청 계약을 안정적으로 유지한다.
+                        "imageSize": "1K",
+                    },
                 },
             }
             headers = {

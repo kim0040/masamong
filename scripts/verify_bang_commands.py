@@ -434,7 +434,7 @@ async def case_server_private_menu_launcher() -> None:
 
     message = channel.messages[-1]
     assert message.embed is not None
-    assert "호출한 사람에게만" in (message.embed.description or "")
+    assert "본인에게만" in (message.embed.description or "")
     assert isinstance(message.view, ServerMenuLauncherView)
 
 
