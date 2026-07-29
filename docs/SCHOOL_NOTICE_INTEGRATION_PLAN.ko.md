@@ -409,6 +409,8 @@ INELIGIBLE   → hidden
 - 하루 delivery run은 사용자/대상 날짜별 상태, attempt, 다음 시도, 안전한 error code를
   기록한다.
 - 1분 catch-up이 사용자별 시각을 확인하므로 bot 재시작이나 짧은 지연을 흡수한다.
+- 05:00에 생성한 오늘 digest를 같은 날 설정 시각(기본 09:00)에 우선 처리한다.
+  이전 날짜 backlog는 오늘의 더 최신 성공 digest가 없을 때만 최근 3일 상한 안에서 본다.
 - 한 tick의 사용자 수, 사용자별 처리 시간, 최대 attempt와 retry 간격을 제한한다.
 - DM 차단, contract 오류, timeout, send 실패를 성공으로 기록하지 않는다.
 - 일부 item 전송 뒤 실패한 경우 이미 기록된 revision은 다시 보내지 않고 남은 item만
