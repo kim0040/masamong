@@ -159,7 +159,7 @@ TOKENIZERS_PARALLELISM=false
 ## Development
 
 ```bash
-.venv/bin/python -m pytest -q                        # 854 tests, offline
+.venv/bin/python -m pytest -q                        # full offline suite
 .venv/bin/python -m compileall -q .
 .venv/bin/python scripts/verify_bang_commands.py     # command surface
 .venv/bin/python scripts/audit_tracked_secrets.py --secret-env .env
@@ -206,7 +206,7 @@ school_notice/       vendored school collection core
 transfer_notice/     transfer-admissions collector
 scripts/             read-only audits, migrations, one-shot jobs
 deploy/systemd/      batch service and timer templates
-tests/               854 offline tests
+tests/               offline tests
 docs/                architecture and operations
 ```
 
