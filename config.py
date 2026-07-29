@@ -1388,6 +1388,14 @@ if WEB_SEARCH_PROVIDER not in {"linkup", "legacy"}:
 # Linkup 검색 설정
 LINKUP_ENABLED = as_bool(load_config_value('LINKUP_ENABLED', 'true'))
 LINKUP_TIMEOUT_SECONDS = max(5, as_int(load_config_value('LINKUP_TIMEOUT_SECONDS', 40), 40))
+LINKUP_PIPELINE_TIMEOUT_SECONDS = max(
+    LINKUP_TIMEOUT_SECONDS,
+    as_int(load_config_value('LINKUP_PIPELINE_TIMEOUT_SECONDS', 55), 55),
+)
+WEB_SEARCH_TOTAL_TIMEOUT_SECONDS = max(
+    10,
+    as_int(load_config_value('WEB_SEARCH_TOTAL_TIMEOUT_SECONDS', 60), 60),
+)
 LINKUP_FETCH_RENDER_JS = as_bool(load_config_value('LINKUP_FETCH_RENDER_JS', 'false'))
 LINKUP_FETCH_JS_RETRY_ENABLED = as_bool(
     load_config_value('LINKUP_FETCH_JS_RETRY_ENABLED', 'true')

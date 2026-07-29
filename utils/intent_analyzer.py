@@ -29,6 +29,7 @@ class ToolRoutingDecision:
     needs_memory: bool
     intent: str = ""
     context_digest: str = ""
+    requires_external_evidence: bool = False
 
 
 class IntentAnalyzer:
@@ -83,6 +84,7 @@ class IntentAnalyzer:
     _ALLOWED_RUNTIME_TOOLS = frozenset([
         "web_search",
         "get_weather_forecast",
+        "get_market_snapshot",
         "get_stock_price",
         "search_for_place",
         "generate_image",
@@ -232,7 +234,14 @@ class IntentAnalyzer:
             return False
 
         # 환율/코인/주가 등 강한 금융 키워드는 즉시 금융으로 분류
-        if any(kw in query_lower for kw in self._STOCK_GENERAL_KEYWORDS):
+        unambiguous_stock_terms = self._STOCK_GENERAL_KEYWORDS - {"시가"}
+        if any(kw in query_lower for kw in unambiguous_stock_terms):
+            return True
+        # "시가"의 단순 부분문자열 검사는 "시각 자료"까지 금융으로 오인한다.
+        if (
+            "시가총액" in query_lower
+            or re.search(r"(?<![가-힣])시가(?![가-힣])", query_lower)
+        ):
             return True
         if any(kw in query_lower for kw in self._EXCHANGE_KEYWORDS):
             return True
@@ -246,6 +255,202 @@ class IntentAnalyzer:
         if not has_stock_entity:
             return False
         return any(hint in query_lower for hint in self._FINANCE_INTENT_HINTS)
+
+    def _looks_like_market_brief_query(self, query: str) -> bool:
+        """개별 종목이 아닌 시장 지수·시황 브리핑 요청인지 판별합니다."""
+        text = (query or "").lower().strip()
+        if not text or not self._looks_like_finance_query(text):
+            return False
+
+        index_or_market_terms = (
+            "국장", "미장", "한국 시장", "미국 시장", "주식 시장", "증권 시장",
+            "시장 흐름", "시장 동향", "시장 브리핑", "시황", "증시",
+            "코스피", "코스닥", "kospi", "kosdaq",
+            "나스닥", "nasdaq", "다우", "dow", "s&p", "sp500", "s&p 500",
+        )
+        if any(term in text for term in index_or_market_terms):
+            return True
+
+        news_terms = ("뉴스", "소식", "이슈", "동향", "브리핑", "주요")
+        has_news_request = any(term in text for term in news_terms)
+        has_named_stock = (
+            any(term in text for term in self._STOCK_US_KEYWORDS)
+            or any(term in text for term in self._STOCK_KR_KEYWORDS)
+            or bool(self._STOCK_TICKER_PATTERN.search(text))
+        )
+        return has_news_request and not has_named_stock
+
+    @staticmethod
+    def _market_region_from_text(query: str) -> str:
+        """시장 브리핑 대상 지역을 보수적으로 정규화합니다."""
+        text = (query or "").lower()
+        if any(
+            term in text
+            for term in ("글로벌", "세계 증시", "전 세계", "국내외", "global")
+        ):
+            return "global"
+        if any(
+            term in text
+            for term in (
+                "미국", "미장", "뉴욕증시", "나스닥", "nasdaq",
+                "다우", "dow", "s&p", "sp500",
+            )
+        ):
+            return "us"
+        if any(
+            term in text
+            for term in (
+                "한국", "국장", "국내", "코스피", "코스닥", "kospi", "kosdaq",
+            )
+        ):
+            return "kr"
+        # 한국어 봇에서 시장을 따로 지정하지 않은 "오늘 주식 소식"은 국장을
+        # 기본으로 보고, 해외 전체를 임의로 섞지 않는다.
+        if re.search(r"[가-힣]", text):
+            return "kr"
+        return "global"
+
+    def _derive_external_evidence_requirement(
+        self,
+        query: str,
+        *,
+        intent: str = "",
+        declared: Any = None,
+    ) -> bool:
+        """라우터 응답 누락·오판 시에도 검증이 필요한 사실 질문을 보호합니다."""
+        if isinstance(declared, bool) and declared:
+            return True
+
+        semantic_text = f"{query}\n{intent}".strip()
+        if self._looks_like_finance_query(semantic_text):
+            return True
+        if self._has_explicit_web_search_intent(query):
+            return True
+        if self._looks_like_external_fact_query(query):
+            return True
+
+        # ``intent``는 의미 라우터가 이미 자연어 문맥을 해석한 결과다. 사용자가
+        # 제시한 외부 사건·변화의 사실 여부를 "확인"하는 의도인데 도구가 비면
+        # 모델의 내장 지식으로 단정하지 않고 공개 자료를 확인한다.
+        intent_lower = (intent or "").lower()
+        verification_terms = (
+            "사실 확인", "여부 확인", "있는지 확인", "맞는지 확인",
+            "변화 확인", "관련 소식", "최신 정보", "공개 자료 확인",
+        )
+        return any(term in intent_lower for term in verification_terms)
+
+    def _enforce_evidence_tool_plan(
+        self,
+        query: str,
+        intent: str,
+        plan: list[dict[str, Any]],
+        *,
+        requires_external_evidence: bool,
+        log_extra: dict | None = None,
+    ) -> list[dict[str, Any]]:
+        """검증 필수 요청에서 라우터의 도구 누락을 결정적으로 보정합니다."""
+        normalized = list(plan or [])
+        semantic_text = f"{query}\n{intent}".strip()
+        finance_query = self._looks_like_finance_query(semantic_text)
+        market_brief = finance_query and self._looks_like_market_brief_query(
+            semantic_text
+        )
+        names = {
+            str(item.get("tool_to_use") or item.get("tool_name") or "")
+            for item in normalized
+            if isinstance(item, dict)
+        }
+        inferred_market_region = self._market_region_from_text(semantic_text)
+
+        if market_brief and "get_market_snapshot" not in names:
+            normalized.insert(
+                0,
+                {
+                    "tool_to_use": "get_market_snapshot",
+                    "tool_name": "get_market_snapshot",
+                    "parameters": {
+                        "region": inferred_market_region,
+                    },
+                },
+            )
+            names.add("get_market_snapshot")
+            logger.warning(
+                "[도구보정] 시장 브리핑에 검증 지수 도구를 강제 추가합니다.",
+                extra=log_extra,
+            )
+        elif market_brief:
+            # region은 비용이나 호출 수를 바꾸지 않는 실행 파라미터다. 한국어
+            # 기본 질문을 라우터가 임의로 global로 넓히거나 후속 "미국은?"을
+            # 이전 지역으로 남기는 일을 막는다.
+            for item in normalized:
+                if not isinstance(item, dict):
+                    continue
+                name = str(
+                    item.get("tool_to_use")
+                    or item.get("tool_name")
+                    or ""
+                )
+                if name != "get_market_snapshot":
+                    continue
+                item["parameters"] = {"region": inferred_market_region}
+                break
+
+        # 시장 뉴스는 지수 스냅샷만으로 설명할 수 없으므로 공개 출처도 함께
+        # 확인한다. 그 밖의 외부 사실 질문은 도구가 완전히 비었을 때만 검색한다.
+        needs_web = market_brief or (
+            requires_external_evidence
+            and not names.intersection(
+                {
+                    "web_search",
+                    "get_weather_forecast",
+                    "get_market_snapshot",
+                    "get_stock_price",
+                    "search_for_place",
+                }
+            )
+        )
+        if needs_web and "web_search" not in names:
+            search_query = (
+                self._build_finance_news_query(semantic_text)
+                if finance_query
+                else (query or intent).strip()
+            )
+            normalized.append(
+                {
+                    "tool_to_use": "web_search",
+                    "tool_name": "web_search",
+                    "parameters": {"query": search_query},
+                }
+            )
+            logger.warning(
+                "[도구보정] 검증 필수 요청에 web_search를 강제 추가합니다.",
+                extra=log_extra,
+            )
+        elif market_brief:
+            # 라우터가 검색어를 직접 만든 경우에도 현재 KST 날짜, 공식 자료
+            # 우선, 커뮤니티 배제 조건을 빠뜨릴 수 없게 공통 금융 계약을 씌운다.
+            for item in normalized:
+                if not isinstance(item, dict):
+                    continue
+                name = str(
+                    item.get("tool_to_use")
+                    or item.get("tool_name")
+                    or ""
+                )
+                if name != "web_search":
+                    continue
+                params = item.get("parameters")
+                if not isinstance(params, dict):
+                    params = {}
+                raw_query = str(params.get("query") or query).strip()
+                item["parameters"] = {
+                    "query": self._build_finance_news_query(
+                        f"{query}\n{raw_query}".strip()
+                    )
+                }
+                break
+
+        return normalized[:2]
 
     @staticmethod
     def _normalize_realtime_web_query(query: str) -> str:
@@ -409,6 +614,16 @@ class IntentAnalyzer:
         unavailable일 때 기존 명시 표현을 살려 기능 전체가 멈추는 것을 피한다.
         """
         plan = self._detect_tools_by_keyword(query)
+        requires_external_evidence = self._derive_external_evidence_requirement(
+            query,
+            intent="fallback",
+        )
+        plan = self._enforce_evidence_tool_plan(
+            query,
+            "fallback",
+            plan,
+            requires_external_evidence=requires_external_evidence,
+        )
         return ToolRoutingDecision(
             plan=plan,
             source=source,
@@ -416,6 +631,7 @@ class IntentAnalyzer:
             # 허용한다. 명시 도구 fallback은 과거 기억을 불필요하게 조회하지 않는다.
             needs_memory=not bool(plan),
             intent="fallback",
+            requires_external_evidence=requires_external_evidence,
         )
 
     @staticmethod
@@ -579,9 +795,18 @@ class IntentAnalyzer:
             "도구:\n"
             "- web_search(query): 공개 웹의 최신 사실·공식 자료·가격·일정·뉴스·후기·비교\n"
             "- get_weather_forecast(location, day_offset): 지역 날씨, 오늘 0~10일 뒤\n"
+            "- get_market_snapshot(region): 주요 시장 지수의 검증된 최신 수치. "
+            "region은 kr, us, global 중 하나\n"
             "- get_stock_price(symbol, user_query): 현재 주가. symbol은 알면 Yahoo 호환 티커\n"
             "- search_for_place(query, page_size): 음식점·카페·장소의 위치 검색\n"
             "- generate_image(prompt): 사용자가 새 이미지 생성을 요청한 경우만\n"
+            "시장 시황·주요 주식 뉴스는 get_market_snapshot과 web_search를 함께 "
+            "사용한다. 공개 자료로 검증해야 하는 최신 정보, 수치, 뉴스, 일정, "
+            "가격, 사용자가 제시한 외부 사실의 진위는 requires_external_evidence=true로 "
+            "둔다. 지역 제도·교통·시설의 유래나 변경처럼 내장 지식만으로 확신하기 "
+            "어려운 틈새 사실도 true다. 이때 적절한 조회 도구가 적어도 하나 있어야 "
+            "하며, 모델의 기억만으로 답하지 않는다. 의견·창작·잡담·현재 대화나 "
+            "장기기억 회상, 널리 확립된 안정적인 일반 상식은 false다. "
             "도구가 불필요하면 tools=[]이며 최대 2개다. needs_memory는 제공된 최근 "
             "대화보다 오래된 Discord/Kakao 기억이 답변의 정확도나 개인화에 도움이 "
             "되면 true다. 이전 합의·결정·취향·관계·사건뿐 아니라 공개 지식으로 "
@@ -594,6 +819,7 @@ class IntentAnalyzer:
             f"{digest_instruction}\n"
             "출력 형식: "
             '{"intent":"짧은 의도","needs_memory":false,'
+            '"requires_external_evidence":false,'
             '"context_digest":"","tools":[{"tool":"도구명","params":{}}]}\n'
             f"현재 시각(KST): {now_kst}\n"
             f"{compaction_section}"
@@ -665,6 +891,40 @@ class IntentAnalyzer:
             ):
                 needs_memory = True
             intent = str(parsed.get("intent") or "")[:120]
+            requires_external_evidence = self._derive_external_evidence_requirement(
+                query,
+                intent=intent,
+                declared=parsed.get("requires_external_evidence"),
+            )
+            if any(
+                item.get("tool_to_use")
+                in {
+                    "web_search",
+                    "get_weather_forecast",
+                    "get_market_snapshot",
+                    "get_stock_price",
+                    "search_for_place",
+                }
+                for item in plan
+            ):
+                requires_external_evidence = True
+            plan = self._enforce_evidence_tool_plan(
+                query,
+                intent,
+                plan,
+                requires_external_evidence=requires_external_evidence,
+                log_extra=log_extra,
+            )
+            # 최신 외부 사실은 최근 채팅 문맥만으로 대상을 이어가고, 장기기억의
+            # 오래된 수치·요약을 사실 자료와 섞지 않는다.
+            if (
+                requires_external_evidence
+                and not any(
+                    hint in (query or "").lower()
+                    for hint in self._LOCAL_MEMORY_HINTS
+                )
+            ):
+                needs_memory = False
             context_digest = ""
             if compaction_requested:
                 context_digest = re.sub(
@@ -673,10 +933,12 @@ class IntentAnalyzer:
                     str(parsed.get("context_digest") or ""),
                 ).strip()[:digest_limit]
             logger.info(
-                "[의미라우터] intent=%s tools=%s needs_memory=%s digest_chars=%d",
+                "[의미라우터] intent=%s tools=%s needs_memory=%s "
+                "external_evidence=%s digest_chars=%d",
                 intent or "-",
                 [item["tool_to_use"] for item in plan],
                 needs_memory,
+                requires_external_evidence,
                 len(context_digest),
                 extra=log_extra,
             )
@@ -686,6 +948,7 @@ class IntentAnalyzer:
                 needs_memory=needs_memory,
                 intent=intent,
                 context_digest=context_digest,
+                requires_external_evidence=requires_external_evidence,
             )
         except Exception as exc:
             logger.warning(
@@ -724,7 +987,16 @@ class IntentAnalyzer:
         trust_llm=True 이면 LLM의 판단을 신뢰하여 web_search를 과도하게 차단하지 않습니다.
         (휴리스틱이 판단을 유보했을 때만 True)"""
         if not tool_plan:
-            return []
+            finance_query = self._looks_like_finance_query(query)
+            if not finance_query:
+                return []
+            tool_plan = self._enforce_evidence_tool_plan(
+                query,
+                "금융 정보 확인",
+                [],
+                requires_external_evidence=True,
+                log_extra=log_extra,
+            )
 
         query_lower = (query or "").lower()
         explicit_web = self._has_explicit_web_search_intent(query)
@@ -746,6 +1018,7 @@ class IntentAnalyzer:
         per_tool_limits = {
             "web_search": min(2, max_tool_calls),
             "get_weather_forecast": 1,
+            "get_market_snapshot": 1,
             "get_stock_price": 1,
             "search_for_place": 1,
             "generate_image": 1,
@@ -861,6 +1134,11 @@ class IntentAnalyzer:
                         params = {"symbol": symbol}
                     else:
                         params = {"user_query": query[:300]}
+                elif name == "get_market_snapshot":
+                    region = str(params.get("region") or "global").strip().lower()
+                    if region not in {"kr", "us", "global"}:
+                        region = "global"
+                    params = {"region": region}
                 elif name == "search_for_place":
                     place_query_text = str(
                         params.get("query") or query
@@ -911,6 +1189,11 @@ class IntentAnalyzer:
                     and re.fullmatch(r"[A-Z0-9^][A-Z0-9.^=-]{0,19}", symbol)
                     else {"user_query": query[:300]}
                 )
+            elif name == "get_market_snapshot":
+                region = str(params.get("region") or "global").strip().lower()
+                if region not in {"kr", "us", "global"}:
+                    region = "global"
+                params = {"region": region}
             elif name == "search_for_place":
                 place_query_text = str(
                     params.get("query") or query
@@ -1069,15 +1352,23 @@ class IntentAnalyzer:
         """금융 질문을 웹 검색 친화 쿼리로 보정합니다."""
         base = (query or "").strip()
         if not base:
-            return "국내외 금융 시장 최신 뉴스"
+            base = "국내외 금융 시장 최신 뉴스"
         base_lower = base.lower()
         has_news_hint = any(
             hint in base_lower
             for hint in ("뉴스", "소식", "헤드라인", "이슈", "동향", "시황", "news")
         )
-        if has_news_hint:
-            return base
-        return f"{base} 최신 금융 뉴스"
+        if not has_news_hint:
+            base = f"{base} 최신 금융 뉴스"
+        now_kst = datetime.now(timezone(timedelta(hours=9)))
+        date_anchor = now_kst.strftime("%Y-%m-%d")
+        return (
+            f"{base}\n"
+            f"기준일: {date_anchor} KST. 해당 시장의 최신 거래일을 명시하고, "
+            "지수 수치와 등락은 거래소·공식 시세 자료로 교차 확인. "
+            "뉴스는 기업 공시·거래소·중앙은행·주요 통신사/경제지 우선. "
+            "커뮤니티·SNS·출처 없는 요약은 제외."
+        )
 
     def _extract_location_from_query(self, query: str) -> str | None:
         """쿼리에서 지역명을 추출합니다 (DB 캐시 사용)."""

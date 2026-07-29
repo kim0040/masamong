@@ -313,7 +313,10 @@ def _build_search_prompt(user_query: str, depth: str) -> str:
     if depth == "standard":
         return (
             f"{cleaned}\n\n"
-            "Retrieve precise sources for this question and keep concrete dates/numbers when available."
+            "Retrieve precise, authoritative sources for this question. Prefer official "
+            "records and reputable primary reporting over social posts or community summaries. "
+            "Keep concrete dates/numbers only when a retrieved source supports them, and "
+            f"distinguish event date from publication date. Today's date is {today_kst} (KST)."
         )
     return cleaned
 
@@ -877,7 +880,27 @@ async def _run_singleflight(
 ) -> dict[str, Any]:
     """동일 검색어의 provider 호출을 합치고 작업 종료 시 슬롯을 회수합니다."""
     try:
-        return await _run_uncached_pipeline(query, db_conn=db_conn)
+        pipeline_timeout = _bounded_int(
+            getattr(config, "LINKUP_PIPELINE_TIMEOUT_SECONDS", 55),
+            55,
+            10,
+            180,
+        )
+        try:
+            return await asyncio.wait_for(
+                _run_uncached_pipeline(query, db_conn=db_conn),
+                timeout=pipeline_timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[web_search] Linkup 전체 파이프라인 시간 상한(%ss) 초과",
+                pipeline_timeout,
+            )
+            return _error_result(
+                "외부 검색이 제한 시간 안에 완료되지 않았습니다.",
+                fallback_safe=False,
+                failure_kind="pipeline_timeout",
+            )
     finally:
         current = asyncio.current_task()
         async with _pipeline_cache_lock:

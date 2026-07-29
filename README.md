@@ -143,6 +143,13 @@ global, per-feature, per-guild, per-user, and per-DM budgets *before* the
 provider is touched, and these checks fail closed — an error loop can't become an
 unbounded billing loop.
 
+Questions that require current or niche external facts are fail-closed: the bot
+must obtain a successful source-backed tool result before it can answer. A failed
+lookup produces an explicit “not verified” response instead of an ungrounded
+guess or a promise to search later. Market briefs additionally batch-check the
+latest available KOSPI/KOSDAQ or US index session and reject material numbers
+that do not appear in the tool evidence.
+
 On a low-spec host, set these explicitly rather than inheriting defaults:
 
 ```dotenv

@@ -73,8 +73,10 @@ LLM_FEATURE_RPD_LIMIT=2500
 ```
 
 도구 선택은 정상적으로 routing 모델의 의미 판단을 사용하고, 키워드 감지는 provider
-장애 시 fallback에만 사용됩니다. 활성 대화 컨텍스트와 routing JSON 출력 예산은 다음처럼
-제한합니다.
+장애 시 fallback에만 사용됩니다. 다만 라우터 JSON의
+`requires_external_evidence=true` 요청과 시장 브리핑에는 조회 성공을 요구하는 실행
+후조건이 적용됩니다. 이는 답변 품질 안전장치이며 반복 라우팅이나 무한 재시도를 만들지
+않습니다. 활성 대화 컨텍스트와 routing JSON 출력 예산은 다음처럼 제한합니다.
 
 ```env
 INTENT_LLM_ENABLED=true
@@ -97,6 +99,9 @@ routing 호출의 JSON에만 짧은 digest를 포함하므로 별도 LLM 호출�
 WEB_SEARCH_PROVIDER=linkup
 LINKUP_API_KEY=your_linkup_api_key_here
 LINKUP_ENABLED=true
+LINKUP_TIMEOUT_SECONDS=40
+LINKUP_PIPELINE_TIMEOUT_SECONDS=55
+WEB_SEARCH_TOTAL_TIMEOUT_SECONDS=60
 LINKUP_MONTHLY_BUDGET_ENFORCED=true
 LINKUP_MONTHLY_BUDGET_EUR=4.5
 LINKUP_FETCH_RENDER_JS=false

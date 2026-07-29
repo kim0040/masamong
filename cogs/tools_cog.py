@@ -88,6 +88,12 @@ class ToolsCog(commands.Cog):
                     "설정되지 않았",
                 )
             )
+        if tool_name == "get_market_snapshot":
+            return not (
+                isinstance(result, dict)
+                and result.get("status") == "success"
+                and bool(result.get("indices"))
+            )
         if tool_name == "search_for_place":
             return "장소 검색 중 오류" in str(result)
         return False
@@ -342,6 +348,11 @@ class ToolsCog(commands.Cog):
             output_parts.append(f"## 📰 관련 뉴스:\n{news_res}")
             
         return f"'{symbol}'에 대한 종합 주식 리포트 (Finnhub):\n\n" + "\n\n".join(output_parts)
+
+    async def get_market_snapshot(self, region: str = "global") -> dict:
+        """한국·미국 주요 지수를 검증 가능한 구조화 데이터로 반환합니다."""
+        yfinance_handler = await self._load_yfinance_handler()
+        return await yfinance_handler.get_market_snapshot(region)
 
     async def get_company_news(self, stock_name: str, count: int = 3) -> str:
         """특정 종목(Ticker Symbol)에 대한 최신 뉴스를 조회합니다."""
