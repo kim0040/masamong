@@ -359,7 +359,8 @@ systemctl status <masamo-service> --no-pager
 - 명백한 도구 요청이 의도 LLM을 불필요하게 호출하지 않는지
 - 날씨, 금융/환율, 웹 검색, 본문 출처 목록, 이미지 quota
 - 이미지 모델 설정을 사용량 예약 전에 검증하고, 배포 직후 아래 실호출을 정확히 한 번만
-  실행해 200·허용 MIME·12MB 이하 응답을 확인한다.
+  실행해 200·허용 MIME·12MB 이하 응답과 `selected=last_final`을 확인한다.
+  `image_parts`가 2 이상이어도 Discord에는 최종 렌더 한 장만 전송되는 것이 정상이다.
 
 ```bash
 MASAMONG_ENV_FILE=/etc/masamong/masamo.env \

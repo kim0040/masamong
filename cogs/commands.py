@@ -148,7 +148,7 @@ class UserCommands(commands.Cog):
                 # 생성 중 메시지 전송
                 status_msg = await ctx.send(f"🎨 **'{prompt}'**\n위 설명으로 그림을 그리고 있어요... (최대 1분 30초 정도 걸릴 수 있으니 잠시만 기다려줘...)")
                 
-                # 1. 프롬프트 최적화 (LLM으로 한국어→영문 최적화 프롬프트 생성)
+                # 1. 원문과 관련 기억을 보존한 이미지 프롬프트 구성
                 log_extra_img = {'guild_id': ctx.guild.id, 'author_id': ctx.author.id}
                 rag_context = ""
                 try:
@@ -177,7 +177,13 @@ class UserCommands(commands.Cog):
                 image_prompt = optimized_prompt or prompt
                 
                 if optimized_prompt and optimized_prompt != prompt:
-                    await status_msg.edit(content=f"🎨 **'{prompt}'**\n→ 최적화 프롬프트: `{optimized_prompt[:200]}`\n그림을 그리고 있어요... (최대 1분 30초 소요)")
+                    await status_msg.edit(
+                        content=(
+                            f"🎨 **'{prompt}'**\n"
+                            "대화에서 관련된 기억을 확인하고 한 장의 그림으로 "
+                            "정리하고 있어요..."
+                        )
+                    )
                 
                 # 2. 이미지 생성 (tools_cog 직접 호출)
                 result = await ai_handler.tools_cog.generate_image(

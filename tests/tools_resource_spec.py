@@ -228,7 +228,8 @@ async def test_image_generation_uses_exact_gemini_native_contract(monkeypatch):
         AsyncMock(return_value=True),
     )
     recorded = {}
-    png = b"\x89PNG\r\n\x1a\n" + b"test-image"
+    draft_png = b"\x89PNG\r\n\x1a\n" + b"draft-image"
+    png = b"\x89PNG\r\n\x1a\n" + b"final-image"
 
     class _Response:
         status = 200
@@ -241,6 +242,15 @@ async def test_image_generation_uses_exact_gemini_native_contract(monkeypatch):
                         "content": {
                             "parts": [
                                 {"text": "generated"},
+                                {
+                                    "thought": True,
+                                    "inlineData": {
+                                        "mimeType": "image/png",
+                                        "data": base64.b64encode(
+                                            draft_png
+                                        ).decode(),
+                                    },
+                                },
                                 {
                                     "inlineData": {
                                         "mimeType": "image/png",
@@ -305,6 +315,42 @@ async def test_image_generation_uses_exact_gemini_native_contract(monkeypatch):
         "mime_type": "image/png",
         "remaining": 2,
     }
+
+
+def test_image_selection_uses_last_image_when_provider_omits_thought_marker():
+    """중간 이미지 표식이 없더라도 첫 시안이 아닌 마지막 렌더를 고른다."""
+    first = base64.b64encode(b"first").decode()
+    final = base64.b64encode(b"final").decode()
+
+    selected = ToolsCog._select_final_inline_image(
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "inlineData": {
+                                    "mimeType": "image/png",
+                                    "data": first,
+                                }
+                            },
+                            {
+                                "inlineData": {
+                                    "mimeType": "image/png",
+                                    "data": final,
+                                }
+                            },
+                        ]
+                    }
+                }
+            ]
+        }
+    )
+
+    assert selected is not None
+    assert selected["encoded"] == final
+    assert selected["image_part_count"] == 2
+    assert selected["thought_image_count"] == 0
 
 
 @pytest.mark.asyncio

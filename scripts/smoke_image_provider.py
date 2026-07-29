@@ -87,8 +87,10 @@ async def run(args: argparse.Namespace) -> None:
                 "parts": [
                     {
                         "text": (
-                            "A minimal flat icon of one blue circle centered on "
-                            "a clean white background, no text"
+                            "Create exactly one final image: a minimal flat icon "
+                            "of one blue circle centered on a clean white "
+                            "background. No text, collage, split screen, grid, "
+                            "or multiple variants."
                         )
                     }
                 ],
@@ -117,6 +119,7 @@ async def run(args: argparse.Namespace) -> None:
     if len(raw) > 18_000_000:
         raise RuntimeError("이미지 provider 응답이 허용 크기를 초과했습니다.")
     parsed = json.loads(raw)
+    image_parts: list[tuple[dict, bool]] = []
     for candidate in parsed.get("candidates", []):
         for part in candidate.get("content", {}).get("parts", []):
             inline = part.get("inlineData")
@@ -126,17 +129,43 @@ async def run(args: argparse.Namespace) -> None:
             encoded = inline.get("data")
             if mime_type not in ALLOWED_MIME_TYPES or not isinstance(encoded, str):
                 continue
-            image = base64.b64decode(encoded, validate=True)
-            if not image or len(image) > 12_000_000:
-                continue
-            digest = hashlib.sha256(image).hexdigest()[:12]
-            print(
-                f"success: profile={config.PROFILE} model={EXPECTED_MODEL} "
-                f"mime={mime_type} bytes={len(image)} sha256_prefix={digest} "
-                "output_saved=false calls=1"
+            image_parts.append(
+                (
+                    {"mime_type": mime_type, "encoded": encoded},
+                    bool(part.get("thought")),
+                )
             )
-            return
-    raise RuntimeError("이미지 provider 응답에서 유효한 이미지를 찾지 못했습니다.")
+    if not image_parts:
+        raise RuntimeError("이미지 provider 응답에서 유효한 이미지를 찾지 못했습니다.")
+
+    final_parts = [
+        image_part for image_part, is_thought in image_parts
+        if not is_thought
+    ]
+    selected = final_parts[-1] if final_parts else image_parts[-1][0]
+    image = base64.b64decode(selected["encoded"], validate=True)
+    mime_type = str(selected["mime_type"])
+    magic_matches = (
+        (mime_type == "image/png" and image.startswith(b"\x89PNG\r\n\x1a\n"))
+        or (mime_type == "image/jpeg" and image.startswith(b"\xff\xd8\xff"))
+        or (
+            mime_type == "image/webp"
+            and len(image) >= 12
+            and image.startswith(b"RIFF")
+            and image[8:12] == b"WEBP"
+        )
+    )
+    if not image or len(image) > 12_000_000 or not magic_matches:
+        raise RuntimeError("최종 이미지의 크기 또는 파일 형식이 올바르지 않습니다.")
+    digest = hashlib.sha256(image).hexdigest()[:12]
+    print(
+        f"success: profile={config.PROFILE} model={EXPECTED_MODEL} "
+        f"mime={mime_type} bytes={len(image)} sha256_prefix={digest} "
+        f"image_parts={len(image_parts)} "
+        f"thought_parts={sum(1 for _part, thought in image_parts if thought)} "
+        "selected=last_final output_saved=false calls=1"
+    )
+    return
 
 
 def main() -> None:
