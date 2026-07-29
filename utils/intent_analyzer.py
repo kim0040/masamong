@@ -1026,6 +1026,15 @@ class IntentAnalyzer:
                     parsed.get("reasoning_level"),
                     config.LLM_DYNAMIC_REASONING_DEFAULT,
                 )
+                # 라우터 출력이 흔들리더라도 코드가 이미 확실히 아는 구조적
+                # 복잡성은 high로 보정한다. 질문 키워드나 이름 목록은 쓰지
+                # 않으며 추가 판정/재호출도 만들지 않는다.
+                if (
+                    bare_identity_question
+                    or compaction_requested
+                    or len(plan) > 1
+                ):
+                    reasoning_level = "high"
             context_digest = ""
             if compaction_requested:
                 context_digest = re.sub(
