@@ -195,10 +195,10 @@ visible item이 0건이면 전달 run만 완료 상태로 기록하고 DM은 보
 core source 설정, selector/host/robots 계약, fixture/live-check를 함께 추가해야 한다.
 로그인·SSO·CAPTCHA 우회는 지원하지 않는다.
 
-2026-07-29 live-check에서는 17개 source 모두 목록과 상세 진입에 성공했고, source당
-상세 2건씩 총 34건을 확인했다. 16개는 `healthy`, 한양대 서울 한 곳은 확인 대상 중
-이미지 본문만 있는 공지 때문에 `degraded`였다. 이 상태를 성공으로 숨기거나 이미지
-내용을 추측하지 않는다.
+2026-07-29 최종 live-check에서는 17개 source 모두 목록과 상세 진입에 성공했고,
+source당 상세 2건씩 총 34건을 확인해 모두 `healthy`였다. 본문이 이미지뿐인 개별
+공지가 다시 나타나면 성공으로 숨기거나 이미지 내용을 추측하지 않고 `degraded`와
+원문 확인 필요를 표시한다.
 
 ## 프로세스와 저장소 경계
 
