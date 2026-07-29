@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 from pathlib import Path
 import sys
@@ -13,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import config  # noqa: E402
 from utils.intent_analyzer import IntentAnalyzer  # noqa: E402
 from utils.llm_client import LLMClient  # noqa: E402
 
@@ -112,7 +114,58 @@ CASES = (
 )
 
 
-async def run() -> int:
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "routing provider를 실제 호출하는 비용 발생 smoke. "
+            "--run과 정확한 확인 문구 없이는 호출하지 않습니다."
+        )
+    )
+    parser.add_argument(
+        "--expected-profile",
+        required=True,
+        choices=("masamo", "general"),
+    )
+    parser.add_argument(
+        "--max-calls",
+        type=int,
+        default=len(CASES),
+        help=f"실제 routing 호출 상한 (1~{len(CASES)})",
+    )
+    parser.add_argument("--run", action="store_true")
+    parser.add_argument("--confirm")
+    return parser.parse_args()
+
+
+def confirmation_text(args: argparse.Namespace) -> str:
+    return (
+        f"RUN {int(args.max_calls)} SEMANTIC ROUTING CALLS FOR "
+        f"profile={args.expected_profile} "
+        f"model={config.LLM_ROUTING_PRIMARY_MODEL}"
+    )
+
+
+def validate_execution(args: argparse.Namespace) -> bool:
+    if config.PROFILE != args.expected_profile:
+        raise SystemExit(
+            f"현재 profile={config.PROFILE!r}이 "
+            f"--expected-profile={args.expected_profile!r}와 다릅니다."
+        )
+    if not 1 <= int(args.max_calls) <= len(CASES):
+        raise SystemExit(f"--max-calls는 1~{len(CASES)}여야 합니다.")
+    expected = confirmation_text(args)
+    if not args.run:
+        print(
+            "DRY-RUN: provider를 호출하지 않았습니다. 실행하려면 "
+            f"--run --confirm {expected!r}"
+        )
+        return False
+    if args.confirm != expected:
+        raise SystemExit("--confirm 값이 현재 profile/model/호출 상한과 일치하지 않습니다.")
+    return True
+
+
+async def run(args: argparse.Namespace) -> int:
     client = LLMClient(db=None)
     analyzer = IntentAnalyzer(
         db=None,
@@ -127,7 +180,7 @@ async def run() -> int:
         expected_memory,
         expected_fortune_context,
         history,
-    ) in CASES:
+    ) in CASES[: int(args.max_calls)]:
         started = time.monotonic()
         decision = await analyzer.route_tools(
             query,
@@ -173,7 +226,10 @@ async def run() -> int:
 
 
 def main() -> int:
-    return asyncio.run(run())
+    args = parse_args()
+    if not validate_execution(args):
+        return 0
+    return asyncio.run(run(args))
 
 
 if __name__ == "__main__":

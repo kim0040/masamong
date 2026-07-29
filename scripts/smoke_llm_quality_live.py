@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 from pathlib import Path
 import re
@@ -13,7 +14,51 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import config
 from utils.llm_client import LLMClient
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "main LLM provider를 정확히 1회 호출하는 비용 발생 smoke. "
+            "--run과 정확한 확인 문구 없이는 호출하지 않습니다."
+        )
+    )
+    parser.add_argument(
+        "--expected-profile",
+        required=True,
+        choices=("masamo", "general"),
+    )
+    parser.add_argument("--run", action="store_true")
+    parser.add_argument("--confirm")
+    return parser.parse_args()
+
+
+def confirmation_text(args: argparse.Namespace) -> str:
+    return (
+        "RUN ONE MAIN LLM QUALITY SMOKE FOR "
+        f"profile={args.expected_profile} "
+        f"model={config.LLM_MAIN_PRIMARY_MODEL}"
+    )
+
+
+def validate_execution(args: argparse.Namespace) -> bool:
+    if config.PROFILE != args.expected_profile:
+        raise SystemExit(
+            f"현재 profile={config.PROFILE!r}이 "
+            f"--expected-profile={args.expected_profile!r}와 다릅니다."
+        )
+    expected = confirmation_text(args)
+    if not args.run:
+        print(
+            "DRY-RUN: provider를 호출하지 않았습니다. 실행하려면 "
+            f"--run --confirm {expected!r}"
+        )
+        return False
+    if args.confirm != expected:
+        raise SystemExit("--confirm 값이 현재 profile/model과 일치하지 않습니다.")
+    return True
 
 
 async def run() -> int:
@@ -65,6 +110,9 @@ async def run() -> int:
 
 
 def main() -> int:
+    args = parse_args()
+    if not validate_execution(args):
+        return 0
     return asyncio.run(run())
 
 
