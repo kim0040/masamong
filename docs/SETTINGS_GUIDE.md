@@ -94,6 +94,10 @@ provider 장애 fallback도 같은 기본값을 사용합니다. 이 값은 현�
 특정 이름이나 주제 키워드 목록을 사용하지 않습니다.
 `high` 요청에서는 Discord 진행 문구도 “조금 더 오래 고민 중”으로 바뀝니다.
 상태 표시만 달라지며 별도 API 호출은 없습니다.
+일반 대화의 입력 중 애니메이션과 메뉴·버튼의 “생각 중” 표시는 Discord 자체
+기능입니다. 단계 문구는 짧은 변경을 합쳐 수정하고, 작업이 끝나면 표시도
+종료합니다. native typing 신호도 기본 5분 상한이 있어 별도 LLM 과금이나 무한
+edit·keepalive 경로가 생기지 않습니다.
 `LLM_DYNAMIC_REASONING_ENABLED=false`이면 기존
 `LLM_MAIN_PRIMARY_REASONING_EFFORT` 고정 설정으로 돌아갑니다.
 

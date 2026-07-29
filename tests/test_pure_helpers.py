@@ -119,3 +119,110 @@ async def test_discord_progress_coalesces_fast_updates_and_keeps_latest_phase():
     assert await progress.update("시간이 걸리는 2단계") is True
     assert message.edits[-1]["content"] == "시간이 걸리는 2단계"
     await progress.stop()
+
+
+@pytest.mark.asyncio
+async def test_discord_progress_uses_native_typing_and_stops_it_once():
+    events = []
+
+    class FakeTyping:
+        async def __aenter__(self):
+            events.append("typing-start")
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            events.append("typing-stop")
+
+    class FakeChannel:
+        def typing(self):
+            return FakeTyping()
+
+    class FakeMessage:
+        channel = FakeChannel()
+
+        async def edit(self, **_kwargs):
+            return None
+
+    progress = DiscordProgress(
+        FakeMessage(),
+        initial_text="시작",
+        heartbeat_seconds=30,
+    )
+    await progress.start()
+    assert events == ["typing-start"]
+
+    await progress.stop()
+    await progress.stop()
+    assert events == ["typing-start", "typing-stop"]
+
+
+@pytest.mark.asyncio
+async def test_discord_progress_native_typing_has_a_hard_lifetime_cap():
+    events = []
+
+    class FakeTyping:
+        async def __aenter__(self):
+            events.append("typing-start")
+
+        async def __aexit__(self, exc_type, exc, tb):
+            events.append("typing-stop")
+
+    class FakeChannel:
+        def typing(self):
+            return FakeTyping()
+
+    class FakeMessage:
+        channel = FakeChannel()
+
+        async def edit(self, **_kwargs):
+            return None
+
+    progress = DiscordProgress(
+        FakeMessage(),
+        initial_text="시작",
+        heartbeat_seconds=30,
+        native_typing_max_seconds=10,
+    )
+    await progress.start()
+    assert await progress._expire_native_typing_if_needed(9.9) is False
+    assert events == ["typing-start"]
+    assert await progress._expire_native_typing_if_needed(10) is True
+    assert events == ["typing-start", "typing-stop"]
+
+    # 만료 뒤 start를 다시 불러도 네이티브 keepalive는 부활하지 않는다.
+    await progress.start()
+    await progress.stop()
+    assert events == ["typing-start", "typing-stop"]
+
+
+@pytest.mark.asyncio
+async def test_discord_progress_keeps_working_when_native_typing_fails():
+    class BrokenTyping:
+        async def __aenter__(self):
+            raise RuntimeError("typing unavailable")
+
+    class FakeChannel:
+        def typing(self):
+            return BrokenTyping()
+
+    class FakeMessage:
+        channel = FakeChannel()
+
+        def __init__(self):
+            self.edits = []
+
+        async def edit(self, **kwargs):
+            self.edits.append(kwargs)
+
+    message = FakeMessage()
+    progress = DiscordProgress(
+        message,
+        initial_text="시작",
+        min_update_interval_seconds=0.5,
+        heartbeat_seconds=30,
+    )
+    await progress.start()
+    progress.last_edit_at -= 1
+    assert await progress.update("계속 진행") is True
+    assert message.edits[-1]["content"] == "계속 진행"
+    await progress.stop()

@@ -89,6 +89,15 @@ flowchart LR
 진행 메시지는 `high`일 때만 더 오래 고민 중이라는 문구로 바뀌며 API 호출을
 추가하지 않는다.
 
+긴 일반 메시지 작업은 `DiscordProgress`가 담당한다. 단계 문구는 최소 갱신 간격
+안의 변경을 합쳐 Discord message edit 폭주를 막고, 별도의 Discord 기본 입력 중
+표시는 작업 수명 동안만 유지한다. heartbeat는 장시간 정체 때만 경과 시간을
+표시한다. 메뉴·버튼처럼 Discord interaction인 경로는 `thinking=True`로 3초 응답
+기한 전에 승인하고, 첫 명령 결과로 deferred original response를 교체한다. 이
+표시들은 Discord API만 사용하며 LLM·검색·이미지 API 호출 횟수를 늘리지 않는다.
+native typing keepalive는 기본 5분, 최대 15분으로 코드 수준의 상한을 두며 이후에도
+본 작업과 낮은 빈도의 상태 문구는 계속 진행된다.
+
 ## 컨텍스트 관리
 
 컨텍스트는 “전체 로그를 계속 붙이는 방식”이 아니다.

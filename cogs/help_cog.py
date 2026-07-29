@@ -801,7 +801,7 @@ def _category_embed(ctx: commands.Context, category: str) -> discord.Embed:
 
 
 class _MenuContextProxy:
-    """명령 콜백의 출력을 현재 interaction 응답으로 돌리는 최소 Context 프록시."""
+    """명령 출력을 현재 interaction의 생각 중 자리에 이어 쓰는 Context 프록시."""
 
     def __init__(
         self,
@@ -809,10 +809,13 @@ class _MenuContextProxy:
         interaction: discord.Interaction,
         *,
         result_ephemeral: bool = False,
+        replace_deferred_response: bool = False,
     ) -> None:
         self._source = source
         self._interaction = interaction
         self._result_ephemeral = bool(result_ephemeral)
+        self._replace_deferred_response = bool(replace_deferred_response)
+        self._result_started = False
 
     def __getattr__(self, name):
         return getattr(self._source, name)
@@ -827,7 +830,29 @@ class _MenuContextProxy:
                 ephemeral=ephemeral,
                 **kwargs,
             )
+            self._result_started = True
             return await self._interaction.original_response()
+        if self._replace_deferred_response and not self._result_started:
+            # thinking=True로 만든 Discord 기본 애니메이션을 별도 메시지로
+            # 남기지 않고 첫 실제 결과로 교체한다. edit에는 send의 file/files
+            # 이름 대신 attachments를 사용한다.
+            file = kwargs.pop("file", None)
+            files = kwargs.pop("files", None)
+            attachments = list(kwargs.pop("attachments", []) or [])
+            if file is not None:
+                attachments.append(file)
+            if files:
+                attachments.extend(files)
+            if attachments:
+                kwargs["attachments"] = attachments
+            kwargs.pop("delete_after", None)
+            kwargs.pop("silent", None)
+            self._result_started = True
+            return await self._interaction.edit_original_response(
+                content=content,
+                **kwargs,
+            )
+        self._result_started = True
         return await self._interaction.followup.send(
             content,
             ephemeral=ephemeral,
@@ -1109,6 +1134,7 @@ class CategoryView(ReliableView):
             self.ctx,
             interaction,
             result_ephemeral=False,
+            replace_deferred_response=True,
         )
         await command.callback(command.cog, proxy, **kwargs)
 
@@ -1154,16 +1180,25 @@ class CategoryView(ReliableView):
                 else "TransferNoticeCog"
             )
             cog = self.bot.get_cog(cog_name)
-            await interaction.response.send_message(
-                "고르신 설정 화면을 아래에 열었어요.",
+            await interaction.response.defer(
                 ephemeral=False,
+                thinking=True,
+            )
+            proxy = _MenuContextProxy(
+                self.ctx,
+                interaction,
+                result_ephemeral=False,
+                replace_deferred_response=True,
             )
             if cog is None:
-                await interaction.followup.send(
+                await proxy.send(
                     "여기서는 해당 공지 기능을 사용할 수 없어요."
                 )
                 return
-            await cog.send_dashboard(self.ctx)
+            if action == "school_dashboard":
+                await cog.send_dashboard(self.ctx, destination=proxy)
+            else:
+                await cog.send_dashboard(proxy)
             return
         if action == "privacy_status":
             await interaction.response.defer(
@@ -1176,9 +1211,8 @@ class CategoryView(ReliableView):
                 if cog is not None
                 else "개인정보 상태 기능을 불러오지 못했어요."
             )
-            await interaction.followup.send(
-                text,
-                ephemeral=self.server_mode,
+            await interaction.edit_original_response(
+                content=text,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             return
@@ -1250,7 +1284,12 @@ class CategoryView(ReliableView):
                     ephemeral=self.server_mode,
                     thinking=True,
                 )
-                proxy = _MenuContextProxy(self.ctx, interaction)
+                proxy = _MenuContextProxy(
+                    self.ctx,
+                    interaction,
+                    result_ephemeral=self.server_mode,
+                    replace_deferred_response=True,
+                )
                 await command.callback(
                     command.cog,
                     proxy,
@@ -1297,6 +1336,7 @@ class CategoryView(ReliableView):
                 self.ctx,
                 interaction,
                 result_ephemeral=False,
+                replace_deferred_response=True,
             )
             await command.callback(
                 command.cog,

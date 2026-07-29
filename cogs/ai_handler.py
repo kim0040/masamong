@@ -2745,8 +2745,8 @@ class AIHandler(commands.Cog):
         self._debug(f"--- 에이전트 세션 시작 trace_id={trace_id}", log_extra)
 
         # 초기 상태는 즉시 표시하고 이후 단계는 낮은 빈도로 합쳐 갱신한다.
-        # 오래 걸리는 도구/LLM 호출은 12초 heartbeat로 살아 있음을 알리되,
-        # 단계가 빠르게 바뀔 때 Discord edit 요청을 연속으로 보내지 않는다.
+        # Discord 기본 입력 중 애니메이션과 12초 heartbeat로 살아 있음을
+        # 알리되, 단계가 빠르게 바뀔 때 edit 요청을 연속으로 보내지 않는다.
         initial_progress_text = "🤔 질문을 확인하고 있어요..."
         status_msg = await message.channel.send(
             initial_progress_text,

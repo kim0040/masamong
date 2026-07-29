@@ -320,11 +320,10 @@ class TransferDashboardView(ReliableView):
         interaction: discord.Interaction,
         _button: discord.ui.Button,
     ) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         text = await self.cog._recent_text(self.user_id)
-        await interaction.followup.send(
-            text,
-            ephemeral=True,
+        await interaction.edit_original_response(
+            content=text,
             allowed_mentions=discord.AllowedMentions.none(),
         )
 

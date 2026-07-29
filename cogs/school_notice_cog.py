@@ -1743,10 +1743,16 @@ class SchoolNoticeCog(commands.Cog):
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
-    async def send_dashboard(self, ctx: commands.Context) -> None:
+    async def send_dashboard(
+        self,
+        ctx: commands.Context,
+        *,
+        destination=None,
+    ) -> None:
         """설정 상태와 자주 쓰는 동작을 한 화면에 모아 보여준다."""
+        output = destination or ctx
         if ctx.guild:
-            await ctx.reply(
+            await output.reply(
                 "🎓 학교 공지는 개인정보가 포함될 수 있어 DM에서 설정해요. 마사몽에게 DM으로 `학교 공지 설정`이라고 보내주세요."
             )
             return
@@ -1788,7 +1794,7 @@ class SchoolNoticeCog(commands.Cog):
         embed.set_footer(
             text="세부 명령은 !도움 공지 · 삭제는 !공지 삭제"
         )
-        await ctx.reply(
+        await output.reply(
             embed=embed,
             view=SchoolNoticeDashboardView(
                 self,

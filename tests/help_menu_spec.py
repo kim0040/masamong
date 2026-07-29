@@ -141,6 +141,10 @@ async def test_category_command_defers_before_slow_command_callback():
             events.append(("send", content, kwargs))
             return SimpleNamespace()
 
+    async def _edit_original_response(content=None, **kwargs):
+        events.append(("edit", content, kwargs))
+        return SimpleNamespace()
+
     class _Command:
         cog = object()
 
@@ -160,6 +164,7 @@ async def test_category_command_defers_before_slow_command_callback():
     interaction = SimpleNamespace(
         response=_Response(),
         followup=_Followup(),
+        edit_original_response=_edit_original_response,
     )
 
     await CategoryView(bot, ctx, "weather")._invoke_command(
@@ -172,5 +177,4 @@ async def test_category_command_defers_before_slow_command_callback():
         "defer",
         {"ephemeral": False, "thinking": True},
     )
-    assert events[1][0:2] == ("send", "완료")
-    assert events[1][2]["ephemeral"] is False
+    assert events[1] == ("edit", "완료", {})
