@@ -356,6 +356,7 @@ sequenceDiagram
     AI->>Intent: route_tools(query, history)
     Intent->>LLMR: call_routing_lane_target(도구 계약 + 최근 대화)
     LLMR-->>Intent: {intent, needs_memory, needs_fortune_context, context_digest, tools}
+    Note over Intent: 이름만 있는 신원 질문은 scoped memory 우선 후조건
     Intent-->>AI: ToolRoutingDecision
 
     Note over AI: 6. 도구 실행 → ToolsCog 위임

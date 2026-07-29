@@ -341,6 +341,7 @@ sequenceDiagram
     AI->>Intent: route_tools(query, history)
     Intent->>LLMR: call_routing_lane_target(tool contract + recent turns)
     LLMR-->>Intent: {intent, needs_memory, needs_fortune_context, context_digest, tools}
+    Note over Intent: bare identity questions prefer scoped memory
     Intent-->>AI: ToolRoutingDecision
 
     Note over AI: 6. Tool Execution → delegate to ToolsCog

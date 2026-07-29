@@ -384,6 +384,41 @@ async def test_semantic_router_marks_fortune_context_only_when_requested():
 
 
 @pytest.mark.asyncio
+async def test_bare_identity_question_prefers_scoped_memory_over_web():
+    handler = _build_handler_without_init()
+    handler.use_cometapi = True
+
+    async def _fake_fast(*_args, **_kwargs):
+        return (
+            '{"intent":"특정 인물의 신원 확인","needs_memory":false,'
+            '"needs_fortune_context":false,'
+            '"requires_external_evidence":true,'
+            '"tools":[{"tool":"web_search",'
+            '"params":{"query":"김재원 누구"}}]}'
+        )
+
+    handler._cometapi_fast_generate_text = _fake_fast
+    decision = await handler._route_tools(
+        "김재원이 누구야?",
+        {"trace_id": "bare-identity"},
+        history=[],
+    )
+
+    assert decision.plan == []
+    assert decision.needs_memory is True
+    assert decision.requires_external_evidence is False
+
+
+def test_described_or_explicitly_searched_identity_is_not_forced_local():
+    assert not IntentAnalyzer._looks_like_bare_identity_question(
+        "축구선수 호날두가 누구야?"
+    )
+    assert not IntentAnalyzer._looks_like_bare_identity_question(
+        "김재원이 누군지 웹에서 검색해줘"
+    )
+
+
+@pytest.mark.asyncio
 async def test_semantic_router_ignores_unsolicited_digest_for_short_history():
     handler = _build_handler_without_init()
     handler.use_cometapi = True

@@ -720,7 +720,7 @@ flowchart TD
     AddDigest --> CallRouting[Routing lane 1회 호출<br/>gpt-5.4-nano]
     CallRouting --> ParseJSON[JSON 추출·파싱]
     ParseJSON --> Valid{계약 유효?}
-    Valid -->|Yes| Sanitize[도구 allowlist·개수·파라미터 상한 검증]
+    Valid -->|Yes| Sanitize[도구 allowlist·개수·파라미터 상한<br/>이름만 있는 신원 질문은 scoped memory 우선]
     Valid -->|No| Emergency[제한된 키워드 장애 fallback]
     Sanitize --> Decision[ToolRoutingDecision<br/>tools + needs_memory + needs_fortune_context + digest]
     Emergency --> Decision
