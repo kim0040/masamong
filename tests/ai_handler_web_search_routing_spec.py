@@ -309,6 +309,12 @@ async def test_semantic_router_compacts_only_older_history(monkeypatch):
     monkeypatch.setattr(config, "AI_CONTEXT_COMPACTION_TRIGGER_CHARS", 1_000)
     monkeypatch.setattr(config, "AI_CONTEXT_COMPACTION_SOURCE_MAX_CHARS", 2_000)
     monkeypatch.setattr(config, "AI_CONTEXT_DIGEST_MAX_CHARS", 240)
+    monkeypatch.setattr(config, "SEMANTIC_ROUTER_MAX_TOKENS", 384)
+    monkeypatch.setattr(
+        config,
+        "SEMANTIC_ROUTER_COMPACTION_MAX_TOKENS",
+        768,
+    )
     captured = {}
 
     history = [
@@ -331,6 +337,7 @@ async def test_semantic_router_compacts_only_older_history(monkeypatch):
 
     async def _fake_fast(prompt, *_args, **_kwargs):
         captured["prompt"] = prompt
+        captured["max_tokens"] = _kwargs.get("max_tokens")
         return (
             '{"intent":"계획 이어가기","needs_memory":false,'
             '"context_digest":"민수는 자가용을 쓰지 않기로 했고 KTX 예약은 미정이다.",'
@@ -351,6 +358,29 @@ async def test_semantic_router_compacts_only_older_history(monkeypatch):
     assert "압축할 오래된 대화:" in captured["prompt"]
     assert "오래된 계획" in captured["prompt"]
     assert "최신 답변 3" in captured["prompt"]
+    assert captured["max_tokens"] == 768
+
+
+@pytest.mark.asyncio
+async def test_semantic_router_marks_fortune_context_only_when_requested():
+    handler = _build_handler_without_init()
+    handler.use_cometapi = True
+
+    async def _fake_fast(*_args, **_kwargs):
+        return (
+            '{"intent":"직전 운세 기반 조언","needs_memory":false,'
+            '"needs_fortune_context":true,'
+            '"requires_external_evidence":false,"tools":[]}'
+        )
+
+    handler._cometapi_fast_generate_text = _fake_fast
+    decision = await handler._route_tools(
+        "아까 본 운세를 토대로 오늘 조언해줘",
+        {"trace_id": "fortune-context"},
+        history=[],
+    )
+
+    assert decision.needs_fortune_context is True
 
 
 @pytest.mark.asyncio
@@ -388,19 +418,28 @@ def test_detect_tools_by_keyword_place_routes_to_web_search():
 def test_no_tool_conversation_gets_bounded_passive_memory_search(monkeypatch):
     monkeypatch.setattr(config, "RAG_PASSIVE_NO_TOOL_SEARCH_ENABLED", True)
 
+    assert not AIHandler._should_search_memory(
+        SimpleNamespace(needs_memory=False, plan=[], source="llm")
+    )
     assert AIHandler._should_search_memory(
-        SimpleNamespace(needs_memory=False, plan=[])
+        SimpleNamespace(
+            needs_memory=False,
+            plan=[],
+            source="error_fallback",
+        )
     )
     assert not AIHandler._should_search_memory(
         SimpleNamespace(
             needs_memory=False,
             plan=[{"tool_to_use": "get_weather_forecast"}],
+            source="error_fallback",
         )
     )
     assert AIHandler._should_search_memory(
         SimpleNamespace(
             needs_memory=True,
             plan=[{"tool_to_use": "generate_image"}],
+            source="llm",
         )
     )
 

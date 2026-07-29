@@ -142,6 +142,48 @@ def test_lexical_name_bonus_handles_korean_postposition():
     assert score >= 0.04
 
 
+def test_overlapping_structured_memories_do_not_monopolize_top_k():
+    entries = [
+        {
+            "candidate_id": "shared-window",
+            "dialogue_block": "김재원: 부산 여행은 KTX로 간다.",
+            "source_message_ids": "[1, 2, 3, 4, 5, 6]",
+        },
+        {
+            "candidate_id": "user-window",
+            "dialogue_block": "김재원: 부산 여행은 KTX로 간다. 숙소를 찾는다.",
+            "source_message_ids": [2, 3, 4],
+        },
+        {
+            "candidate_id": "distinct-window",
+            "dialogue_block": "민수: 숙소는 해운대 근처를 선호한다.",
+            "source_message_ids": [20, 21],
+        },
+    ]
+
+    selected = HybridSearchEngine._dedupe_overlapping_entries(entries)
+
+    assert [entry["candidate_id"] for entry in selected] == [
+        "shared-window",
+        "distinct-window",
+    ]
+
+
+def test_identical_memory_blocks_are_deduplicated_without_source_ids():
+    entries = [
+        {"candidate_id": "first", "dialogue_block": "민수: 파전을 좋아한다."},
+        {
+            "candidate_id": "duplicate",
+            "dialogue_block": "  민수:   파전을 좋아한다.  ",
+        },
+        {"candidate_id": "other", "dialogue_block": "민수: 비 오는 날을 좋아한다."},
+    ]
+
+    selected = HybridSearchEngine._dedupe_overlapping_entries(entries)
+
+    assert [entry["candidate_id"] for entry in selected] == ["first", "other"]
+
+
 @pytest.mark.asyncio
 async def test_deep_search_reads_structured_and_raw_discord_embeddings(monkeypatch):
     monkeypatch.setattr(config, "SEARCH_QUERY_EXPANSION_ENABLED", False)

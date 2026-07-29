@@ -247,6 +247,11 @@ class HybridSearchEngine:
         )
         if not enriched:
             return HybridSearchResult(entries=[], query_variants=variants, top_score=0.0)
+        # 슬라이딩 윈도우의 공유 기억과 사용자 기억은 같은 원문 메시지를
+        # 포함할 수 있다. 점수가 높은 동일 근거가 top-k를 독점하면 새로운
+        # 사실을 하나 덜 주는 동시에 같은 사실에 과도한 가중치를 주므로,
+        # 원문 ID 포함관계와 완전 동일 본문을 기준으로 한 번 더 다양화한다.
+        enriched = self._dedupe_overlapping_entries(enriched)
         # 상한은 config 파일의 top_k와 코드 상한 중 작은 쪽이다. 이미 배포된
         # 서버의 embedding config를 고치지 않아도 새 상한이 적용되게 한다.
         block_limit = min(
@@ -318,6 +323,68 @@ class HybridSearchEngine:
         floor_ratio = float(getattr(config, "RAG_MEMORY_RELATIVE_FLOOR", 0.94))
         floor = best * max(0.0, min(1.0, floor_ratio))
         return [entry for entry in entries if _score(entry) >= floor]
+
+    @staticmethod
+    def _source_message_id_set(value: Any) -> set[str]:
+        """DB의 JSON/list 원문 ID를 비교 가능한 집합으로 정규화합니다."""
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (TypeError, json.JSONDecodeError):
+                value = [item for item in value.split(",") if item.strip()]
+        if not isinstance(value, (list, tuple, set)):
+            return set()
+        return {
+            str(item).strip()
+            for item in value
+            if str(item).strip()
+        }
+
+    @classmethod
+    def _dedupe_overlapping_entries(
+        cls,
+        entries: List[dict[str, Any]],
+    ) -> List[dict[str, Any]]:
+        """순위를 유지하며 사실상 같은 원문에서 나온 기억 블록을 하나만 남깁니다."""
+        selected: List[dict[str, Any]] = []
+        selected_sources: list[set[str]] = []
+        selected_blocks: set[str] = set()
+
+        for entry in entries:
+            source_ids = cls._source_message_id_set(
+                entry.get("source_message_ids")
+            )
+            normalized_block = _WHITESPACE_PATTERN.sub(
+                " ",
+                str(entry.get("dialogue_block") or "").casefold(),
+            ).strip()
+            if normalized_block and normalized_block in selected_blocks:
+                continue
+
+            redundant = False
+            if source_ids:
+                for existing_ids in selected_sources:
+                    if not existing_ids:
+                        continue
+                    overlap = len(source_ids & existing_ids)
+                    # 공유 윈도우와 그 안의 사용자별 윈도우처럼 한쪽 원문이
+                    # 거의 전부 다른 쪽에 포함되면 같은 근거로 취급한다.
+                    containment = overlap / min(
+                        len(source_ids),
+                        len(existing_ids),
+                    )
+                    if containment >= 0.8:
+                        redundant = True
+                        break
+            if redundant:
+                continue
+
+            selected.append(entry)
+            selected_sources.append(source_ids)
+            if normalized_block:
+                selected_blocks.add(normalized_block)
+
+        return selected
 
     async def _expand_query_variants(
         self,
@@ -673,6 +740,11 @@ class HybridSearchEngine:
                     "dialogue_block": dialogue_block,
                     "memory_scope": memory_scope,
                     "memory_type": memory_type,
+                    "source_message_ids": sorted(
+                        self._source_message_id_set(
+                            row.get("source_message_ids")
+                        )
+                    ),
                 }
             )
 

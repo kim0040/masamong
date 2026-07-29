@@ -30,6 +30,7 @@ class ToolRoutingDecision:
     intent: str = ""
     context_digest: str = ""
     requires_external_evidence: bool = False
+    needs_fortune_context: bool = False
 
 
 class IntentAnalyzer:
@@ -816,18 +817,29 @@ class IntentAnalyzer:
             "어려운 틈새 사실도 true다. 이때 적절한 조회 도구가 적어도 하나 있어야 "
             "하며, 모델의 기억만으로 답하지 않는다. 의견·창작·잡담·현재 대화나 "
             "장기기억 회상, 널리 확립된 안정적인 일반 상식은 false다. "
-            "도구가 불필요하면 tools=[]이며 최대 2개다. needs_memory는 제공된 최근 "
-            "대화보다 오래된 Discord/Kakao 기억이 답변의 정확도나 개인화에 도움이 "
-            "되면 true다. 이전 합의·결정·취향·관계·사건뿐 아니라 공개 지식으로 "
+            "도구가 불필요하면 tools=[]이며 최대 2개다. needs_memory는 장기기억 "
+            "저장소를 별도로 검색할지 정하는 스위치이며, 제공된 최근 대화를 활용한다는 "
+            "표시가 아니다. 최근 대화 안에 답변에 필요한 대상과 사실이 이미 있으면 "
+            "반드시 false다. 그보다 오래된 Discord/Kakao 기억이 답변의 정확도나 "
+            "개인화에 도움이 되면 true다. 이전 합의·결정·취향·관계·사건뿐 아니라 공개 지식으로 "
             "알 수 없는 현재 사용자나 서버 구성원·지인 등 특정 인물이 누구인지, "
             "어떤 사람인지, 무엇을 좋아하는지 묻는 요청도 별도의 '전에/기억' 표현이 "
             "없어도 true다. 최근 대화만으로 지시 대상이나 생략된 주어를 확정할 수 "
             "없을 때도 true다. 순수 인사와 과거 맥락이 전혀 필요 없는 독립적인 "
-            "일반 지식·의견 질문만 false다. 애매하면 기억 누락보다 관련도 필터링을 "
-            "우선해 true로 둔다.\n"
+            "일반 지식·의견 질문만 false다. '그 계획을 이어서'처럼 생략이 있어도 "
+            "최근 대화에 대상과 필요한 내용이 이미 드러나 있으면 false이며, 단지 "
+            "대화가 이어진다는 이유로 true를 쓰지 않는다. 그 내용을 최근 대화만으로 "
+            "확정할 수 없을 때에만 기억 누락보다 관련도 필터링을 우선해 true로 둔다. "
+            "needs_fortune_context는 DM 일반 대화에서 동의받아 "
+            "저장한 직전 운세 내용을 실제로 참고해야 할 때만 true다. 사용자가 운세 "
+            "내용을 이어 묻거나 그 운세를 바탕으로 조언을 요청한 경우가 아니면 false다. "
+            "저장 운세만 있으면 답할 수 있는 요청에서는 needs_fortune_context=true, "
+            "needs_memory=false다. 운세 외의 오래된 Discord/Kakao 사실도 함께 필요할 "
+            "때만 두 값을 모두 true로 둔다.\n"
             f"{digest_instruction}\n"
             "출력 형식: "
             '{"intent":"짧은 의도","needs_memory":false,'
+            '"needs_fortune_context":false,'
             '"requires_external_evidence":false,'
             '"context_digest":"","tools":[{"tool":"도구명","params":{}}]}\n'
             f"현재 시각(KST): {now_kst}\n"
@@ -836,14 +848,26 @@ class IntentAnalyzer:
             f"현재 요청:\n{query}\n"
         )
         try:
+            router_max_tokens = int(
+                getattr(config, "SEMANTIC_ROUTER_MAX_TOKENS", 384)
+            )
+            if compaction_requested:
+                router_max_tokens = max(
+                    router_max_tokens,
+                    int(
+                        getattr(
+                            config,
+                            "SEMANTIC_ROUTER_COMPACTION_MAX_TOKENS",
+                            768,
+                        )
+                    ),
+                )
             raw = await self.llm_client.fast_generate_text(
                 prompt,
                 None,
                 log_extra,
                 trace_key="cometapi_fast_intent",
-                max_tokens=int(
-                    getattr(config, "SEMANTIC_ROUTER_MAX_TOKENS", 384)
-                ),
+                max_tokens=router_max_tokens,
             )
             if not raw:
                 raise ValueError("라우팅 모델 응답이 비어 있습니다.")
@@ -889,6 +913,11 @@ class IntentAnalyzer:
                 needs_memory_raw
                 if isinstance(needs_memory_raw, bool)
                 else not bool(plan)
+            )
+            needs_fortune_context = (
+                parsed.get("needs_fortune_context")
+                if isinstance(parsed.get("needs_fortune_context"), bool)
+                else False
             )
             # 이미지 요청은 "아까 말한 철수", "네가 기억하는 나"처럼 짧은
             # 지시가 많다. 검색 결과는 범위·관련도 필터를 다시 통과하므로 모든
@@ -943,10 +972,11 @@ class IntentAnalyzer:
                 ).strip()[:digest_limit]
             logger.info(
                 "[의미라우터] intent=%s tools=%s needs_memory=%s "
-                "external_evidence=%s digest_chars=%d",
+                "fortune_context=%s external_evidence=%s digest_chars=%d",
                 intent or "-",
                 [item["tool_to_use"] for item in plan],
                 needs_memory,
+                needs_fortune_context,
                 requires_external_evidence,
                 len(context_digest),
                 extra=log_extra,
@@ -958,6 +988,7 @@ class IntentAnalyzer:
                 intent=intent,
                 context_digest=context_digest,
                 requires_external_evidence=requires_external_evidence,
+                needs_fortune_context=needs_fortune_context,
             )
         except Exception as exc:
             logger.warning(

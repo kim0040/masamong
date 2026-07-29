@@ -1178,11 +1178,13 @@ class AIHandler(commands.Cog):
 
     @staticmethod
     def _should_search_memory(routing_decision: Any) -> bool:
-        """명시 기억 요청은 깊게, 일반 무도구 대화는 얕게 검색합니다.
+        """명시 기억 요청은 깊게, 라우터 장애 시에만 얕게 검색합니다.
 
-        의미 라우터가 특정 서버 인물 질문을 일반 대화로 오판해도 저장된
-        기억을 전혀 보지 않는 회귀를 막습니다. 실제 관련성은 검색 임계값이
-        다시 검증하므로 무관한 기억을 프롬프트에 강제로 넣지는 않습니다.
+        정상 의미 라우터는 특정 인물·과거 합의까지 포함해 장기기억 필요 여부를
+        한 번에 판정한다. 그 결과가 신뢰 가능한데도 모든 무도구 대화에서 RAG를
+        다시 실행하면 인사·일반 지식에도 로컬 임베딩과 TiDB 조회가 발생한다.
+        provider 장애로 제한 fallback을 쓴 경우에만 기존 얕은 검색을 안전망으로
+        남긴다. 실제 주입 여부는 관련성 게이트가 다시 검증한다.
         """
         if bool(getattr(routing_decision, "needs_memory", False)):
             return True
@@ -1190,7 +1192,9 @@ class AIHandler(commands.Cog):
             getattr(config, "RAG_PASSIVE_NO_TOOL_SEARCH_ENABLED", True)
         ):
             return False
-        return not bool(getattr(routing_decision, "plan", None))
+        if bool(getattr(routing_decision, "plan", None)):
+            return False
+        return getattr(routing_decision, "source", None) != "llm"
 
     @staticmethod
     def _select_final_history(
@@ -2966,7 +2970,17 @@ class AIHandler(commands.Cog):
             
             # [NEW] 운세 컨텍스트 조회
             fortune_context = None
-            if not message.guild and self.bot.db:
+            if (
+                not message.guild
+                and self.bot.db
+                and bool(
+                    getattr(
+                        routing_decision,
+                        "needs_fortune_context",
+                        False,
+                    )
+                )
+            ):
                 fortune_context = await self._fortune_context_with_consent(
                     message.author.id
                 )

@@ -454,7 +454,7 @@ sequenceDiagram
 
             AI->>Intent: route_tools(query, history)
             Intent->>Routing: call_routing_llm(prompt, system)
-            Routing-->>Intent: JSON (intent, needs_memory, context_digest, tools)
+            Routing-->>Intent: JSON (intent, needs_memory, needs_fortune_context, context_digest, tools)
             Intent-->>AI: ToolRoutingDecision
 
             alt 도구 필요
@@ -466,10 +466,10 @@ sequenceDiagram
 
             opt needs_memory=true
                 AI->>RAG: search(query, channel_id)
-                RAG-->>AI: RAG context
+                RAG-->>AI: 관련도·원문 중복 제거된 RAG context
             end
 
-            AI->>Main: call_main_llm(tool results, digest, recent turns, optional RAG)
+            AI->>Main: call_main_llm(tool results, digest, recent turns, optional RAG, requested fortune)
             Main-->>AI: 최종 응답 텍스트
 
             AI->>Discord: reply(message, response)
@@ -722,7 +722,7 @@ flowchart TD
     ParseJSON --> Valid{계약 유효?}
     Valid -->|Yes| Sanitize[도구 allowlist·개수·파라미터 상한 검증]
     Valid -->|No| Emergency[제한된 키워드 장애 fallback]
-    Sanitize --> Decision[ToolRoutingDecision<br/>tools + needs_memory + digest]
+    Sanitize --> Decision[ToolRoutingDecision<br/>tools + needs_memory + needs_fortune_context + digest]
     Emergency --> Decision
     Decision --> Done([라우팅 완료])
 ```
