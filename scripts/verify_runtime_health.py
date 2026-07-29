@@ -568,9 +568,14 @@ async def _run_prompt_injection_check(channel_id: int = 0) -> CheckResult:
         def __init__(self, cid: int):
             self.id = cid
 
+    class _DummyAuthor:
+        id = 0
+        display_name = "health-check-user"
+
     class _DummyMessage:
         def __init__(self, cid: int):
             self.channel = _DummyChannel(cid)
+            self.author = _DummyAuthor()
 
     handler = AIHandler(_DummyBot())
     tool_block = handler._format_tool_results_for_prompt(
@@ -599,9 +604,10 @@ async def _run_prompt_injection_check(channel_id: int = 0) -> CheckResult:
     )
 
     required_markers = [
-        "[현재 시간]",
-        "[최근 대화 흐름 (단기 기억)]",
-        "[과거 대화 기억 (관련성 검토 후 선택 사용)]",
+        "[현재 상황]",
+        "현재 시간(KST):",
+        "[최근 대화 흐름 (선택 참고)]",
+        "[과거 대화 기억 (선택 참고)]",
         "[도구 실행 결과 (최우선 정보)]",
         "[현재 질문]",
         "RAG 주입 검증용 문장",
