@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 
 import config
 from cogs.ai_handler import AIHandler
@@ -157,6 +158,7 @@ async def test_semantic_router_controls_tool_choice_without_keyword_override():
     ]
     assert "Examples:" not in captured["prompt"]
     assert "단어 포함 여부가 아니라" in captured["prompt"]
+    assert "서버 구성원·지인" in captured["prompt"]
     assert captured["max_tokens"] == config.SEMANTIC_ROUTER_MAX_TOKENS
 
 
@@ -287,6 +289,47 @@ def test_detect_tools_by_keyword_place_routes_to_web_search():
     assert plan
     assert plan[0]["tool_to_use"] == "web_search"
     assert "맛집" in plan[0]["parameters"]["query"]
+
+
+def test_no_tool_conversation_gets_bounded_passive_memory_search(monkeypatch):
+    monkeypatch.setattr(config, "RAG_PASSIVE_NO_TOOL_SEARCH_ENABLED", True)
+
+    assert AIHandler._should_search_memory(
+        SimpleNamespace(needs_memory=False, plan=[])
+    )
+    assert not AIHandler._should_search_memory(
+        SimpleNamespace(
+            needs_memory=False,
+            plan=[{"tool_to_use": "get_weather_forecast"}],
+        )
+    )
+    assert AIHandler._should_search_memory(
+        SimpleNamespace(
+            needs_memory=True,
+            plan=[{"tool_to_use": "generate_image"}],
+        )
+    )
+
+
+def test_final_history_keeps_short_source_window_without_digest(monkeypatch):
+    monkeypatch.setattr(config, "AI_CONTEXT_SOURCE_HISTORY_LIMIT", 24)
+    monkeypatch.setattr(config, "AI_CONTEXT_RECENT_TURNS", 8)
+    history = [
+        {"role": "user", "parts": [f"짧은 메시지 {index}"]}
+        for index in range(24)
+    ]
+
+    kept = AIHandler._select_final_history(
+        history,
+        SimpleNamespace(context_digest=""),
+    )
+    compacted = AIHandler._select_final_history(
+        history,
+        SimpleNamespace(context_digest="압축됨"),
+    )
+
+    assert len(kept) == 24
+    assert len(compacted) == 8
 
 
 def test_sanitize_tool_plan_keeps_supported_place_tool():
@@ -445,10 +488,94 @@ def test_discord_source_footer_is_deduplicated_and_suppresses_embeds():
     )
 
     assert footer == (
-        "\n\n**출처**\n"
+        "\n\n📰 **뉴스 출처**\n"
         "1. <https://a.example.com>\n"
         "2. <https://b.example.com>"
     )
+
+
+@pytest.mark.asyncio
+async def test_news_sources_are_hidden_until_user_reacts_and_hidden_again():
+    class _Message:
+        def __init__(self, message_id, content):
+            self.id = message_id
+            self.content = content
+            self.reactions = []
+            self.added_reactions = []
+            self.channel = None
+
+        async def add_reaction(self, emoji):
+            self.added_reactions.append(emoji)
+            self.reactions = [SimpleNamespace(emoji=emoji, count=1)]
+
+        async def edit(self, *, content, **_kwargs):
+            self.content = content
+            return self
+
+    long_message = _Message(10, "긴 답변 " * 150)
+    short_message = _Message(11, "마지막 답변")
+
+    class _Channel:
+        async def fetch_message(self, message_id):
+            assert message_id == short_message.id
+            return short_message
+
+    channel = _Channel()
+    long_message.channel = channel
+    short_message.channel = channel
+    handler = object.__new__(AIHandler)
+    handler.bot = SimpleNamespace(
+        user=SimpleNamespace(id=999),
+        get_channel=lambda channel_id: channel if channel_id == 22 else None,
+    )
+    handler._news_source_cache = {}
+    handler._news_source_locks = {}
+
+    anchor = await handler._register_news_source_reaction(
+        [long_message, short_message],
+        ["https://news.example/a", "https://news.example/a"],
+    )
+
+    assert anchor is short_message
+    assert short_message.content == "마지막 답변"
+    assert short_message.added_reactions == ["📰"]
+    assert handler._news_source_cache[short_message.id] == [
+        "https://news.example/a"
+    ]
+
+    short_message.reactions[0].count = 2
+    payload = SimpleNamespace(
+        user_id=123,
+        channel_id=22,
+        message_id=short_message.id,
+        emoji="📰",
+    )
+    await handler.on_raw_reaction_add(payload)
+    assert "📰 **뉴스 출처**" in short_message.content
+    assert "<https://news.example/a>" in short_message.content
+
+    short_message.reactions[0].count = 1
+    await handler.on_raw_reaction_remove(payload)
+    assert short_message.content == "마지막 답변"
+
+
+@pytest.mark.asyncio
+async def test_bot_news_reaction_does_not_reveal_sources():
+    handler = object.__new__(AIHandler)
+    handler.bot = SimpleNamespace(user=SimpleNamespace(id=999))
+    handler._news_source_cache = {10: ["https://news.example/a"]}
+    handler._news_source_locks = {}
+
+    await handler.on_raw_reaction_add(
+        SimpleNamespace(
+            user_id=999,
+            channel_id=22,
+            message_id=10,
+            emoji="📰",
+        )
+    )
+
+    assert handler._news_source_cache[10] == ["https://news.example/a"]
 
 
 def test_intent_analyzer_initializes_runtime_caches():

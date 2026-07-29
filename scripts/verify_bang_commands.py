@@ -100,7 +100,8 @@ class DummyContext:
         self.channel = channel
         self.author = author
         self.guild = guild
-        self.message = SimpleNamespace(content="", channel=channel)
+        self.message = DummySentMessage(content="")
+        self.message.channel = channel
         self.invoked_subcommand = None
         self.clean_prefix = "!"
 

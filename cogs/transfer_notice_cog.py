@@ -16,7 +16,10 @@ from discord.ext import commands, tasks
 
 import config
 from logger_config import logger
-from transfer_notice.catalog import load_transfer_sources
+from transfer_notice.catalog import (
+    load_manual_transfer_sources,
+    load_transfer_sources,
+)
 from utils.discord_interactions import ReliableModal, ReliableView
 from utils.privacy_consent import (
     CONSENT_GRANTED,
@@ -170,10 +173,11 @@ class TransferSchoolSelect(discord.ui.Select):
             )
             for source in cog.sources.values()
         ]
+        source_count = len(options)
         super().__init__(
-            placeholder="알림 받을 대학을 1~20개 선택",
+            placeholder=f"알림 받을 대학을 1~{source_count}개 선택",
             min_values=1,
-            max_values=len(options),
+            max_values=source_count,
             options=options,
             row=0,
         )
@@ -234,6 +238,17 @@ class TransferDashboardView(ReliableView):
         self.cog = cog
         self.user_id = int(user_id)
         self.add_item(TransferSchoolSelect(cog, user_id, selected))
+        for source in cog.manual_sources.values():
+            self.add_item(
+                discord.ui.Button(
+                    label=f"{source.university} 공식 공지"[:80],
+                    emoji="🔗",
+                    style=discord.ButtonStyle.link,
+                    url=source.official_url,
+                    row=2,
+                )
+            )
+        self.subscribe_all.label = f"전체 {len(cog.sources)}개 구독"
         self.pause_resume.label = "구독 취소" if active else "구독 재개"
         self.pause_resume.style = (
             discord.ButtonStyle.secondary
@@ -251,7 +266,7 @@ class TransferDashboardView(ReliableView):
         return False
 
     @discord.ui.button(
-        label="20개 모두 구독",
+        label="전체 대학 구독",
         style=discord.ButtonStyle.primary,
         emoji="📚",
         row=1,
@@ -288,7 +303,8 @@ class TransferDashboardView(ReliableView):
             ),
         )
         await interaction.followup.send(
-            "✅ 20개 대학을 모두 구독했습니다. 새 편입 공지가 있을 때만 DM합니다.",
+            f"✅ {len(self.cog.sources)}개 대학을 모두 구독했습니다. "
+            "새 편입 공지가 있을 때만 DM합니다.",
             ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
         )
@@ -327,7 +343,7 @@ class TransferDashboardView(ReliableView):
         row = await self.cog._subscription_row(self.user_id)
         if row is None:
             await interaction.followup.send(
-                "먼저 위에서 대학을 선택하거나 **20개 모두 구독**을 눌러주세요.",
+                "먼저 위에서 대학을 선택하거나 **전체 대학 구독**을 눌러주세요.",
                 ephemeral=True,
             )
             return
@@ -381,13 +397,20 @@ class TransferNoticeCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.sources = load_transfer_sources(config.TRANSFER_NOTICE_SOURCE_CONFIG)
+        self.manual_sources = load_manual_transfer_sources(
+            config.TRANSFER_NOTICE_SOURCE_CONFIG
+        )
         self.output_path = Path(config.TRANSFER_NOTICE_OUTPUT_DIR) / "latest.json"
         self._delivery_lock = asyncio.Lock()
         # 단위 테스트나 schema 검사에 쓰는 최소 bot 객체에서는 background
         # task를 시작하지 않는다. 실제 discord.py Bot만 readiness API를 가진다.
         if hasattr(bot, "wait_until_ready"):
             self.delivery_task.start()
-        logger.info("편입 공지 Cog 초기화: sources=%d", len(self.sources))
+        logger.info(
+            "편입 공지 Cog 초기화: automatic_sources=%d manual_sources=%d",
+            len(self.sources),
+            len(self.manual_sources),
+        )
 
     def cog_unload(self) -> None:
         if self.delivery_task.is_running():
@@ -411,7 +434,7 @@ class TransferNoticeCog(commands.Cog):
     async def _send_consent_prompt(self, destination, user_id: int) -> None:
         privacy = self.bot.get_cog("PrivacyCog")
         prefix = (
-            "📚 20개 대학의 편입 공지를 개인 DM으로 받으려면 "
+            f"📚 {len(self.sources)}개 대학의 편입 공지를 개인 DM으로 받으려면 "
             "대학 선택과 Discord 사용자 ID를 저장해야 합니다."
         )
         if privacy is not None:
@@ -664,6 +687,15 @@ class TransferNoticeCog(commands.Cog):
             )
         else:
             description += "\n\n아래에서 관심 대학을 선택하면 구독이 시작됩니다."
+        if self.manual_sources:
+            manual_names = ", ".join(
+                source.university for source in self.manual_sources.values()
+            )
+            description += (
+                "\n\n**공식 공지 직접 확인**\n"
+                f"{manual_names}은 공식 사이트의 자동 접근 정책으로 현재 알림 "
+                "대상에 넣지 않습니다. 아래 링크 버튼에서 바로 확인할 수 있어요."
+            )
         payload = self._load_payload()
         if payload is not None:
             healthy = int(payload.get("healthy_count") or 0)

@@ -1,6 +1,20 @@
 {
   "schema_version": 1,
-  "description": "공인영어(TOEIC 포함)를 반영하는 대표 편입 대학 20곳의 공식 입학처 공지 목록. 반영 시험·모집단위·점수 산식은 매년 최종 모집요강으로 다시 확인해야 한다.",
+  "description": "공인영어(TOEIC 포함)를 반영하는 대표 편입 대학의 공식 입학처 공지 목록. 자동 수집 20곳과 robots 정책상 직접 확인만 제공하는 2곳을 구분한다. 반영 시험·모집단위·점수 산식은 매년 최종 모집요강으로 다시 확인해야 한다.",
+  "manual_sources": [
+    {
+      "id": "pknu",
+      "university": "국립부경대학교",
+      "official_url": "https://iphak.pknu.ac.kr/pknu/board/board.htm?code=iphak_help&mode=list&ctg_cd=ta",
+      "reason": "공식 입학처 robots.txt가 전체 자동 수집을 허용하지 않아 공식 링크 직접 확인만 제공"
+    },
+    {
+      "id": "chungnam",
+      "university": "충남대학교",
+      "official_url": "https://ipsi.cnu.ac.kr/_prog/_board/?code=notice_faculty&post_dvs_cd=03&site_dvs_cd=uadm&menu_dvs_cd=0301",
+      "reason": "공식 입학처 robots.txt가 전체 자동 수집을 허용하지 않아 공식 링크 직접 확인만 제공"
+    }
+  ],
   "sources": [
     {
       "id": "kangwon",

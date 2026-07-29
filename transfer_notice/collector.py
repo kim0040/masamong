@@ -19,7 +19,7 @@ KST = ZoneInfo("Asia/Seoul")
 
 
 class TransferNoticeCollector:
-    """20개 공식 목록을 순차 확인하는 bounded one-shot collector."""
+    """자동 구독 대상 공식 목록 20개를 순차 확인하는 bounded one-shot collector."""
 
     def __init__(
         self,

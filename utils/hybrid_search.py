@@ -22,6 +22,46 @@ from utils.reranker import Reranker
 # 성능 최적화: 정규식 패턴 컴파일 (모듈 레벨에서 한 번만)
 _URL_PATTERN = re.compile(r"https?://\S+")
 _WHITESPACE_PATTERN = re.compile(r"\s+")
+_LEXICAL_TOKEN_PATTERN = re.compile(r"[0-9A-Za-z가-힣]{2,}")
+# 조사·호격이 붙은 고유명사도 원문 이름과 비교할 수 있게 원형 후보를 함께
+# 만든다. 특정 사용자명이나 기능 키워드가 아니라 한국어 문법 접미사만 다룬다.
+_KOREAN_QUERY_SUFFIXES = tuple(
+    sorted(
+        (
+            "에게서",
+            "한테서",
+            "으로",
+            "에게",
+            "한테",
+            "이랑",
+            "하고",
+            "에서",
+            "까지",
+            "부터",
+            "처럼",
+            "보다",
+            "이라",
+            "라고",
+            "이",
+            "가",
+            "은",
+            "는",
+            "을",
+            "를",
+            "의",
+            "와",
+            "과",
+            "랑",
+            "도",
+            "만",
+            "께",
+            "야",
+            "아",
+        ),
+        key=len,
+        reverse=True,
+    )
+)
 
 
 def _get_numpy() -> Any | None:
@@ -130,12 +170,18 @@ class HybridSearchEngine:
         user_id: int | None = None,
         memory_user_id: int | None = None,
         recent_messages: list[str] | None = None,
+        deep_search: bool = False,
     ) -> HybridSearchResult:
         """주어진 질문에 대해 하이브리드 검색을 수행합니다."""
         # 최근 대화 맥락을 활용해 확장 쿼리를 만든다.
         variants = await self._expand_query_variants(query, recent_messages=recent_messages)
         if not variants:
             return HybridSearchResult(entries=[], query_variants=[], top_score=0.0)
+        # 일반 무도구 대화의 회귀 방지용 얕은 검색은 원본 질의 한 번만
+        # 사용해 TiDB/Kakao 무료 플랜과 저사양 CPU를 보호한다. 라우터가
+        # 장기기억 필요성을 명시한 경우에만 설정된 쿼리 확장을 모두 쓴다.
+        if not deep_search:
+            variants = variants[:1]
 
         candidate_map: Dict[str, dict[str, Any]] = {}
         dialogue_cache: Dict[tuple[str, int, int], List[dict[str, Any]]] = {}
@@ -150,6 +196,7 @@ class HybridSearchEngine:
                 memory_user_id=memory_user_id,
                 dialogue_cache=dialogue_cache,
                 row_cache=discord_row_cache,
+                deep_search=deep_search,
             )
             for rank, entry in enumerate(embed_entries[: self.embedding_top_n]):
                 # 임베딩 후보는 가중치 계산을 위해 랭크를 기록한다.
@@ -259,6 +306,7 @@ class HybridSearchEngine:
         memory_user_id: int | None = None,
         dialogue_cache: Dict[tuple[str, int, int], List[dict[str, Any]]] | None = None,
         row_cache: Dict[str, List[Any]] | None = None,
+        deep_search: bool = False,
     ) -> List[dict[str, Any]]:
         if _get_numpy() is None:
             if not self._warned_numpy:
@@ -272,69 +320,45 @@ class HybridSearchEngine:
 
         dispatcher: List[dict[str, Any]] = []
         cache = row_cache if row_cache is not None else {}
-        if "structured" not in cache:
-            cache["structured"] = await self.discord_store.fetch_recent_memory_entries(
-                server_id=guild_id,
-                channel_id=channel_id,
-                user_id=(
-                    memory_user_id
-                    if memory_user_id is not None
-                    else user_id
-                ),
-                limit=self.structured_memory_limit,
-            )
-        discord_rows = cache["structured"]
-        use_legacy_discord_rows = not discord_rows
-        if use_legacy_discord_rows:
-            if "legacy" not in cache:
-                cache["legacy"] = await self.discord_store.fetch_recent_embeddings(
+        structured_cache_key = (
+            "structured_wide" if deep_search else "structured"
+        )
+        structured_limit = (
+            self.structured_memory_fallback_limit
+            if deep_search
+            else self.structured_memory_limit
+        )
+        if structured_cache_key not in cache:
+            cache[structured_cache_key] = (
+                await self.discord_store.fetch_recent_memory_entries(
                     server_id=guild_id,
                     channel_id=channel_id,
-                    user_id=user_id,
-                    limit=self.embedding_limit,
+                    user_id=(
+                        memory_user_id
+                        if memory_user_id is not None
+                        else user_id
+                    ),
+                    limit=structured_limit,
                 )
-            discord_rows = cache["legacy"]
-
-        dispatcher.extend(
-            await self._score_discord_rows(
-                query_vector,
-                discord_rows,
-                guild_id=guild_id,
-                channel_id=channel_id,
-                dialogue_cache=dialogue_cache,
-                use_legacy_discord_rows=use_legacy_discord_rows,
             )
-        )
-        if (
-            not dispatcher
-            and not use_legacy_discord_rows
-            and self.structured_memory_fallback_limit > self.structured_memory_limit
-        ):
-            if "structured_wide" not in cache:
-                cache["structured_wide"] = (
-                    await self.discord_store.fetch_recent_memory_entries(
-                        server_id=guild_id,
-                        channel_id=channel_id,
-                        user_id=(
-                            memory_user_id
-                            if memory_user_id is not None
-                            else user_id
-                        ),
-                        limit=self.structured_memory_fallback_limit,
-                    )
-                )
-            wider_rows = cache["structured_wide"]
+        structured_rows = cache[structured_cache_key]
+        if structured_rows:
             dispatcher.extend(
                 await self._score_discord_rows(
+                    query,
                     query_vector,
-                    wider_rows,
+                    structured_rows,
                     guild_id=guild_id,
                     channel_id=channel_id,
                     dialogue_cache=dialogue_cache,
                     use_legacy_discord_rows=False,
                 )
             )
-        if not dispatcher and not use_legacy_discord_rows:
+
+        # 명시적인 기억 요청은 LLM 요약 기억과 Discord 원문 임베딩을 함께
+        # 조회한다. 얕은 검색은 구조화 후보가 없을 때만 원문으로 보완해
+        # 평상시 TiDB BLOB 읽기량을 제한한다.
+        if deep_search or not dispatcher:
             if "legacy" not in cache:
                 cache["legacy"] = await self.discord_store.fetch_recent_embeddings(
                     server_id=guild_id,
@@ -343,15 +367,24 @@ class HybridSearchEngine:
                     limit=self.embedding_limit,
                 )
             legacy_rows = cache["legacy"]
+            structured_message_ids = {
+                str(entry.get("message_id"))
+                for entry in dispatcher
+                if entry.get("message_id") is not None
+            }
+            legacy_entries = await self._score_discord_rows(
+                query,
+                query_vector,
+                legacy_rows,
+                guild_id=guild_id,
+                channel_id=channel_id,
+                dialogue_cache=dialogue_cache,
+                use_legacy_discord_rows=True,
+            )
             dispatcher.extend(
-                await self._score_discord_rows(
-                    query_vector,
-                    legacy_rows,
-                    guild_id=guild_id,
-                    channel_id=channel_id,
-                    dialogue_cache=dialogue_cache,
-                    use_legacy_discord_rows=True,
-                )
+                entry
+                for entry in legacy_entries
+                if str(entry.get("message_id")) not in structured_message_ids
             )
 
         if self.kakao_store is not None:
@@ -370,7 +403,15 @@ class HybridSearchEngine:
                     if vector is not None:
                         similarity = self._cosine_similarity(query_vector, vector)
 
-                if similarity is None or similarity < self.embedding_threshold:
+                if similarity is None:
+                    continue
+                semantic_similarity = float(similarity)
+                lexical_score = self._lexical_relevance(query, row)
+                similarity = min(
+                    0.999999,
+                    semantic_similarity + lexical_score,
+                )
+                if similarity < self.embedding_threshold:
                     continue
 
                 message_id = row.get("message_id")
@@ -409,6 +450,8 @@ class HybridSearchEngine:
                         "origin": origin,
                         "speaker": row.get("speaker"),
                         "similarity": similarity,
+                        "semantic_similarity": semantic_similarity,
+                        "lexical_score": lexical_score,
                         "acceptance_threshold": self.embedding_threshold,
                         "matched_server_id": row.get("matched_server_id"),
                         "timestamp": timestamp,
@@ -422,8 +465,52 @@ class HybridSearchEngine:
         dispatcher.sort(key=lambda item: item.get("similarity", 0.0), reverse=True)
         return dispatcher
 
+    @staticmethod
+    def _lexical_query_terms(query: str) -> tuple[str, ...]:
+        """고유명사 보조 점수에 쓸 일반 토큰과 조사 제거 후보를 만듭니다."""
+        terms: set[str] = set()
+        for raw_token in _LEXICAL_TOKEN_PATTERN.findall(
+            str(query or "").casefold()
+        ):
+            token = raw_token.strip()
+            if len(token) < 2:
+                continue
+            terms.add(token)
+            for suffix in _KOREAN_QUERY_SUFFIXES:
+                if token.endswith(suffix) and len(token) - len(suffix) >= 2:
+                    terms.add(token[: -len(suffix)])
+                    break
+        return tuple(sorted(terms, key=lambda item: (-len(item), item)))
+
+    @classmethod
+    def _lexical_relevance(cls, query: str, row: dict[str, Any]) -> float:
+        """의미 벡터가 놓치기 쉬운 이름·코드의 원문 일치에 작은 보너스를 줍니다."""
+        terms = cls._lexical_query_terms(query)
+        if not terms:
+            return 0.0
+        haystack = " ".join(
+            str(row.get(field) or "")
+            for field in (
+                "summary_text",
+                "memory_text",
+                "raw_context",
+                "keyword_json",
+                "speaker_names",
+                "user_name",
+                "speaker",
+                "message",
+            )
+        ).casefold()
+        matched = {term for term in terms if term in haystack}
+        if not matched:
+            return 0.0
+        longest = max(len(term) for term in matched)
+        base = 0.015 if longest == 2 else 0.04 if longest == 3 else 0.06
+        return min(0.08, base + min(0.02, 0.01 * (len(matched) - 1)))
+
     async def _score_discord_rows(
         self,
+        query: str,
         query_vector: np.ndarray,
         discord_rows: List[dict[str, Any]] | List[Any],
         *,
@@ -441,7 +528,12 @@ class HybridSearchEngine:
             message = row.get("summary_text") or row.get("message") or ""
             if vector is None or not message.strip():
                 continue
-            similarity = self._cosine_similarity(query_vector, vector)
+            semantic_similarity = self._cosine_similarity(query_vector, vector)
+            lexical_score = self._lexical_relevance(query, row)
+            similarity = min(
+                0.999999,
+                semantic_similarity + lexical_score,
+            )
             memory_scope = row.get("memory_scope")
             memory_type = row.get("memory_type")
             if (
@@ -487,6 +579,8 @@ class HybridSearchEngine:
                     "origin": "Discord",
                     "speaker": row.get("user_name"),
                     "similarity": similarity,
+                    "semantic_similarity": semantic_similarity,
+                    "lexical_score": lexical_score,
                     "acceptance_threshold": threshold,
                     "matched_server_id": str(guild_id),
                     "timestamp": timestamp,

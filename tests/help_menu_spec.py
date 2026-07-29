@@ -82,6 +82,7 @@ def test_server_school_category_disables_dm_only_actions():
 @pytest.mark.asyncio
 async def test_server_launcher_opens_ephemeral_owner_menu():
     sent = []
+    deleted = []
 
     class _Response:
         async def send_message(self, **kwargs):
@@ -94,9 +95,18 @@ async def test_server_launcher_opens_ephemeral_owner_menu():
         guild=SimpleNamespace(id=456),
     )
     launcher = ServerMenuLauncherView(bot, ctx)
+    launcher_message = SimpleNamespace(
+        delete=lambda: None,
+    )
+
+    async def _delete_launcher():
+        deleted.append(True)
+
+    launcher_message.delete = _delete_launcher
     interaction = SimpleNamespace(
         user=SimpleNamespace(id=123),
         response=_Response(),
+        message=launcher_message,
     )
     button = next(
         child
@@ -111,6 +121,8 @@ async def test_server_launcher_opens_ephemeral_owner_menu():
     private_view = sent[0]["view"]
     assert isinstance(private_view, MasamongHomeView)
     assert private_view.server_mode is True
+    assert deleted == [True]
+    assert launcher.message is None
 
 
 @pytest.mark.asyncio
