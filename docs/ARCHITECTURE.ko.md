@@ -1,968 +1,277 @@
-# 마사몽 아키텍처 문서
+# 마사몽 아키텍처
 
-> **참고**: 더 자세한 UML 분석은 [UML_SPEC.md](UML_SPEC.ko.md)를 참조하세요.
+이 문서는 2026-07-29 기준 코드의 실행 구조를 설명한다. 사용자 사용법은
+[README.ko.md](README.ko.md), 운영 절차는 [DEPLOYMENT.md](../DEPLOYMENT.md),
+클래스·시퀀스 그림은 [UML_SPEC.ko.md](UML_SPEC.ko.md)를 본다.
 
-## 시스템 개요
+## 설계 원칙
 
-마사몽은 모듈식 아키텍처를 가진 Discord 봇으로, AI 에이전트, RAG 시스템, 외부 API 통합을 결합합니다.
+1. Masamo와 General은 같은 릴리스만 공유하고 토큰·DB·프롬프트·기억·쓰기 경로는
+   공유하지 않는다.
+2. 운영 DB의 기존 행은 배포 과정에서 삭제하거나 암묵적으로 재작성하지 않는다.
+3. 외부 사실은 실제 도구 결과가 성공했을 때만 사실로 말한다.
+4. LLM·웹·이미지 호출은 횟수, 동시성, 대기 시간, 실행 시간, 재시도 횟수가 모두
+   유한하다.
+5. 개인정보 프로필은 기능별 현재 정책에 명시적으로 동의한 사용자에게만 읽고 쓴다.
+6. 원격 저사양 서버에서는 BM25/FTS5를 만들거나 재구축하지 않는다.
 
----
+## 인스턴스 경계
 
-## 시스템 컨텍스트 다이어그램
+| 경계 | Masamo | General |
+|---|---|---|
+| 프로필 | `masamo` | `general` |
+| Discord 애플리케이션 | 기존 봇 | 별도 봇 |
+| TiDB 데이터베이스 | `masamong` | `masamong_general` |
+| 기억 | Discord + 허용된 Kakao 서버 | Discord만 |
+| 공지 배치 | 소유 | 기본 비활성 |
+| 관리자·로그·가변 파일 | Masamo 전용 | General 전용 |
 
-```mermaid
-graph TB
-    subgraph Users["👤 사용자"]
-        GU["서버 유저<br/>@멘션 필수"]
-        DM["DM 유저<br/>5h/30회 제한"]
-        AD["관리자<br/>!업데이트, !debug"]
-    end
+`MASAMONG_ENV_FILE`로 선택한 파일만 경계 설정의 출처다. 명시적 프로필은 상속된
+`MASAMONG_*` 값을 신뢰하지 않으며, 예상 프로필·봇 ID·DB 이름·TLS·필수 Cog·경로와
+저사양 상한이 맞지 않으면 기동하지 않는다. 상세 계약은
+[INSTANCE_SEPARATION.ko.md](INSTANCE_SEPARATION.ko.md)에 있다.
 
-    subgraph Discord["Discord 플랫폼"]
-        Gateway["Discord Gateway<br/>WebSocket + HTTP"]
-    end
+## 저장소 구조
 
-    subgraph BotProcess["🤖 마사몽 Bot Process"]
-        Entry["main.py<br/>ReMasamongBot"]
-    end
-
-    subgraph ExternalAPIs["🌐 외부 API"]
-        LLM["CometAPI / Gemini<br/>LLM Inference"]
-        KMA_["KMA (기상청)<br/>날씨/지진"]
-        Finance_["Finnhub / yfinance / KRX<br/>금융 데이터"]
-        Web_["Linkup / DuckDuckGo<br/>웹 검색"]
-        Place_["Kakao Local<br/>장소 검색"]
-    end
-
-    subgraph Storage["💾 저장소"]
-        TiDB["TiDB Cloud<br/>(운영)"]
-        SQLiteDB["SQLite<br/>(개발)"]
-        HF["HuggingFace Cache<br/>임베딩 모델"]
-    end
-
-    GU --> Gateway
-    DM --> Gateway
-    AD --> Gateway
-    Gateway <-->|"WebSocket"| Entry
-    Entry --> LLM
-    Entry --> KMA_
-    Entry --> Finance_
-    Entry --> Web_
-    Entry --> Place_
-    Entry --> TiDB
-    Entry --> SQLiteDB
-    Entry --> HF
+```text
+main.py                 기동, 스키마 검증, Cog 수명주기
+config.py               프로필 해석, 기능 플래그, 자원·호출 상한
+cogs/                   Discord 명령·메뉴·이벤트·스케줄러
+utils/llm_client.py      routing/main LLM 레인과 물리 호출 경계
+utils/intent_analyzer.py 의미 라우팅, 도구 계획, 컨텍스트 digest
+utils/rag_manager.py     대화 저장, 윈도우, 임베딩 백그라운드 작업
+utils/hybrid_search.py   의미 검색, 스코프 정렬, 관련도 관문
+utils/db.py              사용량 예약과 공통 DB 작업
+database/compat_db.py    SQLite/TiDB 호환과 TiDB 트랜잭션 소유권
+school_notice/           학교 공지 수집·상세 분석·digest 생성
+transfer_notice/         편입 공지 수집·snapshot 생성
+profiles/                두 프로필 예제와 학교 카탈로그
+scripts/                 감사, 검증, one-shot 배치·마이그레이션
+deploy/systemd/          공지 배치 service/timer 예제
+tests/                   네트워크 없는 회귀·계약 테스트
 ```
 
----
-
-## 핵심 설계 원칙
-
-### 1. 3단계 AI 파이프라인
-
-```mermaid
-flowchart TB
-    Input["👤 사용자 메시지"] --> Valid[검증<br/>멘션/채널/잠금]
-
-    Valid --> Step1["🔍 Step 1: 의미 라우팅<br/>IntentAnalyzer<br/><i>도구 + 기억 필요 + 선택적 digest</i>"]
-
-    Step1 -->|"장기기억 필요"| RAG
-    Step1 -->|"장기기억 불필요"| Step2
-    Step1 -->|"도구 실행 계획"| Step2["🛠️ Step 2: 도구 실행<br/>ToolsCog"]
-
-    subgraph Step2Detail[" "]
-        direction LR
-        W["날씨<br/>KMA"]
-        S["웹·금융·장소 검색<br/>Linkup"]
-        I["이미지<br/>CometAPI"]
-    end
-
-    Step2 --> Step2Detail
-    Step2Detail --> Merge["🧩 컨텍스트 조립<br/><i>digest + 최신 원문 + 선택 RAG</i>"]
-    RAG --> Merge
-
-    Merge --> Step3["✍️ Step 3: 응답 생성<br/>LLMClient (Main Lane)<br/><i>deepseek-v4-flash</i>"]
-
-    Step3 --> Output["💬 Discord 응답<br/><i>페르소나 + 이모지 적용</i>"]
-
-    style Valid fill:#ffecb3,stroke:#f57c00
-    style Step1 fill:#e1f5fe,stroke:#0288d1
-    style Step2 fill:#f3e5f5,stroke:#7b1fa2
-    style RAG fill:#e8f5e9,stroke:#388e3c
-    style Step3 fill:#fff3e0,stroke:#e65100
-    style Output fill:#c8e6c9,stroke:#2e7d32
-```
-
-### 2. 듀얼 레인 LLM 라우팅
-
-```mermaid
-flowchart TB
-    subgraph Routing["Routing Lane (의도 분석)"]
-        direction TB
-        RP1["Primary: gpt-5.4-nano<br/><i>(CometAPI)</i>"]
-        RE["장애 시 제한된 키워드 fallback"]
-        RP1 -->|"provider/JSON fail"| RE
-    end
-
-    subgraph Main["Main Lane (응답 생성)"]
-        direction TB
-        MP1["Primary: deepseek-v4-flash<br/><i>(CometAPI)</i>"]
-        ME["Bounded timeout / 명시적 실패"]
-        MP1 -->|"fail"| ME
-    end
-
-    Caller["LLMClient"] --> Routing
-    Caller --> Main
-
-    style RP1 fill:#e3f2fd,stroke:#1565c0
-    style MP1 fill:#fff8e1,stroke:#f57f17
-    style RE fill:#ffebee,stroke:#c62828
-    style ME fill:#ffebee,stroke:#c62828
-```
-
-**LLM 호출 시퀀스**:
-
-```mermaid
-sequenceDiagram
-    participant Caller as AIHandler
-    participant Client as LLMClient
-    participant Primary as CometAPI Primary
-    participant Fallback as CometAPI Fallback
-    participant Gemini as Gemini Direct
-
-    Caller->>Client: call_routing_llm(prompt, system)
-    Client->>Client: _check_rate_limit(RPM/RPD)
-
-    Client->>Primary: chat.completions.create()
-    alt 성공
-        Primary-->>Client: {choices: [{message: {content: "..."}}]}
-        Client->>Client: _filter_prompt_leak()
-        Client-->>Caller: parsed response
-    else 실패
-        Primary-->>Client: Exception
-        Client->>Fallback: chat.completions.create()
-        alt 성공
-            Fallback-->>Client: response
-            Client-->>Caller: parsed response
-        else 실패
-            opt ALLOW_DIRECT_GEMINI_FALLBACK=true
-                Client->>Gemini: generate_content()
-                Gemini-->>Client: response
-                Client-->>Caller: parsed response
-            end
-        end
-    end
-```
-
-### 3. 하이브리드 RAG
-
-**문제**: 단일 검색 방식의 한계
-- 의미 검색만: 키워드 정확도 부족
-- 키워드 검색만: 의미 파악 불가
-
-**해결**: BM25 + Embedding 결합
+## Discord 대화 경로
 
 ```mermaid
 flowchart LR
-    Query["사용자 쿼리"] --> QE["Query Expansion<br/>query_rewriter<br/><i>변형 생성</i>"]
-
-    QE --> Parallel
-
-    subgraph Parallel["병렬 검색"]
-        direction TB
-        Emb["🔍 임베딩 검색<br/>코사인 유사도<br/><i>top_n=8</i>"]
-        BM["📝 BM25 검색<br/>키워드 매칭<br/><i>top_n=8</i>"]
-    end
-
-    Emb --> RRF["🔄 RRF 융합<br/>RRF score = 1/(k+rank)<br/>k=60"]
-    BM --> RRF
-
-    RRF --> Weighted["⚖️ 가중 결합<br/>embedding: 0.55<br/>bm25: 0.45"]
-
-    Weighted --> RerankOpt{"Reranker<br/>활성화?"}
-
-    RerankOpt -->|"yes"| Rerank["🎯 Cross-Encoder<br/>BAAI/bge-reranker-v2-m3"]
-    RerankOpt -->|"no"| Results["📋 최종 결과"]
-
-    Rerank --> Results
-
-    style Query fill:#e1f5fe,stroke:#0288d1
-    style RRF fill:#fff3e0,stroke:#e65100
-    style Results fill:#c8e6c9,stroke:#2e7d32
+    U["사용자 멘션 또는 DM"] --> E["Events / AIHandler"]
+    E --> G["쿨다운·스팸·DM 한도"]
+    G --> H["최근 Discord 원문 1회 조회"]
+    H --> R["Semantic router"]
+    R --> M{"기억 필요?"}
+    M -->|명시적| MR["깊은 의미 검색"]
+    M -->|일반 무도구| MP["얕은 의미 검색 1회"]
+    M -->|도구 중심| N["기억 생략"]
+    R --> T["최대 3개 도구 계획 정규화"]
+    T --> X["도구 순차 실행"]
+    MR --> P["프롬프트 예산 조립"]
+    MP --> P
+    N --> P
+    X --> P
+    P --> L["Main LLM 또는 검증된 직접 렌더"]
+    L --> D["Discord 형식 정규화·분할 전송"]
 ```
 
-```python
-# 가중치
-embedding_weight = 0.55  # 의미 기반
-bm25_weight = 0.45       # 키워드 기반
+한 메시지에서 Discord 최근 기록은 한 번만 읽어 라우터와 최종 프롬프트가 재사용한다.
+도구는 동시에 폭주시키지 않고 정규화된 순서대로 실행한다. 라우터 결과가 고장 나면
+제한된 키워드 fallback만 쓰며, fallback도 같은 도구 상한을 통과한다.
 
-# 최종 점수
-combined_score = (similarity * 0.55) + (bm25_score * 0.45)
-```
+## 컨텍스트 관리
 
-### 4. 멘션 게이트 패턴
+컨텍스트는 “전체 로그를 계속 붙이는 방식”이 아니다.
 
-**목표**: 리소스 낭비 방지 및 개인정보 보호
+1. 현재 질문과 성공한 도구 결과가 먼저 자리를 확보한다.
+2. 최근 원문은 기본 8턴 범위에서 최대 4,000자로 제한한다.
+3. 앞 구간은 필요할 때만 routing 레인으로 짧은 digest를 만든다. digest 출력 상한은
+   768 토큰, 최종 주입은 최대 1,200자다.
+4. 장기 기억은 질문과 관련된 경우에만 최대 3개 블록, 5,000자 안에서 넣는다.
+5. 운세 프로필은 DM이고 라우터가 운세 맥락을 요구하며 현재 동의가 있을 때만 넣는다.
+6. 겹치는 원문·윈도우·구조화 기억은 원문 ID와 내용 중복으로 제거한다.
 
-모든 메시지를 처리하면:
-- ❌ 불필요한 API 호출
-- ❌ 개인 대화 노출 위험
-- ❌ 높은 비용
+프롬프트 최종 상한에서도 머리와 꼬리를 함께 보존해 시스템 규칙과 최신 질문 중 하나가
+통째로 사라지지 않게 한다.
 
-멘션만 처리하면:
-- ✅ 명시적 요청만 응답
-- ✅ API 비용 절감
-- ✅ 프라이버시 보호
+## 기억 저장과 격리
 
----
+대화 원문은 `conversation_history`, 슬라이딩 윈도우는
+`conversation_windows`, 검색용 구조화 기억은 `discord_memory_entries`와 기존
+임베딩 테이블에 보존한다. Kakao 기억은 허용된 Masamo 서버 매핑으로만 접근한다.
 
-## 모듈 구조
+검색 스코프는 다음과 같다.
 
-### Cog 아키텍처
+- Guild 공용 기억: 같은 `guild_id` 안에서만 검색
+- Guild 사용자 기억: 같은 `guild_id`와 해당 사용자 정체성에만 결합
+- DM 기억: `guild_id=0`인 해당 DM/사용자 범위
+- Kakao 기억: 프로필에 등록된 서버 매핑 안에서만 검색
+
+표시명은 정체성이 아니다. Discord 사용자 ID가 있으면 ID를 우선하며, 같은 이름을
+여러 사용자가 쓰면 출력 라벨도 구분한다. A 서버의 페르소나나 기억은 B 서버 프롬프트에
+들어갈 수 없다.
+
+## RAG 검색
+
+운영 주 경로는 의미 임베딩 검색이다.
 
 ```mermaid
-flowchart TB
-    Bot["ReMasamongBot<br/>main.py"] --> CogLoad["Cog 로드<br/>setup_hook()"]
-
-    CogLoad -->|"순서 1-13"| Cogs
-
-    subgraph Cogs["Cog 레이어"]
-        direction TB
-        WC["WeatherCog<br/>날씨 명령어 + 알림"]
-        TC["ToolsCog<br/>외부 API 도구"]
-        EV["EventsCog<br/>길드/멤버 이벤트"]
-        CM["Commands<br/>관리자 명령어"]
-        AI["AIHandler<br/>AI 파이프라인 (핵심)"]
-        FC["FunCog<br/>요약/유틸"]
-        AC["ActivityCog<br/>활동/랭킹"]
-        PC["PollCog<br/>투표"]
-        SC["SettingsCog<br/>슬래시 설정"]
-        MC["MaintenanceCog<br/>아카이빙"]
-        PA["ProactiveAssistant<br/>선제적 참여"]
-        FC2["FortuneCog<br/>운세/별자리"]
-        HC["HelpCog<br/>도움말"]
-    end
-
-    CogLoad --> DepInject["의존성 주입"]
-
-    DepInject -->|"LLMClient.db"| AI
-    DepInject -->|"IntentAnalyzer.db"| AI
-    DepInject -->|"RAGManager.db"| AI
-    DepInject -->|"AIHandler → ActivityCog"| AC
-    DepInject -->|"AIHandler → FunCog"| FC
-
-    AI -->|"도구 위임"| TC
-    AI -->|"도구 위임"| WC
-
-    style AI fill:#fff3e0,stroke:#e65100,stroke-width:3px
-    style TC fill:#f3e5f5,stroke:#7b1fa2
-    style Bot fill:#e1f5fe,stroke:#0288d1
+flowchart TD
+    Q["현재 질문"] --> V["질의 변형<br/>얕은 검색은 원문 1개"]
+    V --> S["TiDB vector 또는 bounded fallback scan"]
+    S --> C["Guild/DM/User/Kakao 스코프 정렬"]
+    C --> G["절대 의미 유사도 관문"]
+    G --> RF["상대 점수 floor"]
+    RF --> DD["겹치는 근거 제거"]
+    DD --> RR["선택적 reranker"]
+    RR --> K["최대 3개 기억 블록"]
 ```
 
-### 컴포넌트 의존성 관계
-
-```mermaid
-flowchart TB
-    subgraph Core["핵심 컴포넌트"]
-        AIHandler["AIHandler<br/><i>파이프라인 컨트롤러</i>"]
-    end
-
-    subgraph LLMLayer["LLM 레이어"]
-        LLMClient["LLMClient<br/><i>레인 라우팅, Rate Limit</i>"]
-        IntentAnalyzer["IntentAnalyzer<br/><i>의도 분석, 도구 계획</i>"]
-    end
-
-    subgraph RAGLayer["RAG 레이어"]
-        RAGManager["RAGManager<br/><i>메모리 관리</i>"]
-        HybridSearch["HybridSearchEngine<br/><i>임베딩+BM25+RRF</i>"]
-        QueryRewriter["QueryRewriter"]
-        Reranker["Reranker<br/><i>Cross-Encoder</i>"]
-    end
-
-    subgraph StoreLayer["저장소 레이어"]
-        DiscordStore["DiscordEmbeddingStore"]
-        KakaoStore["KakaoEmbeddingStore"]
-        CompatDB["CompatDB<br/><i>TiDB/SQLite</i>"]
-        BM25Idx["BM25IndexManager<br/><i>(비활성)</i>"]
-    end
-
-    subgraph ToolLayer["도구 레이어"]
-        ToolsCog["ToolsCog"]
-        Weather["weather.py"]
-        LinkupSearch["linkup_search.py"]
-        NewsSearch["news_search.py<br/>(DuckDuckGo)"]
-        FinanceAPIs["api_handlers<br/>finnhub, yfinance, krx"]
-    end
-
-    AIHandler --> LLMClient
-    AIHandler --> IntentAnalyzer
-    AIHandler --> RAGManager
-    AIHandler --> HybridSearch
-    AIHandler --> ToolsCog
-
-    IntentAnalyzer -->|"Routing Lane"| LLMClient
-
-    RAGManager --> DiscordStore
-    RAGManager --> CompatDB
-
-    HybridSearch --> DiscordStore
-    HybridSearch --> KakaoStore
-    HybridSearch --> BM25Idx
-    HybridSearch --> QueryRewriter
-    HybridSearch --> Reranker
-
-    ToolsCog --> Weather
-    ToolsCog --> LinkupSearch
-    ToolsCog --> NewsSearch
-    ToolsCog --> FinanceAPIs
-```
-
----
-
-## 메시지 처리 상세 시퀀스
-
-```mermaid
-sequenceDiagram
-    actor User as 👤 유저
-    participant Discord as Discord
-    participant Bot as ReMasamongBot
-    participant Activity as ActivityCog
-    participant AI as AIHandler
-    participant Intent as IntentAnalyzer
-    participant LLMR as LLMClient<br/>(Routing)
-    participant Tools as ToolsCog
-    participant RAG as RAGManager
-    participant LLMM as LLMClient<br/>(Main)
-
-    User->>Discord: "@마사몽 오늘 서울 날씨랑 애플 주가 알려줘"
-    Discord->>Bot: on_message(message)
-
-    Note over Bot: 1. 봇 메시지 무시
-    Note over Bot: 2. ActivityCog 기록
-
-    Bot->>Activity: record_message(message)
-    Activity-->>Bot: done
-
-    Note over Bot: 3. ! 프리픽스 체크 → 아님
-
-    Bot->>AI: add_message_to_history(message)
-    AI-->>Bot: 저장 완료
-
-    Note over Bot: 4. 검증: AI 준비, 채널 허용, 멘션 유효, 사용자 잠금 해제
-
-    Bot->>AI: process_agent_message(message)
-
-    Note over AI: 5. Discord history 한 번 조회
-    AI->>Intent: route_tools(query, history)
-    Intent->>LLMR: call_routing_lane_target(도구 계약 + 최근 대화)
-    LLMR-->>Intent: {intent, needs_memory, needs_fortune_context, context_digest, tools}
-    Note over Intent: 이름만 있는 신원 질문은 scoped memory 우선 후조건
-    Intent-->>AI: ToolRoutingDecision
-
-    Note over AI: 6. 도구 실행 → ToolsCog 위임
-
-    AI->>Tools: get_weather_forecast(location="서울", day_offset=0)
-    Tools-->>AI: 기상청 근거 데이터
-
-    opt needs_memory=true
-        Note over AI: 7. 오래된 기억만 선택 검색
-        AI->>RAG: search(query, channel_id, user_id)
-        Note over RAG: 관련도 gate + 겹치는 원문 블록 제거 + 최대 3개
-        RAG-->>AI: 다양화된 관련 장기 기억
-    end
-
-    Note over AI: 8. 응답 생성
-
-    AI->>LLMM: call_main_llm(<br/>persona + tool results + digest<br/>+ 최신 원문 + 선택 RAG<br/>+ 요청 시에만 동의된 운세)
-    LLMM-->>AI: Discord 규격 최종 응답
-
-    Note over AI: 9. 응답 전송
-
-    AI->>Discord: reply(정규화된 응답)
-
-    Note over AI: 10. 임베딩 비동기 저장
-    AI->>AI: asyncio.create_task(save_embedding)
-```
-
----
-
-## 데이터 레이어
-
-### 데이터베이스 구조
-
-```mermaid
-erDiagram
-    conversation_history {
-        int message_id PK
-        int guild_id
-        int channel_id
-        int user_id
-        text user_name
-        text content
-        boolean is_bot
-        text created_at
-        blob embedding
-    }
-
-    conversation_windows {
-        int window_id PK
-        int guild_id
-        int channel_id
-        int start_message_id
-        int end_message_id
-        int message_count
-        text messages_json
-        text anchor_timestamp
-        text created_at
-    }
-
-    guild_settings {
-        int guild_id PK
-        boolean ai_enabled
-        text ai_allowed_channels
-        float proactive_response_probability
-        int proactive_response_cooldown
-        text persona_text
-        text created_at
-    }
-
-    user_profiles {
-        int user_id PK
-        text birth_date
-        text birth_time
-        text gender
-        boolean is_lunar
-        boolean subscription_active
-        text subscription_time
-        text birth_place
-    }
-
-    user_activity {
-        int user_id PK
-        int guild_id PK
-        int message_count
-        text last_active_at
-    }
-
-    user_activity_log {
-        int message_id PK
-        int guild_id
-        int channel_id
-        int user_id
-        text created_at
-    }
-
-    discord_memory_entries {
-        int id PK
-        text memory_id UK
-        text anchor_message_id
-        text server_id
-        text channel_id
-        text owner_user_id
-        text memory_scope
-        text memory_type
-        text summary_text
-        text memory_text
-        text raw_context
-        blob embedding
-    }
-
-    api_call_log {
-        int id PK
-        text api_type
-        text called_at
-    }
-
-    linkup_usage_log {
-        int id PK
-        text used_at
-        text endpoint
-        text depth
-        boolean render_js
-        float cost_eur
-    }
-
-    system_counters {
-        text counter_name PK
-        int counter_value
-        text last_reset_at
-    }
-
-    conversation_history ||--o{ conversation_windows : "forms windows"
-    conversation_history ||--o{ user_activity_log : "tracks activity"
-    conversation_windows ||--o{ discord_memory_entries : "summarized into"
-```
-
-### 대화 윈도우 캐싱
-
-**목적**: RAG 성능 최적화
-
-일반적인 방식:
-```sql
--- 매번 ±3 메시지 조회 (느림)
-SELECT * FROM conversation_history 
-WHERE message_id BETWEEN (target_id - 3) AND (target_id + 3)
-```
-
-마사몽 방식:
-```sql
--- 미리 계산된 윈도우 조회 (빠름)
-SELECT messages_json FROM conversation_windows 
-WHERE start_message_id <= target_id 
-  AND end_message_id >= target_id
-```
-
-**성능 향상**: 3~5배
-
----
-
-## RAG 파이프라인 상세
-
-### 1. 쿼리 전처리
-
-```python
-# 입력: "서울 날씨"
-query = "서울 날씨"
-recent_messages = ["어제 비 왔어", "오늘은 어떨까"]
-
-# 1단계: 컨텍스트 결합
-seed_query = "서울 날씨 어제 비 왔어 오늘은 어떨까"
-
-# 2단계: 쿼리 확장
-variants = [
-    "서울 날씨",
-    "서울 날씨 어제 비 왔어 오늘은 어떨까",
-    "서울의 현재 기상 정보",  # 생성된 변형
-]
-```
-
-### 2. 병렬 검색
-
-```python
-# 각 변형마다 BM25 + 임베딩 동시 실행
-for variant in variants:
-    # 병렬로
-    embedding_results = await embedding_search(variant, top_n=8)
-    bm25_results = await bm25_search(variant, top_n=8)
-```
-
-### 3. RRF (Reciprocal Rank Fusion)
-
-```python
-def calculate_rrf_score(rank: int, k: int = 60) -> float:
-    return 1.0 / (k + rank)
-
-# 예시
-# 임베딩 rank 1 → rrf_score = 1/(60+1) = 0.0164
-# BM25 rank 3 → rrf_score = 1/(60+3) = 0.0159
-```
-
-### 4. 가중 결합
-
-```python
-# 후보가 두 검색에서 모두 나타난 경우
-combined_score = (
-    similarity * 0.55 +        # 의미 유사도
-    bm25_normalized * 0.45     # 키워드 매칭
-)
-```
-
-### 5. 리랭킹 (선택)
-
-```python
-if RERANK_ENABLED:
-    # Cross-Encoder로 정밀 평가
-    reranked = cross_encoder.rank(query, candidates)
-    return reranked[:top_k]
-```
-
----
-
-## 백그라운드 태스크 아키텍처
-
-```mermaid
-sequenceDiagram
-    participant WC as WeatherCog
-    participant KMA as KMA API
-    participant AI as AIHandler
-    participant Discord as Discord
-    participant MC as MaintenanceCog
-
-    loop 10분 간격
-        WC->>KMA: 초단기예보 조회
-        KMA-->>WC: 강수 데이터
-        alt 강수 예보 감지
-            WC->>AI: 날씨 요약 요청
-            AI-->>WC: 알림 메시지
-            WC->>Discord: 강수 알림 전송
-        end
-    end
-
-    loop 아침/저녁
-        WC->>KMA: 당일 날씨 요약
-        KMA-->>WC: 날씨 데이터
-        WC->>AI: 인사말 + 날씨 생성
-        AI-->>WC: 인사 메시지
-        WC->>Discord: 인사 전송
-    end
-
-    loop 1시간 간격
-        MC->>MC: archive_old_messages()
-        Note over MC: 7일 이상 지난 메시지<br/>conversation_history → archive
-    end
-```
-
----
-
-## 의미 라우터 통신 계약
-
-### 의도 분석 프롬프트 구조
-
-**입력 프롬프트 구조**:
-```json
-도구 계약, KST 시각, 화자가 표시된 최근 대화, 현재 요청을 전달한다. 대화가 설정된
-문자 임계치를 넘은 경우에만 최신 원문보다 앞선 구간을 `압축할 오래된 대화`로 함께
-전달한다. RAG와 서버 페르소나는 도구 선택 입력에 넣지 않는다.
-```
-
-**출력 JSON 구조**:
-```json
-{
-  "intent": "서울 날씨 확인",
-  "needs_memory": false,
-  "requires_external_evidence": true,
-  "context_digest": "",
-  "tools": [
-    {
-      "tool": "get_weather_forecast",
-      "params": {"location": "서울", "day_offset": 0}
-    }
-  ]
-}
-```
-
-`requires_external_evidence=true`이면 실행 가능한 외부 자료가 하나도 없을 때 최종
-모델을 호출하지 않고 명시적 확인 실패로 종료한다. 라우터가 시장 브리핑의 도구를
-누락해도 `get_market_snapshot`과 `web_search`를 최대 한 번씩 보정하며, 최신 외부
-사실은 장기기억의 과거 답변과 섞지 않는다. 이는 일반 키워드 라우팅이 아니라 라우터
-오판 시 허위 사실 생성을 막는 실행 후조건이다.
-
----
-
-## 성능 최적화 전략
-
-### 1. 캐싱 계층
-
-```mermaid
-graph TB
-    subgraph L1["Level 1: Python 메모리"]
-        M1["임베딩 모델 (_MODEL)"]
-        M2["LLM 클라이언트 인스턴스"]
-        M3["설정 객체"]
-    end
-
-    subgraph L2["Level 2: SQLite/TiDB"]
-        DB1["conversation_windows<br/><i>미리 계산된 윈도우</i>"]
-        DB2["BM25 FTS5 인덱스"]
-        DB3["임베딩 벡터"]
-    end
-
-    subgraph L3["Level 3: 디스크"]
-        HF1["HuggingFace 모델 캐시<br/><i>~/.cache/huggingface</i>"]
-        HF2["yfinance 캐시"]
-    end
-
-    L1 --> L2 --> L3
-```
-
-### 2. 비동기 처리
-
-**메시지 임베딩**:
-```python
-# 메인 스레드 블로킹 방지
-asyncio.create_task(
-    self._create_and_save_embedding(message)
-)
-```
-
-**병렬 API 호출**:
-```python
-# 여러 API 동시 호출
-results = await asyncio.gather(
-    get_weather(),
-    get_stock_info(),
-    web_search(),
-    return_exceptions=True
-)
-```
-
-### 3. 인덱싱 최적화
-
-```sql
--- conversation_windows 복합 인덱스
-CREATE INDEX idx_conversation_windows_channel 
-ON conversation_windows (channel_id, anchor_timestamp DESC);
-
--- 유니크 제약으로 중복 방지
-CREATE UNIQUE INDEX idx_conversation_windows_span 
-ON conversation_windows (channel_id, start_message_id, end_message_id);
-```
-
----
-
-## 에러 처리 패턴
-
-### 제한된 공급자 실패 처리
+- 일반 얕은 검색 관문: `RAG_MEMORY_GATE_SCORE`, 기본 `0.61`
+- 명시적 기억 질문 관문: `RAG_EXPLICIT_MEMORY_GATE_SCORE`, 기본 `0.58`
+- 상대 floor: 최고 점수의 기본 `0.94`
+- 개인·어휘 보너스는 순위만 조정하며 절대 의미 관문을 우회하지 못한다.
+- DB에 `embedding_vec`가 있고 전체 백필 검증과 기능 플래그가 모두 참일 때만 TiDB
+  vector 경로를 쓴다. 아니면 기존 BLOB 후보를 제한된 수만 읽는 호환 경로를 쓴다.
+
+`utils/hybrid_search.py`에는 선택적 로컬 어휘 후보를 방어적으로 처리하는 코드가
+남아 있지만, 현재 `config.py`는 `BM25_DATABASE_PATH=None`으로 관리자 자체를 만들지
+않는다. 원격 프로필은 추가로 `BM25_AUTO_REBUILD_ENABLED=false`를 필수 검증한다.
+따라서 운영 서버에서는 BM25 검색·인덱스 생성·자동 재구축이 실행되지 않는다.
+
+## 사실 확인과 도구
+
+라우터는 날씨, 시장, 장소, 웹 검색, 이미지 중 필요한 도구를 선택한다. 성공 문자열이
+아닌 구조화된 증거 계약을 검사하며, 다음과 같은 결과는 증거로 인정하지 않는다.
+
+- 오류·시간 초과·키 누락·제공자 비활성 문구
+- 비어 있는 날씨/주가/장소 payload
+- 성공 상태나 실제 시세 행이 없는 시장 snapshot
+- URL·출처·요약이 모두 없는 웹 결과
+
+현재 정보·수치·뉴스·일정·지역 시설처럼 외부 검증이 필요한 질문에서 증거를 못 얻으면
+Main LLM이 추측하도록 넘기지 않고 확인 실패를 명시한다. 금융 답변은 KOSPI/KOSDAQ
+또는 미국 지수의 실제 snapshot과 웹 소식을 함께 보고, 도구 원문에 없는 수치를
+최종 전송 전에 제거한다.
+
+각 제공자는 `ToolHealthRegistry` 회로 차단기를 거친다. 연속 실패 후 cooldown에
+들어가고, 시간이 지난 뒤 사용자 요청 한 건만 half-open probe로 허용한다. probe가
+취소되면 점유 상태를 즉시 버려 영구 잠금을 막는다.
+
+## LLM 경계
+
+`LLMClient`에는 routing과 main 두 레인이 있다. 각 레인은 primary와 선택적 fallback을
+가질 수 있지만 SDK 자체 재시도는 끈다.
+
+- provider 동시성: bounded semaphore
+- 슬롯 대기: `LLM_ACQUIRE_TIMEOUT_SECONDS`
+- 물리 호출: `LLM_CALL_TIMEOUT_SECONDS`
+- 논리 요청 사용량: 전역·기능·Guild/DM·사용자 계층을 한 트랜잭션으로 예약
+- 물리 시도: `llm_attempt`로 성공 여부와 무관하게 기록
+- timeout 뒤에는 완료 여부가 불명확하므로 추가 fallback을 겹쳐 호출하지 않음
+- 도구 계획: 최대 3개, 이미지 1개, 같은 유형별 별도 상한
+
+학교 공지의 독립 LLM 클라이언트도 재시도 최대 2회, 동시성 2 이하, 응답 크기와 전체
+시간 상한을 갖는다. 어떤 경로도 무한 retry나 재귀 LLM 호출을 사용하지 않는다.
+
+## 이미지 생성
+
+이미지는 CometAPI의 Gemini native `generateContent` 경로와
+`gemini-3.1-flash-lite-image` 모델을 사용한다. 프롬프트에는 사용자가 요청한 경우에만
+관련 기억을 넣고, 외모·민감 정보가 기억에 없으면 만들어내지 않도록 지시한다.
+
+사용자·Guild·전역 한도를 확인한 뒤 세 범위 사용량을 한 commit으로 예약한다. 응답은
+18MB 상한 안에서 읽고 `inlineData` 중 최종 이미지 한 장만 Discord에 첨부한다.
+전용 키 또는 공용 CometAPI 키가 없으면 명시적 프로필은 기동하지 않는다.
+
+## 학교 공지
+
+Discord 봇 프로세스는 크롤링하지 않는다. 별도 systemd oneshot이 매일 05:00 KST에
+프로필이 등록한 학교의 source만 순차 수집한다.
 
 ```mermaid
 flowchart LR
-    Try1["Primary LLM<br/><i>CometAPI</i>"]
-    Try1 -->|"routing fail"| RouteFallback["제한된 로컬 라우팅 fallback"]
-    Try1 -->|"main fail"| Error["명시적 오류 응답<br/>무한 재시도 없음"]
-
-    style Try1 fill:#c8e6c9,stroke:#2e7d32
-    style RouteFallback fill:#fff9c4,stroke:#f9a825
-    style Error fill:#ffcdd2,stroke:#c62828
+    P["동의된 사용자 프로필"] --> B["05:00 batch"]
+    B --> L["등록 학교 source 목록"]
+    L --> F["목록 fetch"]
+    F --> A["신규·수정 후보 판별"]
+    A --> D["상세 페이지 fetch"]
+    D --> C["규칙 + bounded LLM 적합성 분석"]
+    C --> O["사용자별 digest"]
+    O --> S["설정 시각 catch-up"]
+    S --> DM["관련 항목이 있을 때만 DM"]
 ```
 
-### 웹 검색 폴백 체인
+학교 사이트에는 Discord ID·학과·학년·관심사를 보내지 않는다. 공개 목록과 상세
+페이지만 수집한 뒤 내부에서 프로필과 비교한다. 신규 등록은 해당 학교만 즉시 one-shot
+수집하며 timeout·시도 횟수·프로세스 수가 제한된다. 전달은 revision·프로필
+version/hash·완료 시각을 검증해 설정 변경 전 결과가 새 프로필에 섞이지 않게 한다.
 
-```mermaid
-flowchart LR
-    L["Linkup 검색<br/><i>(주력)</i>"] -->|"fail"| D["DuckDuckGo 검색<br/><i>(대체)</i>"]
-    D -->|"fail"| F["명시적 확인 실패<br/><i>추측 금지</i>"]
+## 편입 공지
 
-    style L fill:#c8e6c9,stroke:#2e7d32
-    style D fill:#fff9c4,stroke:#f9a825
-    style F fill:#ffecb3,stroke:#f57c00
+독립 oneshot이 매일 05:35 KST에 20개 공식 입학처를 순차 확인한다. 첫 snapshot은
+기준선만 만들고 전송하지 않으며, 이후 신규·실제 제목 수정만 구독자에게 전달한다.
+자동 접근이 공식 `robots.txt`로 차단된 충남대·부경대는 지원하는 척하지 않고 공식
+링크만 제공한다.
+
+## 지진과 기상
+
+지진은 60초마다 KMA를 확인한다. 새 발표를 보내기 전에 발생 시각 watermark를 DB에
+기록하고, 채널별 원본 Discord 메시지 ID도 보존한다. 같은 시간·거리 범위의 지진군은
+원본 메시지를 수정하고, 원본이 실제로 삭제된 경우에만 새 메시지를 보낸다. timeout이나
+권한 오류에서 중복 메시지로 fallback하지 않는다. 재난 문구는 Guild 페르소나를 거치지
+않는 공통 형식 문구다.
+
+## 개인정보
+
+동의는 기능 scope·정책 version·고지문 hash 단위다. 버튼은 먼저 interaction을
+`defer`해 Discord의 3초 응답 제한을 지키고, 저장 성공 뒤 follow-up을 보낸다.
+
+- 운세, 학교 공지, 편입 공지는 각각 별도 동의
+- 동의 저장소 오류는 개인정보 사용에 대해 fail-closed
+- 세션 중 철회될 수 있어 provider 호출과 최종 저장 직전에 다시 확인
+- 철회는 사용 중단, 삭제 명령은 해당 기능 데이터 정리
+- 동의·철회 이력은 처리 근거로 append-only 보존
+
+일반 Discord 대화와 서버가 제공하는 공용 데이터는 기존 정책을 유지한다.
+
+## DB 트랜잭션과 TiDB 무료 플랜
+
+운영 TiDB 어댑터는 단일 PyMySQL 연결을 사용한다. 패킷 잠금 외에 논리 트랜잭션
+소유권 gate를 두어 한 task의 첫 쓰기부터 commit/rollback까지 다른 task가 끼어들지
+못한다. 소유 task가 취소되거나 commit 없이 끝나면 미확정 쓰기를 자동 rollback한다.
+쓰기 예외를 처리하는 호출자도 명시적으로 rollback해 다음 작업의 commit에 섞이지
+않게 한다.
+
+TiDB Starter 보호 방식:
+
+- 삭제 없이 최근 시간 범위와 복합 인덱스로 사용량 집계
+- 여러 한도를 한 `GROUP BY` 조회와 multi-row INSERT로 예약
+- 공지 원문·snapshot은 로컬 Masamo 전용 SQLite/파일 경로 소유
+- 운영 감사 스크립트는 stale-read read-only transaction 사용
+- vector 마이그레이션은 별도 명시적 단계이며 기본 배포에서 실행하지 않음
+
+## 수명주기와 실패 격리
+
+- `tasks.loop` 본문은 한 tick 작업량과 timeout이 제한된다.
+- 학교·편입 catch-up은 batch 크기와 재시도 횟수가 제한된다.
+- RAG 임베딩 태스크는 set으로 추적하고 상한 초과 시 새 작업을 버린다.
+- 종료 시 백그라운드 태스크·공유 HTTP 세션·DB 연결을 취소 후 회수한다.
+- 도구 실패는 해당 도구 회로만 열고 대화 프로세스 전체를 멈추지 않는다.
+- 시작 검증에서 필수 스키마·인덱스·경계를 만족하지 못하면 Discord 로그인 전에
+  실패한다.
+
+## 검증 기준
+
+오프라인 기본 검증:
+
+```bash
+venv/bin/python -m pytest -q
+venv/bin/python -m compileall -q .
+venv/bin/python scripts/verify_bang_commands.py
+venv/bin/python scripts/audit_tracked_secrets.py --secret-env .env
+venv/bin/python scripts/validate_profile_separation.py \
+  /etc/masamong/masamo.env \
+  /etc/masamong/general.env
 ```
 
-### 도구 실행 실패 처리
-
-```python
-# 도구 실패는 결과에 명시한다.
-# 외부 근거가 필수인 요청은 성공 자료가 없으면 main 모델을 호출하지 않는다.
-# 시장 수치는 구조화된 지수 스냅샷과 최종 문장의 숫자를 다시 대조한다.
-tool_results.append({"tool": tool_name, "error": public_error})
-```
-
----
-
-## 확장 가능성
-
-### 새 Cog 추가
-
-```python
-# cogs/my_new_cog.py
-class MyNewCog(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
-    
-    @commands.command()
-    async def my_command(self, ctx):
-        await ctx.send("Hello!")
-
-# main.py → cog_list에 추가
-await bot.load_extension("cogs.my_new_cog")
-```
-
-### 새 도구 추가
-
-```python
-# cogs/tools_cog.py
-async def my_new_tool(self, param1: str) -> dict:
-    """새로운 도구 설명"""
-    result = await some_api_call(param1)
-    return {"result": result}
-
-# IntentAnalyzer의 routing tool contract와 allowlist에 이름/파라미터를 추가
-# 정상 선택은 routing LLM이 의미적으로 수행하고 keyword는 장애 fallback만 수정
-```
-
-### 새 임베딩 소스 추가
-
-```python
-# emb_config.json
-{
-  "kakao_servers": [
-    {
-      "server_id": "new_source_123",
-      "db_path": "database/new_source_embeddings.db",
-      "label": "새 데이터 소스"
-    }
-  ]
-}
-```
-
----
-
-## 배포 아키텍처
-
-```mermaid
-graph TB
-    subgraph DevEnv["🖥️ 개발 환경 (macOS)"]
-        Dev["GPU Workstation<br/>CUDA 11.8"]
-    end
-
-    subgraph ProdServer["☁️ 운영 서버 (Linux CPU)"]
-        Screen["screen 세션"]
-        Bot["Bot Process<br/>main.py"]
-        VENV["Python venv"]
-    end
-
-    subgraph Cloud["☁️ 클라우드"]
-        TiDB["TiDB Cloud<br/>ap-northeast-1"]
-        LLM_API["CometAPI"]
-    end
-
-    Dev -->|"git push"| Repo["GitHub"]
-    ProdServer -->|"git pull"| Repo
-    Screen --> Bot
-    VENV --> Bot
-    Bot -->|"PyMySQL :4000"| TiDB
-    Bot -->|"HTTPS"| LLM_API
-
-    subgraph Block["/mnt/block-storage/masamong/"]
-        Code["app code"]
-        Configs["tmp/server_config/"]
-        Logs["logs/"]
-    end
-
-    Bot --> Block
-```
-
----
-
-## 보안 고려사항
-
-### 1. 멘션 게이트
-
-- 모든 프롬프트에 자동 추가되는 멘션 정책
-- 코드 레벨에서도 이중 확인
-
-### 2. API 키 관리
-
-```python
-# ❌ 하드코딩 금지
-GEMINI_API_KEY = "AIza..."
-
-# ✅ 환경 변수 사용
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-```
-
-### 3. Rate Limiting
-
-```python
-# API 호출 제한 (DB 기반)
-async def check_rate_limit(api_type: str) -> bool:
-    recent_calls = await db.count_recent_calls(
-        api_type, 
-        window_minutes=60
-    )
-    return recent_calls < config.RPM_LIMIT
-```
-
-### 4. 입력 검증
-
-```python
-# 사용자 입력 sanitization
-cleaned_query = re.sub(r'[<>\"\'`]', '', user_query)
-```
-
----
-
-## 모니터링 및 관찰성
-
-### 로깅 계층
-
-```mermaid
-graph TB
-    subgraph L1["Level 1: Console"]
-        C["INFO 이상<br/>봇 시작/종료, Cog 로드, 주요 이벤트"]
-    end
-
-    subgraph L2["Level 2: File"]
-        F1["discord_logs.txt<br/>DEBUG 이상"]
-        F2["error_logs.txt<br/>에러 전용"]
-    end
-
-    subgraph L3["Level 3: Discord"]
-        D["#logs 채널<br/>Discord 임베드 로그"]
-    end
-
-    subgraph L4["Level 4: DB"]
-        DB["analytics_log<br/>운영 지표"]
-    end
-
-    L1 --> L2 --> L3 --> L4
-```
-
-### 메트릭 수집
-
-```python
-# analytics_log 테이블
-{
-  "event_type": "AI_INTERACTION",
-  "details": {
-    "model_used": "deepseek-v4-flash",
-    "rag_hits": 3,
-    "latency_ms": 1250,
-    "tools_used": ["get_weather"],
-    "self_score": 0.92
-  }
-}
-```
-
----
-
-## 배포 고려사항
-
-### 저사양 서버
-
-**권장 사양**:
-- CPU: 2 Core
-- RAM: 2GB
-- Disk: 5GB
-
-**최적화 설정**:
-```env
-AI_MEMORY_ENABLED=false
-RERANK_ENABLED=false
-SEARCH_CHUNKING_ENABLED=false
-CONVERSATION_WINDOW_SIZE=3
-```
-
-### 고성능 서버
-
-**권장 사양**:
-- CPU: 4+ Core
-- RAM: 8GB+
-- Disk: 20GB+
-- GPU: Optional (CUDA 11.8+)
-
-**최적화 설정**:
-```env
-AI_MEMORY_ENABLED=true
-RERANK_ENABLED=true
-SEARCH_CHUNKING_ENABLED=true
-LOCAL_EMBEDDING_DEVICE=cuda  # GPU 사용
-BM25_AUTO_REBUILD_ENABLED=true
-```
-
----
-
-## 레퍼런스
-
-| 문서 | 내용 |
-|------|------|
-| [UML_SPEC.md](UML_SPEC.ko.md) | 🆕 UML 다이어그램 상세 분석 |
-| [README.md](../README.md) | 프로젝트 메인 문서 |
-| [QUICKSTART.md](QUICKSTART.md) | 빠른 시작 가이드 |
-| [Discord.py](https://discordpy.readthedocs.io/) | Discord.py 공식 문서 |
-| [Google Gemini API](https://ai.google.dev/) | Gemini API |
-| [SentenceTransformers](https://www.sbert.net/) | 임베딩 모델 |
-| [SQLite FTS5](https://www.sqlite.org/fts5.html) | 전문 검색 |
-
----
-
-*마지막 업데이트: 2026-04-30*
+운영 배포 후에는 서비스가 active인지뿐 아니라 선택 env, release SHA, DB 이름,
+필수 Cog, LLM 레인, BM25 비활성, scheduler 중복 여부, 최근 오류 로그를 확인한다.

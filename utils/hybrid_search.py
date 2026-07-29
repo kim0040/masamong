@@ -242,6 +242,7 @@ class HybridSearchEngine:
             reverse=True,
         )
         enriched = self._gate_by_relevance(
+            query,
             enriched,
             deep_search=deep_search,
         )
@@ -266,6 +267,7 @@ class HybridSearchEngine:
 
     def _gate_by_relevance(
         self,
+        query: str,
         entries: List[dict[str, Any]],
         *,
         deep_search: bool,
@@ -308,6 +310,23 @@ class HybridSearchEngine:
             )
         )
         if semantic_best < gate:
+            if deep_search:
+                # FTS5는 정확한 이름·코드처럼 임베딩이 놓칠 수 있는 어휘를
+                # 보완한다. 다만 사용자가 장기기억 검색을 요청한 경우에만,
+                # 실제 질의 어휘가 원문과 충분히 겹치는 상위 두 건으로 제한한다.
+                lexical_fallback = [
+                    entry
+                    for entry in entries
+                    if float(entry.get("semantic_similarity", 0.0) or 0.0)
+                    <= 0.0
+                    and float(
+                        entry.get("lexical_score")
+                        or self._lexical_relevance(query, entry)
+                    )
+                    >= 0.04
+                ]
+                if lexical_fallback:
+                    return lexical_fallback[:2]
             # 가장 관련 있는 기억의 순수 의미 점수조차 기준에 못 미치면
             # 어휘·개인 가산점과 무관하게 아무것도 넣지 않는다.
             logger.debug(
@@ -768,8 +787,18 @@ class HybridSearchEngine:
             limit=self.bm25_top_n,
         )
         dispatcher: List[dict[str, Any]] = []
-        for item in results:
-            normalized_score = 1.0 / (1.0 + item.bm25_score)
+        for rank, item in enumerate(results):
+            # SQLite FTS5 bm25()는 작은 값이 우수하고 흔히 음수이므로 이를
+            # 확률처럼 1/(1+raw)로 바꾸면 거의 1.0이 되어 의미 게이트를
+            # 우회한다. 절대값 대신 순위만 낮은 보조 점수 대역으로 매핑한다.
+            normalized_score = max(0.0, 0.57 - (rank * 0.02))
+            lexical_score = self._lexical_relevance(
+                query,
+                {
+                    "message": item.content,
+                    "user_name": item.user_name,
+                },
+            )
             focus = {
                 "message_id": item.message_id,
                 "user_id": item.user_id,
@@ -798,6 +827,8 @@ class HybridSearchEngine:
                     "origin": "Discord",
                     "speaker": item.user_name,
                     "bm25_score": normalized_score,
+                    "semantic_similarity": 0.0,
+                    "lexical_score": lexical_score,
                     "acceptance_threshold": 0.0,
                     "bm25_score_raw": item.bm25_score,
                     "matched_server_id": str(item.guild_id),
@@ -817,7 +848,12 @@ class HybridSearchEngine:
         source: str,
         rank: int,
     ) -> None:
-        candidate_id = entry.get("id")
+        message_id = entry.get("message_id")
+        candidate_id = (
+            f"message:{message_id}"
+            if message_id is not None and str(message_id).strip()
+            else entry.get("id")
+        )
         if not candidate_id:
             return
 

@@ -199,8 +199,12 @@ class UserCommands(commands.Cog):
                     # 상태 메시지 삭제
                     try:
                         await status_msg.delete()
-                    except:
-                        pass
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        logger.debug(
+                            "이미지 생성 상태 메시지를 삭제하지 못했습니다.",
+                            exc_info=True,
+                            extra=log_extra,
+                        )
                     
                     # 이미지 바이너리가 있으면 파일로 직접 업로드 (URL 만료 방지)
                     if result.get('image_data'):
@@ -239,8 +243,15 @@ class UserCommands(commands.Cog):
                         await status_msg.edit(content="❌ 처리 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요!")
                     else:
                         await ctx.send("❌ 처리 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요!")
-                except:
-                    await ctx.send("❌ 처리 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요!")
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    try:
+                        await ctx.send("❌ 처리 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요!")
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        logger.warning(
+                            "이미지 생성 오류 안내 전송 실패",
+                            exc_info=True,
+                            extra=log_extra,
+                        )
     
     @generate_image_command.error
     async def generate_image_error(self, ctx: commands.Context, error):

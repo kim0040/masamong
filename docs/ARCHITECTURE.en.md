@@ -1,910 +1,228 @@
-# Masamong Architecture Document
+# Masamong Architecture
 
-> **See also**: [UML_SPEC.md](UML_SPEC.ko.md) for detailed UML diagrams and technical analysis.
+This document describes the code as of 2026-07-29. See
+[README.ko.md](README.ko.md) for the user guide,
+[DEPLOYMENT.md](../DEPLOYMENT.md) for operations, and
+[UML_SPEC.en.md](UML_SPEC.en.md) for diagrams.
 
-## System Overview
+## Core invariants
 
-Masamong is a modular Discord bot combining an AI agent, RAG system, and external API integrations.
+1. Masamo and General share a release, never an identity or mutable boundary.
+2. A deployment does not delete or silently rewrite existing production rows.
+3. Externally verifiable facts require a successful evidence-bearing tool result.
+4. LLM, web, image, and batch work all have finite concurrency, time, size, and
+   retry budgets.
+5. Reusable personal profiles require current, feature-scoped consent.
+6. Production low-spec hosts never build, query, or rebuild a BM25/FTS5 index.
 
----
+## Instance boundary
 
-## System Context Diagram
+| Boundary | Masamo | General |
+|---|---|---|
+| Profile | `masamo` | `general` |
+| Discord app | existing bot | separate bot |
+| TiDB database | `masamong` | `masamong_general` |
+| Memory | Discord + mapped Kakao | Discord only |
+| Notice batches | owner | disabled by default |
+| Admins, logs, mutable files | Masamo-only | General-only |
 
-```mermaid
-graph TB
-    subgraph Users["👤 Users"]
-        GU["Guild User<br/>@mention required"]
-        DM["DM User<br/>5h / 30 calls limit"]
-        AD["Admin<br/>!update, !debug"]
-    end
+An explicit profile reads its selected `MASAMONG_ENV_FILE` as the boundary
+source of truth. Startup fails before Discord login if the declared profile,
+bot ID, database, TLS identity, required Cogs, paths, or resource limits do not
+match. See [INSTANCE_SEPARATION.ko.md](INSTANCE_SEPARATION.ko.md).
 
-    subgraph Discord["Discord Platform"]
-        Gateway["Discord Gateway<br/>WebSocket + HTTP"]
-    end
+## Repository map
 
-    subgraph BotProcess["🤖 Masamong Bot Process"]
-        Entry["main.py<br/>ReMasamongBot"]
-    end
-
-    subgraph ExternalAPIs["🌐 External APIs"]
-        LLM["CometAPI / Gemini<br/>LLM Inference"]
-        KMA_["KMA (기상청)<br/>Weather / Earthquake"]
-        Finance_["Finnhub / yfinance / KRX<br/>Financial Data"]
-        Web_["Linkup / DuckDuckGo<br/>Web Search"]
-        Place_["Kakao Local<br/>Place Search"]
-    end
-
-    subgraph Storage["💾 Storage"]
-        TiDB["TiDB Cloud<br/>(Production)"]
-        SQLiteDB["SQLite<br/>(Development)"]
-        HF["HuggingFace Cache<br/>Embedding Models"]
-    end
-
-    GU --> Gateway
-    DM --> Gateway
-    AD --> Gateway
-    Gateway <-->|"WebSocket"| Entry
-    Entry --> LLM
-    Entry --> KMA_
-    Entry --> Finance_
-    Entry --> Web_
-    Entry --> Place_
-    Entry --> TiDB
-    Entry --> SQLiteDB
-    Entry --> HF
+```text
+main.py                 startup, schema verification, Cog lifecycle
+config.py               profile resolution, feature and resource limits
+cogs/                   Discord commands, views, events, schedulers
+utils/llm_client.py      routing/main lanes and physical provider boundary
+utils/intent_analyzer.py semantic routing and context digest
+utils/rag_manager.py     history, windows, bounded embedding tasks
+utils/hybrid_search.py   semantic retrieval, scope alignment, relevance gate
+utils/db.py              atomic usage reservations and shared DB operations
+database/compat_db.py    SQLite/TiDB adapter and transaction ownership
+school_notice/           list/detail collection, analysis, digest generation
+transfer_notice/         transfer-admission snapshots
+profiles/                instance examples and school catalog
+scripts/                 audits, validators, one-shot jobs, migrations
+tests/                   offline regression and contract tests
 ```
 
----
-
-## Core Design Principles
-
-### 1. 3-Stage AI Pipeline
-
-```mermaid
-flowchart TB
-    Input["👤 User Message"] --> Valid["Validation<br/>mention / channel / lock"]
-
-    Valid --> Step1["🔍 Stage 1: Semantic Routing<br/>IntentAnalyzer<br/><i>tools + memory need + optional digest</i>"]
-
-    Step1 -->|"long-term memory needed"| RAG
-    Step1 -->|"no long-term memory"| Step2
-    Step1 -->|"tool plan"| Step2["🛠️ Stage 2: Tool Execution<br/>ToolsCog"]
-
-    subgraph Step2Detail[" "]
-        direction LR
-        W["Weather<br/>KMA"]
-        S["Web, finance, place facts<br/>Linkup"]
-        I["Image<br/>CometAPI"]
-    end
-
-    Step2 --> Step2Detail
-    Step2Detail --> Merge["🧩 Context Assembly<br/><i>digest + recent verbatim + selective RAG</i>"]
-    RAG["🧠 Selective Long-Term Memory<br/>HybridSearchEngine"] --> Merge
-
-    Merge --> Step3["✍️ Stage 3: Response Generation<br/>LLMClient (Main Lane)<br/><i>deepseek-v4-flash</i>"]
-
-    Step3 --> Output["💬 Discord Reply<br/><i>Persona + Emoji applied</i>"]
-
-    style Valid fill:#ffecb3,stroke:#f57c00
-    style Step1 fill:#e1f5fe,stroke:#0288d1
-    style Step2 fill:#f3e5f5,stroke:#7b1fa2
-    style RAG fill:#e8f5e9,stroke:#388e3c
-    style Step3 fill:#fff3e0,stroke:#e65100
-    style Output fill:#c8e6c9,stroke:#2e7d32
-```
-
-### 2. Dual-Lane LLM Routing
-
-```mermaid
-flowchart TB
-    subgraph Routing["Routing Lane (Intent Analysis)"]
-        direction TB
-        RP1["Primary: gpt-5.4-nano<br/><i>(CometAPI)</i>"]
-        RE["Restricted keyword fallback on provider failure"]
-        RP1 -->|"provider / JSON failure"| RE
-    end
-
-    subgraph Main["Main Lane (Response Generation)"]
-        direction TB
-        MP1["Primary: deepseek-v4-flash<br/><i>(CometAPI)</i>"]
-        ME["Bounded timeout / explicit failure"]
-        MP1 -->|"fail"| ME
-    end
-
-    Caller["LLMClient"] --> Routing
-    Caller --> Main
-
-    style RP1 fill:#e3f2fd,stroke:#1565c0
-    style MP1 fill:#fff8e1,stroke:#f57f17
-    style RE fill:#ffebee,stroke:#c62828
-    style ME fill:#ffebee,stroke:#c62828
-```
-
-**LLM Call Sequence**:
-
-```mermaid
-sequenceDiagram
-    participant Caller as AIHandler
-    participant Client as LLMClient
-    participant Primary as CometAPI Primary
-    participant Fallback as CometAPI Fallback
-    participant Gemini as Gemini Direct
-
-    Caller->>Client: call_routing_llm(prompt, system)
-    Client->>Client: _check_rate_limit(RPM/RPD)
-
-    Client->>Primary: chat.completions.create()
-    alt success
-        Primary-->>Client: {choices: [{message: {content: "..."}}]}
-        Client->>Client: _filter_prompt_leak()
-        Client-->>Caller: parsed response
-    else failure
-        Primary-->>Client: Exception
-        Client->>Fallback: chat.completions.create()
-        alt success
-            Fallback-->>Client: response
-            Client-->>Caller: parsed response
-        else failure
-            opt ALLOW_DIRECT_GEMINI_FALLBACK=true
-                Client->>Gemini: generate_content()
-                Gemini-->>Client: response
-                Client-->>Caller: parsed response
-            end
-        end
-    end
-```
-
-### 3. Hybrid RAG
+## Conversation pipeline
 
 ```mermaid
 flowchart LR
-    Query["User Query"] --> QE["Query Expansion<br/>query_rewriter<br/><i>variant generation</i>"]
-
-    QE --> Parallel
-
-    subgraph Parallel["Parallel Search"]
-        direction TB
-        Emb["🔍 Embedding Search<br/>cosine similarity<br/><i>top_n=8</i>"]
-        BM["📝 BM25 Search<br/>keyword matching<br/><i>top_n=8</i>"]
-    end
-
-    Emb --> RRF["🔄 RRF Fusion<br/>score = 1/(k+rank)<br/>k=60"]
-    BM --> RRF
-
-    RRF --> Weighted["⚖️ Weighted Combination<br/>embedding: 0.55<br/>bm25: 0.45"]
-
-    Weighted --> RerankOpt{"Reranker<br/>enabled?"}
-
-    RerankOpt -->|"yes"| Rerank["🎯 Cross-Encoder<br/>BAAI/bge-reranker-v2-m3"]
-    RerankOpt -->|"no"| Results["📋 Final Results"]
-
-    Rerank --> Results
-
-    style Query fill:#e1f5fe,stroke:#0288d1
-    style RRF fill:#fff3e0,stroke:#e65100
-    style Results fill:#c8e6c9,stroke:#2e7d32
+    U["Mention or DM"] --> A["AIHandler guards"]
+    A --> H["Read recent Discord history once"]
+    H --> R["Semantic router"]
+    R --> M{"Memory needed?"}
+    M -->|explicit| D["Deep semantic retrieval"]
+    M -->|ordinary no-tool turn| P["One shallow retrieval"]
+    M -->|tool-focused| N["Skip memory"]
+    R --> T["Normalize at most 3 tools"]
+    T --> X["Execute tools sequentially"]
+    D --> C["Assemble bounded context"]
+    P --> C
+    N --> C
+    X --> C
+    C --> L["Main lane or verified direct renderer"]
+    L --> O["Normalize and split for Discord"]
 ```
 
-### 4. Mention Gate Pattern
+Recent history is reused by routing, follow-up query contextualization, and the
+final prompt. A broken router falls back to a narrow keyword detector, but the
+same tool allowlist and cardinality limits still apply.
 
-**Goal**: Prevent resource waste and protect privacy.
+## Context harness
 
-Processing all messages would mean:
-- ❌ Unnecessary API calls
-- ❌ Risk of exposing private conversations
-- ❌ High costs
+The bot does not append the entire chat log:
 
-Processing mentions only ensures:
-- ✅ Respond only to explicit requests
-- ✅ Reduced API costs
-- ✅ Privacy protection
+- the current question and successful tool evidence receive space first;
+- recent verbatim turns are capped at 4,000 characters;
+- older selected turns are compacted only when needed, with a 768-token output
+  ceiling and a 1,200-character final insertion;
+- long-term memory is inserted only when relevant, up to three blocks and 5,000
+  characters;
+- fortune context is DM-only, router-requested, and consent-gated;
+- overlapping original messages, windows, and structured memories are removed.
 
----
+The final prompt guard preserves both ends so neither global rules nor the
+latest request disappears during truncation.
 
-## Module Structure
+## Memory and retrieval
 
-### Cog Architecture
+Memory is scoped by stable identity:
+
+- guild-public facts stay within the same guild;
+- guild-user memories also require the matching Discord user;
+- DM memories use the DM/user scope (`guild_id=0`);
+- Kakao memories are reachable only through the Masamo server map.
+
+Display names are not identities. Discord IDs take precedence, and colliding
+display names are labelled distinctly.
+
+Production retrieval is semantic:
 
 ```mermaid
-flowchart TB
-    Bot["ReMasamongBot<br/>main.py"] --> CogLoad["Cog Loading<br/>setup_hook()"]
-
-    CogLoad -->|"ordered 1-13"| Cogs
-
-    subgraph Cogs["Cog Layer"]
-        direction TB
-        WC["WeatherCog<br/>Weather + alerts"]
-        TC["ToolsCog<br/>External API tools"]
-        EV["EventsCog<br/>Guild/member events"]
-        CM["Commands<br/>Admin commands"]
-        AI["AIHandler<br/>AI pipeline (core)"]
-        FC["FunCog<br/>Summary / utils"]
-        AC["ActivityCog<br/>Activity / ranking"]
-        PC["PollCog<br/>Polls"]
-        SC["SettingsCog<br/>Slash commands"]
-        MC["MaintenanceCog<br/>Archiving"]
-        PA["ProactiveAssistant<br/>Proactive participation"]
-        FC2["FortuneCog<br/>Fortune / zodiac"]
-        HC["HelpCog<br/>Help"]
-    end
-
-    CogLoad --> DepInject["Dependency Injection"]
-
-    DepInject -->|"LLMClient.db"| AI
-    DepInject -->|"IntentAnalyzer.db"| AI
-    DepInject -->|"RAGManager.db"| AI
-    DepInject -->|"AIHandler → ActivityCog"| AC
-    DepInject -->|"AIHandler → FunCog"| FC
-
-    AI -->|"tool delegation"| TC
-    AI -->|"tool delegation"| WC
-
-    style AI fill:#fff3e0,stroke:#e65100,stroke-width:3px
-    style TC fill:#f3e5f5,stroke:#7b1fa2
-    style Bot fill:#e1f5fe,stroke:#0288d1
+flowchart TD
+    Q["Query"] --> V["Variants<br/>one for shallow search"]
+    V --> S["TiDB vector or bounded BLOB scan"]
+    S --> B["Guild / DM / user / Kakao scope"]
+    B --> G["Absolute semantic gate"]
+    G --> F["Relative score floor"]
+    F --> D["Overlap deduplication"]
+    D --> R["Optional reranker"]
+    R --> K["At most 3 memory blocks"]
 ```
 
-### Component Dependency
+The passive gate defaults to `0.61`, the explicit-memory gate to `0.58`, and
+the relative floor to `0.94` of the best result. Personal or lexical bonuses
+may reorder candidates but cannot bypass the semantic gate. TiDB vector search
+is used only when the column exists, the backfill is complete, and the feature
+flag is on; otherwise a bounded compatibility scan reads existing embeddings.
 
-```mermaid
-flowchart TB
-    subgraph Core["Core Components"]
-        AIHandler["AIHandler<br/><i>Pipeline Controller</i>"]
-    end
+The code can defensively consume an optional local lexical candidate source,
+but `config.py` sets `BM25_DATABASE_PATH=None`, and explicit production profiles
+must set `BM25_AUTO_REBUILD_ENABLED=false`. BM25 is therefore unreachable in
+the remote runtime.
 
-    subgraph LLMLayer["LLM Layer"]
-        LLMClient["LLMClient<br/><i>Lane Routing, Rate Limit</i>"]
-        IntentAnalyzer["IntentAnalyzer<br/><i>Intent Analysis, Tool Planning</i>"]
-    end
+## Evidence-bearing tools
 
-    subgraph RAGLayer["RAG Layer"]
-        RAGManager["RAGManager<br/><i>Memory Management</i>"]
-        HybridSearch["HybridSearchEngine<br/><i>Embedding + BM25 + RRF</i>"]
-        QueryRewriter["QueryRewriter"]
-        Reranker["Reranker<br/><i>Cross-Encoder</i>"]
-    end
+Weather, market, place, web, and image tools return structured contracts.
+Timeout text, missing credentials, empty payloads, or status-less market data
+are normalized as errors, not evidence. Current, numeric, news, schedule, or
+local-facility questions fail closed when no successful source exists.
 
-    subgraph StoreLayer["Storage Layer"]
-        DiscordStore["DiscordEmbeddingStore"]
-        KakaoStore["KakaoEmbeddingStore"]
-        CompatDB["CompatDB<br/><i>TiDB/SQLite</i>"]
-        BM25Idx["BM25IndexManager<br/><i>(inactive)</i>"]
-    end
+Market answers combine an actual KOSPI/KOSDAQ or US-index snapshot with sourced
+news. Material numbers absent from the evidence are removed before sending.
 
-    subgraph ToolLayer["Tool Layer"]
-        ToolsCog["ToolsCog"]
-        Weather["weather.py"]
-        LinkupSearch["linkup_search.py"]
-        NewsSearch["news_search.py<br/>(DuckDuckGo)"]
-        FinanceAPIs["api_handlers<br/>finnhub, yfinance, krx"]
-    end
+Each external provider has a circuit breaker. Consecutive failures enter a
+cooldown; one user request becomes the half-open probe. Cancellation abandons
+the probe so the provider cannot remain permanently locked.
 
-    AIHandler --> LLMClient
-    AIHandler --> IntentAnalyzer
-    AIHandler --> RAGManager
-    AIHandler --> HybridSearch
-    AIHandler --> ToolsCog
+## LLM and cost boundary
 
-    IntentAnalyzer -->|"Routing Lane"| LLMClient
+`LLMClient` provides routing and main lanes, each with a primary and optional
+fallback. SDK retries are disabled.
 
-    RAGManager --> DiscordStore
-    RAGManager --> CompatDB
+- bounded provider semaphore;
+- bounded admission and call timeouts;
+- atomic logical-request reservation across global, feature, guild/DM, and user
+  dimensions;
+- a separate `llm_attempt` record for every physical attempt;
+- no overlapping fallback after an ambiguous timeout;
+- at most three tool calls, with stricter per-tool cardinality.
 
-    HybridSearch --> DiscordStore
-    HybridSearch --> KakaoStore
-    HybridSearch --> BM25Idx
-    HybridSearch --> QueryRewriter
-    HybridSearch --> Reranker
+The school-notice LLM has independent concurrency, response-size, total-time,
+and at-most-two-retry limits. No path uses recursive or infinite LLM retry.
 
-    ToolsCog --> Weather
-    ToolsCog --> LinkupSearch
-    ToolsCog --> NewsSearch
-    ToolsCog --> FinanceAPIs
+## Image generation
+
+Image generation calls CometAPI's Gemini-native `generateContent` endpoint with
+`gemini-3.1-flash-lite-image`. Relevant memory is included only when the user
+asks for a context-dependent image. User, guild, and global usage rows are
+reserved before the provider call. The response is capped at 18 MB and only one
+final `inlineData` image is attached.
+
+## Notice pipelines
+
+The Discord process does not crawl school sites. A Masamo-only one-shot job at
+05:00 KST collects only schools that have active profiles, reads list pages,
+fetches candidate detail pages, evaluates them with rules plus a bounded LLM,
+and writes user digests. The bot performs a one-school initial collection after
+new registration and later delivers only non-empty, version-matching digests at
+each user's configured time.
+
+No Discord ID, department, year, or interest is sent to a school website.
+
+Transfer notices use a separate 05:35 KST one-shot over 20 official admissions
+sites. The first snapshot is a silent baseline. New or materially renamed
+notices are delivered only to subscribers. Chungnam and Pukyong explicitly
+block automation through `robots.txt`, so the product exposes official links
+instead of pretending to monitor them.
+
+## Earthquake path
+
+KMA earthquakes are polled every 60 seconds. The occurrence watermark is saved
+before notification and each channel's original Discord message ID is persisted.
+Events in the same time/distance incident are edited into that message. A new
+message is sent only if the original is confirmed missing; timeout or permission
+errors never trigger a duplicate fallback. Disaster text bypasses guild persona.
+
+## Privacy
+
+Consent is keyed by feature scope, policy version, and notice hash. Button
+interactions are deferred before DB work to satisfy Discord's acknowledgement
+deadline. Fortune, school notices, and transfer notices use independent scopes.
+Provider use and final writes re-check consent to cover mid-session withdrawal.
+Consent storage failures fail closed for personal data use.
+
+## Transactions and TiDB
+
+Production uses one PyMySQL connection with `autocommit=False`. In addition to
+packet serialization, the adapter assigns transaction ownership from the first
+write through commit or rollback. Other tasks cannot interleave. If the owner is
+cancelled or exits without committing, the adapter rolls back automatically.
+
+The Starter-plan strategy uses bounded time-window queries, grouped quota reads,
+multi-row reservations, local per-profile notice stores, and stale-read
+read-only audits. Vector migrations are explicit operations, never part of an
+ordinary release.
+
+## Verification
+
+```bash
+venv/bin/python -m pytest -q
+venv/bin/python -m compileall -q .
+venv/bin/python scripts/verify_bang_commands.py
+venv/bin/python scripts/audit_tracked_secrets.py --secret-env .env
+venv/bin/python scripts/validate_profile_separation.py \
+  /etc/masamong/masamo.env \
+  /etc/masamong/general.env
 ```
 
----
-
-## Message Processing Sequence
-
-```mermaid
-sequenceDiagram
-    actor User as 👤 User
-    participant Discord as Discord
-    participant Bot as ReMasamongBot
-    participant Activity as ActivityCog
-    participant AI as AIHandler
-    participant Intent as IntentAnalyzer
-    participant LLMR as LLMClient<br/>(Routing)
-    participant Tools as ToolsCog
-    participant RAG as RAGManager
-    participant LLMM as LLMClient<br/>(Main)
-
-    User->>Discord: "@Masamong weather in Seoul and Apple stock"
-    Discord->>Bot: on_message(message)
-
-    Note over Bot: 1. Ignore bot messages
-    Note over Bot: 2. Record via ActivityCog
-
-    Bot->>Activity: record_message(message)
-    Activity-->>Bot: done
-
-    Note over Bot: 3. Check for ! prefix → not command
-
-    Bot->>AI: add_message_to_history(message)
-    AI-->>Bot: saved
-
-    Note over Bot: 4. Validate: AI ready, channel allowed, mention valid, user unlocked
-
-    Bot->>AI: process_agent_message(message)
-
-    Note over AI: 5. Fetch Discord history once
-    AI->>Intent: route_tools(query, history)
-    Intent->>LLMR: call_routing_lane_target(tool contract + recent turns)
-    LLMR-->>Intent: {intent, needs_memory, needs_fortune_context, context_digest, tools}
-    Note over Intent: bare identity questions prefer scoped memory
-    Intent-->>AI: ToolRoutingDecision
-
-    Note over AI: 6. Tool Execution → delegate to ToolsCog
-
-    AI->>Tools: get_weather_forecast(location="Seoul", day_offset=0)
-    Tools-->>AI: grounded KMA data
-
-    opt needs_memory=true
-        Note over AI: 7. Selective search of older memory
-        AI->>RAG: search(query, channel_id, user_id)
-        Note over RAG: relevance gate + overlapping-source dedupe + at most 3 blocks
-        RAG-->>AI: diversified relevant long-term memory
-    end
-
-    Note over AI: 8. Response Generation
-
-    AI->>LLMM: call_main_llm(<br/>persona + tool results + digest<br/>+ recent verbatim + optional RAG<br/>+ consented fortune only when requested)
-    LLMM-->>AI: final Discord-safe response
-
-    Note over AI: 9. Send Response
-
-    AI->>Discord: reply(normalized response)
-
-    Note over AI: 10. Async embedding save
-    AI->>AI: asyncio.create_task(save_embedding)
-```
-
----
-
-## Data Layer
-
-### Database Structure
-
-```mermaid
-erDiagram
-    conversation_history {
-        int message_id PK
-        int guild_id
-        int channel_id
-        int user_id
-        text user_name
-        text content
-        boolean is_bot
-        text created_at
-        blob embedding
-    }
-
-    conversation_windows {
-        int window_id PK
-        int guild_id
-        int channel_id
-        int start_message_id
-        int end_message_id
-        int message_count
-        text messages_json
-        text anchor_timestamp
-        text created_at
-    }
-
-    guild_settings {
-        int guild_id PK
-        boolean ai_enabled
-        text ai_allowed_channels
-        float proactive_response_probability
-        int proactive_response_cooldown
-        text persona_text
-    }
-
-    user_profiles {
-        int user_id PK
-        text birth_date
-        text birth_time
-        text gender
-        boolean is_lunar
-        boolean subscription_active
-        text subscription_time
-    }
-
-    user_activity {
-        int user_id PK
-        int guild_id PK
-        int message_count
-        text last_active_at
-    }
-
-    user_activity_log {
-        int message_id PK
-        int guild_id
-        int channel_id
-        int user_id
-        text created_at
-    }
-
-    discord_memory_entries {
-        int id PK
-        text memory_id UK
-        text server_id
-        text channel_id
-        text memory_scope
-        text memory_type
-        text summary_text
-        text memory_text
-        blob embedding
-    }
-
-    api_call_log {
-        int id PK
-        text api_type
-        text called_at
-    }
-
-    linkup_usage_log {
-        int id PK
-        text used_at
-        text endpoint
-        text depth
-        float cost_eur
-    }
-
-    system_counters {
-        text counter_name PK
-        int counter_value
-        text last_reset_at
-    }
-
-    conversation_history ||--o{ conversation_windows : "forms windows"
-    conversation_history ||--o{ user_activity_log : "tracks activity"
-    conversation_windows ||--o{ discord_memory_entries : "summarized into"
-```
-
-### Conversation Window Caching
-
-**Goal**: Optimize RAG performance
-
-Naive approach:
-```sql
--- Query ±3 messages every time (slow)
-SELECT * FROM conversation_history 
-WHERE message_id BETWEEN (target_id - 3) AND (target_id + 3)
-```
-
-Masamong approach:
-```sql
--- Query pre-computed windows (fast)
-SELECT messages_json FROM conversation_windows 
-WHERE start_message_id <= target_id 
-  AND end_message_id >= target_id
-```
-
-**Performance improvement**: 3~5x
-
----
-
-## RAG Pipeline Details
-
-### 1. Query Preprocessing
-
-```python
-# Input: "weather Seoul"
-query = "weather Seoul"
-recent_messages = ["it rained yesterday", "what about today"]
-
-# Step 1: Context combination
-seed_query = "weather Seoul it rained yesterday what about today"
-
-# Step 2: Query expansion
-variants = [
-    "weather Seoul",
-    "weather Seoul it rained yesterday what about today",
-    "current weather information for Seoul",  # generated variant
-]
-```
-
-### 2. Parallel Search
-
-```python
-# Run BM25 + embedding simultaneously for each variant
-for variant in variants:
-    embedding_results = await embedding_search(variant, top_n=8)
-    bm25_results = await bm25_search(variant, top_n=8)
-```
-
-### 3. RRF (Reciprocal Rank Fusion)
-
-```python
-def calculate_rrf_score(rank: int, k: int = 60) -> float:
-    return 1.0 / (k + rank)
-
-# Example
-# embedding rank 1 → rrf_score = 1/(60+1) = 0.0164
-# BM25 rank 3 → rrf_score = 1/(60+3) = 0.0159
-```
-
-### 4. Weighted Combination
-
-```python
-# When a candidate appears in both searches
-combined_score = (
-    similarity * 0.55 +        # semantic similarity
-    bm25_normalized * 0.45     # keyword matching
-)
-```
-
-### 5. Re-ranking (Optional)
-
-```python
-if RERANK_ENABLED:
-    # Cross-Encoder for precision
-    reranked = cross_encoder.rank(query, candidates)
-    return reranked[:top_k]
-```
-
----
-
-## Background Tasks
-
-```mermaid
-sequenceDiagram
-    participant WC as WeatherCog
-    participant KMA as KMA API
-    participant AI as AIHandler
-    participant Discord as Discord
-    participant MC as MaintenanceCog
-
-    loop Every 10 min
-        WC->>KMA: Fetch ultra-short-term forecast
-        KMA-->>WC: precipitation data
-        alt Precipitation detected
-            WC->>AI: Request weather summary
-            AI-->>WC: Alert message
-            WC->>Discord: Send precipitation alert
-        end
-    end
-
-    loop Morning / Evening
-        WC->>KMA: Fetch daily weather summary
-        KMA-->>WC: weather data
-        WC->>AI: Generate greeting + weather
-        AI-->>WC: Greeting message
-        WC->>Discord: Send greeting
-    end
-
-    loop Every 1 hour
-        MC->>MC: archive_old_messages()
-        Note over MC: Messages older than 7 days<br/>conversation_history → archive
-    end
-```
-
----
-
-## Performance Optimization
-
-### 1. Caching Layers
-
-```mermaid
-graph TB
-    subgraph L1["Level 1: Python Memory"]
-        M1["Embedding Model (_MODEL)"]
-        M2["LLM Client Instances"]
-        M3["Config Objects"]
-    end
-
-    subgraph L2["Level 2: SQLite / TiDB"]
-        DB1["conversation_windows<br/><i>pre-computed</i>"]
-        DB2["BM25 FTS5 Index"]
-        DB3["Embedding Vectors"]
-    end
-
-    subgraph L3["Level 3: Disk"]
-        HF1["HuggingFace Model Cache<br/><i>~/.cache/huggingface</i>"]
-        HF2["yfinance Cache"]
-    end
-
-    L1 --> L2 --> L3
-```
-
-### 2. Async Processing
-
-**Message embedding**:
-```python
-# Prevent main thread blocking
-asyncio.create_task(
-    self._create_and_save_embedding(message)
-)
-```
-
-**Parallel API calls**:
-```python
-# Concurrent API calls
-results = await asyncio.gather(
-    get_weather(),
-    get_stock_info(),
-    web_search(),
-    return_exceptions=True
-)
-```
-
-### 3. Index Optimization
-
-```sql
--- conversation_windows composite index
-CREATE INDEX idx_conversation_windows_channel 
-ON conversation_windows (channel_id, anchor_timestamp DESC);
-
--- Unique constraint prevents duplicates
-CREATE UNIQUE INDEX idx_conversation_windows_span 
-ON conversation_windows (channel_id, start_message_id, end_message_id);
-```
-
----
-
-## Error Handling Patterns
-
-### Bounded Provider Failure Handling
-
-```mermaid
-flowchart LR
-    Try1["Primary LLM<br/><i>CometAPI</i>"]
-    Try1 -->|"routing failure"| RouteFallback["Restricted local routing fallback"]
-    Try1 -->|"main failure"| Error["Explicit error response<br/>no unbounded retries"]
-
-    style Try1 fill:#c8e6c9,stroke:#2e7d32
-    style RouteFallback fill:#fff9c4,stroke:#f9a825
-    style Error fill:#ffcdd2,stroke:#c62828
-```
-
-### Web Search Fallback Chain
-
-```mermaid
-flowchart LR
-    L["Linkup Search<br/><i>(primary)</i>"] -->|"fail"| D["DuckDuckGo Search<br/><i>(fallback)</i>"]
-    D -->|"fail"| F["Plain response without tools<br/><i>(final fallback)</i>"]
-
-    style L fill:#c8e6c9,stroke:#2e7d32
-    style D fill:#fff9c4,stroke:#f9a825
-    style F fill:#ffecb3,stroke:#f57c00
-```
-
-### Tool Execution Failure
-
-```python
-# Keep tool failures explicit so the main model does not invent results.
-# Do not append keyword-selected tools after a successful semantic routing result.
-tool_results.append({"tool": tool_name, "error": public_error})
-```
-
----
-
-## Extensibility
-
-### Adding a New Cog
-
-```python
-# cogs/my_new_cog.py
-class MyNewCog(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
-    
-    @commands.command()
-    async def my_command(self, ctx):
-        await ctx.send("Hello!")
-
-# main.py → add to cog_list
-await bot.load_extension("cogs.my_new_cog")
-```
-
-### Adding a New Tool
-
-```python
-# cogs/tools_cog.py
-async def my_new_tool(self, param1: str) -> dict:
-    """New tool description"""
-    result = await some_api_call(param1)
-    return {"result": result}
-
-# Add the tool name/parameters to IntentAnalyzer's routing contract and allowlist.
-# The routing LLM makes normal semantic choices; edit keywords only for outage fallback.
-```
-
-### Adding a New Embedding Source
-
-```python
-# emb_config.json
-{
-  "kakao_servers": [
-    {
-      "server_id": "new_source_123",
-      "db_path": "database/new_source_embeddings.db",
-      "label": "New Data Source"
-    }
-  ]
-}
-```
-
----
-
-## Deployment Architecture
-
-```mermaid
-graph TB
-    subgraph DevEnv["🖥️ Development (macOS)"]
-        Dev["GPU Workstation<br/>CUDA 11.8"]
-    end
-
-    subgraph ProdServer["☁️ Production Server (Linux CPU)"]
-        Screen["screen session"]
-        Bot["Bot Process<br/>main.py"]
-        VENV["Python venv"]
-    end
-
-    subgraph Cloud["☁️ Cloud Services"]
-        TiDB["TiDB Cloud<br/>ap-northeast-1"]
-        LLM_API["CometAPI"]
-    end
-
-    Dev -->|"git push"| Repo["GitHub"]
-    ProdServer -->|"git pull"| Repo
-    Screen --> Bot
-    VENV --> Bot
-    Bot -->|"PyMySQL :4000"| TiDB
-    Bot -->|"HTTPS"| LLM_API
-
-    subgraph Block["/mnt/block-storage/masamong/"]
-        Code["app code"]
-        Configs["tmp/server_config/"]
-        Logs["logs/"]
-    end
-
-    Bot --> Block
-```
-
----
-
-## Security Considerations
-
-### 1. Mention Gate
-
-- Auto-injected mention policy in all prompts
-- Double-checked at code level
-
-### 2. API Key Management
-
-```python
-# ❌ No hardcoding
-GEMINI_API_KEY = "AIza..."
-
-# ✅ Environment variables
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-```
-
-### 3. Rate Limiting
-
-```python
-# DB-based API call limit
-async def check_rate_limit(api_type: str) -> bool:
-    recent_calls = await db.count_recent_calls(
-        api_type, 
-        window_minutes=60
-    )
-    return recent_calls < config.RPM_LIMIT
-```
-
-### 4. Input Validation
-
-```python
-# User input sanitization
-cleaned_query = re.sub(r'[<>\"\'`]', '', user_query)
-```
-
----
-
-## Monitoring & Observability
-
-### Logging Layers
-
-```mermaid
-graph TB
-    subgraph L1["Level 1: Console"]
-        C["INFO+<br/>Bot start/stop, Cog loading, key events"]
-    end
-
-    subgraph L2["Level 2: File"]
-        F1["discord_logs.txt<br/>DEBUG+"]
-        F2["error_logs.txt<br/>Errors only"]
-    end
-
-    subgraph L3["Level 3: Discord"]
-        D["#logs channel<br/>Discord embed logs"]
-    end
-
-    subgraph L4["Level 4: DB"]
-        DB["analytics_log<br/>Operational metrics"]
-    end
-
-    L1 --> L2 --> L3 --> L4
-```
-
-### Metrics Collection
-
-```python
-# analytics_log table
-{
-  "event_type": "AI_INTERACTION",
-  "details": {
-    "model_used": "deepseek-v4-flash",
-    "rag_hits": 3,
-    "latency_ms": 1250,
-    "tools_used": ["get_weather"],
-    "self_score": 0.92
-  }
-}
-```
-
----
-
-## Deployment Considerations
-
-### Low-end Server
-
-**Recommended specs**:
-- CPU: 2 Core
-- RAM: 2 GB
-- Disk: 5 GB
-
-**Optimization**:
-```env
-AI_MEMORY_ENABLED=false
-RERANK_ENABLED=false
-SEARCH_CHUNKING_ENABLED=false
-CONVERSATION_WINDOW_SIZE=3
-```
-
-### High-performance Server
-
-**Recommended specs**:
-- CPU: 4+ Core
-- RAM: 8 GB+
-- Disk: 20 GB+
-- GPU: Optional (CUDA 11.8+)
-
-**Optimization**:
-```env
-AI_MEMORY_ENABLED=true
-RERANK_ENABLED=true
-SEARCH_CHUNKING_ENABLED=true
-LOCAL_EMBEDDING_DEVICE=cuda
-BM25_AUTO_REBUILD_ENABLED=true
-```
-
----
-
-## References
-
-| Document | Content |
-|----------|---------|
-| [UML_SPEC.md](UML_SPEC.ko.md) | Detailed UML diagrams & technical analysis |
-| [README.en.md](README.en.md) | English project overview |
-| [QUICKSTART.md](QUICKSTART.md) | 5-minute quick start guide |
-| [Discord.py](https://discordpy.readthedocs.io/) | Discord.py official docs |
-| [Google Gemini API](https://ai.google.dev/) | Gemini API |
-| [SentenceTransformers](https://www.sbert.net/) | Embedding models |
-| [SQLite FTS5](https://www.sqlite.org/fts5.html) | Full-text search |
-
----
-
-*Last updated: 2026-04-30*
+A production verification also checks the selected env, release SHA, database
+name, required Cogs, LLM lanes, BM25-disabled setting, scheduler ownership,
+service state, and recent error logs.

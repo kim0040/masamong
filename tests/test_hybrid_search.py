@@ -184,6 +184,38 @@ def test_identical_memory_blocks_are_deduplicated_without_source_ids():
     assert [entry["candidate_id"] for entry in selected] == ["first", "other"]
 
 
+def test_embedding_and_bm25_for_same_message_merge_into_one_candidate(monkeypatch):
+    monkeypatch.setattr(config, "SEARCH_QUERY_EXPANSION_ENABLED", False)
+    engine = HybridSearchEngine(DummyDiscordStore(), None, None)
+    candidates = {}
+
+    engine._merge_candidate(
+        candidates,
+        {
+            "id": "discord:memory-1",
+            "message_id": 10,
+            "similarity": 0.7,
+            "message": "김재원 부산 여행",
+        },
+        source="embedding",
+        rank=0,
+    )
+    engine._merge_candidate(
+        candidates,
+        {
+            "id": "bm25:10",
+            "message_id": 10,
+            "bm25_score": 0.57,
+            "message": "김재원 부산 여행",
+        },
+        source="bm25",
+        rank=0,
+    )
+
+    assert list(candidates) == ["message:10"]
+    assert candidates["message:10"]["sources"] == {"embedding", "bm25"}
+
+
 @pytest.mark.asyncio
 async def test_deep_search_reads_structured_and_raw_discord_embeddings(monkeypatch):
     monkeypatch.setattr(config, "SEARCH_QUERY_EXPANSION_ENABLED", False)

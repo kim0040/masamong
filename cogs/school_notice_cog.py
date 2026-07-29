@@ -1640,6 +1640,13 @@ class SchoolNoticeCog(commands.Cog):
             await self.process_due_deliveries()
         except Exception:
             # tasks.loop 자체가 멈추지 않게 하되 다음 tick도 같은 유한 batch다.
+            try:
+                await self.bot.db.rollback()
+            except Exception:
+                logger.critical(
+                    "학교 공지 scheduler 실패 후 rollback도 실패했습니다.",
+                    exc_info=True,
+                )
             logger.error("학교 공지 전달 scheduler tick 실패", exc_info=True)
 
     @delivery_task.before_loop

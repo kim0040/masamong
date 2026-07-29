@@ -1191,6 +1191,22 @@ def test_explicit_profile_rejects_placeholder_credentials(tmp_path):
     assert "placeholder" in result.stderr
 
 
+def test_explicit_profile_requires_image_key_when_image_feature_is_enabled(
+    tmp_path,
+):
+    profile_path = _profile_env(tmp_path)
+    with profile_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            "\nCOMETAPI_IMAGE_ENABLED=true"
+            "\nCOMETAPI_IMAGE_API_KEY="
+        )
+
+    result = _boot(profile_path)
+
+    assert result.returncode != 0
+    assert "COMETAPI_IMAGE_API_KEY" in result.stderr
+
+
 def test_explicit_profile_allows_missing_key_for_disabled_cog(tmp_path):
     # key가 없는 인스턴스는 Cog를 명시적으로 빼는 것이 정직한 표현이다.
     profile_path = _profile_env(tmp_path)

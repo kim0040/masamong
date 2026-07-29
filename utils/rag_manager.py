@@ -191,6 +191,14 @@ class RAGManager:
             await self._update_conversation_windows(message)
             await self.db.commit()
         except Exception as e:
+            try:
+                await self.db.rollback()
+            except Exception:
+                logger.critical(
+                    "대화 기록 저장 실패 후 rollback도 실패했습니다.",
+                    exc_info=True,
+                    extra={"guild_id": guild_id},
+                )
             logger.error(f"대화 기록 저장 중 DB 오류: {e}", exc_info=True, extra={'guild_id': guild_id})
 
     async def _summarize_content(self, text: str) -> str:

@@ -161,6 +161,7 @@ LLM_CALL_TIMEOUT_SECONDS=120
 EMBEDDING_MAX_CONCURRENCY=1
 TIDB_STARTER_FREE_PLAN_MODE=true
 TOKENIZERS_PARALLELISM=false
+BM25_AUTO_REBUILD_ENABLED=false
 ```
 
 ## Development
@@ -181,8 +182,10 @@ reject it):
 .venv/bin/python scripts/audit_memory_quality_readonly.py --expected-profile masamo --expected-db masamong
 ```
 
-Live smoke scripts (`scripts/smoke_*.py`) each spend at most one real API call
-and are deliberately excluded from the offline suite.
+Live smoke scripts (`scripts/smoke_*.py`) can spend real provider calls and are
+deliberately excluded from the offline suite. Read each script's `--help` and
+explicit call budget before running it; the semantic conversation smoke covers
+multiple scenarios rather than a single call.
 
 ## Documentation
 
@@ -193,7 +196,7 @@ and are deliberately excluded from the offline suite.
 | [UML_SPEC.ko.md](docs/UML_SPEC.ko.md) · [en](docs/UML_SPEC.en.md) | Class/sequence diagrams |
 | [INSTANCE_SEPARATION.ko.md](docs/INSTANCE_SEPARATION.ko.md) | Masamo/General boundary and cutover |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Migrations, systemd timers, rollback |
-| [SETTINGS_GUIDE.md](docs/SETTINGS_GUIDE.md) | Every configuration key |
+| [SETTINGS_GUIDE.md](docs/SETTINGS_GUIDE.md) | Operational settings and profile examples |
 | [SCHOOL_NOTICE.ko.md](docs/SCHOOL_NOTICE.ko.md) | School-notice design and contracts |
 | [TRANSFER_NOTICE.ko.md](docs/TRANSFER_NOTICE.ko.md) | Transfer-notice design |
 | [RAG_ANALYSIS.ko.md](docs/RAG_ANALYSIS.ko.md) | Memory retrieval: what was measured and why it failed |

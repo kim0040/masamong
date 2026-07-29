@@ -137,7 +137,45 @@ def test_ranking_bonus_cannot_bypass_passive_semantic_gate(monkeypatch):
         }
     ]
 
-    assert engine._gate_by_relevance(entries, deep_search=False) == []
-    assert engine._gate_by_relevance(entries, deep_search=True) == entries, (
+    assert engine._gate_by_relevance("질문", entries, deep_search=False) == []
+    assert engine._gate_by_relevance("질문", entries, deep_search=True) == entries, (
         "명시적으로 과거 기억을 묻는 경우에는 별도의 완화된 관문을 쓴다."
     )
+
+
+def test_bm25_only_result_cannot_bypass_passive_semantic_gate(monkeypatch):
+    engine = _engine(monkeypatch, [])
+    entries = [
+        {
+            "combined_score": 0.57,
+            "semantic_similarity": 0.0,
+            "bm25_score": 0.57,
+            "lexical_score": 0.06,
+            "message": "안녕이라는 과거 메시지",
+        }
+    ]
+
+    assert engine._gate_by_relevance(
+        "안녕",
+        entries,
+        deep_search=False,
+    ) == []
+
+
+def test_explicit_memory_query_can_use_exact_bm25_fallback(monkeypatch):
+    engine = _engine(monkeypatch, [])
+    entries = [
+        {
+            "combined_score": 0.57,
+            "semantic_similarity": 0.0,
+            "bm25_score": 0.57,
+            "lexical_score": 0.06,
+            "message": "김재원은 부산 여행을 다녀왔다.",
+        }
+    ]
+
+    assert engine._gate_by_relevance(
+        "김재원이 누구야?",
+        entries,
+        deep_search=True,
+    ) == entries

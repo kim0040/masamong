@@ -99,7 +99,7 @@ $env:PYTHONPATH="."; python main.py
 |------|------|
 | **AI会話** | `@マサモン` メンションでLLM応答 (チャンネル別ペルソナ) |
 | **DM会話** | メンション不要の1:1会話 (5時間30回制限) |
-| **メモリ / RAG** | ハイブリッド検索 (埋め込み + BM25 + RRF) |
+| **メモリ / RAG** | スコープ分離した意味埋め込み + TiDBベクトル検索 |
 | **天気** | KMA気象庁 リアルタイム/週間予報 + 地震通知 + `!날씨` |
 | **金融** | 株式(US/KR)、為替 — Finnhub, yfinance, KRX, EximBank |
 | **Web検索** | リアルタイム検索 — Linkup API (主) / DuckDuckGo (代替) |
@@ -130,10 +130,12 @@ $env:PYTHONPATH="."; python main.py
 TiDB Cloud Starterでは`TIDB_STARTER_FREE_PLAN_MODE=true`を使用し、構造化メモリの
 候補読み取りを384件、拡張読み取りを768件に制限します。無料枠は行5GiB・列5GiB・
 月5,000万RUで、最終使用量はCloudの**Usage this month**を確認してください。
+低スペックの本番サーバーではBM25/FTS5を構築・検索しません。
+`BM25_AUTO_REBUILD_ENABLED=false`は明示プロファイルの必須条件です。
 
 [📘 詳細アーキテクチャ (English)](ARCHITECTURE.en.md) &nbsp;|&nbsp; [📗 詳細アーキテクチャ (한국어)](ARCHITECTURE.ko.md)
 
-[📐 UML仕様とダイアグラム](UML_SPEC.ko.md) — C4、コンポーネント、クラス、シーケンス、アクティビティ、状態、デプロイ、ER図 (全17種)
+[📐 UML仕様とダイアグラム](UML_SPEC.ko.md) — コンポーネント、クラス、シーケンス、状態、デプロイ図
 
 ---
 
@@ -162,9 +164,9 @@ MIT License — 詳細は [LICENSE](../LICENSE) を参照してください。
 
 | ドキュメント | 言語 | 内容 |
 |-------------|------|------|
-| [ARCHITECTURE.en.md](ARCHITECTURE.en.md) | English | システムアーキテクチャ詳細 (15図) |
-| [ARCHITECTURE.md](ARCHITECTURE.ko.md) | 한국어 | システムアーキテクチャ詳細 (15図) |
-| [UML_SPEC.md](UML_SPEC.ko.md) | 한국어 | UML分析 — C4, クラス, シーケンス, ER (17図) |
+| [ARCHITECTURE.en.md](ARCHITECTURE.en.md) | English | 現行システムのアーキテクチャ |
+| [ARCHITECTURE.md](ARCHITECTURE.ko.md) | 한국어 | 現行システムのアーキテクチャ |
+| [UML_SPEC.md](UML_SPEC.ko.md) | 한국어 | 現行ランタイムのUMLとシーケンス |
 | [../README.md](../README.md) | English | 英語README |
 | [README.ko.md](README.ko.md) | 한국어 | 韓国語README |
 

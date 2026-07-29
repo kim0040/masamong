@@ -120,9 +120,11 @@ def _direct_config_value(key: str, default: str) -> str:
 # 로케일 시스템 초기화 (다국어 지원)
 from utils.locale import msg as _locale_msg, SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE
 
-# [NEW] Stock Config (yfinance)
-USE_YFINANCE = True
-YFINANCE_CACHE_TTL = 600 # 10분 캐시
+# 주식 제공자는 프로필별로 명시적으로 끌 수 있다. 설정 헬퍼 선언 전 구간이므로
+# 문자열을 직접 엄격하게 해석하고, 모호한 값은 활성화하지 않는다.
+USE_YFINANCE = str(
+    _direct_config_value("USE_YFINANCE", "true")
+).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 # config.json 메모리 캐시 (매 호출마다 디스크 I/O 방지)
 _CONFIG_JSON_CACHE: dict | None = None
@@ -2419,6 +2421,12 @@ if REQUIRE_EXPLICIT_PROFILE:
         _linkup_problem = _credential_problem(LINKUP_API_KEY)
         if _linkup_problem:
             _credential_errors.append(f"LINKUP_API_KEY ({_linkup_problem})")
+    if COMETAPI_IMAGE_ENABLED:
+        _image_problem = _credential_problem(COMETAPI_IMAGE_API_KEY)
+        if _image_problem:
+            _credential_errors.append(
+                f"COMETAPI_IMAGE_API_KEY ({_image_problem})"
+            )
     # 날씨 Cog를 올리면 명령과 정기 알림 모두 KMA key를 실제로 사용한다.
     # key가 없는 인스턴스는 MASAMONG_DISABLED_COGS로 Cog를 빼는 것이 정직하다.
     if "weather_cog" not in DISABLED_COGS:

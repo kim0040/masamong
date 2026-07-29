@@ -318,6 +318,13 @@ class FortuneCog(commands.Cog):
                 await self.bot.db.commit()
                 logger.info("Added 'birth_place' column to user_profiles")
         except Exception as e:
+            try:
+                await self.bot.db.rollback()
+            except Exception:
+                logger.critical(
+                    "운세 스키마 점검 실패 후 rollback도 실패했습니다.",
+                    exc_info=True,
+                )
             logger.error(f"Failed to check/add column: {e}")
         finally:
             self._ready = True
@@ -602,6 +609,13 @@ class FortuneCog(commands.Cog):
             )
              await self.bot.db.commit()
         except Exception as e:
+            try:
+                await self.bot.db.rollback()
+            except Exception:
+                logger.critical(
+                    "운세 컨텍스트 저장 실패 후 rollback도 실패했습니다.",
+                    exc_info=True,
+                )
             logger.error(f"운세 컨텍스트 저장 실패: {e}")
 
     @fortune.command(name='삭제')
@@ -641,6 +655,13 @@ class FortuneCog(commands.Cog):
                  "🗑️ 운세 정보와 구독 설정을 모두 지우고 동의도 철회했어요.\n평소 대화와 서버 기록은 그대로예요. 동의·철회 기록은 그대로 남아요."
              )
         except Exception as e:
+             try:
+                 await self.bot.db.rollback()
+             except Exception:
+                 logger.critical(
+                     "운세 정보 삭제 실패 후 rollback도 실패했습니다.",
+                     exc_info=True,
+                 )
              logger.error(f"운세 정보 삭제 중 오류: {e}", exc_info=True)
              await ctx.send("❌ 삭제 중 오류가 발생했어요.")
 
@@ -772,6 +793,13 @@ class FortuneCog(commands.Cog):
                  return
              await ctx.send(f"✅ 구독이 활성화됐어요! 매일 아침 `{time_str}`에 브리핑을 보내드릴게요.")
         except Exception as e:
+             try:
+                 await self.bot.db.rollback()
+             except Exception:
+                 logger.critical(
+                     "운세 구독 설정 실패 후 rollback도 실패했습니다.",
+                     exc_info=True,
+                 )
              logger.error(f"구독 설정 중 오류: {e}", exc_info=True)
              await ctx.send("❌ 설정 변경 중 오류가 발생했어요.")
 
@@ -794,6 +822,13 @@ class FortuneCog(commands.Cog):
              await self.bot.db.commit()
              await ctx.send("🔕 오늘의 운세 브리핑 구독이 취소됐어요. (등록된 정보는 그대로 남아요.)")
         except Exception as e:
+             try:
+                 await self.bot.db.rollback()
+             except Exception:
+                 logger.critical(
+                     "운세 구독 취소 실패 후 rollback도 실패했습니다.",
+                     exc_info=True,
+                 )
              logger.error(f"구독 취소 중 오류: {e}", exc_info=True)
              await ctx.send("❌ 구독 취소 중 오류가 발생했어요.")
 
@@ -2162,11 +2197,25 @@ class FortuneCog(commands.Cog):
                 timeout=_MORNING_TICK_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
+            try:
+                await self.bot.db.rollback()
+            except Exception:
+                logger.critical(
+                    "모닝 브리핑 시간초과 후 rollback도 실패했습니다.",
+                    exc_info=True,
+                )
             logger.error(
                 "모닝 브리핑 tick이 %s초 제한을 초과해 취소되었습니다.",
                 _MORNING_TICK_TIMEOUT_SECONDS,
             )
         except Exception as exc:
+            try:
+                await self.bot.db.rollback()
+            except Exception:
+                logger.critical(
+                    "모닝 브리핑 실패 후 rollback도 실패했습니다.",
+                    exc_info=True,
+                )
             logger.error(
                 "모닝 브리핑 tick 실패: %s",
                 exc,

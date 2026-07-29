@@ -35,6 +35,7 @@ async def test_market_snapshot_batches_indices_and_calculates_changes(monkeypatc
     assert result["region"] == "kr"
     assert captured["tickers"] == ["^KS11", "^KQ11"]
     assert captured["kwargs"]["threads"] is False
+    assert captured["kwargs"]["timeout"] == 10
     assert len(result["indices"]) == 2
 
     kospi = result["indices"][0]

@@ -80,6 +80,13 @@ class MaintenanceCog(commands.Cog):
             )
             logger.info("정기 RAG 아카이빙 작업을 성공적으로 완료했습니다.")
         except Exception as e:
+            try:
+                await self.bot.db.rollback()
+            except Exception:
+                logger.critical(
+                    "정기 RAG 작업 실패 후 rollback도 실패했습니다.",
+                    exc_info=True,
+                )
             logger.error(f"정기 RAG 아카이빙 작업 중 예외가 발생했습니다: {e}", exc_info=True)
 
     @archive_loop.before_loop
@@ -184,6 +191,13 @@ class MaintenanceCog(commands.Cog):
              await self.bot.db.commit()
              await ctx.send(f"✅ 유저 {user_id}의 DM 제한 로그를 초기화했어요.")
         except Exception as e:
+             try:
+                 await self.bot.db.rollback()
+             except Exception:
+                 logger.critical(
+                     "DM 제한 초기화 실패 후 rollback도 실패했습니다.",
+                     exc_info=True,
+                 )
              await ctx.send(f"❌ 초기화 실패: {e}")
 
 async def setup(bot: commands.Bot):

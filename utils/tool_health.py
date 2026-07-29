@@ -55,6 +55,15 @@ class ToolHealthRegistry:
         state.open_until = 0.0
         state.probe_in_flight = False
 
+    def abandon_attempt(self, tool_name: str) -> None:
+        """호출 취소 시 half-open probe 점유만 해제합니다.
+
+        작업 취소는 provider의 성공/실패 신호가 아닙니다. 실패 횟수와 cooldown은
+        그대로 두되 ``probe_in_flight``를 반드시 풀어야 다음 실제 요청이 복구
+        확인을 이어갈 수 있습니다.
+        """
+        self._state(tool_name).probe_in_flight = False
+
     def record_failure(
         self,
         tool_name: str,
@@ -67,4 +76,3 @@ class ToolHealthRegistry:
         state.consecutive_failures += 1
         if state.consecutive_failures >= self.failure_threshold:
             state.open_until = current + self.cooldown_seconds
-

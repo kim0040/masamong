@@ -1,3 +1,4 @@
+import asyncio
 import time
 
 import pytest
@@ -192,3 +193,132 @@ async def test_dirty_transaction_is_committed_before_stale_reconnect(monkeypatch
 
     assert underlying.commit_calls == 1
     assert db._transaction_dirty is False
+
+
+@pytest.mark.asyncio
+async def test_concurrent_task_cannot_enter_between_write_and_commit(monkeypatch):
+    class FakeConnection:
+        def commit(self):
+            return None
+
+    db = _connection()
+    db._conn = FakeConnection()
+    events: list[str] = []
+    first_write_done = asyncio.Event()
+    allow_commit = asyncio.Event()
+
+    def fake_execute(sql, _params):
+        events.append(sql)
+        return BufferedCursor([], rowcount=1)
+
+    monkeypatch.setattr(db, "_execute_sync", fake_execute)
+
+    async def writer():
+        await db._execute_buffered("UPDATE guild_settings SET ai_enabled = 1")
+        first_write_done.set()
+        await allow_commit.wait()
+        await db.commit()
+
+    async def reader():
+        await first_write_done.wait()
+        await db._execute_buffered("SELECT 1")
+
+    writer_task = asyncio.create_task(writer())
+    reader_task = asyncio.create_task(reader())
+    await first_write_done.wait()
+    await asyncio.sleep(0)
+
+    assert events == ["UPDATE guild_settings SET ai_enabled = 1"]
+    allow_commit.set()
+    await asyncio.gather(writer_task, reader_task)
+    assert events == [
+        "UPDATE guild_settings SET ai_enabled = 1",
+        "SELECT 1",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_abandoned_write_is_rolled_back_and_gate_released(monkeypatch):
+    class FakeConnection:
+        def __init__(self):
+            self.rollback_calls = 0
+
+        def rollback(self):
+            self.rollback_calls += 1
+
+    db = _connection()
+    underlying = FakeConnection()
+    db._conn = underlying
+    monkeypatch.setattr(
+        db,
+        "_execute_sync",
+        lambda _sql, _params: BufferedCursor([], rowcount=1),
+    )
+
+    async def abandoned_writer():
+        await db._execute_buffered("UPDATE guild_settings SET ai_enabled = 1")
+
+    await asyncio.create_task(abandoned_writer())
+    for _ in range(20):
+        if underlying.rollback_calls and db._transaction_owner is None:
+            break
+        await asyncio.sleep(0)
+
+    assert underlying.rollback_calls == 1
+    assert db._transaction_dirty is False
+    assert db._transaction_owner is None
+    assert db._transaction_gate.locked() is False
+
+
+@pytest.mark.asyncio
+async def test_transaction_owner_close_releases_gate(monkeypatch):
+    class FakeConnection:
+        def __init__(self):
+            self.close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+
+    db = _connection()
+    underlying = FakeConnection()
+    db._conn = underlying
+    monkeypatch.setattr(
+        db,
+        "_execute_sync",
+        lambda _sql, _params: BufferedCursor([], rowcount=1),
+    )
+
+    await db._execute_buffered("UPDATE guild_settings SET ai_enabled = 1")
+    assert db._transaction_owner is asyncio.current_task()
+    assert db._transaction_gate.locked() is True
+
+    await db.close()
+
+    assert underlying.close_calls == 1
+    assert db._conn is None
+    assert db._transaction_dirty is False
+    assert db._transaction_owner is None
+    assert db._transaction_gate.locked() is False
+
+
+@pytest.mark.asyncio
+async def test_repeated_transactions_register_one_task_done_callback(monkeypatch):
+    class FakeConnection:
+        def commit(self):
+            return None
+
+    db = _connection()
+    db._conn = FakeConnection()
+    monkeypatch.setattr(
+        db,
+        "_execute_sync",
+        lambda _sql, _params: BufferedCursor([], rowcount=1),
+    )
+
+    for _ in range(10):
+        await db._execute_buffered("UPDATE guild_settings SET ai_enabled = 1")
+        await db.commit()
+
+    assert list(db._transaction_owner_callbacks) == [asyncio.current_task()]
+    assert db._transaction_owner is None
+    assert db._transaction_gate.locked() is False

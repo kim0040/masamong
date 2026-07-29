@@ -1,6 +1,6 @@
 [Unit]
 Description=Masamong school notice collection batch
-Documentation=https://github.com/lastdefiance20/Masamong
+Documentation=https://github.com/kim0040/masamong
 Wants=network-online.target
 After=network-online.target
 ConditionPathExists=/etc/masamong/masamo.env
