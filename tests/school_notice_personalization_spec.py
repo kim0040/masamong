@@ -97,3 +97,36 @@ def test_general_school_board_still_uses_grade_and_interests():
 
     assert result["band"] != "hidden"
     assert any("관심 분야 일치" in reason for reason in result["reasons"])
+
+
+def test_likely_other_degree_notice_is_unknown_and_hidden():
+    result = score_notice(
+        profile=_profile(),
+        profile_version=1,
+        notice_id=1,
+        notice_payload={
+            "title": "대학원생 연구지원 신청 안내",
+            "body_text": "대학원생을 위한 연구지원 신청 안내입니다.",
+            "candidate": {
+                "title": "대학원생 연구지원 신청 안내",
+                "source_board": "일반 공지사항",
+                "source_tags": [],
+            },
+        },
+        analysis={
+            "topics": ["장학", "연구"],
+            "audiences": ["대학원생"],
+            "actions": ["신청"],
+            "eligibility_rules": [],
+            "dates": [],
+            "required": True,
+            "urgency": "high",
+        },
+        feedback_events=[],
+        today=TODAY,
+    )
+
+    assert result["eligibility"] == "UNKNOWN"
+    assert result["score"] <= 39
+    assert result["band"] == "hidden"
+    assert any("다른 학위 과정" in reason for reason in result["reasons"])

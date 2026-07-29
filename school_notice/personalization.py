@@ -657,6 +657,13 @@ def score_notice(
         # 학교 공통 공지는 계속 받을 수 있다.
         score = min(score, 39)
         reasons.append("전용 게시판 소속을 확인할 수 없어 자동 알림 제외")
+    if eligibility == "LIKELY_INELIGIBLE":
+        # 코어 내부의 약한 audience 추론을 전달 계약의 확정 자격 판정으로
+        # 내보내지 않는다. 확인이 필요한 UNKNOWN으로 낮추고 자동 DM에서는
+        # 제외해 다른 학위 과정 공지가 섞이지 않게 한다.
+        eligibility = "UNKNOWN"
+        score = min(score, 39)
+        reasons.append("다른 학위 과정 대상일 가능성이 있어 자동 알림 제외")
 
     score = max(0.0, min(100.0, round(score, 2)))
     if expired and not required:

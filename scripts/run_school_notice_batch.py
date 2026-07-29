@@ -1074,6 +1074,7 @@ def summarize_run(
     process_failed = returncode != 0
     summary: dict = {
         "status": "failed" if process_failed else "succeeded",
+        "failure_stage": "process_exit" if process_failed else None,
         "collection_status": None,
         "may_include_stale": False,
         "item_count": 0,
@@ -1089,6 +1090,7 @@ def summarize_run(
         summary["llm_calls"] = payload.get("llm_calls")
     except ValueError:
         summary["status"] = "failed"
+        summary["failure_stage"] = "run_report_contract"
 
     try:
         digest = load_digest(
@@ -1100,6 +1102,7 @@ def summarize_run(
     except DigestContractError:
         # digest를 읽지 못하면 봇이 전달할 수 없으므로 성공으로 볼 수 없다.
         summary["status"] = "failed"
+        summary["failure_stage"] = "digest_contract"
         return summary
 
     if allowed_source_ids is not None:
@@ -1113,6 +1116,7 @@ def summarize_run(
             )
         ):
             summary["status"] = "failed"
+            summary["failure_stage"] = "source_boundary"
             return summary
         emitted_sources = {item.source_id for item in digest.items}
         if digest.collection_health is not None:
@@ -1123,6 +1127,7 @@ def summarize_run(
             # 외부 코어가 --source 경계를 무시한 산출물을 내더라도 다른 학교
             # 공지를 사용자 digest 경로에 공개하지 않는다.
             summary["status"] = "failed"
+            summary["failure_stage"] = "source_boundary"
             return summary
 
     summary["item_count"] = len(digest.visible_items())
@@ -1195,9 +1200,10 @@ def _remaining_timeout(
     return max(0.1, min(float(operation_limit_seconds), remaining))
 
 
-def _failed_summary() -> dict:
+def _failed_summary(reason: str = "internal") -> dict:
     return {
         "status": "failed",
+        "failure_stage": reason,
         "collection_status": None,
         "may_include_stale": False,
         "item_count": 0,
@@ -1397,7 +1403,7 @@ async def _run_profile(
     try:
         selected_source_config, source_ids = select_profile_sources(args, profile)
     except SourceSelectionError:
-        return _failed_summary(), 0, len(feedback_entries)
+        return _failed_summary("source_selection"), 0, len(feedback_entries)
 
     with tempfile.TemporaryDirectory(prefix="run-", dir=work_root) as temporary:
         temporary_root = Path(temporary)
@@ -1433,7 +1439,11 @@ async def _run_profile(
         if feedback_failed:
             # 사용자가 이미 거절/완료로 표시한 공지를 옛 선호 상태로 다시
             # 보내는 것보다 해당 프로필 하루 실행을 실패로 남겨 재시도한다.
-            return _failed_summary(), feedback_succeeded, feedback_failed
+            return (
+                _failed_summary("feedback_apply"),
+                feedback_succeeded,
+                feedback_failed,
+            )
 
         # feedback subprocess 동안 철회/프로필 변경이 일어났다면 개인정보가
         # 담긴 daily profile을 외부 core에 넘기지 않고 temp를 즉시 정리한다.
@@ -1468,7 +1478,7 @@ async def _run_profile(
         except BatchDeadlineExceeded:
             raise
         except (OSError, subprocess.TimeoutExpired):
-            summary = _failed_summary()
+            summary = _failed_summary("core_subprocess")
 
         # daily가 최대 수 분 걸리는 동안 철회/삭제/프로필 변경이 생기면 이미
         # 생성된 staged digest를 사용자 경로에 공개하거나 run으로 기록하지 않는다.
@@ -1482,7 +1492,7 @@ async def _run_profile(
                     run_date,
                 )
             except (OSError, ValueError):
-                summary = _failed_summary()
+                summary = _failed_summary("artifact_publish")
         return summary, feedback_succeeded, feedback_failed
 
 
@@ -1637,6 +1647,11 @@ async def run_batch(args: argparse.Namespace) -> int:
                         f"collection={summary['collection_status']} "
                         f"items={summary['item_count']} "
                         f"stale={summary['may_include_stale']}"
+                        + (
+                            f" failure={summary.get('failure_stage')}"
+                            if summary["status"] == "failed"
+                            else ""
+                        )
                     )
                     if summary["status"] == "failed":
                         exit_code = 2
