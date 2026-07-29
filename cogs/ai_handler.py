@@ -2187,6 +2187,16 @@ class AIHandler(commands.Cog):
         )
 
     @staticmethod
+    def _final_reasoning_progress_text(reasoning_level: Any) -> str:
+        """최종 모델의 실제 추론 수준에 맞춰 Discord 진행 문구를 고릅니다."""
+        if str(reasoning_level or "").strip().lower() == "high":
+            return (
+                "🧠 마사몽이 여러 내용을 살펴보며 "
+                "조금 더 오래 고민 중이에요..."
+            )
+        return "✍️ 수집한 정보를 바탕으로 답변을 작성 중이에요..."
+
+    @staticmethod
     def _format_market_snapshot_fallback(
         snapshot: dict[str, Any] | None,
         *,
@@ -3003,7 +3013,9 @@ class AIHandler(commands.Cog):
 
             # 답변 작성 단계
             await progress.update(
-                "✍️ 수집한 정보를 바탕으로 답변을 작성 중이에요..."
+                self._final_reasoning_progress_text(
+                    getattr(routing_decision, "reasoning_level", None)
+                )
             )
 
             # 도구 결과에서 출처 URL 추출

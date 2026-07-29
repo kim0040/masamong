@@ -92,6 +92,8 @@ provider 장애 fallback도 같은 기본값을 사용합니다. 이 값은 현�
 이름만 있는 신원 질문, 오래된 대화 압축이 필요한 요청, 두 도구 결과를 함께
 종합하는 요청은 이미 확인된 구조적 복잡성을 근거로 `high` 후조건을 적용합니다.
 특정 이름이나 주제 키워드 목록을 사용하지 않습니다.
+`high` 요청에서는 Discord 진행 문구도 “조금 더 오래 고민 중”으로 바뀝니다.
+상태 표시만 달라지며 별도 API 호출은 없습니다.
 `LLM_DYNAMIC_REASONING_ENABLED=false`이면 기존
 `LLM_MAIN_PRIMARY_REASONING_EFFORT` 고정 설정으로 돌아갑니다.
 

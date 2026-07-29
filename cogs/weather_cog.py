@@ -140,6 +140,14 @@ class WeatherCog(commands.Cog):
         try:
             day_names = ["오늘", "내일", "모레"]
             day_name = day_names[day_offset] if 0 <= day_offset < len(day_names) else f"{day_offset}일 후"
+            normalized_query = str(user_query or "").lower()
+
+            async def fetch_optional(coro):
+                try:
+                    return await asyncio.wait_for(coro, timeout=8)
+                except Exception:
+                    return None
+
             if day_offset == 0:
                 current_weather_data, ultra_short_data, short_term_data = await asyncio.gather(
                     weather_utils.get_current_weather_from_kma(self.bot.db, nx, ny),
@@ -158,15 +166,8 @@ class WeatherCog(commands.Cog):
                 )
                 formatted_forecast = weather_utils.format_short_term_forecast(short_term_data, day_name, target_day_offset=0)
 
-                async def fetch_optional(coro):
-                    try:
-                        return await asyncio.wait_for(coro, timeout=8)
-                    except Exception:
-                        return None
-
                 # 국가 개황·영향예보·태풍은 모든 일상 조회에 필요한 자료가 아니다.
                 # 질문이 명시한 경우에만 호출하고 응답 캐시는 다른 사용자와 공유한다.
-                normalized_query = str(user_query or "").lower()
                 optional_names: list[str] = []
                 optional_calls: list = []
                 if any(
@@ -233,7 +234,20 @@ class WeatherCog(commands.Cog):
                 if isinstance(forecast_data, dict) and forecast_data.get("error"): return None, forecast_data.get("message", config.MSG_WEATHER_FETCH_ERROR)
                 if forecast_data is None: return None, config.MSG_WEATHER_FETCH_ERROR
                 formatted_forecast = weather_utils.format_short_term_forecast(forecast_data, day_name, target_day_offset=day_offset)
-                return f"[{location_name} 날씨 정보] {formatted_forecast}", None
+                parts = [f"[{location_name} 날씨 정보]"]
+                # "내일 태풍"처럼 날짜가 붙은 질문도 현재 태풍 분석·공식 전망을
+                # 빠뜨리지 않는다. 명시 질문에만 조회하며 결과는 15분 캐시된다.
+                if "태풍" in normalized_query:
+                    typhoon = await fetch_optional(
+                        weather_utils.get_typhoons(
+                            self.bot.db,
+                            timeout=5.0,
+                        )
+                    )
+                    if typhoon:
+                        parts.append(f"🌀 **태풍 정보:** {typhoon}")
+                parts.append(formatted_forecast)
+                return "\n".join(parts), None
         except Exception as e:
             logger.error(f"날씨 정보 포맷팅 중 오류: {e}", exc_info=True)
             return None, config.MSG_WEATHER_FETCH_ERROR
