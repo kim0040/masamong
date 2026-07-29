@@ -6,7 +6,7 @@ import pytest
 
 import config
 from cogs.ai_handler import AIHandler
-from utils.llm_client import LLMClient, LLMProviderTimeoutError
+from utils.llm_client import LLMClient
 
 
 def _handler() -> AIHandler:
@@ -210,23 +210,27 @@ def test_recent_channel_history_keeps_speaker_identity_separate(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_image_prompt_timeout_uses_raw_prompt_without_direct_llm_fallback():
+async def test_image_prompt_preserves_korean_without_prompt_llm():
     handler = _handler()
     handler.use_cometapi = True
-    direct_calls = 0
+    handler._debug = lambda *_args, **_kwargs: None
+    handler.llm_client = SimpleNamespace(
+        truncate_for_debug=lambda value: str(value)[:200]
+    )
 
-    async def timed_out(*_args, **kwargs):
-        assert kwargs["stop_on_bounded_failure"] is True
-        raise LLMProviderTimeoutError("timed out")
+    async def unexpected_llm(*_args, **_kwargs):
+        raise AssertionError("이미지 프롬프트 구성에 LLM을 호출하면 안 됩니다")
 
-    async def unexpected_direct(*_args, **_kwargs):
-        nonlocal direct_calls
-        direct_calls += 1
-        raise AssertionError("direct fallback must not run after timeout")
+    handler._cometapi_generate_content = unexpected_llm
+    prompt = await handler._generate_image_prompt(
+        "파란 고양이를 수채화로 그려줘",
+        {},
+        rag_context="고양이는 초록색 목걸이를 좋아한다.",
+        interpreted_query="파란 고양이 수채화",
+    )
 
-    handler._cometapi_generate_content = timed_out
-    handler._can_use_direct_gemini = lambda: True
-    handler._safe_generate_content = unexpected_direct
-
-    assert await handler._generate_image_prompt("파란 고양이", {}) is None
-    assert direct_calls == 0
+    assert prompt is not None
+    assert "파란 고양이를 수채화로 그려줘" in prompt
+    assert "초록색 목걸이" in prompt
+    assert "exactly one final" in prompt
+    assert "collage" in prompt

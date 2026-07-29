@@ -87,7 +87,11 @@ def test_interaction_analytics_omits_message_content_by_default(monkeypatch):
         trace_id="trace-1",
         user_query="민감한 원문 메시지",
         final_response="민감한 응답",
-        tool_plan=[{"tool_name": "weather"}, {"tool_name": "weather"}],
+        tool_plan=[
+            {"tool_name": "weather"},
+            {"tool_name": "weather"},
+            {"tool_to_use": "generate_image"},
+        ],
     )
 
     assert details == {
@@ -97,7 +101,7 @@ def test_interaction_analytics_omits_message_content_by_default(monkeypatch):
         "trace_id": "trace-1",
         "user_query_chars": len("민감한 원문 메시지"),
         "final_response_chars": len("민감한 응답"),
-        "tools": ["weather"],
+        "tools": ["weather", "generate_image"],
     }
 
 

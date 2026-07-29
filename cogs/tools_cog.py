@@ -9,6 +9,7 @@ AI 에이전트가 외부 세계와 상호작용하기 위해 사용하는 '도�
 
 from __future__ import annotations
 
+import base64
 import discord
 from discord.ext import commands
 import re
@@ -23,6 +24,7 @@ from utils.api_handlers import exchange_rate, finnhub, kakao, krx
 from utils import db as db_utils
 from utils import coords as coords_utils
 from utils import weather as weather_utils
+from utils.constants import contains_nsfw
 from utils.tool_health import ToolHealthRegistry, ToolTemporarilyUnavailable
 from .weather_cog import WeatherCog
 
@@ -610,10 +612,6 @@ class ToolsCog(commands.Cog):
 
     # --- 이미지 생성 (CometAPI Gemini native) --- #
     
-    # NSFW 차단 키워드 목록 (선정적/혐오/폭력 콘텐츠 차단)
-    # utils/constants.py의 NSFW_KEYWORDS를 사용하여 중복 제거
-    from utils.constants import NSFW_KEYWORDS as _NSFW_BLOCKED_KEYWORDS
-    
     # 안전 Negative Prompt (이미지 품질 향상용)
     _SAFETY_NEGATIVE_PROMPT = (
         "nsfw, nude, naked, sexual, explicit, "
@@ -629,12 +627,87 @@ class ToolsCog(commands.Cog):
         """
         if not prompt:
             return False, "empty_prompt"
-        
-        prompt_lower = prompt.lower()
-        for keyword in self._NSFW_BLOCKED_KEYWORDS:
-            if keyword in prompt_lower:
-                return False, keyword
+
+        if contains_nsfw(prompt):
+            return False, "blocked_content"
         return True, None
+
+    @staticmethod
+    def _select_final_inline_image(data: dict) -> dict | None:
+        """Gemini 응답에서 사용자에게 보낼 최종 이미지 한 장만 고릅니다.
+
+        Gemini 3 이미지 모델은 한 응답에 중간 사고 이미지와 최종 렌더를
+        함께 담을 수 있다. 첫 ``inlineData``를 고르면 미완성 시안이 전송될
+        수 있으므로, ``thought``가 아닌 마지막 이미지를 우선하고 없으면
+        전체 이미지 중 마지막 항목을 사용한다.
+        """
+        image_parts: list[tuple[dict, bool]] = []
+        for candidate in data.get("candidates", []):
+            if not isinstance(candidate, dict):
+                continue
+            content = candidate.get("content")
+            if not isinstance(content, dict):
+                continue
+            for part in content.get("parts", []):
+                if not isinstance(part, dict):
+                    continue
+                inline_data = part.get("inlineData")
+                if not isinstance(inline_data, dict):
+                    continue
+                mime_type = str(
+                    inline_data.get("mimeType") or ""
+                ).casefold()
+                encoded = inline_data.get("data")
+                if (
+                    isinstance(encoded, str)
+                    and encoded
+                    and mime_type
+                    in {
+                        "image/jpeg",
+                        "image/png",
+                        "image/webp",
+                    }
+                ):
+                    image_parts.append(
+                        (
+                            {
+                                "mime_type": mime_type,
+                                "encoded": encoded,
+                            },
+                            bool(part.get("thought")),
+                        )
+                    )
+
+        if not image_parts:
+            return None
+
+        non_thought_parts = [
+            image_part for image_part, is_thought in image_parts
+            if not is_thought
+        ]
+        selected = non_thought_parts[-1] if non_thought_parts else image_parts[-1][0]
+        return {
+            **selected,
+            "image_part_count": len(image_parts),
+            "thought_image_count": sum(
+                1 for _image_part, is_thought in image_parts if is_thought
+            ),
+        }
+
+    @staticmethod
+    def _image_matches_mime(image_binary: bytes, mime_type: str) -> bool:
+        """선언된 MIME과 실제 이미지 헤더가 일치하는지 확인합니다."""
+        if mime_type == "image/png":
+            return image_binary.startswith(b"\x89PNG\r\n\x1a\n")
+        if mime_type == "image/jpeg":
+            return image_binary.startswith(b"\xff\xd8\xff")
+        if mime_type == "image/webp":
+            return (
+                len(image_binary) >= 12
+                and image_binary.startswith(b"RIFF")
+                and image_binary[8:12] == b"WEBP"
+            )
+        return False
 
     async def generate_image(
         self,
@@ -902,48 +975,49 @@ class ToolsCog(commands.Cog):
                     if len(raw_response) > 18_000_000:
                         raise ValueError("이미지 API 응답이 허용 크기를 초과했습니다.")
                     data = json.loads(raw_response)
-                    image_binary = None
-                    mime_type = ""
+                    # 외부 URL을 재요청하지 않고 Gemini native inlineData만
+                    # 허용한다. 중간 사고 이미지가 여러 개면 최종 렌더 1장만
+                    # 선택하여 디스코드에 중복 첨부하지 않는다.
+                    selected_image = self._select_final_inline_image(data)
+                    if not selected_image:
+                        raise ValueError(
+                            "응답에서 유효한 이미지 데이터를 찾을 수 없습니다."
+                        )
 
-                    # Gemini native 응답의 inlineData만 허용한다. 외부 URL을
-                    # 재요청하지 않아 예기치 않은 host·크기의 2차 fetch가 없다.
-                    for candidate in data.get("candidates", []):
-                        for part in candidate.get("content", {}).get("parts", []):
-                            if "inlineData" not in part:
-                                continue
-                            import base64
+                    mime_type = str(selected_image["mime_type"])
+                    image_binary = base64.b64decode(
+                        selected_image["encoded"],
+                        validate=True,
+                    )
+                    image_part_count = int(
+                        selected_image["image_part_count"]
+                    )
+                    thought_image_count = int(
+                        selected_image["thought_image_count"]
+                    )
+                    if image_part_count > 1:
+                        logger.info(
+                            "공급자 이미지 파트 %d개 중 최종 1개 선택 "
+                            "(중간 사고 이미지=%d)",
+                            image_part_count,
+                            thought_image_count,
+                            extra=log_extra,
+                        )
 
-                            inline_data = part["inlineData"]
-                            mime_type = str(
-                                inline_data.get("mimeType") or ""
-                            ).casefold()
-                            image_b64 = inline_data.get("data")
-                            if (
-                                image_b64
-                                and mime_type
-                                in {
-                                    "image/jpeg",
-                                    "image/png",
-                                    "image/webp",
-                                }
-                            ):
-                                image_binary = base64.b64decode(
-                                    image_b64,
-                                    validate=True,
-                                )
-                                break
-                        if image_binary:
-                            break
-
-                    if image_binary and len(image_binary) <= 12_000_000:
+                    if (
+                        image_binary
+                        and len(image_binary) <= 12_000_000
+                        and self._image_matches_mime(image_binary, mime_type)
+                    ):
                         logger.info(f"이미지 생성 완료: {len(image_binary):,} bytes (Model: {model_name})", extra=log_extra)
                         return {
                             "image_data": image_binary,
                             "mime_type": mime_type,
                             "remaining": remaining_after_attempt,
                         }
-                    
-                    raise ValueError("응답에서 유효한 이미지 데이터를 찾을 수 없습니다.")
+                    raise ValueError(
+                        "응답 이미지의 크기 또는 파일 형식이 올바르지 않습니다."
+                    )
 
         except asyncio.TimeoutError:
             logger.error(

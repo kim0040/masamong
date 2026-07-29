@@ -368,7 +368,7 @@ do not match.
 | DM message | Private AI conversation, subject to DM and LLM limits |
 | `!메뉴`, `!도움` | Hierarchical category menu and complete text help; guild details are caller-only and DM-only actions are disabled |
 | `!날씨 [지역] [날짜]` | KMA observation, six-hour outlook, forecast, and active warnings |
-| `!이미지 <prompt>` | `gemini-3.1-flash-lite-image` generation with relevant memory and user/guild/global quota guards |
+| `!이미지 <prompt>` | One final `gemini-3.1-flash-lite-image` render grounded in the original prompt and relevant memory, with user/guild/global quota guards |
 | `!운세`, `!운세 상세` | Daily summary or detailed fortune |
 | `!운세 등록` | Consent-gated DM registration |
 | `!운세 구독 HH:MM` | Persistent morning briefing |
@@ -446,7 +446,11 @@ Image generation uses the Gemini-native
 `/v1beta/models/gemini-3.1-flash-lite-image:generateContent` contract and
 explicit 1K output. A mismatched model is rejected before quota reservation or
 network access. Provider attempts remain counted after the request begins,
-because a remote failure can still incur cost.
+because a remote failure can still incur cost. The original Korean request is
+sent directly without a separate translation-LLM round trip. When Gemini
+returns interim thought images alongside a final render, Masamong selects the
+last non-thought image and uploads exactly one attachment; a single-image
+request also bypasses the redundant final answer-model call.
 
 ## Verification
 
