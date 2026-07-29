@@ -208,6 +208,97 @@ async def test_semantic_router_no_tool_is_not_replaced_by_keyword_plan():
 
 
 @pytest.mark.asyncio
+async def test_market_news_router_cannot_skip_verified_market_tools():
+    handler = _build_handler_without_init()
+    handler.use_cometapi = True
+
+    async def _fake_fast(*_args, **_kwargs):
+        return (
+            '{"intent":"오늘의 주요 주식 시황과 이슈 확인",'
+            '"needs_memory":false,"requires_external_evidence":false,'
+            '"tools":[]}'
+        )
+
+    handler._cometapi_fast_generate_text = _fake_fast
+    decision = await handler._route_tools(
+        "오늘 중요한 주식 소식 알려줘",
+        {"trace_id": "market-missing-tools"},
+        history=[],
+    )
+
+    assert decision.requires_external_evidence is True
+    assert decision.needs_memory is False
+    assert [item["tool_to_use"] for item in decision.plan] == [
+        "get_market_snapshot",
+        "web_search",
+    ]
+    assert decision.plan[0]["parameters"]["region"] == "kr"
+    search_query = decision.plan[1]["parameters"]["query"]
+    assert "기준일:" in search_query
+    assert "거래소" in search_query
+    assert "커뮤니티" in search_query
+
+
+@pytest.mark.asyncio
+async def test_short_us_market_followup_uses_us_snapshot_even_if_router_only_searches():
+    handler = _build_handler_without_init()
+    handler.use_cometapi = True
+
+    async def _fake_fast(*_args, **_kwargs):
+        return (
+            '{"intent":"미국 주식 시장의 오늘 주요 흐름과 소식",'
+            '"needs_memory":true,"requires_external_evidence":true,'
+            '"tools":[{"tool":"web_search","params":{"query":"미국 증시 오늘"}}]}'
+        )
+
+    handler._cometapi_fast_generate_text = _fake_fast
+    decision = await handler._route_tools(
+        "미국은?",
+        {"trace_id": "us-followup"},
+        history=[
+            {
+                "role": "user",
+                "speaker": "질문자",
+                "is_current_user": True,
+                "parts": ["오늘 중요한 주식 소식 알려줘"],
+            }
+        ],
+    )
+
+    assert decision.needs_memory is False
+    assert [item["tool_to_use"] for item in decision.plan] == [
+        "get_market_snapshot",
+        "web_search",
+    ]
+    assert decision.plan[0]["parameters"]["region"] == "us"
+
+
+@pytest.mark.asyncio
+async def test_external_claim_verification_cannot_end_with_empty_tool_plan():
+    handler = _build_handler_without_init()
+    handler.use_cometapi = True
+
+    async def _fake_fast(*_args, **_kwargs):
+        return (
+            '{"intent":"여수에서 엑스포 영향으로 버스 외형 변화가 있는지 확인",'
+            '"needs_memory":true,"requires_external_evidence":false,'
+            '"tools":[]}'
+        )
+
+    handler._cometapi_fast_generate_text = _fake_fast
+    decision = await handler._route_tools(
+        "여수 버스 생김새 바뀐 거 알아? 엑스포 때문에",
+        {"trace_id": "bus-fact-check"},
+        history=[],
+    )
+
+    assert decision.requires_external_evidence is True
+    assert decision.needs_memory is False
+    assert [item["tool_to_use"] for item in decision.plan] == ["web_search"]
+    assert "여수 버스" in decision.plan[0]["parameters"]["query"]
+
+
+@pytest.mark.asyncio
 async def test_semantic_router_compacts_only_older_history(monkeypatch):
     handler = _build_handler_without_init()
     handler.use_cometapi = True
@@ -389,6 +480,14 @@ def test_finance_disambiguation_does_not_treat_apple_music_as_finance():
     assert handler._looks_like_finance_query("애플 뮤직 호환성 문제에 대해 알려줘") is False
     assert handler._looks_like_external_fact_query("애플 뮤직 호환성 문제에 대해 알려줘") is True
     assert handler._detect_tools_by_keyword("애플 뮤직 호환성 문제에 대해 알려줘") == []
+
+
+def test_visual_material_is_not_misclassified_as_opening_price():
+    handler = _build_handler_without_init()
+
+    assert handler._looks_like_finance_query(
+        "도시 성장 과정을 시각 자료로 보여줘"
+    ) is False
 
 
 def test_finance_disambiguation_still_routes_real_stock_questions():
@@ -584,3 +683,60 @@ def test_intent_analyzer_initializes_runtime_caches():
     assert analyzer._auto_web_search_last_used == {}
     assert analyzer.location_cache == set()
     assert analyzer._location_cache_loaded is False
+
+
+def test_finance_numeric_grounding_rejects_numbers_missing_from_tool_evidence():
+    evidence = (
+        "[get_market_snapshot] 코스피: 5,663.24, -360.42 (-5.98%), "
+        "최신 가용 거래일 2026-07-29"
+    )
+
+    assert AIHandler._unsupported_finance_numbers(
+        "코스피는 5,663.24로 -5.98% 하락했어요.",
+        evidence,
+    ) == []
+    unsupported = AIHandler._unsupported_finance_numbers(
+        "코스피는 2,710.24로 -0.12% 하락했어요.",
+        evidence,
+    )
+    assert 2710.24 in unsupported
+    assert -0.12 in unsupported
+
+
+def test_market_snapshot_fallback_uses_only_verified_values():
+    text = AIHandler._format_market_snapshot_fallback(
+        {
+            "indices": [
+                {
+                    "name": "코스피",
+                    "market_date": "2026-07-29",
+                    "value": 5663.24,
+                    "change": -360.42,
+                    "change_percent": -5.9849,
+                }
+            ]
+        },
+        note="뉴스 검색은 실패했어요.",
+    )
+
+    assert "5,663.24" in text
+    assert "-5.98%" in text
+    assert "2026-07-29" in text
+    assert "뉴스 검색은 실패했어요." in text
+
+
+def test_unexecuted_future_search_promise_is_replaced_but_verified_answer_is_kept():
+    promise = "나도 한번 찾아볼게! 다음에 알려줄게."
+
+    replaced = AIHandler._replace_unexecuted_lookup_promise(
+        promise,
+        has_external_evidence=False,
+    )
+    kept = AIHandler._replace_unexecuted_lookup_promise(
+        promise,
+        has_external_evidence=True,
+    )
+
+    assert "실제로 확인하지 못했어요" in replaced
+    assert "찾아볼게" not in replaced
+    assert kept == promise

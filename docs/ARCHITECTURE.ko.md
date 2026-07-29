@@ -628,6 +628,7 @@ sequenceDiagram
 {
   "intent": "서울 날씨 확인",
   "needs_memory": false,
+  "requires_external_evidence": true,
   "context_digest": "",
   "tools": [
     {
@@ -637,6 +638,12 @@ sequenceDiagram
   ]
 }
 ```
+
+`requires_external_evidence=true`이면 실행 가능한 외부 자료가 하나도 없을 때 최종
+모델을 호출하지 않고 명시적 확인 실패로 종료한다. 라우터가 시장 브리핑의 도구를
+누락해도 `get_market_snapshot`과 `web_search`를 최대 한 번씩 보정하며, 최신 외부
+사실은 장기기억의 과거 답변과 섞지 않는다. 이는 일반 키워드 라우팅이 아니라 라우터
+오판 시 허위 사실 생성을 막는 실행 후조건이다.
 
 ---
 
@@ -721,7 +728,7 @@ flowchart LR
 ```mermaid
 flowchart LR
     L["Linkup 검색<br/><i>(주력)</i>"] -->|"fail"| D["DuckDuckGo 검색<br/><i>(대체)</i>"]
-    D -->|"fail"| F["도구 없는 일반 응답<br/><i>(최종 폴백)</i>"]
+    D -->|"fail"| F["명시적 확인 실패<br/><i>추측 금지</i>"]
 
     style L fill:#c8e6c9,stroke:#2e7d32
     style D fill:#fff9c4,stroke:#f9a825
@@ -731,8 +738,9 @@ flowchart LR
 ### 도구 실행 실패 처리
 
 ```python
-# 도구 실패는 결과에 명시하고 main 모델이 추측하지 않게 한다.
-# 의미 라우터가 정상 응답한 요청에는 키워드 기반 도구를 뒤늦게 추가하지 않는다.
+# 도구 실패는 결과에 명시한다.
+# 외부 근거가 필수인 요청은 성공 자료가 없으면 main 모델을 호출하지 않는다.
+# 시장 수치는 구조화된 지수 스냅샷과 최종 문장의 숫자를 다시 대조한다.
 tool_results.append({"tool": tool_name, "error": public_error})
 ```
 
