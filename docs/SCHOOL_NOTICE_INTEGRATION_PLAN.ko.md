@@ -292,6 +292,8 @@ CLI 기본은 안전한 수동 실행을 위해 `--no-llm --low-resource`다. �
 
 - 임시 profile과 directory는 각각 mode `0600`, `0700`
 - core 출력은 사용자·날짜·schema·크기·타입·URL·항목 수 계약을 검증
+- 계약·source 경계·subprocess·publish 실패는 개인정보나 원문 없이 유한한
+  `failure_stage` 코드로 운영 로그에 남김
 - 공개 run report는 원문/error text를 제외한 최소 집계만 보존
 - run report를 먼저, digest를 마지막에 `os.replace`
 - 최종 JSON은 mode `0600`
@@ -389,6 +391,7 @@ score >= 60  → opportunity
 score >= 40  → reference
 그 외        → hidden
 INELIGIBLE   → hidden
+다른 학위 과정 대상 가능성 → UNKNOWN, score <= 39, hidden
 ```
 
 명시 자격 조건이 있으나 profile 값이 없어 판단할 수 없으면 `UNKNOWN`과 69점 상한을
@@ -506,7 +509,7 @@ dry-run과 제한된 batch가 성공해야 Masamo timer를 켠다. General에는
 | feedback 반영 실패 | 그 사용자 daily 보류 |
 | 일부 source 실패 | `partial`/degraded를 정확히 기록 |
 | 모든 source/core 실패 | failed, 새 digest 성공 공개 안 함 |
-| digest 계약 불일치 | 전달 거부 |
+| digest 계약 불일치 | 전달 거부, `failure=digest_contract` 운영 진단 |
 | 관련 visible item 0 | 완료 기록, 자동 DM 없음 |
 | DM 차단/HTTP 실패 | 유한 재시도 상태 |
 | batch 중복 실행 | lock 충돌 종료 코드 3 |

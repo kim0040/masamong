@@ -128,6 +128,7 @@ def test_unreadable_digest_is_failure_even_with_success_report(tmp_path):
     summary = summarize_run(tmp_path, RUN_DATE, 0)
 
     assert summary["status"] == "failed"
+    assert summary["failure_stage"] == "digest_contract"
 
 
 def test_missing_digest_is_failure(tmp_path):
@@ -162,6 +163,7 @@ def test_digest_item_outside_selected_sources_is_failure(tmp_path):
     )
 
     assert summary["status"] == "failed"
+    assert summary["failure_stage"] == "source_boundary"
 
 
 def test_collection_health_outside_selected_sources_is_failure(tmp_path):
