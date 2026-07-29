@@ -181,14 +181,11 @@ class TransferNoticeStore:
                         str(previous["fingerprint"]) != item.fingerprint
                         and not legacy_equivalent
                     )
-                    previous_detail = str(previous["detail_fingerprint"] or "")
-                    detail_changed = bool(
-                        item.detail_fingerprint
-                        and previous_detail
-                        and item.detail_fingerprint != previous_detail
-                    )
                     # 상세 본문을 처음 보강한 행은 기존 공지 재전송 사유가 아니다.
-                    changed = list_changed or detail_changed
+                    # 조회수·공통 메뉴처럼 학교 사이트의 동적 표시가 상세
+                    # fingerprint를 흔드는 사례도 있으므로 상세-only 변경은
+                    # 저장만 갱신하고 자동 알림 revision으로 승격하지 않는다.
+                    changed = list_changed
                     if changed:
                         revision += 1
                     self.connection.execute(

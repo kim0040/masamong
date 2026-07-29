@@ -249,6 +249,7 @@ _DETAIL_DROP_SELECTORS = (
     "nav",
     "header",
     "footer",
+    "aside",
     "form",
     ".pagination",
     ".breadcrumb",
@@ -256,6 +257,21 @@ _DETAIL_DROP_SELECTORS = (
     ".sns",
 )
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。])\s+|\n+")
+_DETAIL_TOKEN_RE = re.compile(r"[0-9A-Za-z가-힣]{2,}")
+_DETAIL_TITLE_STOPWORDS = frozenset(
+    {"공지사항", "더보기", "작성일", "등록일", "조회수", "첨부파일"}
+)
+_DETAIL_DYNAMIC_METADATA_RE = re.compile(
+    r"(?:조회수?|열람수|조회)\s*[:：]?\s*[\d,]+",
+    re.IGNORECASE,
+)
+_DETAIL_NAVIGATION_PHRASES = (
+    "메인메뉴 바로가기",
+    "본문으로 바로가기",
+    "전체메뉴",
+    "주메뉴 바로가기",
+    "하단메뉴 바로가기",
+)
 
 
 def _detail_summary(text: str, *, limit: int = 420) -> str:
@@ -279,6 +295,92 @@ def _detail_summary(text: str, *, limit: int = 420) -> str:
     return " ".join(parts).strip()
 
 
+def _detail_title_tokens(value: str) -> set[str]:
+    return {
+        token.casefold()
+        for token in _DETAIL_TOKEN_RE.findall(value)
+        if token.casefold() not in _DETAIL_TITLE_STOPWORDS
+    }
+
+
+def _detail_body(soup: BeautifulSoup, item: TransferNoticeItem) -> str:
+    """공지 제목과 가까운 본문 컨테이너를 우선 골라 공통 메뉴 오탐을 줄인다."""
+    title_tokens = _detail_title_tokens(item.title)
+    candidates: list[tuple[float, str]] = []
+    seen_nodes: set[int] = set()
+
+    def add_candidate(node: Tag, *, anchored: bool) -> None:
+        identity = id(node)
+        if identity in seen_nodes:
+            return
+        seen_nodes.add(identity)
+        text = normalize_inline(node.get_text(" ", strip=True))
+        if len(text) < 40:
+            return
+        tokens = _detail_title_tokens(text)
+        overlap = (
+            len(title_tokens & tokens) / max(1, len(title_tokens))
+            if title_tokens
+            else 0.0
+        )
+        marker = " ".join(
+            (
+                str(node.name or ""),
+                " ".join(str(value) for value in (node.get("class") or [])),
+                str(node.get("id") or ""),
+            )
+        ).casefold()
+        structural = 60.0 if re.search(
+            r"(?:view|board|content|article|detail)",
+            marker,
+        ) else 0.0
+        navigation_penalty = 80.0 * sum(
+            text.count(phrase) for phrase in _DETAIL_NAVIGATION_PHRASES
+        )
+        length_bonus = min(len(text), 2_500) * 0.05
+        oversize_penalty = max(0, len(text) - 6_000) * 0.05
+        score = (
+            overlap * 500.0
+            + (500.0 if anchored else 0.0)
+            + structural
+            + length_bonus
+            - navigation_penalty
+            - oversize_penalty
+        )
+        candidates.append((score, text))
+
+    heading_tags = soup.find_all(
+        ("h1", "h2", "h3", "h4", "h5", "th", "dt", "strong", "p", "span")
+    )
+    for node in heading_tags:
+        if not isinstance(node, Tag):
+            continue
+        own_text = normalize_inline(node.get_text(" ", strip=True))
+        if not own_text or len(own_text) > 600:
+            continue
+        own_tokens = _detail_title_tokens(own_text)
+        overlap_count = len(title_tokens & own_tokens)
+        overlap = overlap_count / max(1, len(title_tokens))
+        if overlap_count < 2 or overlap < 0.5:
+            continue
+        current: Tag | None = node
+        for _ in range(7):
+            parent = current.parent if current is not None else None
+            current = parent if isinstance(parent, Tag) else None
+            if current is None:
+                break
+            add_candidate(current, anchored=True)
+
+    for selector in _DETAIL_CONTAINER_SELECTORS:
+        for node in soup.select(selector):
+            if isinstance(node, Tag):
+                add_candidate(node, anchored=False)
+
+    if not candidates:
+        return normalize_inline(soup.get_text(" ", strip=True))
+    return max(candidates, key=lambda pair: pair[0])[1]
+
+
 def parse_transfer_detail(
     html: str,
     item: TransferNoticeItem,
@@ -293,28 +395,19 @@ def parse_transfer_detail(
         for node in soup.select(selector):
             node.decompose()
 
-    candidates: list[tuple[int, str]] = []
-    for selector in _DETAIL_CONTAINER_SELECTORS:
-        for node in soup.select(selector):
-            text = normalize_inline(node.get_text(" ", strip=True))
-            if text:
-                candidates.append((len(text), text))
-    if candidates:
-        body = max(candidates, key=lambda pair: pair[0])[1]
-    else:
-        body = normalize_inline(soup.get_text(" ", strip=True))
-
     # 메뉴·사이트맵을 잘못 집는 경우 무제한 저장/전송하지 않는다.
-    body = body[:12_000]
+    body = _detail_body(soup, item)[:12_000]
     if len(body) < 40:
         return item
+    # 조회수처럼 내용과 무관하게 바뀌는 값을 요약·변경 판정에서 제외한다.
+    stable_body = normalize_inline(_DETAIL_DYNAMIC_METADATA_RE.sub("", body))
     key_dates = tuple(
         dict.fromkeys(
             f"{match.group(1)}-{int(match.group(2)):02d}-{int(match.group(3)):02d}"
-            for match in _DATE_RE.finditer(body)
+            for match in _DATE_RE.finditer(stable_body)
         )
     )[:8]
-    summary = _detail_summary(body)
+    summary = _detail_summary(stable_body)
     # 조회수·공통 내비게이션처럼 알림 가치가 없는 동적 문구가 상세 전체
     # fingerprint를 매일 바꾸지 않게, 사용자에게 실제 제시할 요약과 핵심 날짜만
     # 변경 판정에 사용한다.
@@ -330,7 +423,7 @@ def parse_transfer_detail(
         published_date=item.published_date,
         fingerprint=item.fingerprint,
         detail_summary=summary,
-        detail_text=body,
+        detail_text=stable_body,
         detail_fingerprint=detail_fingerprint,
         key_dates=key_dates,
     )

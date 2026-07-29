@@ -296,8 +296,11 @@ first non-delivery baseline it fetches only bounded new, changed, and latest
 detail-page candidates per source. It extracts a short evidence-based summary
 and key dates without receiving a Discord ID or subscriber profile. The bot
 reads the bounded JSON result and DMs only active subscribers whose selected
-source has a genuine new/list/detail revision, at that subscriber's selected
-time (default `09:00` KST).
+source has a genuine new item or meaningful list-title revision, at that
+subscriber's selected time (default `09:00` KST). Detail text supports the
+summary, but detail-only fingerprint changes never create a notification:
+official sites frequently change view counts and shared navigation without
+changing the notice.
 
 The first successful collection for every source is a non-delivery baseline.
 Per-user `(source, external ID, revision)` delivery records prevent replay after a
