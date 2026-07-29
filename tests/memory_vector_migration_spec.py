@@ -71,3 +71,10 @@ def test_cli_limits_are_finite_by_default():
 
     assert args.max_batches > 0
     assert args.max_seconds > 0
+
+
+def test_profile_identity_uses_runtime_instance_name(monkeypatch):
+    monkeypatch.setattr(migration.config, "PROFILE", "masamo")
+    monkeypatch.setattr(migration.config, "INSTANCE_NAME", "masamo")
+
+    assert migration._profile_identity() == ("masamo", "masamo")

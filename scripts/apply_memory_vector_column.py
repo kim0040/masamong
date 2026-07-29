@@ -77,6 +77,14 @@ def _settings() -> TiDBSettings:
     )
 
 
+def _profile_identity() -> tuple[str, str]:
+    """현재 설정의 프로필과 인스턴스 이름을 정규화해 반환한다."""
+    return (
+        str(getattr(config, "PROFILE", "")).strip().lower(),
+        str(getattr(config, "INSTANCE_NAME", "")).strip().lower(),
+    )
+
+
 def _vector_literal(blob: Any) -> str | None:
     """BLOB(float32 배열)을 TiDB VECTOR 리터럴로 바꾼다."""
     if blob is None:
@@ -177,8 +185,7 @@ def main(argv: list[str] | None = None) -> int:
     if str(config.DB_BACKEND).strip().lower() != "tidb":
         print("TiDB 백엔드에서만 실행할 수 있습니다.", file=sys.stderr)
         return 2
-    configured_profile = str(getattr(config, "PROFILE", "")).strip().lower()
-    configured_instance = str(getattr(config, "INSTANCE", "")).strip().lower()
+    configured_profile, configured_instance = _profile_identity()
     if (
         args.expected_profile.strip().lower() != configured_profile
         or configured_instance != configured_profile
