@@ -43,6 +43,15 @@ def test_cli_defaults_to_read_only_and_requires_strong_mutation_flag():
 
 
 @pytest.mark.asyncio
+async def test_prompt_injection_probe_matches_current_message_contract():
+    result = await health._run_prompt_injection_check(channel_id=123)
+
+    assert result.ok is True
+    assert result.name == "prompt_injection"
+    assert result.metrics["missing_markers"] == []
+
+
+@pytest.mark.asyncio
 async def test_default_dispatch_never_invokes_any_mutator(monkeypatch):
     calls: list[str] = []
 
