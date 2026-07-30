@@ -284,6 +284,47 @@ def test_subjective_choice_prompt_forbids_unverified_spec_table():
 
     assert "정확한 수치·가격·기록·출력·제원을 새로 제시하지 마세요" in prompt
     assert "과거의 내 선택 기억" in prompt
+    assert "현재 선택을 고정하는 규칙이 아닙니다" in prompt
+    assert "현재 질문에 주어진 조건과 대화 흐름을 먼저" in prompt
+    assert "특별한 이유 없이 반대로 바꾸지 말고" not in prompt
+
+
+def test_rag_memory_is_framed_as_context_not_a_binding_rule():
+    handler = AIHandler.__new__(AIHandler)
+    handler._get_custom_emoji_instruction = lambda *_args: ""
+    message = SimpleNamespace(
+        author=SimpleNamespace(display_name="tester"),
+    )
+
+    prompt = handler._compose_main_prompt(
+        message,
+        user_query="이번 조건이라면 뭐가 더 나아?",
+        rag_blocks=["마사몽: 예전에는 A가 더 좋다고 답했다."],
+        tool_results_block=None,
+        recent_history=[],
+    )
+
+    assert "현재 질문과 최근 대화에 관련될 때만 참고" in prompt
+    assert "현재 답변을 구속하는 규칙으로 쓰지 마세요" in prompt
+
+
+def test_system_prompt_prioritizes_current_context_over_past_stance():
+    handler = AIHandler.__new__(AIHandler)
+    handler._get_channel_system_prompt = lambda *_args, **_kwargs: "친근하게 답한다."
+    handler._get_custom_emoji_instruction = lambda *_args: ""
+    message = SimpleNamespace(
+        channel=SimpleNamespace(id=77),
+        guild=SimpleNamespace(id=88),
+    )
+
+    prompt = handler._compose_main_system_prompt(
+        message,
+        user_query="지금은 생각이 달라졌어?",
+    )
+
+    assert "현재 답변을 구속하지 않는다" in prompt
+    assert "현재 질문과 최근 대화 흐름, 새로 확인된 정보를 먼저" in prompt
+    assert "사용자가 일관성을 물을 때만" in prompt
 
 
 def test_explicit_memory_search_keeps_one_lexically_matching_other_source(
