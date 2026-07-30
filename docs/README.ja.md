@@ -6,8 +6,8 @@
 </p>
 
 <p align="center">
-  <a href="../README.md">English</a> &nbsp;|&nbsp;
-  <a href="README.ko.md">한국어</a>
+  <a href="README.ko.md">한국어</a> &nbsp;|&nbsp;
+  <a href="README.en.md">English</a>
 </p>
 
 ---
@@ -167,8 +167,9 @@ MIT License — 詳細は [LICENSE](../LICENSE) を参照してください。
 | [ARCHITECTURE.en.md](ARCHITECTURE.en.md) | English | 現行システムのアーキテクチャ |
 | [ARCHITECTURE.md](ARCHITECTURE.ko.md) | 한국어 | 現行システムのアーキテクチャ |
 | [UML_SPEC.md](UML_SPEC.ko.md) | 한국어 | 現行ランタイムのUMLとシーケンス |
-| [../README.md](../README.md) | English | 英語README |
+| [README.en.md](README.en.md) | English | 英語ガイド |
 | [README.ko.md](README.ko.md) | 한국어 | 韓国語README |
+| [README.md](README.md) | 한국어 | 文書一覧 |
 
 ---
 

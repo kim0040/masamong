@@ -1,8 +1,10 @@
 # 학교 공지 기능 설명서
 
-이 문서는 마사몽의 학교 공지 사용자 흐름, 수집 코어와의 계약, 운영 설정, 실패 처리와
-한계를 설명한다. 현재 기능과 누적 상태, 05:00 timer의 소유자는 Masamo다. General은
-기본 비활성이며 나중에 사용하더라도 별도 DB·파일·timer를 가져야 한다.
+이 문서에서는 학교 공지 기능의 사용자 흐름, 수집 코어와의 계약, 운영 설정, 실패 처리와
+한계를 확인할 수 있습니다. 사용 방법만 빠르게 보려면 [사용자 가이드](README.ko.md)를,
+전체 문서 구조를 보려면 [문서 허브](README.md)를 참고할 수 있습니다. 현재 기능과 누적
+상태, 05:00 timer는 Masamo가 소유합니다. General은 기본 비활성이며, 나중에 사용하더라도
+별도 DB·파일·timer를 사용해야 합니다.
 
 ## 현재 지원 범위
 
@@ -575,4 +577,4 @@ DM을 만들지 않는다. 운영자가 true로 켜면 stale 경고의 의미와
 - General flag false에서 school table 없이 정상 기동
 - General과 Masamo의 DB/core/digest/log/timer 경로가 겹치지 않음
 
-운영 배치와 rollback은 [배포 가이드](../DEPLOYMENT.md)를 따른다.
+운영 배치와 rollback은 [배포 가이드](DEPLOYMENT.md)를 따릅니다.
