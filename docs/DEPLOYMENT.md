@@ -412,6 +412,13 @@ MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
 rollback한다. 정상 모닝 브리핑은 생성/발송 각각 기본 최대 3회이며 발송 재시도는 저장된
 문장을 재사용한다.
 
+AI 요청은 같은 `trace_id`에서 `agent_started`와 정확히 하나의 `agent_completed`가
+대응해야 한다. 느린 요청은 `stage`, `duration_ms`, `llm_call_completed`의
+`queue_wait_ms`, `tool_execution_completed`의 개별 시간을 순서대로 확인한다. 기본
+설정에서 이 레코드에 질문·프롬프트·답변 본문·도구 파라미터가 들어가면 배포를 중단한다.
+지진 API 정상 조회는 매분 호출되더라도 INFO 로그가 매분 생기지 않고, 첫 성공·결과 개수
+변화·시간별 heartbeat에서만 생기는 것이 정상이다.
+
 ## 9. General 첫 배포
 
 General은 Masamo 전환과 별개로 준비한다.

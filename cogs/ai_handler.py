@@ -2002,7 +2002,16 @@ class AIHandler(commands.Cog):
                     logger.info(f"도구 계획(plan)을 파싱했습니다: {len(calls)} 단계")
                     return calls
             except json.JSONDecodeError as e:
-                logger.warning(f"tool_plan JSON 디코딩 실패: {e}. 원본: {plan_match.group(1)}")
+                logger.warning(
+                    "tool_plan JSON 디코딩 실패: error_pos=%d payload_chars=%d",
+                    int(getattr(e, "pos", 0) or 0),
+                    len(plan_match.group(1)),
+                    extra={
+                        "event": "tool_plan_parse_failed",
+                        "outcome": "failed",
+                        "failure_kind": "invalid_json",
+                    },
+                )
                 return []
 
         call_match = re.search(r'<tool_call>\s*(\{.*?\})\s*</tool_call>', text, re.DOTALL)
@@ -2013,7 +2022,16 @@ class AIHandler(commands.Cog):
                     logger.info("단일 도구 호출(call)을 파싱했습니다.")
                     return [call]
             except json.JSONDecodeError as e:
-                logger.warning(f"tool_call JSON 디코딩 실패: {e}. 원본: {call_match.group(1)}")
+                logger.warning(
+                    "tool_call JSON 디코딩 실패: error_pos=%d payload_chars=%d",
+                    int(getattr(e, "pos", 0) or 0),
+                    len(call_match.group(1)),
+                    extra={
+                        "event": "tool_plan_parse_failed",
+                        "outcome": "failed",
+                        "failure_kind": "invalid_json",
+                    },
+                )
 
         return []
 
@@ -2407,6 +2425,10 @@ class AIHandler(commands.Cog):
         tool_name: object,
         result: object,
         log_extra: dict[str, Any],
+        *,
+        duration_ms: int,
+        step: int,
+        step_count: int,
     ) -> None:
         """도구 결과의 성공 여부만 비식별 운영 로그로 남긴다.
 
@@ -2416,11 +2438,28 @@ class AIHandler(commands.Cog):
         개수만 남긴다.
         """
         normalized_name = str(tool_name or "unknown")[:64]
+        safe_duration_ms = max(0, int(duration_ms))
+        structured_extra = {
+            **log_extra,
+            "event": "tool_execution_completed",
+            "tool_name": normalized_name,
+            "duration_ms": safe_duration_ms,
+            "step": max(1, int(step)),
+            "step_count": max(1, int(step_count)),
+        }
         if not isinstance(result, dict):
+            structured_extra.update(
+                {
+                    "outcome": "succeeded",
+                    "source_count": 0,
+                }
+            )
             logger.info(
-                "도구 실행 완료: tool=%s outcome=succeeded source_count=0",
+                "도구 실행 완료: tool=%s outcome=succeeded "
+                "duration_ms=%d source_count=0",
                 normalized_name,
-                extra=log_extra,
+                safe_duration_ms,
+                extra=structured_extra,
             )
             return
 
@@ -2428,21 +2467,72 @@ class AIHandler(commands.Cog):
             failure_kind = str(
                 result.get("failure_kind") or "normalized_error"
             )[:64]
+            structured_extra.update(
+                {
+                    "outcome": "failed",
+                    "failure_kind": failure_kind,
+                }
+            )
             logger.warning(
-                "도구 실행 완료: tool=%s outcome=failed failure_kind=%s",
+                "도구 실행 완료: tool=%s outcome=failed "
+                "failure_kind=%s duration_ms=%d",
                 normalized_name,
                 failure_kind,
-                extra=log_extra,
+                safe_duration_ms,
+                extra=structured_extra,
             )
             return
 
         raw_sources = result.get("source_urls") or result.get("urls") or []
         source_count = len(raw_sources) if isinstance(raw_sources, list) else 0
+        structured_extra.update(
+            {
+                "outcome": "succeeded",
+                "source_count": source_count,
+            }
+        )
         logger.info(
-            "도구 실행 완료: tool=%s outcome=succeeded source_count=%d",
+            "도구 실행 완료: tool=%s outcome=succeeded "
+            "duration_ms=%d source_count=%d",
             normalized_name,
+            safe_duration_ms,
             source_count,
-            extra=log_extra,
+            extra=structured_extra,
+        )
+
+    @staticmethod
+    def _log_agent_execution_outcome(
+        log_extra: dict[str, Any],
+        *,
+        started_at: float,
+        outcome: str,
+        stage: str,
+        tool_count: int,
+        error_kind: str | None = None,
+    ) -> None:
+        """한 AI 요청이 반드시 하나의 종료 레코드를 남기게 합니다."""
+        duration_ms = round(
+            max(0.0, time.monotonic() - float(started_at)) * 1000
+        )
+        terminal_extra = {
+            **log_extra,
+            "event": "agent_completed",
+            "outcome": str(outcome or "unknown")[:64],
+            "stage": str(stage or "unknown")[:64],
+            "duration_ms": duration_ms,
+            "tool_count": max(0, int(tool_count)),
+        }
+        if error_kind:
+            terminal_extra["error_kind"] = str(error_kind)[:128]
+        logger.info(
+            "에이전트 처리 종료: outcome=%s stage=%s "
+            "duration_ms=%d tool_count=%d error_kind=%s",
+            terminal_extra["outcome"],
+            terminal_extra["stage"],
+            duration_ms,
+            terminal_extra["tool_count"],
+            terminal_extra.get("error_kind") or "none",
+            extra=terminal_extra,
         )
 
     async def _execute_tool(
@@ -2813,10 +2903,15 @@ class AIHandler(commands.Cog):
         trace_id = uuid.uuid4().hex[:8]
         log_extra = dict(base_log_extra)
         log_extra['trace_id'] = trace_id
+        request_started_at = time.monotonic()
         logger.info(
             "에이전트 처리 시작. query_chars=%d",
             len(user_query),
-            extra=log_extra,
+            extra={
+                **log_extra,
+                "event": "agent_started",
+                "stage": "accepted",
+            },
         )
         self._debug(f"--- 에이전트 세션 시작 trace_id={trace_id}", log_extra)
 
@@ -2824,14 +2919,43 @@ class AIHandler(commands.Cog):
         # Discord 기본 입력 중 애니메이션과 12초 heartbeat로 살아 있음을
         # 알리되, 단계가 빠르게 바뀔 때 edit 요청을 연속으로 보내지 않는다.
         initial_progress_text = "🤔 질문을 확인하고 있어요..."
-        status_msg = await message.channel.send(
-            initial_progress_text,
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
-        progress = await DiscordProgress(
-            status_msg,
-            initial_text=initial_progress_text,
-        ).start()
+        try:
+            status_msg = await message.channel.send(
+                initial_progress_text,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            progress = await DiscordProgress(
+                status_msg,
+                initial_text=initial_progress_text,
+            ).start()
+        except Exception as exc:
+            error_kind = type(exc).__name__
+            logger.warning(
+                "AI 초기 상태 메시지 전송 실패: error_kind=%s",
+                error_kind,
+                exc_info=True,
+                extra={
+                    **log_extra,
+                    "event": "discord_delivery_failed",
+                    "outcome": "failed",
+                    "stage": "initial_status",
+                    "error_kind": error_kind,
+                },
+            )
+            self._log_agent_execution_outcome(
+                log_extra,
+                started_at=request_started_at,
+                outcome="failed",
+                stage="initial_status",
+                tool_count=0,
+                error_kind=error_kind,
+            )
+            return
+
+        terminal_outcome = "failed"
+        terminal_stage = "routing"
+        terminal_error_kind: str | None = None
+        executed_tool_count = 0
 
         try:
             # 1단계: 분석 및 도구 계획 수립
@@ -2847,14 +2971,36 @@ class AIHandler(commands.Cog):
             # Discord REST history를 한 번만 읽고 도구 라우팅·후속 검색·최종
             # 프롬프트에 함께 사용한다. 이전에는 검색 확장과 답변 맥락이 각각
             # history()를 호출해 같은 네트워크 왕복을 중복했다.
+            terminal_stage = "context"
             history = await self._get_recent_history(message, "")
 
             # 정상 경로는 routing lane이 자연어 의미와 대화 흐름을 읽는다.
             # 키워드 목록은 provider 장애 시의 제한된 비상 fallback에만 사용한다.
+            terminal_stage = "routing"
             routing_decision = await self._route_tools(
                 user_query,
                 log_extra,
                 history=history,
+            )
+            logger.info(
+                "에이전트 라우팅 완료: source=%s tools=%d "
+                "needs_memory=%s reasoning=%s",
+                routing_decision.source,
+                len(routing_decision.plan or []),
+                bool(routing_decision.needs_memory),
+                routing_decision.reasoning_level or "default",
+                extra={
+                    **log_extra,
+                    "event": "agent_routing_completed",
+                    "outcome": "succeeded",
+                    "stage": "routing",
+                    "route_source": routing_decision.source,
+                    "tool_count": len(routing_decision.plan or []),
+                    "needs_memory": bool(routing_decision.needs_memory),
+                    "reasoning_level": (
+                        routing_decision.reasoning_level or "default"
+                    ),
+                },
             )
 
             rag_prompt = ""
@@ -2862,6 +3008,7 @@ class AIHandler(commands.Cog):
             rag_top_score = 0.0
             rag_blocks: list[str] = []
             if self._should_search_memory(routing_decision):
+                terminal_stage = "memory"
                 recent_search_messages = self._recent_search_messages_from_history(
                     history
                 )
@@ -2906,6 +3053,7 @@ class AIHandler(commands.Cog):
                 })
 
             if tool_plan:
+                terminal_stage = "tools"
                 step_label = f"{len(tool_plan)}단계" if len(tool_plan) > 1 else ""
                 tool_names_kr = {
                     "web_search": "웹 검색",
@@ -2941,6 +3089,7 @@ class AIHandler(commands.Cog):
                         f"🔍 {tool_label} 진행 중이에요... {step_progress}"
                     )
 
+                    tool_started_at = time.monotonic()
                     result = await self._execute_tool(
                         tool_call,
                         guild_id_safe,
@@ -2953,6 +3102,12 @@ class AIHandler(commands.Cog):
                         tool_name,
                         result,
                         log_extra,
+                        duration_ms=round(
+                            max(0.0, time.monotonic() - tool_started_at)
+                            * 1000
+                        ),
+                        step=idx,
+                        step_count=len(tool_plan),
                     )
 
                     tool_results.append({
@@ -2962,6 +3117,7 @@ class AIHandler(commands.Cog):
                         "result": result,
                     })
                     executed_plan.append(tool_call)
+                    executed_tool_count += 1
 
             # 의미 라우터가 정상적으로 "도구 없음"을 결정했다면 키워드 규칙으로
             # 뒤집지 않는다. provider 장애 fallback에서만 기존 자동 검색을
@@ -2999,11 +3155,21 @@ class AIHandler(commands.Cog):
                             extra=log_extra,
                         )
 
-                    web_result = await self._execute_web_search_raw(refined_query, log_extra)
+                    tool_started_at = time.monotonic()
+                    web_result = await self._execute_web_search_raw(
+                        refined_query,
+                        log_extra,
+                    )
                     self._log_tool_execution_outcome(
                         "web_search",
                         web_result,
                         log_extra,
+                        duration_ms=round(
+                            max(0.0, time.monotonic() - tool_started_at)
+                            * 1000
+                        ),
+                        step=1,
+                        step_count=1,
                     )
                     self._mark_auto_web_search_used(message)
                     tool_results.append(
@@ -3021,6 +3187,7 @@ class AIHandler(commands.Cog):
                             "auto": True,
                         }
                     )
+                    executed_tool_count += 1
 
             # 이미지 생성 단독 요청은 이미 provider가 최종 결과를 만들었으므로
             # 답변용 LLM을 한 번 더 호출하지 않는다. 추가 호출은 이미지 내용과
@@ -3058,6 +3225,7 @@ class AIHandler(commands.Cog):
                 "web_search",
             )
             guarded_response = ""
+            terminal_stage = "answer"
             if (
                 requires_external_evidence
                 and not self._has_verified_external_evidence(
@@ -3107,6 +3275,7 @@ class AIHandler(commands.Cog):
                 )
             ):
                 image_payload = non_local_tool_results[0]["result"]
+                terminal_stage = "delivery"
                 final_image_response = (
                     await self._deliver_single_image_result(
                         message=message,
@@ -3117,6 +3286,7 @@ class AIHandler(commands.Cog):
                     )
                 )
 
+                terminal_stage = "analytics"
                 await db_utils.log_api_call(
                     self.bot.db,
                     f"llm_user_{message.author.id}",
@@ -3136,6 +3306,8 @@ class AIHandler(commands.Cog):
                         tool_plan=executed_plan or tool_plan,
                     ),
                 )
+                terminal_outcome = "succeeded"
+                terminal_stage = "completed"
                 return
 
             # 답변 작성 단계
@@ -3275,6 +3447,7 @@ class AIHandler(commands.Cog):
                     img_url = image_result["result"].get("image_url")
                     if img_data:
                         try:
+                            terminal_stage = "delivery"
                             await progress.stop()
                             extension = {
                                 "image/png": "png",
@@ -3316,6 +3489,7 @@ class AIHandler(commands.Cog):
                                     extra=log_extra,
                                 )
                             # 분석 데이터 로깅 (순차 실행: 단일 커넥션 공유)
+                            terminal_stage = "analytics"
                             await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
                             await db_utils.log_api_call(self.bot.db, "llm_global")
                             await db_utils.log_analytics(
@@ -3329,6 +3503,8 @@ class AIHandler(commands.Cog):
                                     tool_plan=executed_plan or tool_plan,
                                 ),
                             )
+                            terminal_outcome = "succeeded"
+                            terminal_stage = "completed"
                             return
                         except Exception as img_exc:
                             logger.error(f"이미지 전송 실패: {img_exc}", extra=log_extra)
@@ -3337,6 +3513,7 @@ class AIHandler(commands.Cog):
                 
                 # [Progress Update] 최종 답변으로 편집. 웹 출처는 본문에 항상
                 # 노출하지 않고 봇이 단 📰 반응을 사용자가 눌렀을 때만 표시한다.
+                terminal_stage = "delivery"
                 await progress.stop()
                 response_messages = await self._edit_status_with_split_response(
                     status_msg,
@@ -3351,6 +3528,7 @@ class AIHandler(commands.Cog):
                     )
                 
                 # 분석 데이터 로깅 (순차 실행: 단일 커넥션 공유)
+                terminal_stage = "analytics"
                 await db_utils.log_api_call(self.bot.db, f"llm_user_{message.author.id}")
                 await db_utils.log_api_call(self.bot.db, "llm_global")
                 await db_utils.log_analytics(
@@ -3364,11 +3542,17 @@ class AIHandler(commands.Cog):
                         tool_plan=executed_plan or tool_plan,
                     ),
                 )
+                terminal_outcome = "succeeded"
+                terminal_stage = "completed"
             else:
+                terminal_outcome = "empty_response"
+                terminal_stage = "delivery"
                 await progress.stop()
                 await status_msg.edit(content="미안해요, 답을 만들다 막혔어요. 잠시 뒤에 다시 물어봐 주세요 😢")
 
         except Exception as e:
+            terminal_outcome = "failed"
+            terminal_error_kind = type(e).__name__
             logger.error(f"에이전트 처리 중 최상위 오류: {e}", exc_info=True, extra=log_extra)
             await progress.stop()
             try:
@@ -3388,6 +3572,14 @@ class AIHandler(commands.Cog):
                     )
         finally:
             await progress.stop()
+            self._log_agent_execution_outcome(
+                log_extra,
+                started_at=request_started_at,
+                outcome=terminal_outcome,
+                stage=terminal_stage,
+                tool_count=executed_tool_count,
+                error_kind=terminal_error_kind,
+            )
             self._debug(f"--- 에이전트 세션 종료 trace_id={trace_id}", log_extra)
     async def _get_recent_history(self, message: discord.Message, rag_prompt: str) -> list:
         """모델에 전달할 최근 대화 기록을 채널에서 가져옵니다."""

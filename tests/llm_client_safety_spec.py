@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -95,6 +96,38 @@ def test_gemini_client_uses_one_attempt_and_transport_timeout(monkeypatch):
     http_options = created[0]["http_options"]
     assert http_options["retry_options"] == {"attempts": 1}
     assert http_options["timeout"] == 7000
+
+
+@pytest.mark.asyncio
+async def test_bounded_provider_call_logs_safe_terminal_metrics(
+    monkeypatch,
+    caplog,
+):
+    client = _configure_small_client(monkeypatch)
+
+    async def successful_call():
+        return "ok"
+
+    with caplog.at_level(logging.INFO):
+        result = await client._run_bounded_provider_call(
+            successful_call,
+            lane_name="routing.primary",
+            log_extra={"trace_id": "llm-metrics"},
+        )
+
+    assert result == "ok"
+    records = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "llm_call_completed"
+    ]
+    assert len(records) == 1
+    record = records[0]
+    assert record.trace_id == "llm-metrics"
+    assert record.lane == "routing.primary"
+    assert record.outcome == "succeeded"
+    assert record.duration_ms >= 0
+    assert record.queue_wait_ms >= 0
 
 
 @pytest.mark.asyncio

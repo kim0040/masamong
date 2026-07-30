@@ -74,14 +74,14 @@ class EventListeners(commands.Cog):
     @commands.Cog.listener()
     async def on_command_completion(self, ctx: commands.Context):
         """명령어가 성공적으로 실행되었을 때 호출되어, 사용 통계를 기록합니다."""
-        if not ctx.guild or ctx.message.id in self.processed_command_ids:
+        if ctx.message.id in self.processed_command_ids:
             return
         self.processed_command_ids.append(ctx.message.id)
 
         latency_ms = (datetime.now(pytz.utc) - ctx.message.created_at.replace(tzinfo=pytz.UTC)).total_seconds() * 1000
 
         details = {
-            "guild_id": ctx.guild.id,
+            "guild_id": ctx.guild.id if ctx.guild else None,
             "user_id": ctx.author.id,
             "command": ctx.command.qualified_name,
             "channel_id": ctx.channel.id,
@@ -89,7 +89,20 @@ class EventListeners(commands.Cog):
             "latency_ms": round(latency_ms)
         }
         await db_utils.log_analytics(self.bot.db, "COMMAND_USAGE", details)
-        logger.info(f"명령어 실행 완료: `!{details['command']}` by `{ctx.author}` ({details['latency_ms']}ms)", extra={'guild_id': ctx.guild.id})
+        logger.info(
+            "명령어 실행 완료: command=%s duration_ms=%d",
+            details["command"],
+            details["latency_ms"],
+            extra={
+                "guild_id": details["guild_id"],
+                "channel_id": ctx.channel.id,
+                "user_id": ctx.author.id,
+                "event": "command_completed",
+                "outcome": "succeeded",
+                "command": details["command"],
+                "duration_ms": details["latency_ms"],
+            },
+        )
 
     @commands.Cog.listener()
     async def on_command_error(self, ctx: commands.Context, error: commands.CommandError):
@@ -166,6 +179,7 @@ class EventListeners(commands.Cog):
             return
             
         # 3. 기타 예기치 않은 오류 로그 및 기록
+        original_error = getattr(error, "original", error)
         details = {
             # analytics_log.guild_id는 TiDB에서 BIGINT이므로 DM은 NULL로 표현한다.
             "guild_id": ctx.guild.id if ctx.guild else None,
@@ -173,7 +187,7 @@ class EventListeners(commands.Cog):
             "command": ctx.command.qualified_name if ctx.command else "unknown",
             "channel_id": ctx.channel.id,
             "success": False,
-            "error": type(error).__name__,
+            "error": type(original_error).__name__,
         }
         if config.ANALYTICS_STORE_CONTENT:
             details["error_message"] = str(error)
@@ -182,7 +196,30 @@ class EventListeners(commands.Cog):
         if self.bot.db:
              await db_utils.log_analytics(self.bot.db, "COMMAND_USAGE", details)
              
-        logger.error(f"명령어 오류 발생: `!{details['command']}` by `{ctx.author}`. Error: {details['error']}", exc_info=error, extra={'guild_id': details['guild_id']})
+        traceback_info = (
+            (
+                type(original_error),
+                original_error,
+                original_error.__traceback__,
+            )
+            if getattr(original_error, "__traceback__", None) is not None
+            else False
+        )
+        logger.error(
+            "명령어 실행 실패: command=%s error_kind=%s",
+            details["command"],
+            details["error"],
+            exc_info=traceback_info,
+            extra={
+                "guild_id": details["guild_id"],
+                "channel_id": ctx.channel.id,
+                "user_id": ctx.author.id,
+                "event": "command_completed",
+                "outcome": "failed",
+                "command": details["command"],
+                "error_kind": details["error"],
+            },
+        )
 
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message):
