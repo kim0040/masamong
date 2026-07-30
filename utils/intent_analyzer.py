@@ -277,12 +277,11 @@ class IntentAnalyzer:
             return False
         if any(kw in text for kw in self._IMAGE_GEN_KEYWORDS):
             return False
-        # 로컬/이전 대화 회상성 질문은 외부 웹검색 대상으로 보지 않는다.
-        if any(kw in text for kw in self._LOCAL_MEMORY_HINTS):
-            return False
         # 현재 서비스 상태·장애는 특정 회사명을 하드코딩하지 않고도 공개
         # 자료 확인이 필요한 외부 사건이다. 또한 "오늘/현재" 같은 실시간
         # 표지와 원인 질문이 함께 있으면 내장 지식만으로 원인을 만들지 않는다.
+        # 이 판정은 과거 대화 표지보다 먼저 한다. "저번에 말한 서비스 장애
+        # 원인"은 기억 회수와 외부 검증이 동시에 필요한 요청이기 때문이다.
         if self._PUBLIC_STATUS_INCIDENT_PATTERN.search(text):
             return True
         if (
@@ -290,6 +289,10 @@ class IntentAnalyzer:
             and self._CAUSAL_QUESTION_PATTERN.search(text)
         ):
             return True
+        # 공개 사건 검증 신호가 없는 로컬/이전 대화 회상은 웹검색 대상으로
+        # 바꾸지 않는다.
+        if any(kw in text for kw in self._LOCAL_MEMORY_HINTS):
+            return False
         if any(kw in text for kw in self._FACTUAL_WEB_QUERY_HINTS):
             return True
         return False

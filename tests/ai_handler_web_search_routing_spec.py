@@ -514,6 +514,21 @@ def test_emergency_router_preserves_shared_memory_and_external_verification():
     assert [item["tool_to_use"] for item in decision.plan] == ["web_search"]
 
 
+def test_emergency_router_verifies_public_incident_with_explicit_memory_hint():
+    handler = _build_handler_without_init()
+    analyzer = handler._ensure_intent_analyzer()
+
+    decision = analyzer._emergency_routing_decision(
+        "저번에 말한 서비스 장애 원인이 지금도 같은지 알려줘",
+        source="fallback",
+    )
+
+    assert decision.references_shared_history is True
+    assert decision.needs_memory is True
+    assert decision.requires_external_evidence is True
+    assert [item["tool_to_use"] for item in decision.plan] == ["web_search"]
+
+
 @pytest.mark.asyncio
 async def test_semantic_router_no_tool_is_not_replaced_by_keyword_plan():
     handler = _build_handler_without_init()
