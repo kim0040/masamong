@@ -42,9 +42,14 @@ CREATE TABLE IF NOT EXISTS linkup_usage_log (
     endpoint TEXT NOT NULL, -- search | fetch
     depth TEXT, -- fast | standard | deep (search 전용)
     render_js BOOLEAN, -- fetch 전용
-    cost_eur REAL NOT NULL
+    cost_eur REAL NOT NULL, -- 구버전 호환용 USD 숫자 미러
+    request_id TEXT,
+    cost_usd REAL,
+    billing_status TEXT, -- reserved | billed | not_billed | billed_assumed
+    finalized_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_linkup_usage_time ON linkup_usage_log (used_at DESC);
+CREATE INDEX IF NOT EXISTS idx_linkup_request_id ON linkup_usage_log (request_id);
 
 -- 채널 요약의 증분 기준점. 기존 대화 행은 수정하거나 삭제하지 않는다.
 CREATE TABLE IF NOT EXISTS channel_summary_state (

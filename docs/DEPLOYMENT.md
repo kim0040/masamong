@@ -197,6 +197,37 @@ read-only preflight를 다시 실행해 기존 table 집계가 보존됐는지 �
 [내부 기억 인덱스 이행 기록](internal/MEMORY_INDEX_MIGRATION.ko.md)의 shadow table,
 checkpointed backfill, dual-write, feature-flag 전환 절차를 따른다.
 
+### Linkup USD 비용 상태 열 one-shot
+
+기존 `linkup_usage_log.cost_eur`와 모든 행을 그대로 둔 채, 새 호출의 USD 예약·확정
+상태를 기록하는 nullable 열 네 개와 조회 index만 추가한다. 기존 행은 백필하지 않으며
+런타임에서 보수적인 `legacy_assumed` 사용액으로 해석한다.
+
+Dry-run:
+
+```bash
+MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
+  <venv>/bin/python <new-release>/scripts/apply_linkup_usage_usd_columns.py \
+  --expected-profile masamo \
+  --expected-db masamong
+```
+
+적용:
+
+```bash
+MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
+  <venv>/bin/python <new-release>/scripts/apply_linkup_usage_usd_columns.py \
+  --expected-profile masamo \
+  --expected-db masamong \
+  --apply \
+  --confirm 'ADD LINKUP USD COLUMNS TO masamong'
+```
+
+스크립트는 `ADD COLUMN`, `ADD INDEX` 외 변경 SQL을 거부하며 적용 전후 전체 행 수와
+기존 `cost_eur` 합계가 같아야 성공한다. 코드 전환과 함께 env의
+`LINKUP_MONTHLY_BUDGET_EUR`를 같은 숫자의 `LINKUP_MONTHLY_BUDGET_USD`로 바꾼다.
+새 코드는 구 이름도 읽지만 두 값이 모두 있으면 USD 설정이 우선한다.
+
 ### 채널 증분 요약 상태 table one-shot
 
 새 release는 `!요약`의 채널별 기준점과 제한된 요약문만 저장하는
@@ -672,6 +703,8 @@ privacy table 두 개, school table 다섯 개, 편입 관련 세 table과
 - LLM/운세 scheduler의 유한 retry와 유휴 호출 증가 없음
 - 웹 검색 한 턴의 최종 답변 LLM이 1회이고 출처가 Discord 본문에 유지되며, 같은 동시
   검색은 singleflight로 합쳐짐
+- Linkup depth가 의미 라우터의 한 번의 판단에서 정해지고, 품질 재시도는 최대 한 번
+- Linkup USD 예약이 성공·명시 실패·결과 불명으로 확정되며 기존 비용 행 수와 합계 보존
 - `.git` 없는 immutable release에서도 `!업데이트`가 release metadata로 응답함
 - 서버 `!메뉴` 상세는 호출자 전용이고 DM 전용 버튼은 비활성, 개인 정보 조회 없음
 - `channel_summary_state` 추가 뒤 기존 table count가 감소하지 않고 재기동 요약이 이어짐

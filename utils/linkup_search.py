@@ -14,6 +14,7 @@ import json
 import math
 import re
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -166,12 +167,18 @@ def _error_result(
     }
 
 
-def _cache_key(query: str) -> str:
+def _cache_key(query: str, depth_hint: str | None = None) -> str:
     base = re.sub(r"\s+", " ", (query or "").strip().lower())
-    return hashlib.sha256(base.encode("utf-8")).hexdigest()
+    depth_scope = str(depth_hint or "auto").strip().lower()
+    return hashlib.sha256(
+        f"{depth_scope}\n{base}".encode("utf-8")
+    ).hexdigest()
 
 
-async def _load_cache(query: str) -> dict[str, Any] | None:
+async def _load_cache(
+    query: str,
+    depth_hint: str | None = None,
+) -> dict[str, Any] | None:
     ttl = _bounded_int(
         getattr(config, "WEB_RAG_CACHE_TTL_SECONDS", 300),
         300,
@@ -181,7 +188,7 @@ async def _load_cache(query: str) -> dict[str, Any] | None:
     if ttl <= 0:
         return None
 
-    key = _cache_key(query)
+    key = _cache_key(query, depth_hint)
     now = time.time()
     async with _pipeline_cache_lock:
         item = _pipeline_cache.get(key)
@@ -194,7 +201,11 @@ async def _load_cache(query: str) -> dict[str, Any] | None:
         return dict(payload)
 
 
-async def _save_cache(query: str, payload: dict[str, Any]) -> None:
+async def _save_cache(
+    query: str,
+    payload: dict[str, Any],
+    depth_hint: str | None = None,
+) -> None:
     ttl = _bounded_int(
         getattr(config, "WEB_RAG_CACHE_TTL_SECONDS", 300),
         300,
@@ -210,7 +221,7 @@ async def _save_cache(query: str, payload: dict[str, Any]) -> None:
         1,
         1024,
     )
-    key = _cache_key(query)
+    key = _cache_key(query, depth_hint)
     now = time.time()
     expire_at = now + ttl
 
@@ -247,6 +258,25 @@ def infer_linkup_depth(query: str) -> str:
     ):
         return "fast"
     return "standard"
+
+
+def normalize_linkup_depth_hint(query: str, depth_hint: str | None) -> str:
+    """의미 라우터의 depth 힌트를 실행 가능한 범위로 제한합니다.
+
+    정상 경로에서는 이미 호출한 의미 라우터가 질의의 범위와 순서를 판단합니다.
+    여기서는 추가 LLM 호출이나 이름별 하드코딩 없이, URL·다단계 질의를 fast로
+    잘못 내리는 구조적 오류만 막습니다. 힌트가 없으면 기존 보수적 추론을 씁니다.
+    """
+    normalized = str(depth_hint or "").strip().lower()
+    if normalized not in {"fast", "standard", "deep"}:
+        return infer_linkup_depth(query)
+    if normalized == "fast" and (
+        _extract_first_url(query)
+        or _looks_complex_query(query)
+        or "\n" in str(query or "")
+    ):
+        return "standard"
+    return normalized
 
 
 def _extract_first_url(query: str) -> str | None:
@@ -507,14 +537,39 @@ def _is_low_quality_for_output(
     return False
 
 
-def _should_retry_with_deep(query: str, depth: str, answer: str, source_urls: list[str]) -> bool:
+def _should_retry_for_quality(
+    query: str,
+    depth: str,
+    answer: str,
+    source_urls: list[str],
+) -> bool:
     if depth == "deep":
         return False
     if not bool(getattr(config, "LINKUP_QUALITY_RETRY_ENABLED", True)):
         return False
     if not (_contains_realtime_hint(query) or _looks_complex_query(query)):
         return False
+    output_type = str(
+        getattr(config, "LINKUP_OUTPUT_TYPE", "searchResults")
+        or "searchResults"
+    )
+    if output_type != "sourcedAnswer":
+        min_sources = _bounded_int(
+            getattr(config, "LINKUP_DEEP_RETRY_MIN_SOURCES", 2),
+            2,
+            1,
+            10,
+        )
+        return len(source_urls) < min_sources
     return _is_low_quality(answer, source_urls)
+
+
+def _quality_retry_depth(depth: str) -> str | None:
+    """품질 재시도는 한 단계만 올려 불필요한 deep 비용을 피합니다."""
+    return {
+        "fast": "standard",
+        "standard": "deep",
+    }.get(str(depth or "").strip().lower())
 
 
 def _format_linkup_error(status: int, body: str) -> str:
@@ -535,7 +590,12 @@ def _format_linkup_error(status: int, body: str) -> str:
     return default
 
 
-def _estimate_linkup_cost(endpoint: str, *, depth: str | None = None, render_js: bool | None = None) -> float:
+def _estimate_linkup_cost_usd(
+    endpoint: str,
+    *,
+    depth: str | None = None,
+    render_js: bool | None = None,
+) -> float:
     ep = str(endpoint or "").strip().lower()
     if ep == "search":
         depth_key = str(depth or "standard").strip().lower()
@@ -551,7 +611,7 @@ def _build_budget_exceeded_message(used: float, limit: float, cost: float) -> st
     month_label = datetime.now(KST).strftime("%Y-%m")
     return (
         "Linkup 월 예산 한도에 도달해 외부 검색을 중단했어요. "
-        f"(기준월: {month_label}, 사용: €{used:.3f}, 한도: €{limit:.3f}, 요청비용: €{cost:.3f})"
+        f"(기준월: {month_label}, 사용: ${used:.3f}, 한도: ${limit:.3f}, 요청비용: ${cost:.3f})"
     )
 
 
@@ -579,8 +639,10 @@ async def _linkup_post_json(endpoint: str, payload: dict[str, Any]) -> dict[str,
             async with session.post(url, headers=headers, json=payload) as response:
                 body_text = await response.text()
                 if response.status >= 400:
-                    # 명시적인 4xx 거절은 provider가 처리하지 않은 것으로 보아
-                    # 레거시 폴백을 허용한다. 5xx는 처리/과금 여부를 알 수 없다.
+                    # 명시적인 4xx 거절은 provider가 검색을 수행하지 않은 것으로
+                    # 보아 레거시 폴백을 허용한다. 5xx는 검색 처리가 일부 진행됐을
+                    # 가능성이 있어 같은 요청의 추가 외부 검색을 막는다. 비용 상태는
+                    # 공식 계약에 따라 HTTP 오류 모두 not_billed로 별도 확정한다.
                     fallback_safe = 400 <= response.status < 500
                     raise LinkupRequestError(
                         _format_linkup_error(response.status, body_text),
@@ -615,10 +677,18 @@ async def _execute_billed_linkup_call(
     render_js: bool | None = None,
 ) -> dict[str, Any]:
     """비용 check→reservation→provider call을 프로세스 lock 안에서 수행합니다."""
-    estimated_cost = _estimate_linkup_cost(endpoint, depth=depth, render_js=render_js)
+    estimated_cost = _estimate_linkup_cost_usd(
+        endpoint,
+        depth=depth,
+        render_js=render_js,
+    )
     enforce_budget = bool(getattr(config, "LINKUP_MONTHLY_BUDGET_ENFORCED", True))
     budget_limit = _bounded_float(
-        getattr(config, "LINKUP_MONTHLY_BUDGET_EUR", 4.5),
+        getattr(
+            config,
+            "LINKUP_MONTHLY_BUDGET_USD",
+            getattr(config, "LINKUP_MONTHLY_BUDGET_EUR", 4.5),
+        ),
         4.5,
         0.0,
         1000.0,
@@ -634,10 +704,10 @@ async def _execute_billed_linkup_call(
             )
 
         if enforce_budget:
-            allowed, used, limit = await db_utils.can_spend_linkup_budget(
+            allowed, used, limit = await db_utils.can_spend_linkup_budget_usd(
                 db_conn,
                 estimated_cost,
-                budget_limit_eur=budget_limit,
+                budget_limit_usd=budget_limit,
             )
             if used == float("inf"):
                 raise LinkupReservationError(
@@ -648,21 +718,68 @@ async def _execute_billed_linkup_call(
                     _build_budget_exceeded_message(used, limit, estimated_cost)
                 )
 
-        # 성공/4xx/5xx/timeout 여부와 무관하게 물리 호출 시도 자체의
-        # 예상 비용을 먼저 commit한다. 기록 실패 시 provider는 호출하지 않는다.
-        reserved = await db_utils.log_linkup_usage(
+        # 물리 호출 전에 예상 비용을 예약한다. DB 기록이 실패하면 provider를
+        # 호출하지 않는다. 성공/명시 실패/결과 불명을 호출 뒤에 확정해 실제
+        # 과금과 가깝게 집계하되, 확정 실패 행은 reserved로 남아 과소 계측되지 않는다.
+        request_id = uuid.uuid4().hex
+        reserved = await db_utils.reserve_linkup_usage(
             db_conn,
+            request_id=request_id,
             endpoint=endpoint,
             depth=depth,
             render_js=render_js,
-            cost_eur=estimated_cost,
+            cost_usd=estimated_cost,
         )
         if not reserved:
             raise LinkupReservationError(
                 "Linkup 예상 비용을 저장하지 못해 호출을 중단했습니다."
             )
 
-        return await _linkup_post_json(endpoint, payload)
+        try:
+            result = await _linkup_post_json(endpoint, payload)
+        except LinkupRequestError as exc:
+            # HTTP 오류 응답은 Linkup 문서상 과금되지 않는다. timeout/연결 유실은
+            # provider가 처리했는지 확인할 수 없으므로 보수적으로 과금 추정한다.
+            billing_status = (
+                "not_billed"
+                if exc.status is not None
+                else "billed_assumed"
+            )
+            finalized = await db_utils.finalize_linkup_usage(
+                db_conn,
+                request_id=request_id,
+                billing_status=billing_status,
+            )
+            if not finalized:
+                logger.error(
+                    "[web_search] Linkup 실패 호출 비용 상태 확정 실패. "
+                    "reserved 상태로 보수 집계합니다."
+                )
+            raise
+        except Exception:
+            finalized = await db_utils.finalize_linkup_usage(
+                db_conn,
+                request_id=request_id,
+                billing_status="billed_assumed",
+            )
+            if not finalized:
+                logger.error(
+                    "[web_search] Linkup 결과 불명 호출 비용 상태 확정 실패. "
+                    "reserved 상태로 보수 집계합니다."
+                )
+            raise
+
+        finalized = await db_utils.finalize_linkup_usage(
+            db_conn,
+            request_id=request_id,
+            billing_status="billed",
+        )
+        if not finalized:
+            logger.error(
+                "[web_search] Linkup 성공 호출 비용 확정 실패. "
+                "reserved 상태로 보수 집계합니다."
+            )
+        return result
 
 
 async def _run_fetch_pipeline(url: str, db_conn=None) -> dict[str, Any]:
@@ -718,7 +835,11 @@ async def _run_fetch_pipeline(url: str, db_conn=None) -> dict[str, Any]:
     }
 
 
-async def _run_search_pipeline(user_query: str, depth: str, db_conn=None) -> dict[str, Any]:
+async def _run_search_pipeline(
+    user_query: str,
+    depth: str,
+    db_conn=None,
+) -> dict[str, Any]:
     payload = _build_search_payload(user_query, depth)
     data = await _execute_billed_linkup_call(
         endpoint="search",
@@ -731,7 +852,12 @@ async def _run_search_pipeline(user_query: str, depth: str, db_conn=None) -> dic
     sources = _normalize_sources(data)
     source_urls = _collect_source_urls(sources)
 
-    should_retry = _should_retry_with_deep(user_query, depth, answer, source_urls)
+    should_retry = _should_retry_for_quality(
+        user_query,
+        depth,
+        answer,
+        source_urls,
+    )
     if not should_retry:
         should_retry = (
             depth != "deep"
@@ -740,18 +866,24 @@ async def _run_search_pipeline(user_query: str, depth: str, db_conn=None) -> dic
             and _is_low_quality_for_output(user_query, answer, sources, source_urls)
         )
     if should_retry:
-        retry_payload = _build_search_payload(user_query, "deep")
+        retry_depth = _quality_retry_depth(depth)
+        if retry_depth is None:
+            retry_depth = depth
+        retry_payload = _build_search_payload(user_query, retry_depth)
         retry_data = await _execute_billed_linkup_call(
             endpoint="search",
             payload=retry_payload,
             db_conn=db_conn,
-            depth="deep",
+            depth=retry_depth,
         )
         retry_answer = str(retry_data.get("answer") or "").strip()
         retry_sources = _normalize_sources(retry_data)
         retry_urls = _collect_source_urls(retry_sources)
         if retry_answer or retry_urls:
-            answer, sources, source_urls, depth = retry_answer, retry_sources, retry_urls, "deep"
+            answer = retry_answer
+            sources = retry_sources
+            source_urls = retry_urls
+            depth = retry_depth
 
     if not answer and not source_urls:
         return _error_result(
@@ -784,7 +916,11 @@ async def _run_search_pipeline(user_query: str, depth: str, db_conn=None) -> dic
     }
 
 
-async def _run_uncached_pipeline(user_query: str, db_conn=None) -> dict[str, Any]:
+async def _run_uncached_pipeline(
+    user_query: str,
+    db_conn=None,
+    depth_hint: str | None = None,
+) -> dict[str, Any]:
     """
     Linkup 기반 범용 웹 검색 파이프라인 진입점.
     반환 형식은 tools_cog.web_search_rag() 계약을 따릅니다.
@@ -811,7 +947,8 @@ async def _run_uncached_pipeline(user_query: str, db_conn=None) -> dict[str, Any
             failure_kind="invalid_input",
         )
 
-    cached = await _load_cache(query)
+    effective_depth = normalize_linkup_depth_hint(query, depth_hint)
+    cached = await _load_cache(query, effective_depth)
     if cached:
         cached["cached"] = True
         return cached
@@ -825,7 +962,7 @@ async def _run_uncached_pipeline(user_query: str, db_conn=None) -> dict[str, Any
             )
             result = await _run_fetch_pipeline(url, db_conn=db_conn)
         else:
-            depth = infer_linkup_depth(query)
+            depth = effective_depth
             logger.info(
                 "[web_search] Linkup /search 실행. depth=%s query_chars=%d",
                 depth,
@@ -834,7 +971,7 @@ async def _run_uncached_pipeline(user_query: str, db_conn=None) -> dict[str, Any
             result = await _run_search_pipeline(query, depth, db_conn=db_conn)
 
         if result.get("status") == "success":
-            await _save_cache(query, result)
+            await _save_cache(query, result, effective_depth)
         return result
     except LinkupRequestError as exc:
         logger.warning("[web_search] Linkup 파이프라인 실패: %s", exc)
@@ -877,6 +1014,7 @@ async def _run_singleflight(
     query: str,
     key: str,
     db_conn=None,
+    depth_hint: str | None = None,
 ) -> dict[str, Any]:
     """동일 검색어의 provider 호출을 합치고 작업 종료 시 슬롯을 회수합니다."""
     try:
@@ -888,7 +1026,11 @@ async def _run_singleflight(
         )
         try:
             return await asyncio.wait_for(
-                _run_uncached_pipeline(query, db_conn=db_conn),
+                _run_uncached_pipeline(
+                    query,
+                    db_conn=db_conn,
+                    depth_hint=depth_hint,
+                ),
                 timeout=pipeline_timeout,
             )
         except asyncio.TimeoutError:
@@ -908,7 +1050,11 @@ async def _run_singleflight(
                 _pipeline_inflight.pop(key, None)
 
 
-async def run_linkup_search_pipeline(user_query: str, db_conn=None) -> dict[str, Any]:
+async def run_linkup_search_pipeline(
+    user_query: str,
+    db_conn=None,
+    depth_hint: str | None = None,
+) -> dict[str, Any]:
     """Linkup 검색 진입점. 캐시 미스인 동일 동시 질의는 한 번만 과금합니다."""
     query = re.sub(r"\s+", " ", (user_query or "").strip())
     if not query:
@@ -918,18 +1064,24 @@ async def run_linkup_search_pipeline(user_query: str, db_conn=None) -> dict[str,
             failure_kind="invalid_input",
         )
 
-    cached = await _load_cache(query)
+    effective_depth = normalize_linkup_depth_hint(query, depth_hint)
+    cached = await _load_cache(query, effective_depth)
     if cached:
         cached["cached"] = True
         return cached
 
-    key = _cache_key(query)
+    key = _cache_key(query, effective_depth)
     async with _pipeline_cache_lock:
         task = _pipeline_inflight.get(key)
         shared = task is not None
         if task is None:
             task = asyncio.create_task(
-                _run_singleflight(query, key, db_conn=db_conn),
+                _run_singleflight(
+                    query,
+                    key,
+                    db_conn=db_conn,
+                    depth_hint=effective_depth,
+                ),
                 name=f"linkup:{key[:10]}",
             )
             _pipeline_inflight[key] = task

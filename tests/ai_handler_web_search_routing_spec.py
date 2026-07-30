@@ -124,6 +124,43 @@ async def test_should_use_web_search_for_factual_query_when_rag_is_weak():
     assert should_search is True
 
 
+@pytest.mark.asyncio
+async def test_semantic_router_preserves_bounded_linkup_depth_hint():
+    handler = _build_handler_without_init()
+    handler.use_cometapi = True
+    captured_prompt = {}
+
+    async def _fake_fast(prompt, *_args, **_kwargs):
+        captured_prompt["text"] = prompt
+        return (
+            '{"intent":"오늘 발표된 단일 결과 확인",'
+            '"needs_memory":false,"requires_external_evidence":true,'
+            '"reasoning_level":"low",'
+            '"tools":[{"tool":"web_search","params":{'
+            '"query":"오늘 삼성전기 실적 발표 결과","depth":"fast"}}]}'
+        )
+
+    handler._cometapi_fast_generate_text = _fake_fast
+    decision = await handler._route_tools(
+        "오늘 삼성전기 실적 발표 결과 확인해줘",
+        {"trace_id": "semantic-depth"},
+        history=[],
+    )
+
+    assert decision.plan == [
+        {
+            "tool_to_use": "web_search",
+            "tool_name": "web_search",
+            "parameters": {
+                "query": "오늘 삼성전기 실적 발표 결과",
+                "depth": "fast",
+            },
+        }
+    ]
+    assert "fast는 한 대상의 한 가지 수치·결과" in captured_prompt["text"]
+    assert "단순 최신 질문을 deep으로 올리지 않는다" in captured_prompt["text"]
+
+
 def test_local_memory_query_is_not_treated_as_external_fact():
     handler = _build_handler_without_init()
     assert handler._looks_like_external_fact_query("내가 어제 말했던 계획 기억나?") is False
@@ -1019,6 +1056,7 @@ async def test_execute_web_search_raw_does_not_call_answer_llm():
     class _Tools:
         async def web_search_rag(self, query, **_kwargs):
             assert query == "최신 모델"
+            assert _kwargs["depth_hint"] == "fast"
             return {
                 "status": "success",
                 "context": "[출처 1] 공식 문서\n본문",
@@ -1031,7 +1069,11 @@ async def test_execute_web_search_raw_does_not_call_answer_llm():
         AssertionError("raw 검색 단계에서 LLM을 호출하면 안 됩니다")
     )
 
-    result = await handler._execute_web_search_raw("최신 모델", {})
+    result = await handler._execute_web_search_raw(
+        "최신 모델",
+        {},
+        depth_hint="fast",
+    )
 
     assert result["result"] == "[출처 1] 공식 문서\n본문"
     assert result["source_urls"] == ["https://example.com/docs"]

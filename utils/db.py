@@ -459,10 +459,36 @@ async def _ensure_linkup_usage_table(db: aiosqlite.Connection):
                         depth VARCHAR(32),
                         render_js BOOLEAN,
                         cost_eur DOUBLE NOT NULL,
-                        KEY idx_linkup_usage_time (used_at)
+                        request_id VARCHAR(64),
+                        cost_usd DOUBLE,
+                        billing_status VARCHAR(32),
+                        finalized_at VARCHAR(64),
+                        KEY idx_linkup_usage_time (used_at),
+                        KEY idx_linkup_request_id (request_id)
                     )
                     """
                 )
+                cursor = await db.execute(
+                    """
+                    SELECT COLUMN_NAME
+                    FROM information_schema.COLUMNS
+                    WHERE TABLE_SCHEMA = DATABASE()
+                      AND TABLE_NAME = 'linkup_usage_log'
+                    """
+                )
+                columns = {str(row[0]) for row in await cursor.fetchall()}
+                tidb_columns = {
+                    "request_id": "VARCHAR(64)",
+                    "cost_usd": "DOUBLE",
+                    "billing_status": "VARCHAR(32)",
+                    "finalized_at": "VARCHAR(64)",
+                }
+                for column_name, column_type in tidb_columns.items():
+                    if column_name not in columns:
+                        await db.execute(
+                            f"ALTER TABLE linkup_usage_log "
+                            f"ADD COLUMN {column_name} {column_type}"
+                        )
             else:
                 await db.execute(
                     """
@@ -472,12 +498,35 @@ async def _ensure_linkup_usage_table(db: aiosqlite.Connection):
                         endpoint TEXT NOT NULL,
                         depth TEXT,
                         render_js BOOLEAN,
-                        cost_eur REAL NOT NULL
+                        cost_eur REAL NOT NULL,
+                        request_id TEXT,
+                        cost_usd REAL,
+                        billing_status TEXT,
+                        finalized_at TEXT
                     )
                     """
                 )
+                cursor = await db.execute(
+                    "PRAGMA table_info(linkup_usage_log)"
+                )
+                columns = {str(row[1]) for row in await cursor.fetchall()}
+                sqlite_columns = {
+                    "request_id": "TEXT",
+                    "cost_usd": "REAL",
+                    "billing_status": "TEXT",
+                    "finalized_at": "TEXT",
+                }
+                for column_name, column_type in sqlite_columns.items():
+                    if column_name not in columns:
+                        await db.execute(
+                            f"ALTER TABLE linkup_usage_log "
+                            f"ADD COLUMN {column_name} {column_type}"
+                        )
                 await db.execute(
                     "CREATE INDEX IF NOT EXISTS idx_linkup_usage_time ON linkup_usage_log (used_at DESC)"
+                )
+                await db.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_linkup_request_id ON linkup_usage_log (request_id)"
                 )
             await db.commit()
             setattr(db, _LINKUP_SCHEMA_READY_ATTR, True)
@@ -496,20 +545,176 @@ def _get_month_window_utc(now_utc: datetime | None = None) -> tuple[str, str]:
     return month_start_utc, now_iso
 
 
-async def get_linkup_monthly_spend_eur(db: aiosqlite.Connection, now_utc: datetime | None = None) -> float:
-    """이번 달(KST 기준) Linkup 사용 금액(유로)을 반환합니다."""
+async def get_linkup_monthly_spend_usd(
+    db: aiosqlite.Connection,
+    now_utc: datetime | None = None,
+) -> float:
+    """이번 달(KST 기준) Linkup 확정·보수 추정 사용액(USD)을 반환합니다.
+
+    명시적으로 실패가 확인된 ``not_billed`` 행만 제외합니다. 구버전 행과
+    응답 유실 가능성이 있는 예약 행은 예산 초과를 막기 위해 사용액으로 봅니다.
+    """
     try:
         await _ensure_linkup_usage_table(db)
         start_utc, end_utc = _get_month_window_utc(now_utc)
         async with db.execute(
-            "SELECT COALESCE(SUM(cost_eur), 0) FROM linkup_usage_log WHERE used_at >= ? AND used_at <= ?",
+            """
+            SELECT COALESCE(
+                SUM(
+                    CASE
+                        WHEN COALESCE(billing_status, 'legacy_assumed')
+                             = 'not_billed'
+                        THEN 0
+                        ELSE COALESCE(cost_usd, cost_eur)
+                    END
+                ),
+                0
+            )
+            FROM linkup_usage_log
+            WHERE used_at >= ? AND used_at <= ?
+            """,
             (start_utc, end_utc),
         ) as cursor:
             row = await cursor.fetchone()
             return float(row[0] or 0.0) if row else 0.0
     except Exception as e:
-        logger.error(f"Linkup 월 사용액 조회 중 오류: {e}", exc_info=True)
+        logger.error(f"Linkup 월 USD 사용액 조회 중 오류: {e}", exc_info=True)
         return float("inf")
+
+
+async def can_spend_linkup_budget_usd(
+    db: aiosqlite.Connection,
+    estimated_cost_usd: float,
+    *,
+    budget_limit_usd: float | None = None,
+    now_utc: datetime | None = None,
+) -> tuple[bool, float, float]:
+    """Linkup 월 USD 예산 사용 가능 여부를 확인합니다."""
+    limit = float(
+        config.LINKUP_MONTHLY_BUDGET_USD
+        if budget_limit_usd is None
+        else budget_limit_usd
+    )
+    if limit <= 0:
+        return False, 0.0, limit
+    used = await get_linkup_monthly_spend_usd(db, now_utc=now_utc)
+    if used == float("inf"):
+        return False, used, limit
+    return (used + max(0.0, float(estimated_cost_usd))) <= limit, used, limit
+
+
+async def reserve_linkup_usage(
+    db: aiosqlite.Connection,
+    *,
+    request_id: str,
+    endpoint: str,
+    cost_usd: float,
+    depth: str | None = None,
+    render_js: bool | None = None,
+    used_at_iso: str | None = None,
+) -> bool:
+    """Linkup 물리 호출 직전 USD 예상 비용을 ``reserved``로 기록합니다.
+
+    commit까지 완료된 경우에만 True를 반환합니다. 호출자는 False일 때
+    provider 요청을 실행하지 않아 사용량 저장 장애를 비용 우회로 해석하지
+    않아야 합니다.
+    """
+    try:
+        await _ensure_linkup_usage_table(db)
+        normalized_request_id = str(request_id or "").strip()
+        if not normalized_request_id or len(normalized_request_id) > 64:
+            raise ValueError("Linkup request_id가 비어 있거나 너무 깁니다.")
+        normalized_cost = float(cost_usd)
+        if not 0.0 < normalized_cost <= 1.0:
+            raise ValueError("Linkup 1회 예약 비용은 0 초과 1달러 이하여야 합니다.")
+        used_at = used_at_iso or datetime.now(timezone.utc).isoformat()
+        await db.execute(
+            """
+            INSERT INTO linkup_usage_log (
+                used_at,
+                endpoint,
+                depth,
+                render_js,
+                cost_eur,
+                request_id,
+                cost_usd,
+                billing_status,
+                finalized_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved', NULL)
+            """,
+            (
+                used_at,
+                str(endpoint or "").strip().lower(),
+                (str(depth or "").strip().lower() or None),
+                None if render_js is None else (1 if bool(render_js) else 0),
+                # 기존 NOT NULL 열은 삭제하지 않고 USD 숫자를 호환 미러로 둔다.
+                normalized_cost,
+                normalized_request_id,
+                normalized_cost,
+            ),
+        )
+        await db.commit()
+        return True
+    except Exception as e:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        logger.error(f"Linkup USD 비용 예약 중 오류: {e}", exc_info=True)
+        return False
+
+
+async def finalize_linkup_usage(
+    db: aiosqlite.Connection,
+    *,
+    request_id: str,
+    billing_status: str,
+    finalized_at_iso: str | None = None,
+) -> bool:
+    """예약된 Linkup 호출을 확정합니다.
+
+    ``billed``는 성공 응답, ``not_billed``는 provider가 명시적으로 실패
+    응답을 반환한 경우, ``billed_assumed``는 timeout처럼 청구 여부를 확인할
+    수 없는 경우입니다. 확정 실패 시 행은 ``reserved``로 남아 예산에는 계속
+    포함되므로 과소 계측되지 않습니다.
+    """
+    allowed_statuses = {"billed", "not_billed", "billed_assumed"}
+    normalized_status = str(billing_status or "").strip().lower()
+    if normalized_status not in allowed_statuses:
+        logger.error("허용되지 않은 Linkup billing_status: %s", normalized_status)
+        return False
+    try:
+        await _ensure_linkup_usage_table(db)
+        cursor = await db.execute(
+            """
+            UPDATE linkup_usage_log
+            SET billing_status = ?, finalized_at = ?
+            WHERE request_id = ? AND billing_status = 'reserved'
+            """,
+            (
+                normalized_status,
+                finalized_at_iso or datetime.now(timezone.utc).isoformat(),
+                str(request_id or "").strip(),
+            ),
+        )
+        await db.commit()
+        return int(getattr(cursor, "rowcount", 0) or 0) == 1
+    except Exception as e:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        logger.error(f"Linkup USD 비용 확정 중 오류: {e}", exc_info=True)
+        return False
+
+
+# 단계적 전환을 위한 구버전 함수 별칭입니다. 신규 호출은 USD 이름을 사용합니다.
+async def get_linkup_monthly_spend_eur(
+    db: aiosqlite.Connection,
+    now_utc: datetime | None = None,
+) -> float:
+    return await get_linkup_monthly_spend_usd(db, now_utc=now_utc)
 
 
 async def can_spend_linkup_budget(
@@ -519,14 +724,12 @@ async def can_spend_linkup_budget(
     budget_limit_eur: float | None = None,
     now_utc: datetime | None = None,
 ) -> tuple[bool, float, float]:
-    """Linkup 월 예산 사용 가능 여부를 확인합니다."""
-    limit = float(config.LINKUP_MONTHLY_BUDGET_EUR if budget_limit_eur is None else budget_limit_eur)
-    if limit <= 0:
-        return False, 0.0, limit
-    used = await get_linkup_monthly_spend_eur(db, now_utc=now_utc)
-    if used == float("inf"):
-        return False, used, limit
-    return (used + max(0.0, float(estimated_cost_eur))) <= limit, used, limit
+    return await can_spend_linkup_budget_usd(
+        db,
+        estimated_cost_eur,
+        budget_limit_usd=budget_limit_eur,
+        now_utc=now_utc,
+    )
 
 
 async def log_linkup_usage(
@@ -538,40 +741,27 @@ async def log_linkup_usage(
     render_js: bool | None = None,
     used_at_iso: str | None = None,
 ) -> bool:
-    """Linkup 물리 호출 직전 예상 비용을 예약합니다.
-
-    commit까지 완료된 경우에만 True를 반환합니다. 호출자는 False일 때
-    provider 요청을 실행하지 않아 사용량 저장 장애를 비용 우회로 해석하지
-    않아야 합니다.
-    """
-    try:
-        await _ensure_linkup_usage_table(db)
-        normalized_cost = float(cost_eur)
-        if not 0.0 < normalized_cost <= 1.0:
-            raise ValueError("Linkup 1회 예약 비용은 0 초과 1유로 이하여야 합니다.")
-        used_at = used_at_iso or datetime.now(timezone.utc).isoformat()
-        await db.execute(
-            """
-            INSERT INTO linkup_usage_log (used_at, endpoint, depth, render_js, cost_eur)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                used_at,
-                str(endpoint or "").strip().lower(),
-                (str(depth or "").strip().lower() or None),
-                None if render_js is None else (1 if bool(render_js) else 0),
-                normalized_cost,
-            ),
-        )
-        await db.commit()
-        return True
-    except Exception as e:
-        try:
-            await db.rollback()
-        except Exception:
-            pass
-        logger.error(f"Linkup 사용량 기록 중 오류: {e}", exc_info=True)
+    """구버전 호출자를 즉시 확정된 사용액으로 기록하는 호환 wrapper."""
+    request_id = (
+        "legacy-"
+        + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    )
+    reserved = await reserve_linkup_usage(
+        db,
+        request_id=request_id,
+        endpoint=endpoint,
+        cost_usd=cost_eur,
+        depth=depth,
+        render_js=render_js,
+        used_at_iso=used_at_iso,
+    )
+    if not reserved:
         return False
+    return await finalize_linkup_usage(
+        db,
+        request_id=request_id,
+        billing_status="billed",
+    )
 
 
 async def get_daily_api_count(db: aiosqlite.Connection, api_type: str) -> int:

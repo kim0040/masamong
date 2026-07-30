@@ -506,7 +506,14 @@ class IntentAnalyzer:
                 {
                     "tool_to_use": "web_search",
                     "tool_name": "web_search",
-                    "parameters": {"query": search_query},
+                    "parameters": {
+                        "query": search_query,
+                        # 시장 브리핑은 서로 독립적인 여러 최신 출처를 한 번에
+                        # 찾는 유형이라 Linkup 권장 계약상 standard가 맞다.
+                        "depth": "standard",
+                    }
+                    if market_brief
+                    else {"query": search_query},
                 }
             )
             logger.warning(
@@ -532,7 +539,8 @@ class IntentAnalyzer:
                 item["parameters"] = {
                     "query": self._build_finance_news_query(
                         finance_search_base
-                    )
+                    ),
+                    "depth": "standard",
                 }
                 break
 
@@ -889,7 +897,11 @@ class IntentAnalyzer:
             "요청의 목적과 최근 대화 흐름으로 판단한다. 답변은 쓰지 말고 JSON 객체 "
             "하나만 반환한다. 근거 없는 웹 검색이나 파라미터를 만들지 않는다.\n"
             "도구:\n"
-            "- web_search(query): 공개 웹의 최신 사실·공식 자료·가격·일정·뉴스·후기·비교\n"
+            "- web_search(query, depth): 공개 웹의 최신 사실·공식 자료·가격·일정·뉴스·후기·비교. "
+            "depth는 fast, standard, deep 중 하나다. fast는 한 대상의 한 가지 수치·결과처럼 "
+            "짧고 초점이 분명한 단일 조회, standard는 일반 검색·뉴스·여러 출처 확인, "
+            "deep은 먼저 찾은 URL을 다시 읽거나 여러 단계·여러 페이지를 순서대로 조사할 "
+            "때만 사용한다. 비용과 지연 때문에 단순 최신 질문을 deep으로 올리지 않는다.\n"
             "- get_weather_forecast(location, day_offset): 지역 날씨, 오늘 0~10일 뒤\n"
             "- get_market_snapshot(region): 주요 시장 지수의 검증된 최신 수치. "
             "region은 kr, us, global 중 하나\n"
@@ -1320,6 +1332,9 @@ class IntentAnalyzer:
             if trust_llm:
                 if name == "web_search":
                     search_query = str(params.get("query") or query).strip()
+                    depth_hint = str(
+                        params.get("depth") or ""
+                    ).strip().lower()
                     if not search_query:
                         logger.info(
                             "[도구보정] 빈 web_search query 제거",
@@ -1327,6 +1342,8 @@ class IntentAnalyzer:
                         )
                         continue
                     params = {"query": search_query[:800]}
+                    if depth_hint in {"fast", "standard", "deep"}:
+                        params["depth"] = depth_hint
                 elif name == "get_weather_forecast":
                     location = str(params.get("location") or "").strip()
                     if not location:
@@ -1502,6 +1519,13 @@ class IntentAnalyzer:
                 ):
                     logger.info("[도구보정] 명시적 탐색 의도 부족으로 web_search 제거", extra=log_extra)
                     continue
+
+                depth_hint = str(params.get("depth") or "").strip().lower()
+                params = {
+                    "query": str(params.get("query") or query).strip()[:800],
+                }
+                if depth_hint in {"fast", "standard", "deep"}:
+                    params["depth"] = depth_hint
 
             candidate = {
                 "tool_to_use": name,

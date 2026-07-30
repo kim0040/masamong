@@ -322,6 +322,29 @@ class ReMasamongBot(commands.Bot):
                 "guild_settings 필수 컬럼이 없습니다: " + ", ".join(missing_columns)
             )
 
+        linkup_columns = set(
+            await get_table_columns(self.db, "linkup_usage_log")
+        )
+        required_linkup_columns = {
+            "used_at",
+            "endpoint",
+            "depth",
+            "render_js",
+            "cost_eur",
+            "request_id",
+            "cost_usd",
+            "billing_status",
+            "finalized_at",
+        }
+        missing_linkup_columns = sorted(
+            required_linkup_columns - linkup_columns
+        )
+        if missing_linkup_columns:
+            raise RuntimeError(
+                "linkup_usage_log 필수 컬럼이 없습니다: "
+                + ", ".join(missing_linkup_columns)
+            )
+
         if config.REQUIRE_EXPLICIT_PROFILE:
             user_profile_columns = set(
                 await get_table_columns(self.db, "user_profiles")

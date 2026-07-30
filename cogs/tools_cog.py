@@ -475,6 +475,7 @@ class ToolsCog(commands.Cog):
         *,
         guild_id: int | None = None,
         user_id: int | None = None,
+        depth_hint: str | None = None,
     ) -> dict:
         """
         범용 탐색 RAG 파이프라인을 실행합니다.
@@ -528,6 +529,7 @@ class ToolsCog(commands.Cog):
                     linkup_result = await run_linkup_search_pipeline(
                         query,
                         db_conn=self.bot.db,
+                        depth_hint=depth_hint,
                     )
                 except Exception as e:
                     # 실행 계약 밖으로 예외가 새면 provider 호출 여부를 알 수

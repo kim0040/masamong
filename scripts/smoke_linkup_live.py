@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
         "--query",
         default="OpenAI API 최신 공식 업데이트",
     )
-    parser.add_argument("--max-cost-eur", type=float, default=0.005)
+    parser.add_argument("--max-cost-usd", type=float, default=0.005)
     parser.add_argument("--run", action="store_true")
     parser.add_argument("--confirm")
     return parser.parse_args()
@@ -78,15 +78,15 @@ async def run(args: argparse.Namespace) -> int:
     if linkup_search._extract_first_url(query):
         raise SystemExit("비용이 달라질 수 있는 직접 URL smoke는 허용하지 않습니다.")
     depth = linkup_search.infer_linkup_depth(query)
-    estimated = linkup_search._estimate_linkup_cost("search", depth=depth)
-    if estimated > float(args.max_cost_eur):
+    estimated = linkup_search._estimate_linkup_cost_usd("search", depth=depth)
+    if estimated > float(args.max_cost_usd):
         raise SystemExit(
-            f"예상 비용 €{estimated:.3f}이 상한 €{args.max_cost_eur:.3f}을 넘습니다."
+            f"예상 비용 ${estimated:.3f}이 상한 ${args.max_cost_usd:.3f}을 넘습니다."
         )
     expected_confirmation = (
         "RUN ONE LINKUP SEARCH FOR "
         f"profile={args.expected_profile} "
-        f"max_cost_eur={float(args.max_cost_eur):.3f}"
+        f"max_cost_usd={float(args.max_cost_usd):.3f}"
     )
     if not args.run:
         print(
@@ -113,7 +113,7 @@ async def run(args: argparse.Namespace) -> int:
 
     print(
         "status={status} provider={provider} kind={kind} sources={sources} "
-        "context_chars={chars} max_reserved_cost_eur={cost:.3f}".format(
+        "context_chars={chars} max_reserved_cost_usd={cost:.3f}".format(
             status=result.get("status"),
             provider=result.get("provider"),
             kind=result.get("search_kind"),

@@ -31,6 +31,30 @@ def test_infer_linkup_depth():
     assert linkup_search.infer_linkup_depth("이번 전북대 축제 라인업 어떰?") == "standard"
 
 
+def test_semantic_depth_hint_is_used_but_fast_is_blocked_for_multistep_queries():
+    assert (
+        linkup_search.normalize_linkup_depth_hint(
+            "오늘 삼성전기 실적 발표 결과",
+            "fast",
+        )
+        == "fast"
+    )
+    assert (
+        linkup_search.normalize_linkup_depth_hint(
+            "먼저 공식 URL을 찾고 여러 자료를 비교 분석해줘",
+            "fast",
+        )
+        == "standard"
+    )
+    assert (
+        linkup_search.normalize_linkup_depth_hint(
+            "https://example.com 내용을 확인해줘",
+            "fast",
+        )
+        == "standard"
+    )
+
+
 def test_url_query_prefers_fetch_first():
     assert linkup_search._should_fetch_first("요약해줘 https://example.com", "https://example.com") is True
     assert (
@@ -73,6 +97,89 @@ async def test_run_linkup_search_pipeline_uses_search(monkeypatch):
     assert "includeInlineCitations" not in calls[0][1]
     assert "fromDate" in calls[0][1]
     assert "toDate" in calls[0][1]
+
+
+@pytest.mark.asyncio
+async def test_semantic_fast_hint_reaches_linkup_payload(monkeypatch):
+    calls = []
+
+    async def fake_post(endpoint: str, payload: dict):
+        calls.append((endpoint, dict(payload)))
+        return {
+            "results": [
+                {
+                    "name": "공식 실적",
+                    "url": "https://example.com/result",
+                    "content": "공식 발표 수치와 기준 시각 " * 8,
+                },
+                {
+                    "name": "거래소 공시",
+                    "url": "https://example.org/filing",
+                    "content": "거래소 공시 수치와 발표 시각 " * 8,
+                },
+            ]
+        }
+
+    monkeypatch.setattr(linkup_search, "_linkup_post_json", fake_post)
+
+    async with aiosqlite.connect(":memory:") as db:
+        result = await linkup_search.run_linkup_search_pipeline(
+            "오늘 삼성전기 실적 발표 결과",
+            db_conn=db,
+            depth_hint="fast",
+        )
+
+    assert result["status"] == "success"
+    assert result["quality"]["depth"] == "fast"
+    assert calls[0][1]["depth"] == "fast"
+
+
+@pytest.mark.asyncio
+async def test_fast_quality_retry_only_steps_up_to_standard(monkeypatch):
+    calls = []
+
+    async def fake_post(endpoint: str, payload: dict):
+        calls.append((endpoint, dict(payload)))
+        if payload["depth"] == "fast":
+            return {
+                "results": [
+                    {
+                        "name": "결과 하나",
+                        "url": "https://one.example.com",
+                        "content": "짧음",
+                    }
+                ]
+            }
+        return {
+            "results": [
+                {
+                    "name": "공식 자료",
+                    "url": "https://a.example.com",
+                    "content": "충분한 공식 자료 발췌 " * 8,
+                },
+                {
+                    "name": "보조 자료",
+                    "url": "https://b.example.com",
+                    "content": "충분한 보조 자료 발췌 " * 8,
+                },
+            ]
+        }
+
+    monkeypatch.setattr(linkup_search, "_linkup_post_json", fake_post)
+
+    async with aiosqlite.connect(":memory:") as db:
+        result = await linkup_search.run_linkup_search_pipeline(
+            "오늘 삼성전기 실적 발표 결과",
+            db_conn=db,
+            depth_hint="fast",
+        )
+
+    assert result["status"] == "success"
+    assert result["quality"]["depth"] == "standard"
+    assert [payload["depth"] for _, payload in calls] == [
+        "fast",
+        "standard",
+    ]
 
 
 @pytest.mark.asyncio

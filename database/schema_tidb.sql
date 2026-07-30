@@ -34,8 +34,13 @@ CREATE TABLE IF NOT EXISTS linkup_usage_log (
     endpoint VARCHAR(32) NOT NULL,
     depth VARCHAR(32),
     render_js BOOLEAN,
-    cost_eur DOUBLE NOT NULL,
-    KEY idx_linkup_usage_time (used_at)
+    cost_eur DOUBLE NOT NULL COMMENT '구버전 호환용 USD 숫자 미러',
+    request_id VARCHAR(64),
+    cost_usd DOUBLE,
+    billing_status VARCHAR(32),
+    finalized_at VARCHAR(64),
+    KEY idx_linkup_usage_time (used_at),
+    KEY idx_linkup_request_id (request_id)
 );
 
 -- 채널 요약의 증분 기준점. 기존 대화 행은 수정하거나 삭제하지 않는다.

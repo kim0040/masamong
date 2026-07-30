@@ -113,7 +113,8 @@ deletes conversation or memory rows.
 - KMA: observation, nowcast, forecasts, warnings, earthquakes, and on-demand
   official typhoon analysis/forecast
 - Finance: Finnhub/yfinance/KRX/EximBank with market-evidence validation
-- Web/news: Linkup with a bounded fallback and visible source links
+- Web/news: Linkup with semantic `fast`/`standard`/`deep` selection, one-step
+  quality escalation, a bounded fallback, and visible source links
 - Places: Kakao Local
 - Images: CometAPI Gemini-native `generateContent`
 
@@ -121,6 +122,11 @@ Source details are revealed by the newspaper reaction and hidden again when the
 reaction is removed. Earthquake notices use formal shared wording; events in the
 same sequence update one Discord message instead of producing an endless stream.
 Server-specific personas are applied only inside that server.
+
+Linkup usage is budgeted in USD. Each physical call is reserved before it starts,
+then finalized as billed, explicitly not billed, or conservatively assumed billed
+when a timeout makes the provider outcome unknowable. Legacy rows and the
+`cost_eur` compatibility column remain untouched.
 
 ## Privacy and administration
 
