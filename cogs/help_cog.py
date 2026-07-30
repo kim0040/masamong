@@ -224,7 +224,7 @@ class MasamongHelpCommand(commands.HelpCommand):
             )
         elif command.name == '공지':
             examples = (
-                f"`{prefix}공지 등록 전북대 소프트웨어공학과 3학년, 오전 9시 알림`\n"
+                f"`{prefix}공지 등록 <학교 이름> <학과> <학년>, 오전 9시 알림`\n"
                 f"`{prefix}공지 상태`\n"
                 f"`{prefix}공지 정보`\n"
                 f"`{prefix}공지 시간 09:00`"

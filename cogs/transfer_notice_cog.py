@@ -175,7 +175,7 @@ class TransferSchoolSelect(discord.ui.Select):
         ]
         source_count = len(options)
         super().__init__(
-            placeholder=f"알림 받을 대학을 1~{source_count}개 선택",
+            placeholder=f"자동 알림 받을 대학을 1~{source_count}개 선택",
             min_values=1,
             max_values=source_count,
             options=options,
@@ -225,6 +225,67 @@ class TransferSchoolSelect(discord.ui.Select):
         )
 
 
+class TransferOfficialLinkSelect(discord.ui.Select):
+    """지원 대학을 같은 형식으로 보여주는 공식 공지 바로가기."""
+
+    def __init__(
+        self,
+        cog: "TransferNoticeCog",
+        user_id: int,
+    ) -> None:
+        self.cog = cog
+        self.user_id = int(user_id)
+        combined_sources = {
+            **cog.sources,
+            **cog.manual_sources,
+        }
+        options = []
+        for source in sorted(
+            combined_sources.values(),
+            key=lambda item: item.university,
+        ):
+            options.append(
+                discord.SelectOption(
+                    label=source.university[:100],
+                    value=source.source_id,
+                    description="공식 입학처 편입 공지",
+                    emoji="🔗",
+                )
+            )
+        super().__init__(
+            placeholder=f"학교별 공식 공지 바로가기 ({len(options)}개교)",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if int(interaction.user.id) != self.user_id:
+            await interaction.response.send_message(
+                "이 메뉴는 명령을 부른 사람만 쓸 수 있어요.",
+                ephemeral=True,
+            )
+            return
+        source_id = str(self.values[0]) if self.values else ""
+        source = self.cog.sources.get(source_id) or self.cog.manual_sources.get(
+            source_id
+        )
+        if source is None:
+            await interaction.response.send_message(
+                "공식 공지 주소를 찾지 못했어요. 메뉴를 다시 열어주세요.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            f"🔗 **{source.university} 편입 공식 공지**\n"
+            f"<{source.official_url}>\n"
+            "지원 조건과 일정은 해당 연도 최종 모집요강에서 확인해주세요.",
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+
 class TransferDashboardView(ReliableView):
     def __init__(
         self,
@@ -238,17 +299,8 @@ class TransferDashboardView(ReliableView):
         self.cog = cog
         self.user_id = int(user_id)
         self.add_item(TransferSchoolSelect(cog, user_id, selected))
-        for source in cog.manual_sources.values():
-            self.add_item(
-                discord.ui.Button(
-                    label=f"{source.university} 공식 공지"[:80],
-                    emoji="🔗",
-                    style=discord.ButtonStyle.link,
-                    url=source.official_url,
-                    row=2,
-                )
-            )
-        self.subscribe_all.label = f"전체 {len(cog.sources)}개 구독"
+        self.add_item(TransferOfficialLinkSelect(cog, user_id))
+        self.subscribe_all.label = f"자동 알림 전체 {len(cog.sources)}개"
         self.pause_resume.label = "구독 취소" if active else "구독 재개"
         self.pause_resume.style = (
             discord.ButtonStyle.secondary
@@ -687,13 +739,10 @@ class TransferNoticeCog(commands.Cog):
         else:
             description += "\n\n아래에서 관심 대학을 선택하면 구독이 시작됩니다."
         if self.manual_sources:
-            manual_names = ", ".join(
-                source.university for source in self.manual_sources.values()
-            )
             description += (
-                "\n\n**공식 공지 직접 확인**\n"
-                f"{manual_names}은 공식 사이트의 자동 접근 정책으로 현재 알림 "
-                "대상에 넣지 않습니다. 아래 링크 버튼에서 바로 확인할 수 있어요."
+                "\n\n모든 대학의 공식 공지는 아래 **학교별 공식 공지 바로가기**에서 "
+                "같은 방식으로 확인할 수 있어요. 자동 확인이 허용되지 않는 학교는 "
+                "직접 확인으로 안내합니다."
             )
         payload = self._load_payload()
         if payload is not None:

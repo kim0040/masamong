@@ -984,7 +984,8 @@ class SchoolNoticeCog(commands.Cog):
         row = await self._profile_row(ctx.author.id)
         if row is None:
             await ctx.reply(
-                "아직 등록된 학교가 없어요. DM에서 `!공지 등록 전북대 소프트웨어공학과 3학년, 오전 9시 알림`처럼 편하게 말해주시면 돼요."
+                "아직 등록된 학교가 없어요. DM에서 `!공지 등록`을 실행한 뒤 "
+                "학교·학과·학년·관심 공지와 알림 시각을 편하게 말해주세요."
             )
             return None
         return row
@@ -1779,8 +1780,8 @@ class SchoolNoticeCog(commands.Cog):
         embed.add_field(
             name="가장 쉬운 사용법",
             value=(
-                "`전북대 소프트웨어공학과 3학년이고 장학·인턴 공지를 "
-                "오전 9시에 알려줘`처럼 DM으로 말해보세요."
+                "`[학교 이름] [학과] [학년]이고 장학·인턴 공지를 오전 9시에 "
+                "알려줘`처럼 DM으로 말해보세요."
             ),
             inline=False,
         )
@@ -2233,7 +2234,7 @@ class SchoolNoticeCog(commands.Cog):
                     await ctx.reply(
                         "학교, 캠퍼스/학과, 과정·학년, 관심 공지와 원하는 알림 시각을 "
                         "한 문장으로 말씀해주세요.\n"
-                        "예: `전북대 소프트웨어공학과 3학년이고 장학·인턴 공지를 "
+                        "예: `[학교 이름] [학과] [학년]이고 장학·인턴 공지를 "
                         "오전 9시에 받고 싶어`"
                     )
                 while draft is None:
