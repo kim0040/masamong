@@ -107,6 +107,37 @@ def test_daily_greeting_schedule_uses_real_kst_offset():
             assert scheduled.utcoffset() == timedelta(hours=9)
 
 
+def test_earthquake_poll_success_log_is_sampled_but_changes_are_immediate():
+    weather_utils._KMA_SUCCESS_LOG_STATE.clear()
+
+    assert weather_utils._should_log_kma_success(
+        "eqk",
+        4,
+        now_monotonic=100.0,
+    )
+    assert not weather_utils._should_log_kma_success(
+        "eqk",
+        4,
+        now_monotonic=159.0,
+    )
+    assert weather_utils._should_log_kma_success(
+        "eqk",
+        5,
+        now_monotonic=160.0,
+    )
+    assert weather_utils._should_log_kma_success(
+        "eqk",
+        5,
+        now_monotonic=3_760.0,
+    )
+    assert weather_utils._should_log_kma_success(
+        "forecast",
+        5,
+        now_monotonic=3_761.0,
+    )
+    weather_utils._KMA_SUCCESS_LOG_STATE.clear()
+
+
 @pytest.mark.asyncio
 async def test_rain_partial_channel_and_llm_failure_are_consumed_once(monkeypatch):
     """LLM/한 채널 실패가 있어도 성공 채널 중복 전송과 LLM 재호출을 막는다."""

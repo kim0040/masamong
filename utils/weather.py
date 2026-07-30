@@ -34,6 +34,38 @@ _SENSITIVE_QUERY_KEYS = frozenset({
     "token",
 })
 _KMA_HTTP_LOCAL = threading.local()
+_KMA_SUCCESS_LOG_STATE: dict[str, tuple[float, int]] = {}
+_KMA_URGENT_SUCCESS_LOG_INTERVAL_SECONDS = 60 * 60
+
+
+def _should_log_kma_success(
+    api_type: str,
+    item_count: int,
+    *,
+    now_monotonic: float | None = None,
+) -> bool:
+    """1분 긴급 폴링 성공은 변화·첫 실행·시간별 heartbeat만 INFO로 남깁니다."""
+    normalized_type = str(api_type or "").strip().lower()
+    if normalized_type != "eqk":
+        return True
+    now_value = (
+        time.monotonic()
+        if now_monotonic is None
+        else float(now_monotonic)
+    )
+    previous = _KMA_SUCCESS_LOG_STATE.get(normalized_type)
+    should_log = (
+        previous is None
+        or int(previous[1]) != int(item_count)
+        or now_value - float(previous[0])
+        >= _KMA_URGENT_SUCCESS_LOG_INTERVAL_SECONDS
+    )
+    if should_log:
+        _KMA_SUCCESS_LOG_STATE[normalized_type] = (
+            now_value,
+            int(item_count),
+        )
+    return should_log
 
 
 def _get_kma_http_session() -> requests.Session:
@@ -234,7 +266,26 @@ async def _fetch_kma_api(
                          items_data = res_body.get('items', {}).get('item', []) if isinstance(res_body.get('items'), dict) else res_body.get('items', [])
                          count = len(items_data) if isinstance(items_data, list) else (1 if items_data else 0)
                          
-                         logger.info(f"🌦️ [KMA API] {endpoint} ({api_type}) -> {count} items fetched.")
+                         success_extra = {
+                             "event": "kma_call_completed",
+                             "outcome": "succeeded",
+                             "tool_name": f"kma_{api_type}",
+                             "source_count": count,
+                         }
+                         if _should_log_kma_success(api_type, count):
+                             logger.info(
+                                 "기상청 API 조회 완료: type=%s item_count=%d",
+                                 api_type,
+                                 count,
+                                 extra=success_extra,
+                             )
+                         else:
+                             logger.debug(
+                                 "기상청 API 조회 완료: type=%s item_count=%d",
+                                 api_type,
+                                 count,
+                                 extra=success_extra,
+                             )
                          
                          if data.get('response', {}).get('header', {}).get('resultCode') != '00':
                              error_msg = data.get('response', {}).get('header', {}).get('resultMsg', 'Unknown API Error')

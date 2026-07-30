@@ -272,6 +272,20 @@ TiDB Starter 보호 방식:
 - 운영 감사 스크립트는 stale-read read-only transaction 사용
 - vector 마이그레이션은 별도 명시적 단계이며 기본 배포에서 실행하지 않음
 
+## 운영 로그와 요청 추적
+
+- 일반 로그는 회전되는 JSON Lines 파일, 오류 로그는 `ERROR` 이상 전용 파일로 분리한다.
+- AI 요청 하나는 임의의 `trace_id`로 라우팅, LLM 물리 호출, 도구 실행, Discord 전달,
+  최종 종료 레코드를 연결한다.
+- 종료 레코드에는 `outcome`, 마지막 `stage`, 전체 `duration_ms`, 실행한 도구 수를 남긴다.
+  도구와 LLM 호출은 개별 소요 시간·대기 시간·실패 유형을 별도로 남긴다.
+- 구조화 필드는 고정 allowlist와 길이 상한을 사용한다. 기본 설정에서는 질문, 프롬프트,
+  검색 결과, 답변 본문과 도구 파라미터를 로그나 분석 table에 저장하지 않는다.
+- 1분 지진 감시는 계속 수행하되 정상 성공 로그는 첫 실행·결과 개수 변화·시간별
+  heartbeat만 `INFO`로 기록한다. 오류와 실제 신규 지진 처리는 즉시 기록한다.
+- Discord 운영 로그에는 `WARNING` 이상만 보내며 bounded queue를 사용한다. `trace_id`가
+  있으면 footer에 표시해 파일 로그와 연결할 수 있다.
+
 ## 수명주기와 실패 격리
 
 - `tasks.loop` 본문은 한 tick 작업량과 timeout이 제한된다.

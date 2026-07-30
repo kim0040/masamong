@@ -51,6 +51,31 @@ _CREDENTIAL_PATTERN = re.compile(
     r"|(?:api[-_]?key|servicekey|token|password|secret)\s*[:=]\s*)"
     r"([^&,\s\"']+)"
 )
+_STRUCTURED_LOG_FIELDS = (
+    "guild_id",
+    "user_id",
+    "channel_id",
+    "author_id",
+    "trace_id",
+    "event",
+    "outcome",
+    "stage",
+    "tool_name",
+    "failure_kind",
+    "duration_ms",
+    "queue_wait_ms",
+    "source_count",
+    "step",
+    "step_count",
+    "tool_count",
+    "route_source",
+    "reasoning_level",
+    "needs_memory",
+    "lane",
+    "command",
+    "error_kind",
+)
+_STRUCTURED_TEXT_MAX_CHARS = 128
 
 
 def _redact_log_text(value: object) -> str:
@@ -59,6 +84,14 @@ def _redact_log_text(value: object) -> str:
     for secret_value in _SENSITIVE_VALUES:
         rendered = rendered.replace(secret_value, "[REDACTED]")
     return _CREDENTIAL_PATTERN.sub(r"\1[REDACTED]", rendered)
+
+
+def _safe_structured_log_value(value: object) -> object:
+    """구조화 필드가 원문·거대 객체를 우발적으로 품지 않게 제한합니다."""
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    rendered = re.sub(r"[\x00-\x1f\x7f]+", " ", str(value)).strip()
+    return _redact_log_text(rendered[:_STRUCTURED_TEXT_MAX_CHARS])
 
 # 로깅 시간 포맷을 KST로 변환하는 함수
 def time_converter(*args):
@@ -123,10 +156,11 @@ class JsonFormatter(logging.Formatter):
             )
 
         # 로깅 호출 시 extra에 추가된 커스텀 필드를 로그 객체에 포함시킵니다.
-        extra_fields = ['guild_id', 'user_id', 'channel_id', 'author_id', 'trace_id']
-        for field in extra_fields:
+        for field in _STRUCTURED_LOG_FIELDS:
             if hasattr(record, field):
-                log_object[field] = getattr(record, field)
+                log_object[field] = _safe_structured_log_value(
+                    getattr(record, field)
+                )
 
         return json.dumps(log_object, ensure_ascii=False)
 
@@ -205,7 +239,13 @@ class DiscordLogHandler(logging.Handler):
             message_content = message_content[:1000] + "..."
 
         embed.add_field(name="Message", value=f"```\n{message_content}\n```", inline=False)
-        embed.set_footer(text=f"{record.filename}:{record.lineno}")
+        trace_id = _safe_structured_log_value(
+            getattr(record, "trace_id", None)
+        )
+        footer = f"{record.filename}:{record.lineno}"
+        if trace_id:
+            footer += f" · trace={trace_id}"
+        embed.set_footer(text=footer)
         return embed
 
 async def discord_logging_task():

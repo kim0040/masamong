@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
@@ -157,6 +158,32 @@ class LLMClient:
         받습니다. 획득 timeout 시 생성되지 않은 coroutine이 남는 문제를 피하고,
         모든 진입점이 동일한 실제 provider-call 경계를 공유하게 합니다.
         """
+        started_at = time.monotonic()
+        queue_wait_ms = 0
+        base_extra = dict(log_extra or {})
+
+        def outcome_extra(
+            outcome: str,
+            *,
+            failure_kind: str | None = None,
+            skip_discord: bool = False,
+        ) -> dict[str, Any]:
+            extra = {
+                **base_extra,
+                "event": "llm_call_completed",
+                "lane": str(lane_name or "unknown")[:128],
+                "outcome": outcome,
+                "duration_ms": round(
+                    max(0.0, time.monotonic() - started_at) * 1000
+                ),
+                "queue_wait_ms": queue_wait_ms,
+            }
+            if failure_kind:
+                extra["failure_kind"] = failure_kind
+            if skip_discord:
+                extra["skip_discord"] = True
+            return extra
+
         acquired = False
         try:
             try:
@@ -165,7 +192,21 @@ class LLMClient:
                     timeout=self._acquire_timeout_seconds,
                 )
                 acquired = True
+                queue_wait_ms = round(
+                    max(0.0, time.monotonic() - started_at) * 1000
+                )
             except asyncio.TimeoutError as exc:
+                logger.warning(
+                    "LLM 호출 종료: lane=%s outcome=failed "
+                    "failure_kind=admission_timeout duration_ms=%d",
+                    lane_name,
+                    round(max(0.0, time.monotonic() - started_at) * 1000),
+                    extra=outcome_extra(
+                        "failed",
+                        failure_kind="admission_timeout",
+                        skip_discord=True,
+                    ),
+                )
                 raise LLMAdmissionTimeoutError(
                     f"{lane_name} LLM 호출 슬롯을 "
                     f"{self._acquire_timeout_seconds:g}초 안에 확보하지 못했습니다."
@@ -182,17 +223,57 @@ class LLMClient:
                         await db_utils.log_api_call(self._db, "llm_attempt")
                     return await call_factory()
 
-                return await asyncio.wait_for(
+                result = await asyncio.wait_for(
                     _record_and_call(),
                     timeout=self._call_timeout_seconds,
                 )
+                duration_ms = round(
+                    max(0.0, time.monotonic() - started_at) * 1000
+                )
+                logger.info(
+                    "LLM 호출 종료: lane=%s outcome=succeeded "
+                    "duration_ms=%d queue_wait_ms=%d",
+                    lane_name,
+                    duration_ms,
+                    queue_wait_ms,
+                    extra=outcome_extra("succeeded"),
+                )
+                return result
             except asyncio.CancelledError:
+                logger.info(
+                    "LLM 호출 종료: lane=%s outcome=cancelled duration_ms=%d",
+                    lane_name,
+                    round(max(0.0, time.monotonic() - started_at) * 1000),
+                    extra=outcome_extra(
+                        "cancelled",
+                        failure_kind="cancelled",
+                        skip_discord=True,
+                    ),
+                )
                 raise
             except Exception as exc:
                 is_provider_timeout = (
                     isinstance(exc, asyncio.TimeoutError)
                     or (APITimeoutError is not None and isinstance(exc, APITimeoutError))
                     or "timeout" in type(exc).__name__.lower()
+                )
+                failure_kind = (
+                    "provider_timeout"
+                    if is_provider_timeout
+                    else type(exc).__name__[:128]
+                )
+                logger.warning(
+                    "LLM 호출 종료: lane=%s outcome=failed "
+                    "failure_kind=%s duration_ms=%d queue_wait_ms=%d",
+                    lane_name,
+                    failure_kind,
+                    round(max(0.0, time.monotonic() - started_at) * 1000),
+                    queue_wait_ms,
+                    extra=outcome_extra(
+                        "failed",
+                        failure_kind=failure_kind,
+                        skip_discord=True,
+                    ),
                 )
                 if is_provider_timeout:
                     raise LLMProviderTimeoutError(

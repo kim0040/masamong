@@ -21,6 +21,9 @@ def test_tool_outcome_logging_is_bounded_and_omits_result_content(caplog):
                 "source_urls": ["https://example.com/a", "https://example.com/b"],
             },
             {"trace_id": "tool-success"},
+            duration_ms=123,
+            step=1,
+            step_count=2,
         )
         AIHandler._log_tool_execution_outcome(
             "get_weather_forecast",
@@ -29,20 +32,64 @@ def test_tool_outcome_logging_is_bounded_and_omits_result_content(caplog):
                 "failure_kind": "empty_result",
             },
             {"trace_id": "tool-failure"},
+            duration_ms=456,
+            step=2,
+            step_count=2,
         )
 
     rendered = "\n".join(record.getMessage() for record in caplog.records)
     assert (
-        "tool=web_search outcome=succeeded source_count=2"
+        "tool=web_search outcome=succeeded "
+        "duration_ms=123 source_count=2"
         in rendered
     )
     assert (
         "tool=get_weather_forecast outcome=failed "
-        "failure_kind=empty_result"
+        "failure_kind=empty_result duration_ms=456"
         in rendered
     )
+    success_record, failure_record = caplog.records[-2:]
+    assert success_record.event == "tool_execution_completed"
+    assert success_record.step == 1
+    assert success_record.step_count == 2
+    assert failure_record.failure_kind == "empty_result"
     assert "사용자 질문" not in rendered
     assert "공급자 원문 오류" not in rendered
+
+
+def test_agent_terminal_log_is_structured_and_content_free(caplog):
+    with caplog.at_level(logging.INFO):
+        AIHandler._log_agent_execution_outcome(
+            {"trace_id": "agent-finish"},
+            started_at=0.0,
+            outcome="failed",
+            stage="delivery",
+            tool_count=2,
+            error_kind="HTTPException",
+        )
+
+    record = caplog.records[-1]
+    assert record.event == "agent_completed"
+    assert record.outcome == "failed"
+    assert record.stage == "delivery"
+    assert record.tool_count == 2
+    assert record.error_kind == "HTTPException"
+    assert "query" not in record.getMessage().lower()
+
+
+def test_malformed_legacy_tool_plan_log_does_not_copy_payload(caplog):
+    handler = _build_handler_without_init()
+    sensitive_payload = '{"tool_name":"web_search","query":"민감한 원문",}'
+
+    with caplog.at_level(logging.WARNING):
+        result = handler._parse_tool_calls(
+            f"<tool_call>{sensitive_payload}</tool_call>"
+        )
+
+    assert result == []
+    rendered = "\n".join(record.getMessage() for record in caplog.records)
+    assert "민감한 원문" not in rendered
+    assert "payload_chars=" in rendered
 
 
 def test_final_reasoning_progress_text_distinguishes_high_requests():
