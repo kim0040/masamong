@@ -1,11 +1,19 @@
-# Changelog
+# 내부 변경 이력
 
-이 파일은 마사몽 프로젝트의 주요 변경사항을 기록합니다.
+이 파일은 릴리스 단위의 주요 변경을 Git과 함께 추적하는 내부 기록입니다. 사용자에게
+보이는 현재 기능은 [문서 허브](../README.md)와 기능 기준 문서를 우선합니다. 작업 중간
+메모나 계획은 이력에 섞지 않고, 재현 가능한 판단 근거만 남깁니다.
 
-형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 따르며,
-버전 관리는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
+형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 참고하며, 버전 번호는
+[Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
-## [Unreleased] - 2026-07-29
+## [Unreleased]
+
+### 문서
+
+- 공개 README를 프로젝트 소개와 시작 지점으로 정리하고, 문서 허브를 추가
+- RAG 실측·개선 기록·인덱스 이행 기준·변경 이력을 `docs/internal/`으로 분리
+- Discord 기본 진행 표시의 동작·상한·비용 경계를 사용자·설정·아키텍처 문서에 반영
 
 ### 추가
 

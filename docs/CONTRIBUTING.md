@@ -1,7 +1,9 @@
 # 마사몽 기여 가이드
 
 마사몽은 기존 Masamo 운영 데이터와 새 General 인스턴스를 한 코드베이스에서
-관리한다. 변경은 기능 동작뿐 아니라 인스턴스·개인정보·비용 경계를 유지해야 한다.
+관리합니다. 변경을 제안하거나 구현할 때는 기능 동작뿐 아니라 인스턴스·개인정보·비용
+경계도 함께 지킬 수 있어야 합니다. 제품과 운영 문서의 시작점은
+[문서 허브](README.md)에서 확인할 수 있습니다.
 
 ## 개발 환경
 
@@ -97,5 +99,5 @@ docs: Align deployment guide with explicit profiles
 - 기존 운영 데이터와 무삭제 롤백 경로가 유지되는가
 - 문서의 모델명·주기·기능 flag가 코드와 일치하는가
 
-배포 절차와 롤백은 [DEPLOYMENT.md](../DEPLOYMENT.md), 인스턴스 경계는
+배포 절차와 롤백은 [DEPLOYMENT.md](DEPLOYMENT.md), 인스턴스 경계는
 [INSTANCE_SEPARATION.ko.md](INSTANCE_SEPARATION.ko.md)를 따른다.

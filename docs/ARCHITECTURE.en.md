@@ -2,7 +2,7 @@
 
 This document describes the code as of 2026-07-29. See
 [README.ko.md](README.ko.md) for the user guide,
-[DEPLOYMENT.md](../DEPLOYMENT.md) for operations, and
+[DEPLOYMENT.md](DEPLOYMENT.md) for operations, and
 [UML_SPEC.en.md](UML_SPEC.en.md) for diagrams.
 
 ## Core invariants

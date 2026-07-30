@@ -1,7 +1,9 @@
 # Masamong UML Specification
 
 These diagrams represent the current implementation. BM25 is intentionally
-absent from the production runtime; retrieval is semantic.
+absent from the production runtime; retrieval is semantic. For feature use,
+see the [Korean user guide](README.ko.md); for the component-level explanation,
+see [Architecture](ARCHITECTURE.en.md).
 
 ## Components
 

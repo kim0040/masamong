@@ -1,7 +1,14 @@
 # 마사몽 운영·배포 가이드
 
-이 문서는 누적 데이터가 있는 Masamo를 보존하면서 공통 코드의 새 release를 반영하고,
-General을 별도 인스턴스로 준비하는 절차다. 단순 `git pull && python main.py` 절차가 아니다.
+이 문서에서는 누적 데이터가 있는 Masamo를 보존하면서 검증된 릴리스를 반영하고,
+General을 별도 인스턴스로 준비하는 절차를 확인할 수 있습니다. 운영 데이터가 있는
+환경에서는 단순 업데이트 명령 대신 이 문서의 사전 점검·검증·복구 기준을 사용합니다.
+
+명령의 `<release-dir>`, `<venv>`, `<service>`, 사용자·그룹은 실제 운영 환경의 값으로
+바꿔야 합니다. 예시의 경로·계정·시간은 복사해서 바로 실행하는 값이 아닙니다. 사용자
+기능은 [사용자 가이드](README.ko.md), 환경 변수는 [설정 가이드](SETTINGS_GUIDE.md),
+두 인스턴스의 경계는 [인스턴스 분리 운영 가이드](INSTANCE_SEPARATION.ko.md)에서
+확인할 수 있습니다.
 
 핵심 원칙:
 
@@ -15,7 +22,6 @@ General을 별도 인스턴스로 준비하는 절차다. 단순 `git pull && py
 - General은 학교·편입 공지를 기본 비활성화하며 Masamo의 DB·digest·snapshot·timer를
   공유하지 않는다.
 
-명령의 `<release-dir>`, `<venv>`, `<service>`, 사용자·그룹은 실제 서버 값으로 바꾼다.
 저장소의 school systemd 템플릿은 `/srv/masamong/current`와 `root` 사용자를 기준으로
 같은 release에 포함된 core를 실행한다. 실제 서버에서 다른 경로를 선택했다면 env와 unit의 모든
 절대 경로를 그 배포 레이아웃 하나로 통일한다.
@@ -188,7 +194,7 @@ read-only preflight를 다시 실행해 기존 table 집계가 보존됐는지 �
 
 기억·임베딩은 이 배포에서 전체 재색인하거나 기존 BLOB/vector를 덮어쓰지 않는다. 품질
 감사는 `scripts/audit_memory_quality_readonly.py`, 향후 provenance/vector 개선은
-[docs/MEMORY_INDEX_MIGRATION.ko.md](docs/MEMORY_INDEX_MIGRATION.ko.md)의 shadow table,
+[내부 기억 인덱스 이행 기록](internal/MEMORY_INDEX_MIGRATION.ko.md)의 shadow table,
 checkpointed backfill, dual-write, feature-flag 전환 절차를 따른다.
 
 ### 채널 증분 요약 상태 table one-shot

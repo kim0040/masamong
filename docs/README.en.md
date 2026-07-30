@@ -2,9 +2,13 @@
 
 [한국어](README.ko.md) | English | [日本語](README.ja.md)
 
-Masamong is a Korean-first Discord assistant for conversation, scoped long-term
-memory, KMA weather and disaster information, source-backed web and market
-lookups, image generation, fortunes, and private school/transfer notices.
+Masamong is a Korean-first Discord assistant. It can hold conversations, use
+scoped long-term memory, retrieve KMA weather and disaster information, provide
+source-backed web and market lookups, create images, and deliver private
+school/transfer notices.
+
+This guide introduces the current user and operator experience. Start from the
+[documentation hub](README.md) when you need a guide for a specific task.
 
 The repository runs two editions from one release:
 
@@ -175,9 +179,8 @@ and call budget before running it.
 - [Architecture](ARCHITECTURE.en.md)
 - [UML and runtime sequences](UML_SPEC.en.md)
 - [Instance separation](INSTANCE_SEPARATION.ko.md)
-- [Deployment and rollback](../DEPLOYMENT.md)
+- [Deployment and rollback](DEPLOYMENT.md)
 - [Operational settings](SETTINGS_GUIDE.md)
 - [School notices](SCHOOL_NOTICE.ko.md)
 - [Transfer notices](TRANSFER_NOTICE.ko.md)
-- [Measured RAG analysis](RAG_ANALYSIS.ko.md)
-- [Non-destructive memory migration](MEMORY_INDEX_MIGRATION.ko.md)
+- [Documentation hub](README.md)

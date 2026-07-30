@@ -1,8 +1,10 @@
 # 마사몽 아키텍처
 
-이 문서는 2026-07-29 기준 코드의 실행 구조를 설명한다. 사용자 사용법은
-[README.ko.md](README.ko.md), 운영 절차는 [DEPLOYMENT.md](../DEPLOYMENT.md),
-클래스·시퀀스 그림은 [UML_SPEC.ko.md](UML_SPEC.ko.md)를 본다.
+이 문서는 현재 코드의 실행 구조와 경계를 설명합니다. 기능을 사용하려면
+[사용자 가이드](README.ko.md)를, 운영 절차를 준비하려면
+[운영·배포 가이드](DEPLOYMENT.md)를, 클래스·시퀀스 그림을 확인하려면
+[UML 명세](UML_SPEC.ko.md)를 참고할 수 있습니다. 과거 측정값과 이행 판단은
+사용자 안내와 분리해 [내부 유지보수 기록](internal/README.md)에 보관합니다.
 
 ## 설계 원칙
 
