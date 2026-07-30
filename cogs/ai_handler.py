@@ -938,6 +938,7 @@ class AIHandler(commands.Cog):
         user_query: str,
         final_response: str,
         tool_plan: list[dict[str, Any]] | None,
+        response_message_ids: list[int] | None = None,
     ) -> dict[str, Any]:
         """기본적으로 원문 없이 AI 상호작용 메타데이터만 저장합니다."""
         tool_names: list[str] = []
@@ -963,6 +964,13 @@ class AIHandler(commands.Cog):
             "final_response_chars": len(final_response),
             "tools": list(dict.fromkeys(tool_names)),
         }
+        if response_message_ids is not None:
+            details.update(
+                {
+                    "response_message_count": len(response_message_ids),
+                    "response_message_ids": list(response_message_ids)[:8],
+                }
+            )
         if config.ANALYTICS_STORE_CONTENT:
             details.update(
                 {
@@ -973,6 +981,34 @@ class AIHandler(commands.Cog):
             )
         return details
 
+    async def _record_delivered_response_messages(
+        self,
+        response_messages: list[discord.Message],
+        log_extra: dict[str, Any],
+    ) -> list[int]:
+        """최종 전송 메시지를 응답 흐름과 분리된 기억 저장소에 기록합니다."""
+        recorder = getattr(
+            getattr(self, "rag_manager", None),
+            "record_delivered_bot_messages",
+            None,
+        )
+        if not callable(recorder) or not response_messages:
+            return []
+        try:
+            return await recorder(response_messages)
+        except Exception as exc:  # pragma: no cover - 응답 전송과 기억 저장 격리
+            logger.error(
+                "전송된 봇 응답 기억 기록 실패: %s",
+                exc,
+                exc_info=True,
+                extra={
+                    **log_extra,
+                    "event": "assistant_response_memory_failed",
+                    "failure_kind": type(exc).__name__,
+                },
+            )
+            return []
+
     async def _deliver_single_image_result(
         self,
         *,
@@ -981,6 +1017,7 @@ class AIHandler(commands.Cog):
         progress: DiscordProgress,
         image_payload: dict[str, Any],
         log_extra: dict[str, Any],
+        delivered_messages: list[discord.Message] | None = None,
     ) -> str:
         """이미지 단독 결과를 디스코드에 정확히 한 번 전송합니다."""
         image_error = str(image_payload.get("error") or "").strip()
@@ -990,7 +1027,9 @@ class AIHandler(commands.Cog):
         if image_error:
             # image_error는 이미 완결된 안내 문장이다. 접두어를 덧붙이지 않는다.
             response_text = f"😅 {image_error}"
-            await status_msg.edit(content=response_text)
+            edited = await status_msg.edit(content=response_text)
+            if delivered_messages is not None:
+                delivered_messages.append(edited or status_msg)
             return response_text
 
         if not image_data:
@@ -998,7 +1037,9 @@ class AIHandler(commands.Cog):
                 "그림이 제대로 나오지 않았어요. "
                 "잠시 뒤에 다시 부탁해주세요."
             )
-            await status_msg.edit(content=response_text)
+            edited = await status_msg.edit(content=response_text)
+            if delivered_messages is not None:
+                delivered_messages.append(edited or status_msg)
             return response_text
 
         extension = {
@@ -1021,11 +1062,13 @@ class AIHandler(commands.Cog):
             "🎨 요청한 이미지를 한 장으로 완성했어요.\n"
             f"남은 생성 횟수: {remaining}회"
         )
-        await message.channel.send(
+        sent_message = await message.channel.send(
             content=response_text,
             file=image_file,
             allowed_mentions=discord.AllowedMentions.none(),
         )
+        if delivered_messages is not None:
+            delivered_messages.append(sent_message)
         try:
             await status_msg.delete()
         except Exception:
@@ -1638,6 +1681,7 @@ class AIHandler(commands.Cog):
         threshold = getattr(config, "RAG_SIMILARITY_THRESHOLD", 0.6)
         prepared_entries: list[dict[str, Any]] = []
         rag_blocks: list[str] = []
+        selected_source_counts: dict[str, int] = {}
 
         # INFO 로그에는 대화 원문을 넣지 않고 점수/출처/식별자만 남긴다.
         log_lines = []
@@ -1674,6 +1718,10 @@ class AIHandler(commands.Cog):
                 continue
 
             rag_blocks.append(dialogue_block)
+            source_key = source_tag.strip("[]").lower()
+            selected_source_counts[source_key] = (
+                selected_source_counts.get(source_key, 0) + 1
+            )
             prepared_entries.append(
                 {
                     "dialogue_block": dialogue_block,
@@ -1683,6 +1731,7 @@ class AIHandler(commands.Cog):
                     "sources": entry.get("sources"),
                     "acceptance_threshold": entry_threshold,
                     "origin": entry.get("origin"),
+                    "source_label": entry.get("source_label"),
                     "speaker": entry.get("speaker"),
                     "message_id": entry.get("message_id"),
                 }
@@ -1690,10 +1739,17 @@ class AIHandler(commands.Cog):
 
         # 항상 로그 출력 (점수 포함)
         logger.info(
-            "RAG 검색 결과 (threshold=%.2f):\n%s",
+            "RAG 검색 결과 (threshold=%.2f, selected_sources=%s):\n%s",
             threshold,
+            selected_source_counts or {},
             "\n".join(log_lines) if log_lines else "  (없음)",
-            extra=log_extra,
+            extra={
+                **log_extra,
+                "event": "rag_retrieval_completed",
+                "candidate_count": len(result.entries),
+                "selected_count": len(prepared_entries),
+                "selected_source_counts": selected_source_counts,
+            },
         )
 
         if not rag_blocks:
@@ -2107,6 +2163,7 @@ class AIHandler(commands.Cog):
         )
         question_prefix = "[현재 질문]\n"
         tool_prefix = "[도구 실행 결과 (최우선 정보)]\n"
+        has_tools = bool(tool_results_block)
         tool_rule = (
             "도구 결과에 성공 데이터가 있으면 이를 최우선 사실로 사용하고, "
             "명시적으로 오류/실패인 경우에만 조회 실패라고 답하세요. 최신 외부 "
@@ -2118,8 +2175,23 @@ class AIHandler(commands.Cog):
             "활용하고 현재 사실처럼 단정하지 마세요. 질문과 직접 관련 없는 "
             "사용자 취향·과거 사건은 친근감을 위한 소재로도 꺼내지 마세요."
         )
+        if (
+            not has_tools
+            and re.search(
+                r"(?:\bvs\.?\b|둘\s*중|뭐가\s*더|어느\s*쪽|"
+                r"(?:너|네|니)의?\s*선택|고르라면|선택은)",
+                str(user_query or ""),
+                flags=re.IGNORECASE,
+            )
+        ):
+            final_rule += (
+                " 이번 요청에 외부 조회 결과가 없으므로 선택 이유는 취향과 "
+                "일반적인 성격 차이 중심으로 짧게 설명하고, 정확한 수치·가격·"
+                "기록·출력·제원을 새로 제시하지 마세요. 과거의 내 선택 기억이 "
+                "있다면 특별한 이유 없이 반대로 바꾸지 말고, 바뀌었다면 이유를 "
+                "분명히 말하세요."
+            )
 
-        has_tools = bool(tool_results_block)
         required_section_count = 4 if has_tools else 2
         fixed_required_chars = (
             len(question_prefix)
@@ -3631,6 +3703,7 @@ class AIHandler(commands.Cog):
             ):
                 image_payload = non_local_tool_results[0]["result"]
                 terminal_stage = "delivery"
+                image_response_messages: list[discord.Message] = []
                 final_image_response = (
                     await self._deliver_single_image_result(
                         message=message,
@@ -3638,6 +3711,13 @@ class AIHandler(commands.Cog):
                         progress=progress,
                         image_payload=image_payload,
                         log_extra=log_extra,
+                        delivered_messages=image_response_messages,
+                    )
+                )
+                image_response_message_ids = (
+                    await self._record_delivered_response_messages(
+                        image_response_messages,
+                        log_extra,
                     )
                 )
 
@@ -3659,6 +3739,7 @@ class AIHandler(commands.Cog):
                         user_query=user_query,
                         final_response=final_image_response,
                         tool_plan=executed_plan or tool_plan,
+                        response_message_ids=image_response_message_ids,
                     ),
                 )
                 terminal_outcome = "succeeded"
@@ -3821,16 +3902,26 @@ class AIHandler(commands.Cog):
                             chunks = self._split_message_chunks(
                                 final_response_text
                             ) or ["이미지를 생성했습니다."]
-                            await message.channel.send(
-                                content=chunks[0],
-                                file=image_file,
-                                allowed_mentions=discord.AllowedMentions.none(),
-                            )
-                            for chunk in chunks[1:]:
+                            image_messages = [
                                 await message.channel.send(
-                                    chunk,
+                                    content=chunks[0],
+                                    file=image_file,
                                     allowed_mentions=discord.AllowedMentions.none(),
                                 )
+                            ]
+                            for chunk in chunks[1:]:
+                                image_messages.append(
+                                    await message.channel.send(
+                                        chunk,
+                                        allowed_mentions=discord.AllowedMentions.none(),
+                                    )
+                                )
+                            image_response_message_ids = (
+                                await self._record_delivered_response_messages(
+                                    image_messages,
+                                    log_extra,
+                                )
+                            )
                             try:
                                 await status_msg.delete()
                             except (
@@ -3856,6 +3947,9 @@ class AIHandler(commands.Cog):
                                     user_query=user_query,
                                     final_response=final_response_text,
                                     tool_plan=executed_plan or tool_plan,
+                                    response_message_ids=(
+                                        image_response_message_ids
+                                    ),
                                 ),
                             )
                             terminal_outcome = "succeeded"
@@ -3876,6 +3970,12 @@ class AIHandler(commands.Cog):
                     # 출처 footer가 같은 메시지에 들어갈 여유를 확보한다.
                     chunk_size=1_400 if source_urls_to_cache else 1_900,
                 )
+                response_message_ids = (
+                    await self._record_delivered_response_messages(
+                        response_messages,
+                        log_extra,
+                    )
+                )
                 if source_urls_to_cache:
                     await self._register_news_source_reaction(
                         response_messages,
@@ -3895,6 +3995,7 @@ class AIHandler(commands.Cog):
                         user_query=user_query,
                         final_response=final_response_text,
                         tool_plan=executed_plan or tool_plan,
+                        response_message_ids=response_message_ids,
                     ),
                 )
                 terminal_outcome = "succeeded"

@@ -1400,6 +1400,25 @@ LLM_MAIN_FALLBACK_REASONING_EFFORT = as_str(
     '',
 )
 MAIN_LLM_MAX_TOKENS = max(128, as_int(load_config_value('MAIN_LLM_MAX_TOKENS', 8192), 8192))
+# 단순 대화가 과도하게 길어지는 것을 막되 high 추론 요청은 기존 상한을
+# 유지한다. reasoning 판정은 기존 라우팅 결과를 재사용하므로 추가 호출이 없다.
+MAIN_LLM_LOW_MAX_TOKENS = max(
+    128,
+    min(
+        MAIN_LLM_MAX_TOKENS,
+        as_int(load_config_value("MAIN_LLM_LOW_MAX_TOKENS", 2048), 2048),
+    ),
+)
+MAIN_LLM_HIGH_MAX_TOKENS = max(
+    MAIN_LLM_LOW_MAX_TOKENS,
+    min(
+        MAIN_LLM_MAX_TOKENS,
+        as_int(
+            load_config_value("MAIN_LLM_HIGH_MAX_TOKENS", MAIN_LLM_MAX_TOKENS),
+            MAIN_LLM_MAX_TOKENS,
+        ),
+    ),
+)
 
 # Kakao 임베딩/요약 스크립트용 LLM 설정
 # 기본값은 메인 레인 Primary를 따르고, 미설정 시 COMETAPI_*로 후순위 fallback
@@ -1832,6 +1851,32 @@ RAG_MEMORY_RELATIVE_FLOOR = max(
     0.0,
     min(1.0, RAG_MEMORY_RELATIVE_FLOOR),
 )
+# 명시적인 기억 질문에서 Discord 최고점 하나가 카카오 후보를 상대 컷오프로
+# 전부 제거하지 않게 한다. 절대 의미 게이트와 어휘 겹침을 모두 통과한 다른
+# 출처의 최고 후보 한 건만 허용한다.
+RAG_SOURCE_DIVERSITY_ENABLED = as_bool(
+    load_config_value("RAG_SOURCE_DIVERSITY_ENABLED", "true")
+)
+RAG_SOURCE_DIVERSITY_RELATIVE_FLOOR = max(
+    0.0,
+    min(
+        1.0,
+        as_float(
+            load_config_value(
+                "RAG_SOURCE_DIVERSITY_RELATIVE_FLOOR",
+                0.72,
+            ),
+            0.72,
+        ),
+    ),
+)
+RAG_SOURCE_DIVERSITY_LEXICAL_FLOOR = max(
+    0.0,
+    as_float(
+        load_config_value("RAG_SOURCE_DIVERSITY_LEXICAL_FLOOR", 0.02),
+        0.02,
+    ),
+)
 # 프롬프트에 넣을 기억 블록의 절대 상한.
 #
 # `RAG_HYBRID_TOP_K`는 각 인스턴스의 embedding config 파일에서 오므로, 이미
@@ -1850,6 +1895,26 @@ STRUCTURED_MEMORY_VECTOR_TOP_K = max(
     min(
         as_int(load_config_value("STRUCTURED_MEMORY_VECTOR_TOP_K", None), 32),
         128,
+    ),
+)
+ASSISTANT_MEMORY_MAX_SUMMARY_CHARS = max(
+    120,
+    min(
+        1_000,
+        as_int(
+            load_config_value("ASSISTANT_MEMORY_MAX_SUMMARY_CHARS", 500),
+            500,
+        ),
+    ),
+)
+ASSISTANT_MEMORY_MAX_CONTEXT_CHARS = max(
+    ASSISTANT_MEMORY_MAX_SUMMARY_CHARS,
+    min(
+        3_000,
+        as_int(
+            load_config_value("ASSISTANT_MEMORY_MAX_CONTEXT_CHARS", 1_600),
+            1_600,
+        ),
     ),
 )
 RAG_MEMORY_MAX_BLOCKS = as_int(
@@ -2118,6 +2183,19 @@ LLM_CALL_TIMEOUT_SECONDS = min(
         as_int(
             load_config_value('LLM_CALL_TIMEOUT_SECONDS', AI_REQUEST_TIMEOUT),
             AI_REQUEST_TIMEOUT,
+        ),
+    ),
+)
+# 짧은 JSON만 만드는 의미 라우터가 메인 답변과 같은 120~300초를 점유하면
+# 간단한 질문도 전체 대기열을 막는다. 물리 호출 수는 그대로 두고 라우팅
+# 레인만 더 짧게 실패-닫힘 처리한다.
+ROUTING_LLM_CALL_TIMEOUT_SECONDS = min(
+    LLM_CALL_TIMEOUT_SECONDS,
+    max(
+        1,
+        as_int(
+            load_config_value("ROUTING_LLM_CALL_TIMEOUT_SECONDS", 25),
+            25,
         ),
     ),
 )

@@ -388,7 +388,22 @@ async def get_embedding(text: str, prefix: str = "") -> np.ndarray | None:
 
     def _sync_encode() -> np.ndarray:
         # [Safe] Truncation 인자를 제거 (모델이 지원하지 않음, 기본값에 맡김)
-        vector = model.encode(final_text, normalize_embeddings=normalize)
+        try:
+            vector = model.encode(
+                final_text,
+                normalize_embeddings=normalize,
+                show_progress_bar=False,
+            )
+        except TypeError as exc:
+            # 경량 테스트 대역이나 오래된 sentence-transformers 구현에는
+            # show_progress_bar 인자가 없을 수 있다. 그 경우에만 기존 계약으로
+            # 한 번 되돌리며, 실제 모델 호출 오류까지 숨기지는 않는다.
+            if "show_progress_bar" not in str(exc):
+                raise
+            vector = model.encode(
+                final_text,
+                normalize_embeddings=normalize,
+            )
         if not isinstance(vector, np.ndarray):
             vector = np.asarray(vector)
         return vector.astype(np.float32)

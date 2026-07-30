@@ -100,11 +100,19 @@ provider 장애 fallback도 같은 기본값을 사용합니다. 이 값은 현�
 edit·keepalive 경로가 생기지 않습니다.
 `LLM_DYNAMIC_REASONING_ENABLED=false`이면 기존
 `LLM_MAIN_PRIMARY_REASONING_EFFORT` 고정 설정으로 돌아갑니다.
+`low` 답변은 기본 2,048토큰, `high` 답변은 기존 8,192토큰 상한을 사용합니다.
+이는 같은 최종 호출의 출력 예산만 조정하며 호출 횟수를 늘리지 않습니다. 의미
+라우터는 짧은 JSON 전용 25초 물리 timeout을 사용해, 장애 난 라우터가 메인 응답
+timeout 전체를 점유하지 않게 합니다.
 
 ```env
 INTENT_LLM_ENABLED=true
 SEMANTIC_ROUTER_MAX_TOKENS=384
 SEMANTIC_ROUTER_COMPACTION_MAX_TOKENS=768
+ROUTING_LLM_CALL_TIMEOUT_SECONDS=25
+MAIN_LLM_MAX_TOKENS=8192
+MAIN_LLM_LOW_MAX_TOKENS=2048
+MAIN_LLM_HIGH_MAX_TOKENS=8192
 AI_CONTEXT_SOURCE_HISTORY_LIMIT=24
 AI_CONTEXT_RECENT_TURNS=8
 AI_CONTEXT_COMPACTION_TRIGGER_CHARS=3500
@@ -240,6 +248,14 @@ RAG(Retrieval-Augmented Generation) 시스템의 설정입니다.
 | `strong_similarity_threshold` | 0.72 | 강한 유사도 (웹 검색 불필요) |
 | `conversation_window_size` | 12 | 대화 윈도우 크기 |
 | `RAG_PASSIVE_NO_TOOL_SEARCH_ENABLED` | true | 정상 의미 라우터가 실패한 무도구 fallback에서만 bounded 얕은 기억 검색 1회 허용. 관련도 임계값과 인스턴스 격리는 그대로 적용 |
+| `RAG_SOURCE_DIVERSITY_ENABLED` | true | 명시적인 기억 질문에서만 다른 저장소의 근거 후보를 최대 한 건 보존 |
+| `RAG_SOURCE_DIVERSITY_RELATIVE_FLOOR` | 0.72 | 다른 출처 후보가 최고점 대비 충족해야 하는 최소 비율 |
+| `RAG_SOURCE_DIVERSITY_LEXICAL_FLOOR` | 0.02 | 다른 출처 후보에 요구하는 질의 어휘 겹침 |
+
+전송 완료된 봇 답변도 서버/DM 범위 안에 `assistant_response`로 저장됩니다. 자신의
+선택·취향을 명시한 답변은 `assistant_commitment`로 구분되어 이후 선택 질문의
+일관성을 보강합니다. 기존 행을 수정하거나 삭제하지 않으며, 답변당 로컬 임베딩을
+최대 한 번 예약할 뿐 LLM 요약 API는 호출하지 않습니다.
 
 ---
 

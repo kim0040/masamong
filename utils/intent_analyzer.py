@@ -151,6 +151,26 @@ class IntentAnalyzer:
     _CAUSAL_QUESTION_PATTERN = re.compile(
         r"(?:원인|이유|왜\s*(?:그런|이런|이래|그래|발생|느린|안\s*되는))"
     )
+    _ASSISTANT_SELF_REFERENCE_PATTERN = re.compile(
+        r"(?:^|[\s,.!?~])(?:너가|네가|니가|너는|넌|마사몽(?:이|은|아|아가)?)"
+        r"(?:[\s,.!?~]|$)"
+    )
+    _ASSISTANT_PREFERENCE_PATTERN = re.compile(
+        r"(?:좋아하|좋아했|싫어하|싫어했|선호|취향|고르|골랐|선택|"
+        r"빠돌이|팬이|더\s*좋)"
+    )
+    _ASSISTANT_PERSISTENCE_PATTERN = re.compile(
+        r"(?:보다.{0,40}(?:좋아하|더\s*좋)|"
+        r"(?:원래|항상|예전|전에|아까|저번|계속|갑자기).{0,50}"
+        r"(?:좋아|싫어|선호|고르|선택|말))"
+    )
+    _OBJECTIVE_COMPARISON_FACT_PATTERN = re.compile(
+        r"(?:랩\s*타임|기록|몇\s*초|제로백|0\s*[-~]\s*100|"
+        r"출력|마력|토크|가격|제원|스펙|최고\s*속도|연비|공차\s*중량|"
+        r"누가.{0,16}(?:더\s*)?빠|성능.{0,16}(?:비교|차이|우위)|"
+        r"공식.{0,30}(?:수치|기록|발표))",
+        re.IGNORECASE,
+    )
     _NO_SEARCH_PATTERNS = frozenset([
         '내 얘기', '우리 얘기', '너 얘기', '잡담만', '인사만'
     ])
@@ -260,6 +280,31 @@ class IntentAnalyzer:
             cls._SHARED_HISTORY_PAST_ASSERTION_PATTERN.search(text)
             and cls._SHARED_HISTORY_DEICTIC_PATTERN.search(text)
         )
+
+    @classmethod
+    def _looks_like_assistant_history_reference(cls, query: str) -> bool:
+        """봇 자신의 과거 선택·취향을 전제로 한 질문을 보정합니다.
+
+        제품명이나 인물명은 하드코딩하지 않고, 2인칭 자기 참조와 지속성을
+        암시하는 담화 구조만 봅니다. 단순한 첫 선택 질문까지 매번 장기 기억
+        검색으로 보내지 않아 저사양 서버의 로컬 임베딩 부하를 제한합니다.
+        """
+        text = re.sub(r"\s+", " ", str(query or "").strip().lower())
+        if not text:
+            return False
+        if not cls._ASSISTANT_SELF_REFERENCE_PATTERN.search(text):
+            return False
+        if not cls._ASSISTANT_PREFERENCE_PATTERN.search(text):
+            return False
+        return bool(
+            cls._ASSISTANT_PERSISTENCE_PATTERN.search(text)
+            or cls._looks_like_shared_history_reference(text)
+        )
+
+    @classmethod
+    def _looks_like_objective_comparison_fact(cls, query: str) -> bool:
+        """정확한 수치·기록 검증이 필요한 비교 질문인지 판별합니다."""
+        return bool(cls._OBJECTIVE_COMPARISON_FACT_PATTERN.search(query or ""))
 
     def _looks_like_external_fact_query(self, query: str) -> bool:
         """
@@ -404,6 +449,8 @@ class IntentAnalyzer:
         if self._has_explicit_web_search_intent(query):
             return True
         if self._looks_like_external_fact_query(query):
+            return True
+        if self._looks_like_objective_comparison_fact(query):
             return True
 
         # ``intent``는 의미 라우터가 이미 자연어 문맥을 해석한 결과다. 사용자가
@@ -721,6 +768,8 @@ class IntentAnalyzer:
         references_shared_history = self._looks_like_shared_history_reference(
             query
         )
+        if self._looks_like_assistant_history_reference(query):
+            references_shared_history = True
         return ToolRoutingDecision(
             plan=plan,
             source=source,
@@ -1049,6 +1098,8 @@ class IntentAnalyzer:
             structurally_shared = self._looks_like_shared_history_reference(
                 query
             )
+            if self._looks_like_assistant_history_reference(query):
+                structurally_shared = True
             if structurally_shared and not references_shared_history:
                 logger.info(
                     "[라우팅보정] 과거 공동 대화 참조 신호를 복원합니다.",

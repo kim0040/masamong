@@ -24,6 +24,8 @@ from utils.embeddings import (
     trim_text_to_embedding_token_limit,
 )
 from utils.memory_units import (
+    StructuredMemoryUnit,
+    build_assistant_memory_unit,
     build_storage_text,
     build_structured_memory_units,
     compose_memory_text,
@@ -92,6 +94,43 @@ class RAGManager:
             pass
         except Exception as exc:
             logger.error("RAG 백그라운드 태스크 중 오류: %s", exc, exc_info=True)
+
+    def _schedule_background_task(
+        self,
+        coroutine,
+        *,
+        log_extra: dict[str, Any],
+        task_kind: str,
+    ) -> bool:
+        """RAG 후처리를 제한된 백그라운드 슬롯에 예약합니다."""
+        if self._closing:
+            logger.debug(
+                "RAGManager 종료 중이어서 %s 태스크를 생성하지 않습니다.",
+                task_kind,
+                extra=log_extra,
+            )
+            return False
+        if len(self._background_tasks) >= self._max_background_tasks:
+            self._dropped_background_tasks += 1
+            if (
+                self._dropped_background_tasks == 1
+                or self._dropped_background_tasks % 100 == 0
+            ):
+                logger.warning(
+                    "RAG 백그라운드 태스크 상한(%d)에 도달해 %s 작업을 "
+                    "건너뜁니다. skipped=%d",
+                    self._max_background_tasks,
+                    task_kind,
+                    self._dropped_background_tasks,
+                    extra=log_extra,
+                )
+            coroutine.close()
+            return False
+
+        task = asyncio.create_task(coroutine)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._finalize_background_task)
+        return True
 
     async def close(self) -> None:
         """종료 시 남은 RAG 태스크를 취소·회수해 DB 종료와 경합하지 않게 합니다."""
@@ -200,6 +239,218 @@ class RAGManager:
                     extra={"guild_id": guild_id},
                 )
             logger.error(f"대화 기록 저장 중 DB 오류: {e}", exc_info=True, extra={'guild_id': guild_id})
+
+    async def record_delivered_bot_messages(
+        self,
+        messages: list[discord.Message],
+    ) -> list[int]:
+        """전송이 끝난 봇 답변을 원문 로그와 로컬 임베딩 기억에 기록합니다.
+
+        Discord 이벤트를 다시 발생시키지 않고 DB에 직접 기록하므로 응답
+        재귀가 생기지 않습니다. 응답 청크 전체를 한 유닛으로 묶고 로컬 E5
+        임베딩만 사용해 추가 LLM API 호출·과금도 발생하지 않습니다.
+        """
+        if (
+            self.db is None
+            or not config.AI_MEMORY_ENABLED
+            or not config.EMBEDDING_ENABLED
+            or not messages
+        ):
+            return []
+
+        payload: list[dict[str, Any]] = []
+        stored_ids: list[int] = []
+        guild_id = 0
+        channel_id = 0
+        try:
+            # 한 논리 응답은 유한한 Discord 분할 결과다. 비정상 객체 주입에
+            # 대비한 상한만 두고, 정상적인 high 답변의 후반 청크도 원문 로그에
+            # 빠지지 않게 최대 24개까지 보존한다.
+            for message in messages[:24]:
+                author = getattr(message, "author", None)
+                if author is None or not bool(getattr(author, "bot", False)):
+                    continue
+
+                guild = getattr(message, "guild", None)
+                channel = getattr(message, "channel", None)
+                if channel is None or getattr(channel, "id", None) is None:
+                    continue
+                current_guild_id = int(guild.id) if guild else 0
+                current_channel_id = int(channel.id)
+
+                if guild:
+                    policy_check = getattr(
+                        self.bot,
+                        "is_ai_channel_allowed",
+                        None,
+                    )
+                    if callable(policy_check) and not policy_check(
+                        current_guild_id,
+                        current_channel_id,
+                    ):
+                        continue
+
+                storage_text = build_storage_text(
+                    getattr(message, "content", "") or "",
+                    attachment_count=len(
+                        getattr(message, "attachments", []) or []
+                    ),
+                    embed_count=len(getattr(message, "embeds", []) or []),
+                    sticker_count=len(getattr(message, "stickers", []) or []),
+                )
+                if not storage_text:
+                    continue
+
+                message_id = int(message.id)
+                created_at = message.created_at.isoformat()
+                display_name = (
+                    getattr(author, "display_name", None)
+                    or getattr(author, "name", None)
+                    or "마사몽"
+                )
+                await self.db.execute(
+                    """
+                    INSERT OR IGNORE INTO conversation_history (
+                        message_id, guild_id, channel_id, user_id, user_name,
+                        content, is_bot, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        message_id,
+                        current_guild_id,
+                        current_channel_id,
+                        int(author.id),
+                        str(display_name),
+                        storage_text,
+                        True,
+                        created_at,
+                    ),
+                )
+                payload.append(
+                    {
+                        "message_id": message_id,
+                        "user_id": int(author.id),
+                        "user_name": str(display_name),
+                        "content": storage_text,
+                        "is_bot": True,
+                        "created_at": created_at,
+                    }
+                )
+                stored_ids.append(message_id)
+                guild_id = current_guild_id
+                channel_id = current_channel_id
+
+            if not payload:
+                return []
+            await self.db.commit()
+        except Exception as exc:
+            try:
+                await self.db.rollback()
+            except Exception:
+                logger.critical(
+                    "봇 응답 기억 저장 실패 후 rollback도 실패했습니다.",
+                    exc_info=True,
+                    extra={"guild_id": guild_id, "channel_id": channel_id},
+                )
+            logger.error(
+                "봇 응답 원문 저장 중 DB 오류: %s",
+                exc,
+                exc_info=True,
+                extra={"guild_id": guild_id, "channel_id": channel_id},
+            )
+            return []
+
+        unit = build_assistant_memory_unit(
+            payload,
+            channel_id=channel_id,
+            memory_scope="guild" if guild_id else "dm",
+            max_summary_chars=int(
+                getattr(config, "ASSISTANT_MEMORY_MAX_SUMMARY_CHARS", 500)
+            ),
+            max_context_chars=int(
+                getattr(config, "ASSISTANT_MEMORY_MAX_CONTEXT_CHARS", 1_600)
+            ),
+        )
+        embedding_scheduled = False
+        if unit is not None:
+            embedding_scheduled = self._schedule_background_task(
+                self._create_assistant_memory_embedding(
+                    guild_id,
+                    channel_id,
+                    unit,
+                ),
+                log_extra={
+                    "guild_id": guild_id,
+                    "channel_id": channel_id,
+                    "memory_type": unit.memory_type,
+                },
+                task_kind="봇 응답 임베딩",
+            )
+
+        logger.info(
+            "봇 최종 응답 기억 저장 완료. message_count=%d embedding=%s",
+            len(stored_ids),
+            embedding_scheduled,
+            extra={
+                "event": "assistant_response_memory_recorded",
+                "guild_id": guild_id,
+                "channel_id": channel_id,
+                "message_count": len(stored_ids),
+                "response_message_ids": stored_ids,
+                "embedding_scheduled": embedding_scheduled,
+            },
+        )
+        return stored_ids
+
+    async def _create_assistant_memory_embedding(
+        self,
+        guild_id: int,
+        channel_id: int,
+        unit: StructuredMemoryUnit,
+    ) -> None:
+        """봇 응답 기억을 LLM 요약 없이 로컬 임베딩으로만 저장합니다."""
+        log_extra = {
+            "guild_id": guild_id,
+            "channel_id": channel_id,
+            "window_id": unit.anchor_message_id,
+            "memory_scope": unit.memory_scope,
+            "memory_type": unit.memory_type,
+        }
+        memory_text = unit.memory_text
+        token_limit = await self._embedding_token_limit()
+        if await count_embedding_tokens(f"passage: {memory_text}") > token_limit:
+            trimmed = await trim_text_to_embedding_token_limit(
+                memory_text,
+                token_limit,
+            )
+            if trimmed:
+                memory_text = trimmed
+
+        embedding_vector = await self._generate_local_embedding(
+            f"passage: {memory_text}",
+            log_extra,
+            prefix="",
+        )
+        if embedding_vector is None:
+            return
+        await self.embedding_store.upsert_memory_entry(
+            memory_id=unit.memory_id,
+            anchor_message_id=unit.anchor_message_id,
+            server_id=guild_id,
+            channel_id=channel_id,
+            owner_user_id=None,
+            owner_user_name=unit.owner_user_name,
+            memory_scope=unit.memory_scope,
+            memory_type=unit.memory_type,
+            summary_text=unit.summary_text,
+            memory_text=memory_text,
+            raw_context=unit.raw_context,
+            source_message_ids=unit.source_message_ids,
+            speaker_names=unit.speaker_names,
+            keywords=unit.keywords,
+            timestamp_iso=unit.timestamp_iso,
+            embedding=embedding_vector,
+        )
 
     async def _summarize_content(self, text: str) -> str:
         """긴 텍스트를 검색 단서를 보존한 독립 기억 문장으로 압축합니다."""

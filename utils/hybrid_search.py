@@ -341,7 +341,71 @@ class HybridSearchEngine:
         best = _score(entries[0])
         floor_ratio = float(getattr(config, "RAG_MEMORY_RELATIVE_FLOOR", 0.94))
         floor = best * max(0.0, min(1.0, floor_ratio))
-        return [entry for entry in entries if _score(entry) >= floor]
+        selected = [entry for entry in entries if _score(entry) >= floor]
+
+        # 명시적인 기억 질문에서는 한 저장소의 최고점이 다른 저장소를
+        # 상대 컷오프로 전부 굶길 수 있다. 절대 의미 게이트를 넘고 질의의
+        # 고유 어휘도 실제로 겹치는 경우에만, 다른 출처의 최고 후보 한 건을
+        # 두 번째 자리에 보존한다. 일반 잡담(deep_search=False)에는 적용하지
+        # 않아 무관한 카카오 기억 주입 회귀를 막는다.
+        if (
+            deep_search
+            and selected
+            and bool(getattr(config, "RAG_SOURCE_DIVERSITY_ENABLED", True))
+        ):
+            primary_source = self._source_family(selected[0])
+            selected_ids = {id(entry) for entry in selected}
+            source_ratio = max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        getattr(
+                            config,
+                            "RAG_SOURCE_DIVERSITY_RELATIVE_FLOOR",
+                            0.72,
+                        )
+                    ),
+                ),
+            )
+            lexical_floor = max(
+                0.0,
+                float(
+                    getattr(
+                        config,
+                        "RAG_SOURCE_DIVERSITY_LEXICAL_FLOOR",
+                        0.02,
+                    )
+                ),
+            )
+            for entry in entries:
+                if id(entry) in selected_ids:
+                    continue
+                source_family = self._source_family(entry)
+                if (
+                    source_family in {"unknown", primary_source}
+                    or _semantic_score(entry) < gate
+                    or _score(entry) < best * source_ratio
+                    or float(
+                        entry.get("lexical_score")
+                        or self._lexical_relevance(query, entry)
+                    )
+                    < lexical_floor
+                ):
+                    continue
+                selected.insert(1, entry)
+                break
+        return selected
+
+    @staticmethod
+    def _source_family(entry: dict[str, Any]) -> str:
+        """검색 결과의 사용자 표시명과 무관한 저장소 출처를 정규화합니다."""
+        origin = str(entry.get("origin") or "").strip().casefold()
+        if origin == "kakao" or origin.startswith("kakao:"):
+            return "kakao"
+        if origin == "discord" or origin.startswith("discord:"):
+            return "discord"
+        return "unknown"
 
     @staticmethod
     def _source_message_id_set(value: Any) -> set[str]:
@@ -611,13 +675,17 @@ class HybridSearchEngine:
                 if not dialogue_block:
                     dialogue_block = self._clean_content(message)
 
-                origin = row.get("label") or "카카오"
+                source_label = str(row.get("label") or "카카오").strip()
                 dispatcher.append(
                     {
                         "id": f"kakao:{row.get('db_path')}:{message_id}",
                         "message_id": message_id,
                         "message": message,
-                        "origin": origin,
+                        # origin은 분기·로그용 안정 식별자이고 label은 방 이름이다.
+                        # 방 이름을 origin으로 쓰면 카카오 결과가 UNKNOWN으로
+                        # 집계되어 실제 사용 여부를 진단할 수 없었다.
+                        "origin": "Kakao",
+                        "source_label": source_label,
                         "speaker": row.get("speaker"),
                         "similarity": similarity,
                         "semantic_similarity": semantic_similarity,
@@ -727,7 +795,7 @@ class HybridSearchEngine:
                 "user_name": row.get("user_name") or "User",
                 "content": row.get("raw_context") or row.get("message") or message,
                 "created_at": timestamp,
-                "is_bot": False,
+                "is_bot": str(memory_type or "").startswith("assistant_"),
             }
             dialogue_messages = await self._resolve_dialogue_messages(
                 channel_id=channel_id,
@@ -938,7 +1006,7 @@ class HybridSearchEngine:
                         "user_name": focus.get("user_name") if focus else "User",
                         "content": fallback_text,
                         "created_at": focus.get("created_at") if focus else "",
-                        "is_bot": False,
+                        "is_bot": bool(focus and focus.get("is_bot")),
                     }
                 )
         elif not messages and fallback:

@@ -51,6 +51,64 @@ def _configure_small_client(
     return LLMClient()
 
 
+@pytest.mark.asyncio
+async def test_main_output_cap_follows_existing_reasoning_decision(monkeypatch):
+    client = _configure_small_client(monkeypatch)
+    monkeypatch.setattr(config, "MAIN_LLM_MAX_TOKENS", 8192)
+    monkeypatch.setattr(config, "MAIN_LLM_LOW_MAX_TOKENS", 2048)
+    monkeypatch.setattr(config, "MAIN_LLM_HIGH_MAX_TOKENS", 8192)
+    captured: list[int] = []
+
+    client.get_lane_targets = lambda *_args, **_kwargs: [
+        {"name": "main.primary"}
+    ]
+
+    async def _call(_target, **kwargs):
+        captured.append(kwargs["max_tokens"])
+        return "완료"
+
+    client.call_main_lane_target = _call
+
+    assert await client.generate_content(
+        "system",
+        "user",
+        {},
+        reasoning_effort_override="low",
+    ) == "완료"
+    assert await client.generate_content(
+        "system",
+        "user",
+        {},
+        reasoning_effort_override="high",
+    ) == "완료"
+    assert captured == [2048, 8192]
+
+
+@pytest.mark.asyncio
+async def test_routing_lane_uses_shorter_physical_timeout(monkeypatch):
+    client = _configure_small_client(monkeypatch, call_timeout=1.0)
+    monkeypatch.setattr(config, "ROUTING_LLM_CALL_TIMEOUT_SECONDS", 0.01)
+
+    class Endpoint:
+        async def create(self, **_kwargs):
+            await asyncio.sleep(0.05)
+            return _completion("late")
+
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=Endpoint())
+    )
+    client.get_openai_client = lambda *_args: fake_client
+    target = _target("routing.primary", "https://llm.example/v1")
+
+    with pytest.raises(LLMProviderTimeoutError):
+        await client.call_routing_lane_target(
+            target,
+            prompt="route",
+            log_extra={},
+            max_tokens=128,
+        )
+
+
 def test_openai_client_disables_sdk_retries(monkeypatch):
     created = []
 
