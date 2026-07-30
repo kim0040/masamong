@@ -90,7 +90,8 @@ Current or niche factual questions are evidence-gated. If a required lookup
 fails, Masamong says it could not verify the answer instead of inventing market
 numbers, events, or sources. Provider calls have finite timeouts, finite retry
 targets, bounded concurrency, circuit breakers, and global/feature/guild/user/DM
-budgets.
+budgets. Invalid stock tickers do not trip the provider circuit, and requests
+outside the current-quote tool's scope use bounded public-web evidence instead.
 
 ## Memory and RAG
 

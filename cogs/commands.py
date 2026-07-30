@@ -188,11 +188,61 @@ class UserCommands(commands.Cog):
                     )
                 
                 # 2. 이미지 생성 (tools_cog 직접 호출)
+                image_lock = getattr(
+                    ai_handler.tools_cog,
+                    "_image_generation_lock",
+                    None,
+                )
+                if image_lock is not None and image_lock.locked():
+                    await status_msg.edit(
+                        content=(
+                            f"🎨 **'{prompt}'**\n"
+                            "앞선 그림이 끝나길 기다리는 중이에요. "
+                            "순서가 오면 자동으로 시작해요..."
+                        )
+                    )
+                generation_started = time.monotonic()
                 result = await ai_handler.tools_cog.generate_image(
                     prompt=image_prompt,
                     user_id=ctx.author.id,
                     guild_id=ctx.guild.id,
                 )
+                generation_duration_ms = round(
+                    max(0.0, time.monotonic() - generation_started) * 1000
+                )
+                if result.get("error"):
+                    logger.warning(
+                        "이미지 명령 실행 완료: outcome=failed "
+                        "failure_kind=%s provider_attempted=%s duration_ms=%d",
+                        result.get("failure_kind") or "image_failed",
+                        bool(result.get("provider_attempted")),
+                        generation_duration_ms,
+                        extra={
+                            **log_extra,
+                            "event": "image_command_outcome",
+                            "outcome": "failed",
+                            "failure_kind": (
+                                result.get("failure_kind")
+                                or "image_failed"
+                            ),
+                            "provider_attempted": bool(
+                                result.get("provider_attempted")
+                            ),
+                            "duration_ms": generation_duration_ms,
+                        },
+                    )
+                else:
+                    logger.info(
+                        "이미지 명령 실행 완료: outcome=succeeded "
+                        "duration_ms=%d",
+                        generation_duration_ms,
+                        extra={
+                            **log_extra,
+                            "event": "image_command_outcome",
+                            "outcome": "succeeded",
+                            "duration_ms": generation_duration_ms,
+                        },
+                    )
                 
                 # 3. 결과 처리
                 if result.get('image_data') or result.get('image_url'):

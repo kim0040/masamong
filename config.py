@@ -1588,12 +1588,12 @@ IMAGE_GUILD_DAILY_LIMIT = min(
     max(1, as_int(load_config_value('IMAGE_GUILD_DAILY_LIMIT', 30), 30)),
 )
 IMAGE_GENERATION_QUEUE_TIMEOUT_SECONDS = min(
-    30,
+    60,
     max(
         1,
         as_int(
-            load_config_value("IMAGE_GENERATION_QUEUE_TIMEOUT_SECONDS", 5),
-            5,
+            load_config_value("IMAGE_GENERATION_QUEUE_TIMEOUT_SECONDS", 30),
+            30,
         ),
     ),
 )
@@ -1914,6 +1914,19 @@ ASSISTANT_MEMORY_MAX_CONTEXT_CHARS = max(
         as_int(
             load_config_value("ASSISTANT_MEMORY_MAX_CONTEXT_CHARS", 1_600),
             1_600,
+        ),
+    ),
+)
+ASSISTANT_MEMORY_EMBEDDING_DELAY_SECONDS = max(
+    0.0,
+    min(
+        10.0,
+        as_float(
+            load_config_value(
+                "ASSISTANT_MEMORY_EMBEDDING_DELAY_SECONDS",
+                2,
+            ),
+            2.0,
         ),
     ),
 )

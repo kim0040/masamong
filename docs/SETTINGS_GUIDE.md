@@ -188,13 +188,20 @@ IMAGE_GLOBAL_DAILY_LIMIT=50
 IMAGE_GUILD_DAILY_LIMIT=30
 IMAGE_USER_LIMIT=10
 IMAGE_USER_RESET_HOURS=6
+IMAGE_GENERATION_QUEUE_TIMEOUT_SECONDS=30
+ASSISTANT_MEMORY_EMBEDDING_DELAY_SECONDS=2
 TOOL_CIRCUIT_FAILURE_THRESHOLD=2
 TOOL_CIRCUIT_COOLDOWN_SECONDS=60
 ```
 
 이미지 모델명은 Gemini native 호출 방식과 일치해야 합니다. 다른 모델명이 들어오면
-사용량 예약 전에 요청을 중단합니다. 날씨·주식·장소 API는 연속 실패 시 해당 도구만
-잠시 차단하고 cooldown 뒤 사용자 요청 한 건으로 복구를 확인합니다.
+사용량 예약 전에 요청을 중단합니다. 다른 이미지가 생성 중이면 API를 추가 호출하지
+않고 설정 시간까지 순서를 기다립니다. 공급자가 이미지 없이 응답해도 자동 재호출하지
+않으며, 안전 판정·종료 사유 같은 비식별 메타데이터만 로그에 남깁니다.
+
+날씨·주식·장소 API는 실제 공급자 장애가 연속될 때만 해당 도구를 잠시 차단하고
+cooldown 뒤 사용자 요청 한 건으로 복구를 확인합니다. 존재하지 않거나 모호한 주식
+티커는 공급자 장애 횟수에 포함하지 않습니다.
 
 ### 1.6 외부 API 설정
 

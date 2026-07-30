@@ -217,6 +217,38 @@ async def test_assistant_embedding_uses_local_model_without_llm_summary(
     assert stored[0]["owner_user_id"] is None
 
 
+@pytest.mark.asyncio
+async def test_assistant_embedding_delay_keeps_raw_commit_path_separate(
+    monkeypatch,
+):
+    unit = build_assistant_memory_unit(
+        _bot_payload(),
+        channel_id=77,
+        memory_scope="guild",
+    )
+    assert unit is not None
+    manager = RAGManager.__new__(RAGManager)
+    events: list[tuple[str, float | None]] = []
+
+    async def _sleep(seconds):
+        events.append(("sleep", seconds))
+
+    async def _embed(*_args):
+        events.append(("embed", None))
+
+    monkeypatch.setattr(config, "ASSISTANT_MEMORY_EMBEDDING_DELAY_SECONDS", 2)
+    monkeypatch.setattr("utils.rag_manager.asyncio.sleep", _sleep)
+    manager._create_assistant_memory_embedding = _embed
+
+    await manager._create_assistant_memory_embedding_after_delay(
+        88,
+        77,
+        unit,
+    )
+
+    assert events == [("sleep", 2.0), ("embed", None)]
+
+
 async def _async_value(value):
     return value
 

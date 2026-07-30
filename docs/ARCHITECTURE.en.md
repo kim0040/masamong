@@ -140,7 +140,17 @@ news. Material numbers absent from the evidence are removed before sending.
 
 Each external provider has a circuit breaker. Consecutive failures enter a
 cooldown; one user request becomes the half-open probe. Cancellation abandons
-the probe so the provider cannot remain permanently locked.
+the probe so the provider cannot remain permanently locked. An invalid or
+ambiguous stock symbol is classified as an input failure and does not open the
+provider circuit. A failed quote lookup may fall back to one bounded public-web
+lookup inside the existing per-message tool limit; it never recursively retries
+the same provider.
+
+The stock tool handles one current Yahoo Finance quote for a known ticker.
+Historical charts, ADR/OTC listing checks, private service APIs, and currency
+conversion are redirected to public evidence. A currency-conversion number is
+accepted only when it can be recomputed from the user-supplied amount and a
+verified rate.
 
 ## LLM and cost boundary
 
@@ -180,7 +190,11 @@ Image generation calls CometAPI's Gemini-native `generateContent` endpoint with
 `gemini-3.1-flash-lite-image`. Relevant memory is included only when the user
 asks for a context-dependent image. User, guild, and global usage rows are
 reserved before the provider call. The response is capped at 18 MB and only one
-final `inlineData` image is attached.
+final `inlineData` image is attached. Concurrent requests wait on one bounded
+process lock without reserving usage or calling the provider. A 200 response
+without an image is not retried automatically; logs retain only candidate,
+finish-reason, safety-category, and part-count metadata, never generated text
+or prompt content.
 
 ## Notice pipelines
 

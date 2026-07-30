@@ -374,7 +374,7 @@ class RAGManager:
         embedding_scheduled = False
         if unit is not None:
             embedding_scheduled = self._schedule_background_task(
-                self._create_assistant_memory_embedding(
+                self._create_assistant_memory_embedding_after_delay(
                     guild_id,
                     channel_id,
                     unit,
@@ -401,6 +401,28 @@ class RAGManager:
             },
         )
         return stored_ids
+
+    async def _create_assistant_memory_embedding_after_delay(
+        self,
+        guild_id: int,
+        channel_id: int,
+        unit: StructuredMemoryUnit,
+    ) -> None:
+        """원문 commit 뒤 임베딩을 잠시 늦춰 응답 대기열을 먼저 비웁니다."""
+        delay_seconds = float(
+            getattr(
+                config,
+                "ASSISTANT_MEMORY_EMBEDDING_DELAY_SECONDS",
+                2.0,
+            )
+        )
+        if delay_seconds > 0:
+            await asyncio.sleep(delay_seconds)
+        await self._create_assistant_memory_embedding(
+            guild_id,
+            channel_id,
+            unit,
+        )
 
     async def _create_assistant_memory_embedding(
         self,

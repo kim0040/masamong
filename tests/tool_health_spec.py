@@ -51,3 +51,48 @@ async def test_cancelled_half_open_probe_does_not_lock_tool_forever():
         await cog.execute_guarded("weather", cancelled_operation)
 
     assert health.begin_attempt("weather", now=12) is True
+
+
+@pytest.mark.asyncio
+async def test_invalid_stock_symbol_does_not_open_provider_circuit():
+    health = ToolHealthRegistry(failure_threshold=1, cooldown_seconds=60)
+    cog = ToolsCog.__new__(ToolsCog)
+    cog.tool_health = health
+
+    async def invalid_symbol():
+        return {
+            "status": "error",
+            "error": "종목을 찾지 못했어요.",
+            "failure_kind": "invalid_symbol",
+            "provider_failure": False,
+        }
+
+    result = await cog.execute_guarded(
+        "get_stock_price",
+        invalid_symbol,
+    )
+
+    assert result["failure_kind"] == "invalid_symbol"
+    assert health.begin_attempt("get_stock_price", now=1) is True
+
+
+@pytest.mark.asyncio
+async def test_real_stock_provider_failure_opens_provider_circuit():
+    health = ToolHealthRegistry(failure_threshold=1, cooldown_seconds=60)
+    cog = ToolsCog.__new__(ToolsCog)
+    cog.tool_health = health
+
+    async def provider_failure():
+        return {
+            "status": "error",
+            "error": "공급자 오류",
+            "failure_kind": "provider_error",
+            "provider_failure": True,
+        }
+
+    await cog.execute_guarded(
+        "get_stock_price",
+        provider_failure,
+    )
+
+    assert health.begin_attempt("get_stock_price", now=1) is False
