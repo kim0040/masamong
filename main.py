@@ -1092,36 +1092,14 @@ class ReMasamongBot(commands.Bot):
             # DM은 멘션 체크 패스
 
         try:
-            # [저사양 보호] 실행 중 작업뿐 아니라 semaphore 대기 시간도 제한한다.
-            # burst가 오면 오래 기다리는 task를 계속 쌓는 대신 빠르게 종료한다.
-            await asyncio.wait_for(
-                ai_handler.ai_processing_semaphore.acquire(),
-                timeout=config.AI_QUEUE_WAIT_TIMEOUT_SECONDS,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(
-                "AI 처리 대기열 포화로 요청을 건너뜁니다.",
-                extra={'guild_id': guild_id, 'channel_id': channel_id},
-            )
-            try:
-                await message.channel.send(
-                    "지금 요청이 몰려서 잠깐 쉬고 있어요. 몇 초 뒤에 다시 불러주세요."
-                )
-            except discord.HTTPException:
-                pass
-            return
-
-        try:
-            await ai_handler.process_agent_message(message)
+            await ai_handler.enqueue_message(message)
         except Exception as exc:  # pragma: no cover
             logger.error(
-                "AI 메시지 처리 중 오류: %s",
+                "AI 메시지 대기열 등록 중 오류: %s",
                 exc,
                 exc_info=True,
                 extra={'guild_id': guild_id, 'channel_id': channel_id}
             )
-        finally:
-            ai_handler.ai_processing_semaphore.release()
 
     async def close(self):
         """
@@ -1129,6 +1107,13 @@ class ReMasamongBot(commands.Bot):
         """
         ai_handler = self.get_cog("AIHandler")
         rag_manager = getattr(ai_handler, "rag_manager", None) if ai_handler else None
+        close_ai_queue = (
+            getattr(ai_handler, "close_ai_queue", None)
+            if ai_handler is not None
+            else None
+        )
+        if close_ai_queue is not None:
+            await close_ai_queue()
         if rag_manager is not None:
             await rag_manager.close()
         discord_log_task = getattr(self, "_discord_log_task", None)

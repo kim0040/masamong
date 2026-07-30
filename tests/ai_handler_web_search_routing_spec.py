@@ -356,6 +356,165 @@ async def test_semantic_router_can_request_memory_without_external_tool():
 
 
 @pytest.mark.asyncio
+async def test_shared_history_and_external_evidence_are_kept_separate():
+    handler = _build_handler_without_init()
+    handler.use_cometapi = True
+    call_count = 0
+    captured = {}
+
+    async def _fake_fast(
+        prompt,
+        *_args,
+        **_kwargs,
+    ):
+        nonlocal call_count
+        call_count += 1
+        captured["prompt"] = prompt
+        return (
+            '{"intent":"이전에 함께 말한 서비스 증설과 현재 장애 원인 검증",'
+            '"needs_memory":false,"references_shared_history":false,'
+            '"requires_external_evidence":false,"reasoning_level":"low",'
+            '"tools":[]}'
+        )
+
+    handler._cometapi_fast_generate_text = _fake_fast
+    decision = await handler._route_tools(
+        "얘네 서버 증설 엄청 했잖아. 그런데도 계속 장애가 난다고?",
+        {"trace_id": "shared-history-and-web"},
+        history=[],
+    )
+
+    assert call_count == 1
+    assert decision.references_shared_history is True
+    assert decision.needs_memory is True
+    assert decision.requires_external_evidence is True
+    assert decision.reasoning_level == "high"
+    assert [item["tool_to_use"] for item in decision.plan] == ["web_search"]
+    assert len(
+        [
+            item
+            for item in decision.plan
+            if item["tool_to_use"] == "web_search"
+        ]
+    ) == 1
+    assert '"references_shared_history":false' in captured["prompt"]
+    assert "기억은 과거 대화의 연속성에, 웹은 외부 사실 검증에 쓴다" in captured[
+        "prompt"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_shared_history_flag_enables_memory_without_forcing_web():
+    handler = _build_handler_without_init()
+    handler.use_cometapi = True
+
+    async def _fake_fast(*_args, **_kwargs):
+        return (
+            '{"intent":"이전에 함께 정한 모임 규칙 회상",'
+            '"needs_memory":false,"references_shared_history":true,'
+            '"requires_external_evidence":false,"reasoning_level":"low",'
+            '"tools":[]}'
+        )
+
+    handler._cometapi_fast_generate_text = _fake_fast
+    decision = await handler._route_tools(
+        "우리 그때 정한 규칙 있었잖아. 뭐였지?",
+        {"trace_id": "shared-history-only"},
+        history=[],
+    )
+
+    assert decision.references_shared_history is True
+    assert decision.needs_memory is True
+    assert decision.requires_external_evidence is False
+    assert decision.plan == []
+    assert decision.reasoning_level == "low"
+
+
+@pytest.mark.asyncio
+async def test_rhetorical_common_knowledge_does_not_trigger_shared_memory():
+    handler = _build_handler_without_init()
+    handler.use_cometapi = True
+
+    async def _fake_fast(*_args, **_kwargs):
+        return (
+            '{"intent":"안정적인 일반 상식 설명",'
+            '"needs_memory":false,"references_shared_history":false,'
+            '"requires_external_evidence":false,"reasoning_level":"low",'
+            '"tools":[]}'
+        )
+
+    handler._cometapi_fast_generate_text = _fake_fast
+    decision = await handler._route_tools(
+        "지구는 둥글잖아. 쉽게 설명해줘.",
+        {"trace_id": "rhetorical-common-knowledge"},
+        history=[],
+    )
+
+    assert decision.references_shared_history is False
+    assert decision.needs_memory is False
+    assert decision.plan == []
+
+
+@pytest.mark.asyncio
+async def test_realtime_public_cause_cannot_skip_external_evidence():
+    handler = _build_handler_without_init()
+    handler.use_cometapi = True
+
+    async def _fake_fast(*_args, **_kwargs):
+        return (
+            '{"intent":"새 서비스 지연 원인 설명",'
+            '"needs_memory":false,"references_shared_history":false,'
+            '"requires_external_evidence":false,"reasoning_level":"low",'
+            '"tools":[]}'
+        )
+
+    handler._cometapi_fast_generate_text = _fake_fast
+    decision = await handler._route_tools(
+        "오늘 공개된 새 AI 서비스가 계속 느리다는데 원인이 뭐야?",
+        {"trace_id": "realtime-public-cause"},
+        history=[],
+    )
+
+    assert decision.references_shared_history is False
+    assert decision.needs_memory is False
+    assert decision.requires_external_evidence is True
+    assert [item["tool_to_use"] for item in decision.plan] == ["web_search"]
+
+
+def test_shared_history_structural_guard_avoids_generic_rhetorical_claims():
+    assert IntentAnalyzer._looks_like_shared_history_reference(
+        "얘네 서버 증설 엄청 했잖아. 그런데도 장애가 난다고?"
+    )
+    assert IntentAnalyzer._looks_like_shared_history_reference(
+        "우리 그때 정한 규칙 있었잖아"
+    )
+    assert IntentAnalyzer._looks_like_shared_history_reference(
+        "내가 전에 말했던 여행지 기억나?"
+    )
+    assert not IntentAnalyzer._looks_like_shared_history_reference(
+        "지구는 둥글잖아. 쉽게 설명해줘"
+    )
+    assert not IntentAnalyzer._looks_like_shared_history_reference(
+        "공룡은 멸종했잖아. 왜 멸종했어?"
+    )
+
+
+def test_emergency_router_preserves_shared_memory_and_external_verification():
+    handler = _build_handler_without_init()
+    analyzer = handler._ensure_intent_analyzer()
+
+    decision = analyzer._emergency_routing_decision(
+        "얘네 서버 증설 엄청 했잖아. 그런데도 계속 장애가 난 원인이 뭐야?",
+        source="fallback",
+    )
+
+    assert decision.references_shared_history is True
+    assert decision.needs_memory is True
+    assert decision.requires_external_evidence is True
+    assert [item["tool_to_use"] for item in decision.plan] == ["web_search"]
+
+
+@pytest.mark.asyncio
 async def test_semantic_router_no_tool_is_not_replaced_by_keyword_plan():
     handler = _build_handler_without_init()
     handler.use_cometapi = True
@@ -660,6 +819,24 @@ def test_no_tool_conversation_gets_bounded_passive_memory_search(monkeypatch):
             source="llm",
         )
     )
+
+
+def test_main_prompt_labels_memory_as_unverified_conversation():
+    handler = _build_handler_without_init()
+    message = SimpleNamespace(
+        author=SimpleNamespace(display_name="질문자"),
+    )
+
+    prompt = handler._compose_main_prompt(
+        message,
+        user_query="전에 이야기했던 서버 증설 내용 기억나?",
+        rag_blocks=["User(질문자): 예전에 서버 증설 이야기를 나눴다."],
+        tool_results_block=None,
+        recent_history=[],
+    )
+
+    assert "[과거 대화 기억 (선택 참고)]" in prompt
+    assert "당시 대화 기록이며 외부 사실을 검증한 자료가 아닙니다" in prompt
 
 
 def test_final_history_keeps_short_source_window_without_digest(monkeypatch):

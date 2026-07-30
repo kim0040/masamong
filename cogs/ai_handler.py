@@ -42,6 +42,7 @@ except ImportError:  # pragma: no cover
 
 from datetime import datetime, timedelta, timezone
 import asyncio
+from dataclasses import dataclass, field
 import pytz
 import re
 from typing import Dict, Any, Tuple
@@ -78,6 +79,18 @@ from utils.privacy_consent import (
 
 KST = pytz.timezone('Asia/Seoul')
 FORTUNE_CONSENT_POLICY = get_policy(FORTUNE_SCOPE)
+
+
+@dataclass
+class _QueuedAIRequest:
+    """한 번만 소비되는 Discord AI 요청과 재사용할 접수 메시지."""
+
+    message: discord.Message
+    enqueued_at: float
+    notice: discord.Message | None = None
+    status_claimed: bool = False
+    notice_ready: asyncio.Event = field(default_factory=asyncio.Event)
+
 
 class AIHandler(commands.Cog):
     """AI 에이전트 워크플로우를 통합 관리하는 Cog입니다.
@@ -121,6 +134,17 @@ class AIHandler(commands.Cog):
         # CPU 스래싱/메모리 스파이크가 발생한다. 동시 처리 수를 제한해 백프레셔를 건다.
         _ai_max_concurrent = max(1, int(getattr(config, "AI_MAX_CONCURRENT_PROCESSING", 3)))
         self.ai_processing_semaphore = asyncio.Semaphore(_ai_max_concurrent)
+        self._ai_worker_count = _ai_max_concurrent
+        self.ai_request_queue: asyncio.Queue[_QueuedAIRequest] = asyncio.Queue(
+            maxsize=max(
+                _ai_max_concurrent,
+                int(getattr(config, "AI_QUEUE_MAX_SIZE", 8)),
+            )
+        )
+        self._ai_queue_workers: list[asyncio.Task] = []
+        self._ai_queue_start_lock = asyncio.Lock()
+        self._ai_queue_closing = False
+        self._ai_active_requests = 0
         # General 저사양 프로필은 AI 답변 자체는 사용할 수 있지만 로컬 RAG는
         # 끈 채 시작한다. 이때 사용되지 않을 저장소/검색/리랭커 객체까지 미리
         # 만들지 않는다. 운영 중 플래그를 바꾸는 설정은 지원하지 않으므로
@@ -381,6 +405,277 @@ class AIHandler(commands.Cog):
         """AI 핸들러가 모든 의존성(Gemini, DB, ToolsCog)을 포함하여 준비되었는지 확인합니다."""
         has_llm_provider = bool(self.use_cometapi or self._can_use_direct_gemini())
         return has_llm_provider and self.bot.db is not None and self.tools_cog is not None
+
+    async def cog_load(self) -> None:
+        """Cog가 활성화되면 설정된 수만큼 bounded FIFO worker를 시작합니다."""
+        await self._ensure_ai_queue_workers()
+
+    async def cog_unload(self) -> None:
+        """reload/종료 시 worker와 미처리 접수 표시를 정리합니다."""
+        await self.close_ai_queue()
+
+    async def _ensure_ai_queue_workers(self) -> None:
+        if self._ai_queue_closing or self._ai_queue_workers:
+            return
+        async with self._ai_queue_start_lock:
+            if self._ai_queue_closing or self._ai_queue_workers:
+                return
+            self._ai_queue_workers = [
+                asyncio.create_task(
+                    self._ai_queue_worker(index),
+                    name=f"masamong-ai-queue-{index}",
+                )
+                for index in range(self._ai_worker_count)
+            ]
+            logger.info(
+                "AI FIFO 대기열 worker 시작: workers=%d capacity=%d",
+                self._ai_worker_count,
+                self.ai_request_queue.maxsize,
+                extra={
+                    "event": "ai_queue_started",
+                    "outcome": "succeeded",
+                    "queue_capacity": self.ai_request_queue.maxsize,
+                    "active_count": 0,
+                },
+            )
+
+    @staticmethod
+    async def _delete_unclaimed_queue_notice(
+        request: _QueuedAIRequest,
+    ) -> None:
+        if request.notice is None or request.status_claimed:
+            return
+        try:
+            await request.notice.delete()
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+
+    async def enqueue_message(self, message: discord.Message) -> bool:
+        """메시지를 bounded FIFO에 한 번 넣고 즉시 반환합니다.
+
+        실행 worker 수가 CPU 동시성이고, Queue의 maxsize가 대기 메모리 상한이다.
+        provider 재시도나 LLM 호출은 이 단계에서 수행하지 않는다.
+        """
+        if self._ai_queue_closing:
+            return False
+        await self._ensure_ai_queue_workers()
+
+        guild_id = message.guild.id if message.guild else None
+        log_extra = {
+            "guild_id": guild_id,
+            "channel_id": message.channel.id,
+            "user_id": message.author.id,
+        }
+        ahead = self._ai_active_requests + self.ai_request_queue.qsize()
+        if ahead:
+            notice_text = (
+                f"⏳ 요청을 대기열에 넣었어요. 앞의 {ahead}개 요청이 끝나면 "
+                "자동으로 시작할게요."
+            )
+        else:
+            notice_text = "⏳ 요청을 접수했어요. 곧 확인할게요."
+
+        request = _QueuedAIRequest(
+            message=message,
+            enqueued_at=time.monotonic(),
+        )
+        # Discord 전송을 await하기 전에 자리를 원자적으로 확보한다. 그렇지
+        # 않으면 동시에 들어온 모든 on_message task가 비어 있는 큐를 보고 접수
+        # 메시지 전송에서 대기해 bounded queue 상한을 우회할 수 있다.
+        try:
+            self.ai_request_queue.put_nowait(request)
+        except asyncio.QueueFull:
+            logger.warning(
+                "AI FIFO 대기열이 가득 차 요청을 받지 못했습니다.",
+                extra={
+                    **log_extra,
+                    "event": "ai_queue_rejected",
+                    "outcome": "rejected",
+                    "failure_kind": "queue_full",
+                    "queue_depth": self.ai_request_queue.qsize(),
+                    "queue_capacity": self.ai_request_queue.maxsize,
+                    "active_count": self._ai_active_requests,
+                },
+            )
+            try:
+                await message.channel.send(
+                    "지금 대기 중인 요청이 너무 많아요. 잠시 뒤에 다시 불러주세요.",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+            return False
+
+        logger.info(
+            "AI 요청을 FIFO 대기열에 넣었습니다.",
+            extra={
+                **log_extra,
+                "event": "ai_queue_enqueued",
+                "outcome": "queued",
+                "stage": "queued",
+                "queue_depth": self.ai_request_queue.qsize(),
+                "queue_capacity": self.ai_request_queue.maxsize,
+                "active_count": self._ai_active_requests,
+            },
+        )
+        try:
+            request.notice = await message.channel.send(
+                notice_text,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            # 접수 표시가 실패해도 기존 초기 상태 전송 경로에서 한 번 더
+            # 시도할 수 있으므로 요청 자체는 큐에 보존한다.
+            pass
+        finally:
+            request.notice_ready.set()
+
+        if self._ai_queue_closing and request.notice is not None:
+            try:
+                await request.notice.edit(
+                    content=(
+                        "봇이 재시작되어 이 요청은 처리하지 않았어요. "
+                        "다시 한 번 불러주세요."
+                    ),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+        return True
+
+    async def _ai_queue_worker(self, worker_index: int) -> None:
+        """FIFO 항목을 정확히 한 번 처리하는 장기 실행 worker."""
+        while True:
+            request = await self.ai_request_queue.get()
+            acquired = False
+            active_counted = False
+            try:
+                await request.notice_ready.wait()
+                self._ai_active_requests += 1
+                active_counted = True
+                queue_wait_ms = max(
+                    0,
+                    round((time.monotonic() - request.enqueued_at) * 1000),
+                )
+                message = request.message
+                log_extra = {
+                    "guild_id": message.guild.id if message.guild else None,
+                    "channel_id": message.channel.id,
+                    "user_id": message.author.id,
+                }
+                await self.ai_processing_semaphore.acquire()
+                acquired = True
+                logger.info(
+                    "AI FIFO 요청 처리를 시작합니다. worker=%d",
+                    worker_index,
+                    extra={
+                        **log_extra,
+                        "event": "ai_queue_dequeued",
+                        "outcome": "processing",
+                        "stage": "dequeued",
+                        "queue_wait_ms": queue_wait_ms,
+                        "queue_depth": self.ai_request_queue.qsize(),
+                        "queue_capacity": self.ai_request_queue.maxsize,
+                        "active_count": self._ai_active_requests,
+                    },
+                )
+                await self.process_agent_message(
+                    message,
+                    queue_request=request,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # pragma: no cover - worker 생존 경계
+                message = request.message
+                log_extra = {
+                    "guild_id": message.guild.id if message.guild else None,
+                    "channel_id": message.channel.id,
+                    "user_id": message.author.id,
+                }
+                logger.error(
+                    "AI FIFO worker 처리 중 오류: %s",
+                    type(exc).__name__,
+                    exc_info=True,
+                    extra={
+                        **log_extra,
+                        "event": "ai_queue_item_failed",
+                        "outcome": "failed",
+                        "stage": "queue_worker",
+                        "error_kind": type(exc).__name__,
+                    },
+                )
+            finally:
+                if acquired:
+                    self.ai_processing_semaphore.release()
+                if active_counted:
+                    self._ai_active_requests = max(
+                        0,
+                        self._ai_active_requests - 1,
+                    )
+                await self._delete_unclaimed_queue_notice(request)
+                self.ai_request_queue.task_done()
+
+    async def close_ai_queue(self) -> None:
+        """worker를 취소하고 아직 시작하지 않은 항목을 중복 호출 없이 폐기합니다."""
+        if self._ai_queue_closing:
+            return
+        self._ai_queue_closing = True
+
+        workers = list(self._ai_queue_workers)
+        for worker in workers:
+            worker.cancel()
+        if workers:
+            await asyncio.gather(*workers, return_exceptions=True)
+        self._ai_queue_workers.clear()
+
+        pending: list[_QueuedAIRequest] = []
+        while True:
+            try:
+                request = self.ai_request_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            pending.append(request)
+            self.ai_request_queue.task_done()
+
+        async def _mark_interrupted(request: _QueuedAIRequest) -> None:
+            if request.notice is None or request.status_claimed:
+                return
+            try:
+                await request.notice.edit(
+                    content=(
+                        "봇이 재시작되어 이 요청은 처리하지 않았어요. "
+                        "다시 한 번 불러주세요."
+                    ),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except (
+                discord.NotFound,
+                discord.Forbidden,
+                discord.HTTPException,
+            ):
+                pass
+
+        if pending:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        *(_mark_interrupted(item) for item in pending)
+                    ),
+                    timeout=3.0,
+                )
+            except asyncio.TimeoutError:
+                pass
+        logger.info(
+            "AI FIFO 대기열 종료: discarded=%d",
+            len(pending),
+            extra={
+                "event": "ai_queue_stopped",
+                "outcome": "succeeded",
+                "queue_depth": 0,
+                "queue_capacity": self.ai_request_queue.maxsize,
+                "active_count": 0,
+            },
+        )
 
     def _can_use_direct_gemini(self) -> bool:
         return self.llm_client.can_use_direct_gemini()
@@ -1755,7 +2050,12 @@ class AIHandler(commands.Cog):
             "금리·등락률은 도구 결과에 같은 수치가 있을 때만 쓴다. 최근 대화나 장기 "
             "기억 속 과거 금융 수치를 최신값으로 재사용하지 않는다. 실제 도구 실행 "
             "결과가 없는데 '찾아보겠다/확인해보겠다'고 약속하지 말고, 현재 확인하지 "
-            "못했다고 정직하게 말한다. 사고 과정이나 "
+            "못했다고 정직하게 말한다. 과거 대화 기억은 당시 서버 구성원이 말한 "
+            "내용이지 외부 사실을 검증한 출처가 아니다. 기억과 웹 자료를 함께 받으면 "
+            "'전에 이 서버에서 나왔던 이야기'와 '이번에 공개 자료로 확인한 내용'을 "
+            "혼동하지 않는다. 관련 과거 기억이 제공되지 않았다면 사용자의 현재 문장을 "
+            "전제로 답할 수는 있지만, 예전부터 기억하고 있었다거나 어디선가 들었다고 "
+            "가장하지 않는다. 사고 과정이나 "
             "검토 과정을 사용자에게 풀어 쓰지 말고, 확인된 결론과 필요한 근거만 답한다."
         )
         if not message.guild:
@@ -1935,6 +2235,12 @@ class AIHandler(commands.Cog):
                 self._clip_prompt_text(block, per_rag_limit, keep="head")
             )
         rag_content = "\n\n".join(filtered_rag)
+        if rag_content:
+            rag_content = (
+                "주의: 아래 내용은 당시 대화 기록이며 외부 사실을 검증한 "
+                "자료가 아닙니다.\n"
+                + rag_content
+            )
 
         # (표시 순서, 제목, 원문, 개별 최대 예산, 보존 방향)
         # 할당 순서가 곧 우선순위다: 작은 메타데이터 → 최신 대화 → 동의된
@@ -2787,7 +3093,12 @@ class AIHandler(commands.Cog):
             return None
         return str(row[0]) if row and row[0] else None
 
-    async def process_agent_message(self, message: discord.Message):
+    async def process_agent_message(
+        self,
+        message: discord.Message,
+        *,
+        queue_request: _QueuedAIRequest | None = None,
+    ):
         """2-Step Agent의 전체 흐름을 관리합니다."""
         if not self.is_ready:
             return
@@ -2803,13 +3114,25 @@ class AIHandler(commands.Cog):
         now = datetime.now()
         
         # 1. 사용자별 쿨다운 검사
-        last_request = self.ai_user_cooldowns.get(user_id)
-        if last_request:
-            elapsed = (now - last_request).total_seconds()
-            if elapsed < config.USER_COOLDOWN_SECONDS:
-                remaining = config.USER_COOLDOWN_SECONDS - elapsed
-                logger.debug(f"사용자 {user_id} 쿨다운 중 ({remaining:.1f}초 남음)", extra=base_log_extra)
-                return
+        # 메인 Discord 경로는 이미 bounded FIFO에 들어온 요청이다. 여기서 처리
+        # 시작 시각 기준 쿨다운을 다시 적용하면, 오래 기다린 서로 다른 질문도 앞
+        # 요청 직후 worker가 꺼내는 순간 조용히 버려진다. 큐 경로는 모든 항목을
+        # 한 번씩 처리하고, 반복 문장 방지와 기존 사용자/전역 provider quota로
+        # burst 비용을 제한한다. 큐를 거치지 않는 내부 호환 경로만 기존 쿨다운을
+        # 유지한다.
+        if queue_request is None:
+            last_request = self.ai_user_cooldowns.get(user_id)
+            if last_request:
+                elapsed = (now - last_request).total_seconds()
+                if elapsed < config.USER_COOLDOWN_SECONDS:
+                    remaining = config.USER_COOLDOWN_SECONDS - elapsed
+                    logger.debug(
+                        "사용자 %s 쿨다운 중 (%.1f초 남음)",
+                        user_id,
+                        remaining,
+                        extra=base_log_extra,
+                    )
+                    return
         
         # 2. 스팸 방지: 동일 메시지 반복 감지
         user_msg_key = f"{user_id}:{message.content[:50]}"
@@ -2819,16 +3142,6 @@ class AIHandler(commands.Cog):
                 logger.warning(f"스팸 감지: 사용자 {user_id}가 동일 메시지 반복", extra=base_log_extra)
                 return
         
-        # [Safety] DM Loop Prevention: Detect rapid self-responses or bot-loops
-        if not message.guild:
-             # Check if the channel has very recent messages from THIS bot
-             async for hist_msg in message.channel.history(limit=5):
-                 if hist_msg.author.id == self.bot.user.id:
-                     if (now.replace(tzinfo=timezone.utc) - hist_msg.created_at.replace(tzinfo=timezone.utc)).total_seconds() < 2.0:
-                         logger.warning("DM Loop Detected: Bot replied too recently.", extra=base_log_extra)
-                         return
-                     break # Only check the most recent bot message
-
         spam_cache[user_msg_key] = now
         # 오래된 캐시 정리 (100개 초과 시)
         if len(spam_cache) > 100:
@@ -2920,10 +3233,28 @@ class AIHandler(commands.Cog):
         # 알리되, 단계가 빠르게 바뀔 때 edit 요청을 연속으로 보내지 않는다.
         initial_progress_text = "🤔 질문을 확인하고 있어요..."
         try:
-            status_msg = await message.channel.send(
-                initial_progress_text,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
+            if queue_request is not None and queue_request.notice is not None:
+                try:
+                    status_msg = await queue_request.notice.edit(
+                        content=initial_progress_text,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                except (
+                    discord.NotFound,
+                    discord.Forbidden,
+                    discord.HTTPException,
+                ):
+                    status_msg = await message.channel.send(
+                        initial_progress_text,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+            else:
+                status_msg = await message.channel.send(
+                    initial_progress_text,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            if queue_request is not None:
+                queue_request.status_claimed = True
             progress = await DiscordProgress(
                 status_msg,
                 initial_text=initial_progress_text,
@@ -2984,10 +3315,17 @@ class AIHandler(commands.Cog):
             )
             logger.info(
                 "에이전트 라우팅 완료: source=%s tools=%d "
-                "needs_memory=%s reasoning=%s",
+                "needs_memory=%s shared_history=%s reasoning=%s",
                 routing_decision.source,
                 len(routing_decision.plan or []),
                 bool(routing_decision.needs_memory),
+                bool(
+                    getattr(
+                        routing_decision,
+                        "references_shared_history",
+                        False,
+                    )
+                ),
                 routing_decision.reasoning_level or "default",
                 extra={
                     **log_extra,
@@ -2997,6 +3335,13 @@ class AIHandler(commands.Cog):
                     "route_source": routing_decision.source,
                     "tool_count": len(routing_decision.plan or []),
                     "needs_memory": bool(routing_decision.needs_memory),
+                    "shared_history_ref": bool(
+                        getattr(
+                            routing_decision,
+                            "references_shared_history",
+                            False,
+                        )
+                    ),
                     "reasoning_level": (
                         routing_decision.reasoning_level or "default"
                     ),
@@ -3599,8 +3944,12 @@ class AIHandler(commands.Cog):
         )
         history = []
         
-        async for msg in message.channel.history(limit=history_limit + 1):
-            if msg.id == message.id: continue
+        # FIFO에서 잠시 기다린 요청도 "그 메시지가 작성된 시점 이전"의 문맥만
+        # 읽는다. 처리 대기 중 뒤에 올라온 메시지를 과거 맥락처럼 섞지 않는다.
+        async for msg in message.channel.history(
+            limit=history_limit,
+            before=message,
+        ):
             role = 'model' if msg.author.id == self.bot.user.id else 'user'
             content = msg.content[:config.MAX_MESSAGE_CHARS]
             

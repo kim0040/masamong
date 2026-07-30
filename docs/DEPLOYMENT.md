@@ -394,6 +394,11 @@ MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
 - `!개인정보` 상태, 운세/학교공지/편입공지의 동의·거부·철회 흐름
 - 운세 미동의 차단, 선택 항목 `NULL`, 개인 LLM 운세 합산 일 3회, 구독 설정
 - 기존 Discord/Kakao RAG 조회와 기존 prompt 채널
+- “전에 함께 말했잖아”처럼 과거 공동 대화를 전제로 한 일반 요청은 기억만 검색하고,
+  현재 공개 서비스·사건의 원인까지 묻는 요청은 기억과 `web_search`를 함께 사용하되
+  라우팅 호출은 한 번, 웹 검색 계획은 한 개를 넘지 않는지
+- “지구는 둥글잖아” 같은 독립적인 일반상식의 수사 표현은 장기 기억이나 웹 검색을
+  불필요하게 켜지 않는지
 - A/B 테스트 guild의 일반·창의형 응답이 각자 `guild_id` 페르소나만 사용하고,
   다른 서버 말투·대화·RAG 조각을 포함하지 않는지
 - 재기동 뒤 이전 지진·여진이 다시 전송되지 않고, 지진 경로의 LLM 시도가 0인지
@@ -416,6 +421,11 @@ AI 요청은 같은 `trace_id`에서 `agent_started`와 정확히 하나의 `age
 대응해야 한다. 느린 요청은 `stage`, `duration_ms`, `llm_call_completed`의
 `queue_wait_ms`, `tool_execution_completed`의 개별 시간을 순서대로 확인한다. 기본
 설정에서 이 레코드에 질문·프롬프트·답변 본문·도구 파라미터가 들어가면 배포를 중단한다.
+공동 과거 대화 참조는 `shared_history_ref=true`와 `needs_memory=true`로 확인한다.
+동시 질문 점검에서는 `ai_queue_enqueued`가 접수 수만큼, `ai_queue_dequeued`가 처리
+수만큼 남고 실행 중 `active_count`가 `AI_MAX_CONCURRENT_PROCESSING`을 넘지 않아야
+한다. 대기 중에는 `llm_attempt`·웹·이미지 사용량이 증가하지 않아야 하며, 대기열이
+가득 찬 경우에는 `ai_queue_rejected` 한 건만 남고 자동 재등록하지 않아야 한다.
 지진 API 정상 조회는 매분 호출되더라도 INFO 로그가 매분 생기지 않고, 첫 성공·결과 개수
 변화·시간별 heartbeat에서만 생기는 것이 정상이다.
 
@@ -439,7 +449,7 @@ General은 Masamo 전환과 별개로 준비한다.
 MASAMONG_CPU_THREADS=1
 MASAMONG_EXECUTOR_WORKERS=1
 AI_MAX_CONCURRENT_PROCESSING=1
-AI_QUEUE_WAIT_TIMEOUT_SECONDS=5
+AI_QUEUE_MAX_SIZE=8
 LLM_MAX_CONCURRENT_CALLS=1
 LLM_ACQUIRE_TIMEOUT_SECONDS=10
 LLM_CALL_TIMEOUT_SECONDS=120

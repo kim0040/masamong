@@ -39,6 +39,7 @@ def test_json_formatter_keeps_only_bounded_diagnostic_fields():
     record.outcome = "failed"
     record.failure_kind = "x" * 200
     record.duration_ms = 321
+    record.shared_history_ref = True
     record.parameters = {"query": "저장되면 안 되는 질문"}
 
     rendered = json.loads(logger_config.JsonFormatter().format(record))
@@ -47,6 +48,7 @@ def test_json_formatter_keeps_only_bounded_diagnostic_fields():
     assert rendered["event"] == "tool_execution_completed"
     assert rendered["outcome"] == "failed"
     assert rendered["duration_ms"] == 321
+    assert rendered["shared_history_ref"] is True
     assert len(rendered["failure_kind"]) == 128
     assert "parameters" not in rendered
     assert "저장되면 안 되는 질문" not in json.dumps(

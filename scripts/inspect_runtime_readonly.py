@@ -916,9 +916,7 @@ def inspect_runtime(*, expected_profile: str, expected_db: str) -> dict[str, Any
                 "ai_max_concurrent_processing": int(
                     config.AI_MAX_CONCURRENT_PROCESSING
                 ),
-                "ai_queue_wait_timeout_seconds": int(
-                    config.AI_QUEUE_WAIT_TIMEOUT_SECONDS
-                ),
+                "ai_queue_max_size": int(config.AI_QUEUE_MAX_SIZE),
                 "llm_max_concurrent_calls": int(config.LLM_MAX_CONCURRENT_CALLS),
                 "llm_acquire_timeout_seconds": int(
                     config.LLM_ACQUIRE_TIMEOUT_SECONDS
