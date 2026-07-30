@@ -129,6 +129,20 @@ _TABLE_TIMESTAMP_COLUMNS = {
 }
 
 _CORE_EXPECTED_COLUMNS = {
+    "linkup_usage_log": frozenset(
+        {
+            "id",
+            "used_at",
+            "endpoint",
+            "depth",
+            "render_js",
+            "cost_eur",
+            "request_id",
+            "cost_usd",
+            "billing_status",
+            "finalized_at",
+        }
+    ),
     "guild_settings": frozenset(
         {
             "guild_id",

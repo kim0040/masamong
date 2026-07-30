@@ -1268,6 +1268,8 @@ class AIHandler(commands.Cog):
         self,
         user_query: str,
         log_extra: dict,
+        *,
+        depth_hint: str | None = None,
     ) -> dict:
         """검색 자료만 가져옵니다. 최종 답변 LLM은 호출하지 않습니다."""
         if not self.tools_cog:
@@ -1288,6 +1290,7 @@ class AIHandler(commands.Cog):
                     user_query,
                     guild_id=log_extra.get("guild_id"),
                     user_id=log_extra.get("user_id"),
+                    depth_hint=depth_hint,
                 ),
                 timeout=total_timeout,
             )
@@ -2920,9 +2923,16 @@ class AIHandler(commands.Cog):
         if tool_name == 'web_search':
             logger.info("특별 도구 실행: web_search (원문 RAG 수집)", extra=log_extra)
             query = parameters.get('query', user_query)
+            depth_hint = str(parameters.get("depth") or "").strip().lower()
+            if depth_hint not in {"fast", "standard", "deep"}:
+                depth_hint = None
             self._debug(f"[도구:web_search] 쿼리: {self._truncate_for_debug(query)}", log_extra)
 
-            search_result = await self._execute_web_search_raw(query, log_extra)
+            search_result = await self._execute_web_search_raw(
+                query,
+                log_extra,
+                depth_hint=depth_hint,
+            )
             if search_result.get("result"):
                 self._debug(f"[도구:web_search] 결과: {self._truncate_for_debug(search_result)}", log_extra)
                 return search_result

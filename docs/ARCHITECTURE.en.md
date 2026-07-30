@@ -160,6 +160,17 @@ fallback. SDK retries are disabled.
 - no overlapping fallback after an ambiguous timeout;
 - at most three tool calls, with stricter per-tool cardinality.
 
+The existing semantic routing call also selects Linkup depth: `fast` for one
+focused fact, `standard` for ordinary multi-source retrieval, and `deep` only
+for sequential or multi-page investigation. A low-quality `fast` result can
+advance once to `standard`; a low-quality `standard` result can advance once to
+`deep`. No extra routing model call is introduced.
+
+Linkup accounting uses USD reservation states. A call is committed as
+`reserved` before provider I/O, then finalized as `billed`, `not_billed`, or
+`billed_assumed`. A failed finalization remains reserved and counted, so an
+accounting fault cannot understate spend.
+
 The school-notice LLM has independent concurrency, response-size, total-time,
 and at-most-two-retry limits. No path uses recursive or infinite LLM retry.
 

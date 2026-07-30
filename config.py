@@ -1460,10 +1460,24 @@ LINKUP_MIN_ANSWER_CHARS = max(20, as_int(load_config_value('LINKUP_MIN_ANSWER_CH
 LINKUP_CONTEXT_MAX_CHARS = max(800, as_int(load_config_value('LINKUP_CONTEXT_MAX_CHARS', 3200), 3200))
 LINKUP_CONTEXT_SOURCE_BLOCKS = max(1, as_int(load_config_value('LINKUP_CONTEXT_SOURCE_BLOCKS', 4), 4))
 LINKUP_CONTEXT_SNIPPET_MAX_CHARS = max(80, as_int(load_config_value('LINKUP_CONTEXT_SNIPPET_MAX_CHARS', 300), 300))
-LINKUP_MONTHLY_BUDGET_EUR = max(
-    0.0,
-    as_float(load_config_value('LINKUP_MONTHLY_BUDGET_EUR', 4.5), 4.5),
+# Linkup은 현재 API key 청구를 USD로 안내합니다. 예전 배포의
+# LINKUP_MONTHLY_BUDGET_EUR도 읽되, 새 USD 설정이 있으면 항상 우선합니다.
+_LINKUP_LEGACY_MONTHLY_BUDGET = load_config_value(
+    'LINKUP_MONTHLY_BUDGET_EUR',
+    4.5,
 )
+LINKUP_MONTHLY_BUDGET_USD = max(
+    0.0,
+    as_float(
+        load_config_value(
+            'LINKUP_MONTHLY_BUDGET_USD',
+            _LINKUP_LEGACY_MONTHLY_BUDGET,
+        ),
+        4.5,
+    ),
+)
+# 외부 확장 코드의 단계적 전환을 위한 읽기 전용 호환 별칭입니다.
+LINKUP_MONTHLY_BUDGET_EUR = LINKUP_MONTHLY_BUDGET_USD
 LINKUP_MONTHLY_BUDGET_ENFORCED = as_bool(load_config_value('LINKUP_MONTHLY_BUDGET_ENFORCED', 'true'))
 
 # 범용 웹 탐색 파이프라인 예산/캐시 설정

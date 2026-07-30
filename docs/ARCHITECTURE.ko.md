@@ -199,6 +199,19 @@ Main LLM이 추측하도록 넘기지 않고 확인 실패를 명시한다. 금�
 또는 미국 지수의 실제 snapshot과 웹 소식을 함께 보고, 도구 원문에 없는 수치를
 최종 전송 전에 제거한다.
 
+Linkup depth는 도구 선택에 이미 사용하는 의미 라우터가 같은 호출에서 함께 결정한다.
+한 대상의 단일 사실은 `fast`, 일반 검색과 여러 출처 확인은 `standard`, 검색한 URL을
+다시 읽는 순차 조사만 `deep`을 사용한다. 실행 경계는 URL·다단계 요청이 `fast`로
+내려가는 경우만 구조적으로 막으며 depth 판단을 위한 LLM 호출을 추가하지 않는다.
+`fast` 결과가 부족하면 한 번만 `standard`로 올리고, `standard` 결과가 부족할 때만
+한 번 `deep`으로 올린다.
+
+Linkup 비용 저장은 USD 기준이다. provider 호출 전 `reserved` 행을 먼저 commit하고,
+성공은 `billed`, 명시적인 HTTP 오류는 `not_billed`, timeout·연결 유실은
+`billed_assumed`로 확정한다. 확정 write가 실패하거나 프로세스가 중단된 예약은
+`reserved`로 남아 월 예산에 포함되므로 과소 계측되지 않는다. 기존 `cost_eur` 열과
+행은 삭제·변경하지 않고 USD 숫자의 호환 미러 또는 `legacy_assumed` 행으로 읽는다.
+
 각 제공자는 `ToolHealthRegistry` 회로 차단기를 거친다. 연속 실패 후 cooldown에
 들어가고, 시간이 지난 뒤 사용자 요청 한 건만 half-open probe로 허용한다. probe가
 취소되면 점유 상태를 즉시 버려 영구 잠금을 막는다.

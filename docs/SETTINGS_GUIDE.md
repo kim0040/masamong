@@ -138,7 +138,7 @@ LINKUP_TIMEOUT_SECONDS=40
 LINKUP_PIPELINE_TIMEOUT_SECONDS=55
 WEB_SEARCH_TOTAL_TIMEOUT_SECONDS=60
 LINKUP_MONTHLY_BUDGET_ENFORCED=true
-LINKUP_MONTHLY_BUDGET_EUR=4.5
+LINKUP_MONTHLY_BUDGET_USD=4.5
 LINKUP_FETCH_RENDER_JS=false
 LINKUP_FETCH_JS_RETRY_ENABLED=true
 WEB_SEARCH_GLOBAL_RPM_LIMIT=20
@@ -148,6 +148,11 @@ WEB_SEARCH_GUILD_RPD_LIMIT=300
 WEB_SEARCH_USER_RPM_LIMIT=4
 WEB_SEARCH_USER_RPD_LIMIT=60
 ```
+
+`LINKUP_MONTHLY_BUDGET_USD`는 Linkup API key 청구 통화에 맞춘 월 상한입니다.
+구버전 `LINKUP_MONTHLY_BUDGET_EUR`만 설정된 환경도 같은 숫자로 계속 읽지만, 새
+배포에서는 USD 이름을 사용합니다. 실패 응답은 월 사용액에서 제외하고 timeout처럼
+청구 여부를 확인할 수 없는 호출만 보수적으로 포함합니다.
 
 ### 1.4 관리자 경계
 
@@ -385,7 +390,7 @@ MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
 ### Q: 웹 검색이 안 돼요
 
 1. `LINKUP_API_KEY`가 설정되어 있는지 확인
-2. 월 예산을 초과했을 수 있음 (`LINKUP_MONTHLY_BUDGET_EUR` 확인)
+2. 월 USD 예산을 초과했을 수 있음 (`LINKUP_MONTHLY_BUDGET_USD` 확인)
 
 ### Q: 언어를 변경하고 싶어요
 

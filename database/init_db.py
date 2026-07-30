@@ -112,6 +112,28 @@ def migrate_database(cursor) -> bool:
             cursor.execute("ALTER TABLE guild_settings ADD COLUMN persona_text TEXT")
             print("INFO: 컬럼 추가 완료.")
 
+        # Linkup USD 예약·확정 상태. 기존 cost_eur와 모든 행은 그대로 둔다.
+        cursor.execute("PRAGMA table_info(linkup_usage_log)")
+        linkup_columns = {row[1] for row in cursor.fetchall()}
+        for column_name, column_type in {
+            "request_id": "TEXT",
+            "cost_usd": "REAL",
+            "billing_status": "TEXT",
+            "finalized_at": "TEXT",
+        }.items():
+            if column_name not in linkup_columns:
+                print(
+                    f"INFO: linkup_usage_log.{column_name} 컬럼을 추가합니다..."
+                )
+                cursor.execute(
+                    f"ALTER TABLE linkup_usage_log "
+                    f"ADD COLUMN {column_name} {column_type}"
+                )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_linkup_request_id "
+            "ON linkup_usage_log (request_id)"
+        )
+
         # [Safety Check] Ensure new tables exist (redundant but safe)
         tables_to_check = ['user_profiles', 'dm_usage_logs']
         for table in tables_to_check:

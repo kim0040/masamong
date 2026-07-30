@@ -243,6 +243,8 @@ async def test_kakao_storage_is_required_only_for_kakao_profiles(monkeypatch):
                     "scope", "policy_version", "notice_hash", "status",
                     "granted_at", "withdrawn_at", "updated_at",
                     "instance_name", "role", "enabled", "changed_by",
+                    "used_at", "endpoint", "depth", "render_js", "cost_eur",
+                    "request_id", "cost_usd", "billing_status", "finalized_at",
                 ]
 
         monkeypatch.setattr(bot, "_existing_tables", _fake_existing_tables)

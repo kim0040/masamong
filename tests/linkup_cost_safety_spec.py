@@ -24,7 +24,7 @@ def _linkup_defaults(monkeypatch):
     monkeypatch.setattr(config, "LINKUP_ENABLED", True)
     monkeypatch.setattr(config, "LINKUP_API_KEY", "test-key")
     monkeypatch.setattr(config, "LINKUP_MONTHLY_BUDGET_ENFORCED", True)
-    monkeypatch.setattr(config, "LINKUP_MONTHLY_BUDGET_EUR", 4.5)
+    monkeypatch.setattr(config, "LINKUP_MONTHLY_BUDGET_USD", 4.5)
     monkeypatch.setattr(config, "LINKUP_QUALITY_RETRY_ENABLED", False)
     monkeypatch.setattr(config, "WEB_RAG_CACHE_TTL_SECONDS", 0)
     monkeypatch.setattr(linkup_search, "_linkup_budget_lock", asyncio.Lock())
@@ -48,27 +48,32 @@ async def test_timeout_is_reserved_and_blocks_legacy_fallback(monkeypatch):
             db_conn=db,
         )
         async with db.execute(
-            "SELECT COUNT(*), COALESCE(SUM(cost_eur), 0) FROM linkup_usage_log"
+            """
+            SELECT COUNT(*), COALESCE(SUM(cost_usd), 0),
+                   MIN(billing_status)
+            FROM linkup_usage_log
+            """
         ) as cursor:
-            count, cost = await cursor.fetchone()
+            count, cost, billing_status = await cursor.fetchone()
 
     assert result["status"] == "error"
     assert result["fallback_safe"] is False
     assert result["failure_kind"] == "provider_outcome_unknown"
     assert count == 1
     assert cost == pytest.approx(0.005)
+    assert billing_status == "billed_assumed"
 
 
 @pytest.mark.asyncio
 async def test_provider_is_not_called_when_reservation_fails(monkeypatch):
     monkeypatch.setattr(
         linkup_search.db_utils,
-        "can_spend_linkup_budget",
+        "can_spend_linkup_budget_usd",
         AsyncMock(return_value=(True, 0.0, 4.5)),
     )
     monkeypatch.setattr(
         linkup_search.db_utils,
-        "log_linkup_usage",
+        "reserve_linkup_usage",
         AsyncMock(return_value=False),
     )
     provider = AsyncMock(return_value={})
@@ -97,6 +102,10 @@ async def test_budget_check_reservation_and_call_are_process_serialized(monkeypa
         events.append("reserve")
         return True
 
+    async def finalize(*_args, **_kwargs):
+        events.append("finalize")
+        return True
+
     async def provider(_endpoint, _payload):
         nonlocal sequence
         sequence += 1
@@ -106,8 +115,21 @@ async def test_budget_check_reservation_and_call_are_process_serialized(monkeypa
         events.append(f"call-{call_no}-end")
         return {"answer": "ok"}
 
-    monkeypatch.setattr(linkup_search.db_utils, "can_spend_linkup_budget", allowed)
-    monkeypatch.setattr(linkup_search.db_utils, "log_linkup_usage", reserve)
+    monkeypatch.setattr(
+        linkup_search.db_utils,
+        "can_spend_linkup_budget_usd",
+        allowed,
+    )
+    monkeypatch.setattr(
+        linkup_search.db_utils,
+        "reserve_linkup_usage",
+        reserve,
+    )
+    monkeypatch.setattr(
+        linkup_search.db_utils,
+        "finalize_linkup_usage",
+        finalize,
+    )
     monkeypatch.setattr(linkup_search, "_linkup_post_json", provider)
 
     await asyncio.gather(
@@ -127,10 +149,12 @@ async def test_budget_check_reservation_and_call_are_process_serialized(monkeypa
         "reserve",
         "call-1-start",
         "call-1-end",
+        "finalize",
         "check",
         "reserve",
         "call-2-start",
         "call-2-end",
+        "finalize",
     ]
 
 
@@ -162,9 +186,14 @@ async def test_request_failure_safety_state_is_preserved(
             "검색 테스트",
             db_conn=db,
         )
+        async with db.execute(
+            "SELECT billing_status FROM linkup_usage_log"
+        ) as cursor:
+            billing_status = (await cursor.fetchone())[0]
 
     assert result["fallback_safe"] is fallback_safe
     assert result["failure_kind"] == failure_kind
+    assert billing_status == "not_billed"
 
 
 @pytest.mark.asyncio
@@ -249,14 +278,14 @@ def test_result_and_cost_related_config_values_are_bounded(monkeypatch):
 async def test_monthly_budget_config_is_bounded_before_check(monkeypatch):
     captured = {}
 
-    async def budget_check(_db, _cost, *, budget_limit_eur):
-        captured["limit"] = budget_limit_eur
-        return False, 0.0, budget_limit_eur
+    async def budget_check(_db, _cost, *, budget_limit_usd):
+        captured["limit"] = budget_limit_usd
+        return False, 0.0, budget_limit_usd
 
-    monkeypatch.setattr(config, "LINKUP_MONTHLY_BUDGET_EUR", 999999)
+    monkeypatch.setattr(config, "LINKUP_MONTHLY_BUDGET_USD", 999999)
     monkeypatch.setattr(
         linkup_search.db_utils,
-        "can_spend_linkup_budget",
+        "can_spend_linkup_budget_usd",
         budget_check,
     )
 

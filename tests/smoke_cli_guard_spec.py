@@ -91,7 +91,7 @@ async def test_linkup_smoke_is_dry_before_database_or_provider(
     args = argparse.Namespace(
         expected_profile="masamo",
         query="OpenAI API 최신 공식 업데이트",
-        max_cost_eur=0.005,
+        max_cost_usd=0.005,
         run=False,
         confirm=None,
     )
