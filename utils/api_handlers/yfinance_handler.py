@@ -31,6 +31,22 @@ _MARKET_INDEXES = {
     ),
 }
 
+
+def _looks_like_invalid_symbol_error(exc: Exception | str) -> bool:
+    """Yahoo가 존재하지 않는 티커에 사용하는 오류 문구를 식별합니다."""
+    text = str(exc or "").casefold()
+    return any(
+        marker in text
+        for marker in (
+            "quote not found",
+            "no price data",
+            "no data found",
+            "possibly delisted",
+            "symbol may be delisted",
+        )
+    )
+
+
 async def get_stock_info(ticker: str) -> Dict[str, Any]:
     """
     yfinance를 사용하여 주식/암호화폐 정보를 조회합니다.
@@ -89,17 +105,62 @@ async def get_stock_info(ticker: str) -> Dict[str, Any]:
 
         if data['price'] is None:
             logger.warning(f"yfinance 조회 실패 (Price None): {ticker}")
-            return {"error": f"'{ticker}'에 대한 시세 정보를 가져올 수 없습니다."}
+            return {
+                "status": "error",
+                "error": f"'{ticker}' 종목을 Yahoo Finance에서 찾지 못했어요.",
+                "failure_kind": "invalid_symbol",
+                "provider_failure": False,
+            }
             
         logger.info(f"yfinance 조회 성공: {ticker} -> {data.get('price')}")
-        return data
+        source_url = (
+            "https://finance.yahoo.com/quote/"
+            f"{quote(ticker, safe='')}/"
+        )
+        return {
+            **data,
+            "status": "success",
+            "provider": "yfinance",
+            "checked_at_kst": datetime.now(
+                timezone(timedelta(hours=9))
+            ).isoformat(timespec="seconds"),
+            "source_url": source_url,
+            "source_urls": [source_url],
+        }
 
     except asyncio.TimeoutError:
         logger.warning(f"yfinance 조회 타임아웃({_STOCK_FETCH_TIMEOUT_SEC}s): {ticker}")
-        return {"error": f"'{ticker}' 시세 조회가 지연되어 취소되었습니다."}
+        return {
+            "status": "error",
+            "error": f"'{ticker}' 시세 조회가 지연되어 취소됐어요.",
+            "failure_kind": "provider_timeout",
+            "provider_failure": True,
+        }
     except Exception as e:
-        logger.error(f"yfinance 조회 실패 ({ticker}): {e}")
-        return {"error": "주식 정보를 가져오는 중 오류가 발생했습니다."}
+        if _looks_like_invalid_symbol_error(e):
+            logger.info(
+                "yfinance 티커 없음: %s error_type=%s",
+                ticker,
+                type(e).__name__,
+            )
+            return {
+                "status": "error",
+                "error": f"'{ticker}' 종목을 Yahoo Finance에서 찾지 못했어요.",
+                "failure_kind": "invalid_symbol",
+                "provider_failure": False,
+            }
+        logger.error(
+            "yfinance 조회 실패 (%s): error_type=%s",
+            ticker,
+            type(e).__name__,
+            exc_info=True,
+        )
+        return {
+            "status": "error",
+            "error": "주식 정보를 가져오는 쪽에서 문제가 생겼어요.",
+            "failure_kind": "provider_error",
+            "provider_failure": True,
+        }
 
 
 async def get_market_snapshot(region: str = "global") -> Dict[str, Any]:

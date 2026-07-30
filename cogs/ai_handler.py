@@ -2465,6 +2465,41 @@ class AIHandler(commands.Cog):
 
             # [Optimization] 주식 도구 결과 최적화
             if name == "get_stock_price":
+                if (
+                    isinstance(result, dict)
+                    and result.get("status") == "success"
+                ):
+                    price = result.get("price")
+                    currency = result.get("currency") or "통화 미상"
+                    change_percent = result.get("change_percent")
+                    price_text = (
+                        f"{float(price):,.2f} {currency}"
+                        if isinstance(price, (int, float))
+                        else "확인 불가"
+                    )
+                    change_text = (
+                        f"{float(change_percent):+.2f}%"
+                        if isinstance(change_percent, (int, float))
+                        else "등락률 확인 불가"
+                    )
+                    lines.extend(
+                        [
+                            (
+                                f"[{name}] {result.get('name') or result.get('symbol')} "
+                                f"({result.get('symbol')}): {price_text}, {change_text}"
+                            ),
+                            (
+                                f"[{name}] 조회 시각(KST): "
+                                f"{result.get('checked_at_kst') or '알 수 없음'}"
+                            ),
+                            (
+                                f"[{name}] 주의: 장중 수치는 바뀔 수 있으며 "
+                                f"Yahoo Finance의 최신 가용 값임"
+                            ),
+                        ]
+                    )
+                    continue
+
                 # 1. Wrapped String (yfinance Success) -> _execute_tool wraps str in {"result": str}
                 if isinstance(result, dict) and "result" in result and isinstance(result["result"], str):
                     lines.append(f"[{name}] (결과 데이터)\n{result['result']}")
@@ -2713,15 +2748,62 @@ class AIHandler(commands.Cog):
         cls,
         response_text: str,
         evidence_text: str,
+        query_text: str = "",
     ) -> list[float]:
-        """답변에만 새로 생긴 유의미한 금융 수치를 찾습니다."""
+        """답변에만 새로 생긴 유의미한 금융 수치를 찾습니다.
+
+        환율 환산처럼 사용자가 준 금액과 조회된 환율을 곱하거나 나누어 얻는
+        값은 원문에 그대로 없더라도 결정적 계산 결과로 인정합니다.
+        """
         response_values = cls._extract_significant_numbers(response_text)
+        query_values = cls._extract_significant_numbers(query_text)
         evidence_values = cls._extract_significant_numbers(evidence_text)
+        known_values = [*evidence_values, *query_values]
+        calculation_query = bool(
+            re.search(
+                r"(?:환산|환전|계산|얼마|바꾸면|곱하면|나누면)",
+                str(query_text or ""),
+            )
+            and re.search(
+                r"(?:환율|원화|달러|엔화|유로|usd|krw|jpy|eur)",
+                str(query_text or ""),
+                re.IGNORECASE,
+            )
+        )
+
+        derived_values: list[float] = []
+        if calculation_query:
+            for principal in query_values[:8]:
+                if principal == 0:
+                    continue
+                for rate in evidence_values[:40]:
+                    if rate == 0:
+                        continue
+                    derived_values.extend(
+                        (
+                            principal * rate,
+                            principal / rate,
+                            principal * rate / 100,
+                        )
+                    )
+
         unsupported: list[float] = []
         for value in response_values:
             tolerance = max(0.05, abs(value) * 0.001)
-            if not any(abs(value - known) <= tolerance for known in evidence_values):
-                unsupported.append(value)
+            if any(
+                abs(value - known) <= tolerance
+                for known in known_values
+            ):
+                continue
+            if calculation_query and any(
+                abs(value - derived) <= max(
+                    1.0,
+                    abs(derived) * 0.0005,
+                )
+                for derived in derived_values
+            ):
+                continue
+            unsupported.append(value)
         return unsupported
 
     @staticmethod
@@ -3054,6 +3136,17 @@ class AIHandler(commands.Cog):
                         tool_name,
                         extra=log_extra,
                     )
+                    if isinstance(result, dict) and result.get("error"):
+                        return {
+                            "error": str(result["error"]),
+                            "failure_kind": str(
+                                result.get("failure_kind")
+                                or "no_external_evidence"
+                            ),
+                            "provider_failure": bool(
+                                result.get("provider_failure")
+                            ),
+                        }
                     return {
                         "error": (
                             "이 요청을 뒷받침할 자료를 찾지 못했어요."
@@ -3519,9 +3612,24 @@ class AIHandler(commands.Cog):
                         if len(tool_plan) > 1
                         else ""
                     )
-                    await progress.update(
-                        f"🔍 {tool_label} 진행 중이에요... {step_progress}"
+                    image_lock = getattr(
+                        self.tools_cog,
+                        "_image_generation_lock",
+                        None,
                     )
+                    if (
+                        tool_name == "generate_image"
+                        and image_lock is not None
+                        and image_lock.locked()
+                    ):
+                        await progress.update(
+                            "🎨 앞선 그림이 끝나길 기다리는 중이에요... "
+                            f"{step_progress}"
+                        )
+                    else:
+                        await progress.update(
+                            f"🔍 {tool_label} 진행 중이에요... {step_progress}"
+                        )
 
                     tool_started_at = time.monotonic()
                     result = await self._execute_tool(
@@ -3552,6 +3660,90 @@ class AIHandler(commands.Cog):
                     })
                     executed_plan.append(tool_call)
                     executed_tool_count += 1
+
+            # 현재가 도구가 정확한 티커를 찾지 못했거나 공급자 장애로 근거를
+            # 만들지 못한 경우, 같은 요청 안에서 공개 웹 검색을 딱 한 번만
+            # 사용한다. 이 경로는 재귀하지 않으며 메시지당 도구 호출 상한에도
+            # 포함된다.
+            stock_failure = next(
+                (
+                    entry
+                    for entry in tool_results
+                    if entry.get("tool_name") == "get_stock_price"
+                    and isinstance(entry.get("result"), dict)
+                    and entry["result"].get("error")
+                ),
+                None,
+            )
+            has_web_result = any(
+                entry.get("tool_name") == "web_search"
+                for entry in tool_results
+            )
+            max_tool_calls = min(
+                3,
+                max(1, int(getattr(config, "AGENT_MAX_TOOL_CALLS", 3))),
+            )
+            if (
+                stock_failure
+                and not has_web_result
+                and bool(routing_decision.requires_external_evidence)
+                and executed_tool_count < max_tool_calls
+            ):
+                await progress.update(
+                    "🌐 정확한 종목과 공개 시세 자료를 한 번 더 확인 중이에요..."
+                )
+                contextual_query = self._contextualize_web_query(
+                    user_query,
+                    user_query,
+                    history,
+                )
+                fallback_query = (
+                    self._ensure_intent_analyzer()._build_finance_lookup_query(
+                        contextual_query
+                    )
+                )
+                tool_started_at = time.monotonic()
+                web_result = await self._execute_web_search_raw(
+                    fallback_query,
+                    log_extra,
+                    depth_hint="fast",
+                )
+                fallback_step = executed_tool_count + 1
+                self._log_tool_execution_outcome(
+                    "web_search",
+                    web_result,
+                    log_extra,
+                    duration_ms=round(
+                        max(0.0, time.monotonic() - tool_started_at) * 1000
+                    ),
+                    step=fallback_step,
+                    step_count=fallback_step,
+                )
+                fallback_call = {
+                    "tool_to_use": "web_search",
+                    "tool_name": "web_search",
+                    "parameters": {
+                        "query": fallback_query,
+                        "depth": "fast",
+                    },
+                    "auto": "stock_fallback",
+                }
+                tool_results.append(
+                    {
+                        "step": fallback_step,
+                        "tool_name": "web_search",
+                        "parameters": fallback_call["parameters"],
+                        "result": web_result,
+                    }
+                )
+                executed_plan.append(fallback_call)
+                executed_tool_count += 1
+                logger.info(
+                    "주가 도구 실패 후 bounded web_search 폴백 완료. "
+                    "failure_kind=%s",
+                    stock_failure["result"].get("failure_kind"),
+                    extra=log_extra,
+                )
 
             # 의미 라우터가 정상적으로 "도구 없음"을 결정했다면 키워드 규칙으로
             # 뒤집지 않는다. provider 장애 fallback에서만 기존 자동 검색을
@@ -3766,6 +3958,7 @@ class AIHandler(commands.Cog):
                 if res.get("tool_name") in {
                     "web_search",
                     "get_market_snapshot",
+                    "get_stock_price",
                 } and isinstance(res.get("result"), dict):
                     urls = res["result"].get("source_urls") or res["result"].get("urls")
                     if urls:
@@ -3868,6 +4061,7 @@ class AIHandler(commands.Cog):
                     unsupported_numbers = self._unsupported_finance_numbers(
                         final_response_text,
                         evidence_text,
+                        user_query,
                     )
                     if unsupported_numbers:
                         logger.error(
@@ -4540,27 +4734,43 @@ class AIHandler(commands.Cog):
              return None
 
         system_prompt = (
-            "You are a specialized assistant that extracts stock/crypto ticker symbols from user queries.\n"
-            "The user will ask about a stock price in Korean or English.\n"
-            "You must identify the correct Yahoo Finance compatible ticker symbol.\n"
+            "Extract one Yahoo Finance compatible ticker from the request.\n"
             "Rules:\n"
             "1. Return ONLY the ticker symbol. Do not write any other text.\n"
             "2. For Korean stocks, append '.KS' (KOSPI) or '.KQ' (KOSDAQ). e.g., Samsung -> 005930.KS\n"
             "3. For US stocks, use the standard ticker. e.g., Apple -> AAPL\n"
-            "4. For Crypto, use common pairs. e.g., Bitcoin -> BTC-USD, Ethereum -> ETH-USD\n"
-            "5. If the company is not found or ambiguous, return 'NONE'."
+            "4. For crypto, use a hyphenated pair such as BTC-USD, ETH-USD, or USDT-USD.\n"
+            "5. Never invent an ADR or OTC ticker. If the exchange/listing is ambiguous, return NONE.\n"
+            "6. If the request asks for a chart, historical candles, or an unsupported private API and no exact listed ticker is explicit, return NONE.\n"
+            "7. If the company is not confidently identified, return NONE."
         )
-        
-        user_prompt = f"Query: {query}\nTicker:"
+        ticker_prompt = f"{system_prompt}\n\nQuery: {query}\nTicker:"
         
         try:
-            ticker = await self._cometapi_generate_content(
-                system_prompt,
-                user_prompt,
-                log_extra={'mode': 'ticker_extraction'}
+            ticker = await self._cometapi_fast_generate_text(
+                ticker_prompt,
+                None,
+                log_extra={'mode': 'ticker_extraction'},
+                trace_key="ticker_extraction",
+                max_tokens=24,
             )
-            if ticker and "NONE" not in ticker:
-                clean_ticker = ticker.strip().replace("'", "").replace('"', '').upper()
+            if ticker and "NONE" not in ticker.upper():
+                clean_ticker = (
+                    ticker.strip()
+                    .splitlines()[0]
+                    .replace("'", "")
+                    .replace('"', "")
+                    .upper()
+                )
+                if not re.fullmatch(
+                    r"[A-Z0-9^][A-Z0-9.^=-]{0,19}",
+                    clean_ticker,
+                ):
+                    logger.warning(
+                        "티커 추출 응답 형식 거부. response_chars=%d",
+                        len(str(ticker)),
+                    )
+                    return None
                 return clean_ticker
             return None
         except Exception as e:

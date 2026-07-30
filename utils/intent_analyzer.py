@@ -403,6 +403,39 @@ class IntentAnalyzer:
         return has_news_request and not has_named_stock
 
     @staticmethod
+    def _stock_lookup_requires_web(query: str) -> bool:
+        """현재가 단건 도구의 범위를 벗어나는 금융 요청을 식별합니다."""
+        text = str(query or "").casefold()
+        capability_terms = (
+            "그래프",
+            "차트",
+            "일봉",
+            "주봉",
+            "월봉",
+            "캔들",
+            "과거 주가",
+            "주가 추이",
+            "히스토리",
+            "history",
+            "토스증권",
+            "toss securities",
+            "adr",
+            "otc",
+        )
+        conversion_terms = (
+            "환율",
+            "환산",
+            "환전",
+            "원화로",
+            "달러로",
+            "엔화로",
+            "유로로",
+        )
+        return any(term in text for term in capability_terms) or any(
+            term in text for term in conversion_terms
+        )
+
+    @staticmethod
     def _market_region_from_text(query: str) -> str:
         """시장 브리핑 대상 지역을 보수적으로 정규화합니다."""
         text = (query or "").lower()
@@ -954,7 +987,10 @@ class IntentAnalyzer:
             "- get_weather_forecast(location, day_offset): 지역 날씨, 오늘 0~10일 뒤\n"
             "- get_market_snapshot(region): 주요 시장 지수의 검증된 최신 수치. "
             "region은 kr, us, global 중 하나\n"
-            "- get_stock_price(symbol, user_query): 현재 주가. symbol은 알면 Yahoo 호환 티커\n"
+            "- get_stock_price(symbol, user_query): Yahoo Finance의 현재가 단건 조회. "
+            "정확한 Yahoo 티커를 알 때 사용한다. 환율 환산, ADR/OTC 상장 여부, "
+            "과거 일봉·차트·그래프, 특정 서비스의 비공개 API 요청에는 사용하지 "
+            "말고 web_search로 공식 공개 자료를 확인한다\n"
             "- search_for_place(query, page_size): 음식점·카페·장소의 위치 검색\n"
             "- generate_image(prompt): 사용자가 새 이미지 생성을 요청한 경우만\n"
             "시장 시황·주요 주식 뉴스는 get_market_snapshot과 web_search를 함께 "
@@ -1411,6 +1447,24 @@ class IntentAnalyzer:
                         "day_offset": min(10, max(0, day_offset)),
                     }
                 elif name == "get_stock_price":
+                    if self._stock_lookup_requires_web(query):
+                        name = "web_search"
+                        params = {
+                            "query": self._build_finance_lookup_query(query)
+                        }
+                        logger.info(
+                            "[도구보정] 현재가 도구 범위를 벗어난 요청을 "
+                            "web_search로 전환",
+                            extra=log_extra,
+                        )
+                        append_candidate(
+                            {
+                                "tool_to_use": name,
+                                "tool_name": name,
+                                "parameters": params,
+                            }
+                        )
+                        continue
                     symbol = str(params.get("symbol") or "").strip().upper()
                     if symbol and re.fullmatch(
                         r"[A-Z0-9^][A-Z0-9.^=-]{0,19}",
@@ -1660,6 +1714,19 @@ class IntentAnalyzer:
             "지수 수치와 등락은 거래소·공식 시세 자료로 교차 확인. "
             "뉴스는 기업 공시·거래소·중앙은행·주요 통신사/경제지 우선. "
             "커뮤니티·SNS·출처 없는 요약은 제외."
+        )
+
+    @staticmethod
+    def _build_finance_lookup_query(query: str) -> str:
+        """시세·환율·차트처럼 뉴스가 아닌 금융 조회용 검색 계약입니다."""
+        base = (query or "").strip() or "금융 시세 조회"
+        now_kst = datetime.now(timezone(timedelta(hours=9)))
+        return (
+            f"{base}\n"
+            f"기준일: {now_kst:%Y-%m-%d} KST. 요청한 종목·거래소·통화쌍을 "
+            "먼저 식별하고, 공식 거래소·공식 API·신뢰할 수 있는 시세 제공처의 "
+            "최신 가용 값을 사용. 상장 티커나 지원 API가 불명확하면 추측하지 "
+            "말고 그 한계를 명시. 날짜와 통화 단위를 함께 표시."
         )
 
     def _extract_location_from_query(self, query: str) -> str | None:

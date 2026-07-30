@@ -134,9 +134,10 @@ async def test_image_generation_queue_wait_is_bounded(monkeypatch):
     finally:
         cog._image_generation_lock.release()
 
-    # 내부 용어가 아니라, 지금 밀려 있으니 다시 요청하라는 뜻이 전달돼야 한다.
-    assert "다른 그림을 그리고 있어서" in result["error"]
-    assert "다시 불러주세요" in result["error"]
+    assert "앞선 그림 작업" in result["error"]
+    assert "생성 횟수에 포함되지 않아요" in result["error"]
+    assert result["failure_kind"] == "image_queue_timeout"
+    assert result["provider_attempted"] is False
 
 
 @pytest.mark.asyncio
@@ -318,6 +319,7 @@ async def test_image_generation_uses_exact_gemini_native_contract(monkeypatch):
         "image_data": png,
         "mime_type": "image/png",
         "remaining": 2,
+        "provider_attempted": True,
     }
 
 
@@ -355,6 +357,41 @@ def test_image_selection_uses_last_image_when_provider_omits_thought_marker():
     assert selected["encoded"] == final
     assert selected["image_part_count"] == 2
     assert selected["thought_image_count"] == 0
+
+
+def test_image_response_diagnostics_contains_no_response_text():
+    diagnostics = ToolsCog._image_response_diagnostics(
+        {
+            "promptFeedback": {
+                "blockReason": "SAFETY",
+                "safetyRatings": [
+                    {
+                        "category": "HARM_CATEGORY_TEST",
+                        "probability": "HIGH",
+                        "blocked": True,
+                    }
+                ],
+            },
+            "candidates": [
+                {
+                    "finishReason": "SAFETY",
+                    "content": {
+                        "parts": [
+                            {"text": "private generated explanation"},
+                        ]
+                    },
+                }
+            ],
+        }
+    )
+
+    assert diagnostics["candidate_count"] == 1
+    assert diagnostics["finish_reasons"] == ["SAFETY"]
+    assert diagnostics["prompt_block_reason"] == "SAFETY"
+    assert diagnostics["text_chars"] == len(
+        "private generated explanation"
+    )
+    assert "private generated explanation" not in str(diagnostics)
 
 
 @pytest.mark.asyncio

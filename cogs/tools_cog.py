@@ -17,6 +17,7 @@ import aiohttp
 import asyncio
 import importlib
 import json
+import time
 
 import config
 from logger_config import logger
@@ -34,6 +35,25 @@ def is_korean(text: str) -> bool:
     if not text:
         return False
     return bool(re.search("[\uac00-\ud7a3]", text))
+
+
+_YAHOO_TICKER_ALIASES = (
+    (("삼성전자",), "005930.KS"),
+    (("sk하이닉스", "에스케이하이닉스"), "000660.KS"),
+    (("비트코인", "bitcoin"), "BTC-USD"),
+    (("이더리움", "ethereum"), "ETH-USD"),
+    (("테더", "tether", "usdt"), "USDT-USD"),
+)
+_DIRECT_TICKER_FIXES = {
+    "USDTKRW": "USDT-USD",
+    "USDTUSD": "USDT-USD",
+    "BTCKRW": "BTC-KRW",
+    "BTCUSD": "BTC-USD",
+    "ETHKRW": "ETH-KRW",
+    "ETHUSD": "ETH-USD",
+}
+_KNOWN_FABRICATED_TICKERS = frozenset({"SKHYNX"})
+
 
 class ToolsCog(commands.Cog):
     """AI 에이전트가 사용할 수 있는 도구(Tool)들의 모음입니다."""
@@ -77,6 +97,8 @@ class ToolsCog(commands.Cog):
                 for marker in ("모듈이 준비되지", "API 오류", "시간 초과")
             )
         if tool_name == "get_stock_price":
+            if isinstance(result, dict):
+                return bool(result.get("provider_failure"))
             text = str(result)
             return any(
                 marker in text
@@ -134,6 +156,12 @@ class ToolsCog(commands.Cog):
                 )
             )
         if tool_name == "get_stock_price":
+            if isinstance(result, dict):
+                return bool(
+                    result.get("status") == "success"
+                    and isinstance(result.get("price"), (int, float))
+                    and result.get("source_urls")
+                )
             text = str(result or "").strip()
             return bool(re.search(r"\d", text)) and not any(
                 marker in text
@@ -269,46 +297,66 @@ class ToolsCog(commands.Cog):
             logger.info("yfinance 핸들러 지연 로딩 완료")
             return self._yfinance_handler
 
-    async def get_stock_price(self, symbol: str = None, stock_name: str = None, user_query: str = None) -> str:
-        """
-        주식 시세, 기업 정보, 뉴스, 추천 트렌드를 조회합니다. 
-        yfinance가 활성화된 경우 이를 우선 사용합니다.
-        
+    async def get_stock_price(
+        self,
+        symbol: str = None,
+        stock_name: str = None,
+        user_query: str = None,
+    ) -> str | dict:
+        """정확한 Yahoo 티커의 최신 가용 현재가를 조회합니다.
+
         Args:
             symbol (str): (Legacy) 종목명 또는 티커 (예: "삼성전자", "AAPL", "NVDA")
             stock_name (str): (Legacy) symbol의 별칭
             user_query (str): (New) 사용자의 자연어 질문 (yfinance 모드에서 티커 추출에 사용)
         """
-        # [NEW] yfinance Integration
         if getattr(config, 'USE_YFINANCE', False):
-            # 1. Extract Ticker from LLM (using AIHandler)
-            # AIHandler is needed. Since ToolsCog is initialized in AIHandler, we might need a reference or pass logic.
-            # But ToolsCog doesn't have reference to ai_handler by default.
-            # However, main.py injects ai_handler into FunCog. Let's assume we can get it via bot or pass it.
-            # Actually, AIHandler calls this tool.
-            
-            # Since AIHandler calls this method, we can't easily call back AIHandler methods without circular dependency or injection.
-            # But wait, we can just use the provided symbol/stock_name if extraction happened outside, OR 
-            # if user_query is provided, we need extraction here.
-            
-            # Solution: We will inject `ai_handler` reference into ToolsCog during setup in main.py, similar to FunCog.
-            # OR, we perform extraction here if we have access.
-            
             ai_handler = self.bot.get_cog('AIHandler')
             ticker = None
             
             direct_ticker = str(symbol or "").strip().upper()
+            direct_ticker = _DIRECT_TICKER_FIXES.get(
+                direct_ticker,
+                direct_ticker,
+            )
+            if direct_ticker in _KNOWN_FABRICATED_TICKERS:
+                return {
+                    "status": "error",
+                    "error": (
+                        "요청한 종목의 정확한 상장 티커를 확인하지 못했어요. "
+                        "회사명과 거래소를 함께 알려주세요."
+                    ),
+                    "failure_kind": "invalid_symbol",
+                    "provider_failure": False,
+                }
             if direct_ticker and re.fullmatch(
                 r"[A-Z0-9^][A-Z0-9.^=-]{0,19}",
                 direct_ticker,
             ):
                 ticker = direct_ticker
             elif user_query and ai_handler:
-                logger.info(
-                    "yfinance 모드: 티커 추출 시도. query_chars=%d",
-                    len(user_query),
+                query_lower = str(user_query).casefold()
+                ticker = next(
+                    (
+                        alias
+                        for names, alias in _YAHOO_TICKER_ALIASES
+                        if any(name in query_lower for name in names)
+                    ),
+                    None,
                 )
-                ticker = await ai_handler.extract_ticker_with_llm(user_query)
+                if ticker:
+                    logger.info(
+                        "yfinance 정규화 사전에서 티커 확정: %s",
+                        ticker,
+                    )
+                else:
+                    logger.info(
+                        "yfinance 모드: 티커 추출 시도. query_chars=%d",
+                        len(user_query),
+                    )
+                    ticker = await ai_handler.extract_ticker_with_llm(
+                        user_query
+                    )
             elif symbol or stock_name:
                 # If direct symbol passed (legacy path), assume it might be a ticker or need extraction check
                 # Ideally, extract_ticker_with_llm can handle "삼성전자" too.
@@ -323,38 +371,22 @@ class ToolsCog(commands.Cog):
                 data = await yfinance_handler.get_stock_info(ticker)
                 
                 if "error" in data:
-                    return f"'{ticker}' 조회 실패: {data['error']}"
-                
-                # Format Output
-                currency = data.get('currency', 'USD')
-                price = data.get('price')
-                change_p = data.get('change_percent')
-                
-                change_str = f"({change_p:+.2f}%)" if change_p is not None else ""
-                price_str = f"{price:,.2f} {currency}" if price else "N/A"
-                market_cap = data.get("market_cap")
-                market_cap_str = f"{market_cap:,} (추정)" if isinstance(market_cap, (int, float)) else "정보 없음"
-                industry = data.get("industry") or "정보 없음"
-                website = data.get("website")
-                
-                summary = data.get('summary', '')[:300] + "..." if data.get('summary') else "정보 없음"
-                
-                result_str = (
-                    f"## 📈 {data.get('name')} ({data.get('symbol')})\n"
-                    f"- **현재가**: {price_str} {change_str}\n"
-                    f"- **시가총액**: {market_cap_str}\n"
-                    f"- **산업**: {industry}\n"
-                    f"- **개요**: {summary}"
-                )
-                if website:
-                    result_str += f"\n- [더 보기]({website})"
+                    return data
                 logger.info(
-                    "get_stock_price 결과 생성 완료. result_chars=%d",
-                    len(result_str),
+                    "get_stock_price 결과 생성 완료. ticker=%s",
+                    ticker,
                 )
-                return result_str
+                return data
             else:
-                return "주식 정보를 찾으시는 것 같은데, 정확한 종목을 파악하지 못했어요. '삼성전자 주가 알려줘' 처럼 다시 물어봐주시겠어요?"
+                return {
+                    "status": "error",
+                    "error": (
+                        "정확한 종목을 파악하지 못했어요. "
+                        "회사명이나 티커와 거래소를 함께 알려주세요."
+                    ),
+                    "failure_kind": "ambiguous_symbol",
+                    "provider_failure": False,
+                }
 
 
         # [Legacy Logic] Finnhub / KRX
@@ -791,6 +823,73 @@ class ToolsCog(commands.Cog):
             )
         return False
 
+    @staticmethod
+    def _image_response_diagnostics(data: dict) -> dict:
+        """이미지 응답 원문 없이 종료·안전 메타데이터만 추출합니다."""
+        candidates = data.get("candidates")
+        if not isinstance(candidates, list):
+            candidates = []
+
+        finish_reasons: list[str] = []
+        safety_signals: set[str] = set()
+        part_count = 0
+        image_part_count = 0
+        text_chars = 0
+
+        def collect_safety(raw_ratings) -> None:
+            if not isinstance(raw_ratings, list):
+                return
+            for rating in raw_ratings[:20]:
+                if not isinstance(rating, dict):
+                    continue
+                category = str(rating.get("category") or "unknown")
+                probability = str(
+                    rating.get("probability")
+                    or rating.get("probabilityScore")
+                    or "unknown"
+                )
+                blocked = bool(rating.get("blocked"))
+                safety_signals.add(
+                    f"{category}:{probability}:blocked={blocked}"
+                )
+
+        for candidate in candidates[:8]:
+            if not isinstance(candidate, dict):
+                continue
+            finish_reason = str(candidate.get("finishReason") or "").strip()
+            if finish_reason:
+                finish_reasons.append(finish_reason)
+            collect_safety(candidate.get("safetyRatings"))
+            content = candidate.get("content")
+            parts = content.get("parts") if isinstance(content, dict) else []
+            if not isinstance(parts, list):
+                continue
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                part_count += 1
+                if part.get("inlineData") or part.get("inline_data"):
+                    image_part_count += 1
+                text_chars += len(str(part.get("text") or ""))
+
+        prompt_feedback = data.get("promptFeedback")
+        prompt_block_reason = ""
+        if isinstance(prompt_feedback, dict):
+            prompt_block_reason = str(
+                prompt_feedback.get("blockReason") or ""
+            ).strip()
+            collect_safety(prompt_feedback.get("safetyRatings"))
+
+        return {
+            "candidate_count": len(candidates),
+            "finish_reasons": sorted(set(finish_reasons))[:8],
+            "prompt_block_reason": prompt_block_reason or "none",
+            "safety_signals": sorted(safety_signals)[:20],
+            "part_count": part_count,
+            "image_part_count": image_part_count,
+            "text_chars": text_chars,
+        }
+
     async def generate_image(
         self,
         prompt: str,
@@ -803,19 +902,58 @@ class ToolsCog(commands.Cog):
         quota 확인과 실제 API 호출 전 사용량 예약 사이에 다른 요청이
         끼어들지 않아 동시 요청이 사용자/전역 제한을 초과하지 않습니다.
         """
+        wait_started_at = time.monotonic()
+        was_locked = self._image_generation_lock.locked()
+        if was_locked:
+            logger.info(
+                "이미지 생성 슬롯 대기 시작. timeout_seconds=%s",
+                config.IMAGE_GENERATION_QUEUE_TIMEOUT_SECONDS,
+                extra={
+                    "guild_id": guild_id,
+                    "user_id": user_id,
+                    "mode": "image_generation_queue",
+                },
+            )
         try:
             await asyncio.wait_for(
                 self._image_generation_lock.acquire(),
                 timeout=config.IMAGE_GENERATION_QUEUE_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
+            wait_ms = round(
+                max(0.0, time.monotonic() - wait_started_at) * 1000
+            )
+            logger.warning(
+                "이미지 생성 슬롯 대기 시간 초과. wait_ms=%d",
+                wait_ms,
+                extra={
+                    "guild_id": guild_id,
+                    "user_id": user_id,
+                    "mode": "image_generation_queue",
+                    "failure_kind": "image_queue_timeout",
+                },
+            )
             return {
                 "error": (
-                    "지금 다른 그림을 그리고 있어서 순서를 못 잡았어요. "
-                    "조금 뒤에 다시 불러주세요."
-                )
+                    "앞선 그림 작업이 오래 걸려 이번 요청은 시작하지 못했어요. "
+                    "이번 건은 생성 횟수에 포함되지 않아요."
+                ),
+                "failure_kind": "image_queue_timeout",
+                "provider_attempted": False,
             }
         try:
+            if was_locked:
+                logger.info(
+                    "이미지 생성 슬롯 확보. wait_ms=%d",
+                    round(
+                        max(0.0, time.monotonic() - wait_started_at) * 1000
+                    ),
+                    extra={
+                        "guild_id": guild_id,
+                        "user_id": user_id,
+                        "mode": "image_generation_queue",
+                    },
+                )
             return await self._generate_image_exclusive(
                 prompt=prompt,
                 user_id=user_id,
@@ -1058,7 +1196,10 @@ class ToolsCog(commands.Cog):
                             "error": (
                                 "그림 그리는 쪽에서 문제가 생겼어요. "
                                 "잠시 뒤에 다시 부탁해주세요."
-                            )
+                            ),
+                            "failure_kind": "provider_http_error",
+                            "provider_attempted": True,
+                            "provider_status": int(resp.status),
                         }
                     
                     raw_response = await resp.read()
@@ -1073,9 +1214,31 @@ class ToolsCog(commands.Cog):
                     # 선택하여 디스코드에 중복 첨부하지 않는다.
                     selected_image = self._select_final_inline_image(data)
                     if not selected_image:
-                        raise ValueError(
-                            "응답에서 유효한 이미지 데이터를 찾을 수 없습니다."
+                        diagnostics = self._image_response_diagnostics(data)
+                        logger.warning(
+                            "이미지 공급자가 이미지 없이 응답했습니다. "
+                            "response_bytes=%d diagnostics=%s",
+                            len(raw_response),
+                            json.dumps(
+                                diagnostics,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            ),
+                            extra={
+                                **log_extra,
+                                "event": "image_provider_empty_response",
+                                "failure_kind": "provider_empty_image",
+                            },
                         )
+                        return {
+                            "error": (
+                                "그림 생성 결과에 이미지가 들어오지 않았어요. "
+                                "이번 요청은 공급자까지 전달됐지만 자동으로 다시 "
+                                "호출하지 않았어요."
+                            ),
+                            "failure_kind": "provider_empty_image",
+                            "provider_attempted": True,
+                        }
 
                     mime_type = str(selected_image["mime_type"])
                     image_binary = base64.b64decode(
@@ -1107,6 +1270,7 @@ class ToolsCog(commands.Cog):
                             "image_data": image_binary,
                             "mime_type": mime_type,
                             "remaining": remaining_after_attempt,
+                            "provider_attempted": True,
                         }
                     raise ValueError(
                         "응답 이미지의 크기 또는 파일 형식이 올바르지 않습니다."
@@ -1122,16 +1286,30 @@ class ToolsCog(commands.Cog):
                 "error": (
                     f"{config.IMAGE_GENERATION_TIMEOUT_SECONDS}초가 넘도록 그림이 "
                     "안 나와서 멈췄어요. 아쉽지만 이번 것도 횟수에는 들어가요."
-                )
+                ),
+                "failure_kind": "provider_timeout",
+                "provider_attempted": True,
             }
         except Exception as e:
             err_msg = str(e)
             logger.error(f"이미지 생성 중 예외: {err_msg}", exc_info=True, extra=log_extra)
             if "SAFETY" in err_msg.upper() or "sensitive" in err_msg.lower():
-                return {"error": "이건 그리기 어려운 내용이에요. 다른 장면으로 부탁해주세요."}
+                return {
+                    "error": "이건 그리기 어려운 내용이에요. 다른 장면으로 부탁해주세요.",
+                    "failure_kind": "provider_safety",
+                    "provider_attempted": True,
+                }
             if "429" in err_msg or "quota" in err_msg.lower():
-                return {"error": "그림 요청이 한꺼번에 몰렸어요. 조금 뒤에 다시 불러주세요."}
-            return {"error": "그림을 그리다 문제가 생겼어요. 잠시 뒤에 다시 부탁해주세요."}
+                return {
+                    "error": "그림 요청이 한꺼번에 몰렸어요. 조금 뒤에 다시 불러주세요.",
+                    "failure_kind": "provider_rate_limited",
+                    "provider_attempted": True,
+                }
+            return {
+                "error": "그림을 그리다 문제가 생겼어요. 잠시 뒤에 다시 부탁해주세요.",
+                "failure_kind": "provider_error",
+                "provider_attempted": True,
+            }
 
 
 async def setup(bot: commands.Bot):

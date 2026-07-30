@@ -997,6 +997,35 @@ async def test_execute_tool_does_not_promote_failure_text_to_evidence():
     assert "result" not in result
 
 
+@pytest.mark.asyncio
+async def test_ticker_extraction_uses_fast_bounded_lane():
+    handler = AIHandler.__new__(AIHandler)
+    handler.use_cometapi = True
+
+    async def _fast(
+        prompt,
+        model,
+        log_extra,
+        *,
+        trace_key,
+        max_tokens,
+    ):
+        assert "Never invent an ADR" in prompt
+        assert model is None
+        assert log_extra["mode"] == "ticker_extraction"
+        assert trace_key == "ticker_extraction"
+        assert max_tokens == 24
+        return "AAPL"
+
+    handler._cometapi_fast_generate_text = _fast
+
+    ticker = await handler.extract_ticker_with_llm(
+        "애플 현재 주가 알려줘"
+    )
+
+    assert ticker == "AAPL"
+
+
 def test_external_evidence_predicate_rejects_empty_or_error_results():
     from cogs.tools_cog import ToolsCog
 
@@ -1020,6 +1049,19 @@ def test_external_evidence_predicate_rejects_empty_or_error_results():
             {"error": "provider unavailable"},
         )
         is False
+    )
+    assert (
+        ToolsCog.result_has_external_evidence(
+            "get_stock_price",
+            {
+                "status": "success",
+                "price": 215.32,
+                "source_urls": [
+                    "https://finance.yahoo.com/quote/AAPL/"
+                ],
+            },
+        )
+        is True
     )
 
 
@@ -1047,6 +1089,52 @@ def test_finance_disambiguation_still_routes_real_stock_questions():
     assert plan
     assert plan[0]["tool_to_use"] == "web_search"
     assert "금융 뉴스" in plan[0]["parameters"]["query"]
+
+
+def test_stock_chart_request_is_redirected_to_web_capability():
+    handler = _build_handler_without_init()
+
+    plan = handler._sanitize_tool_plan(
+        "T3 디펜스 주가 일봉 그래프를 토스증권 API로 보여줘",
+        [
+            {
+                "tool_to_use": "get_stock_price",
+                "parameters": {"user_query": "T3 디펜스"},
+            }
+        ],
+        rag_top_score=0.0,
+        log_extra=None,
+        trust_llm=True,
+    )
+
+    assert len(plan) == 1
+    assert plan[0]["tool_to_use"] == "web_search"
+    assert "추측하지 말고" in plan[0]["parameters"]["query"]
+
+
+def test_plain_current_stock_request_keeps_quote_tool():
+    handler = _build_handler_without_init()
+
+    plan = handler._sanitize_tool_plan(
+        "애플 현재 주가 알려줘",
+        [
+            {
+                "tool_to_use": "get_stock_price",
+                "parameters": {"symbol": "AAPL"},
+            }
+        ],
+        rag_top_score=0.0,
+        log_extra=None,
+        trust_llm=True,
+    )
+
+    assert plan == [
+        {
+            "tool_to_use": "get_stock_price",
+            "tool_name": "get_stock_price",
+            "parameters": {"symbol": "AAPL"},
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -1255,6 +1343,26 @@ def test_finance_numeric_grounding_rejects_numbers_missing_from_tool_evidence():
     )
     assert 2710.24 in unsupported
     assert -0.12 in unsupported
+
+
+def test_finance_numeric_grounding_allows_verified_exchange_arithmetic():
+    evidence = (
+        "[web_search] USD/KRW 매매기준율은 1달러당 "
+        "1,385.50원으로 확인됨"
+    )
+    query = "957달러를 현재 환율로 원화 환산하면 얼마야?"
+    converted = 957 * 1385.50
+
+    assert AIHandler._unsupported_finance_numbers(
+        f"957달러는 약 {converted:,.0f}원이에요.",
+        evidence,
+        query,
+    ) == []
+    assert AIHandler._unsupported_finance_numbers(
+        "957달러는 2,000,000원이에요.",
+        evidence,
+        query,
+    ) == [2000000.0]
 
 
 def test_market_snapshot_fallback_uses_only_verified_values():
