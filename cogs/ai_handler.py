@@ -2402,6 +2402,49 @@ class AIHandler(commands.Cog):
 
         return "```debug\n" + "\n".join(lines) + "\n```"
 
+    @staticmethod
+    def _log_tool_execution_outcome(
+        tool_name: object,
+        result: object,
+        log_extra: dict[str, Any],
+    ) -> None:
+        """도구 결과의 성공 여부만 비식별 운영 로그로 남긴다.
+
+        도구마다 시작 로그 형식이 달랐고 웹검색·날씨는 정상 완료되어도 종료
+        로그가 없어, 운영자가 시작 후 멈춘 호출과 성공 호출을 구분할 수
+        없었다. 결과 본문·검색어·사용자 문장은 기록하지 않고 상태와 출처
+        개수만 남긴다.
+        """
+        normalized_name = str(tool_name or "unknown")[:64]
+        if not isinstance(result, dict):
+            logger.info(
+                "도구 실행 완료: tool=%s outcome=succeeded source_count=0",
+                normalized_name,
+                extra=log_extra,
+            )
+            return
+
+        if result.get("error"):
+            failure_kind = str(
+                result.get("failure_kind") or "normalized_error"
+            )[:64]
+            logger.warning(
+                "도구 실행 완료: tool=%s outcome=failed failure_kind=%s",
+                normalized_name,
+                failure_kind,
+                extra=log_extra,
+            )
+            return
+
+        raw_sources = result.get("source_urls") or result.get("urls") or []
+        source_count = len(raw_sources) if isinstance(raw_sources, list) else 0
+        logger.info(
+            "도구 실행 완료: tool=%s outcome=succeeded source_count=%d",
+            normalized_name,
+            source_count,
+            extra=log_extra,
+        )
+
     async def _execute_tool(
         self,
         tool_call: dict,
@@ -2425,8 +2468,11 @@ class AIHandler(commands.Cog):
             'parameters': parameters,
         }
 
-        if not tool_name: 
-            return {"error": "tool_to_use가 지정되지 않았습니다."}
+        if not tool_name:
+            return {
+                "error": "tool_to_use가 지정되지 않았습니다.",
+                "failure_kind": "invalid_plan",
+            }
 
         intent_analyzer = self._ensure_intent_analyzer()
 
@@ -2454,7 +2500,10 @@ class AIHandler(commands.Cog):
 
         if tool_name not in intent_analyzer._ALLOWED_RUNTIME_TOOLS:
             logger.warning("비활성화된 도구 실행 시도 차단: %s", tool_name, extra=log_extra)
-            return {"error": f"'{tool_name}' 도구는 현재 비활성화되어 있습니다."}
+            return {
+                "error": f"'{tool_name}' 도구는 현재 비활성화되어 있습니다.",
+                "failure_kind": "disabled",
+            }
 
         tool_method_requirements = {
             "get_weather_forecast": "get_weather_forecast",
@@ -2466,7 +2515,10 @@ class AIHandler(commands.Cog):
         required_method = tool_method_requirements.get(tool_name)
         if required_method and not callable(getattr(self.tools_cog, required_method, None)):
             logger.warning("구현되지 않은 도구 실행 시도 차단: %s", tool_name, extra=log_extra)
-            return {"error": f"'{tool_name}' 도구는 현재 비활성화되어 있습니다."}
+            return {
+                "error": f"'{tool_name}' 도구는 현재 비활성화되어 있습니다.",
+                "failure_kind": "disabled",
+            }
 
         # 검색 단계에서는 자료만 수집하고 최종 답변 모델은 공통 경로에서 한 번만 호출합니다.
         if tool_name == 'web_search':
@@ -2478,7 +2530,15 @@ class AIHandler(commands.Cog):
             if search_result.get("result"):
                 self._debug(f"[도구:web_search] 결과: {self._truncate_for_debug(search_result)}", log_extra)
                 return search_result
-            return {"error": search_result.get("error", "웹 검색을 통해 정보를 찾는 데 실패했습니다.")}
+            return {
+                "error": search_result.get(
+                    "error",
+                    "웹 검색을 통해 정보를 찾는 데 실패했습니다.",
+                ),
+                "failure_kind": (
+                    search_result.get("failure_kind") or "search_failed"
+                ),
+            }
 
         if tool_name in {
             "get_weather_forecast",
@@ -2512,7 +2572,8 @@ class AIHandler(commands.Cog):
                     return {
                         "error": (
                             "이 요청을 뒷받침할 자료를 찾지 못했어요."
-                        )
+                        ),
+                        "failure_kind": "no_external_evidence",
                     }
                 if not isinstance(result, dict):
                     return {"result": str(result)}
@@ -2527,11 +2588,15 @@ class AIHandler(commands.Cog):
                     "error": (
                         "자료를 가져오는 쪽이 계속 실패해서 잠깐 쉬는 중이에요. "
                         "잠시 뒤에 다시 물어보면 자동으로 다시 확인해요."
-                    )
+                    ),
+                    "failure_kind": "provider_cooldown",
                 }
             except Exception as e:
                 logger.error(f"도구 '{tool_name}' 실행 중 예기치 않은 오류: {e}", exc_info=True, extra=log_extra)
-                return {"error": "자료를 확인하다 문제가 생겼어요."}
+                return {
+                    "error": "자료를 확인하다 문제가 생겼어요.",
+                    "failure_kind": "unexpected_error",
+                }
 
         if tool_name == "generate_image":
             try:
@@ -2565,7 +2630,12 @@ class AIHandler(commands.Cog):
                     guild_id=guild_id or None,
                 )
                 if result.get("error"):
-                    return {"error": result["error"]}
+                    return {
+                        "error": result["error"],
+                        "failure_kind": (
+                            result.get("failure_kind") or "image_failed"
+                        ),
+                    }
                 self._debug(f"[도구:generate_image] 생성 완료", log_extra)
                 return {
                     "result": "이미지가 생성되었습니다.",
@@ -2577,9 +2647,15 @@ class AIHandler(commands.Cog):
                 }
             except Exception as e:
                 logger.error(f"이미지 생성 도구 실행 중 오류: {e}", exc_info=True, extra=log_extra)
-                return {"error": "그림을 그리다 문제가 생겼어요."}
+                return {
+                    "error": "그림을 그리다 문제가 생겼어요.",
+                    "failure_kind": "unexpected_error",
+                }
 
-        return {"error": f"'{tool_name}' 도구는 현재 비활성화되어 있습니다."}
+        return {
+            "error": f"'{tool_name}' 도구는 현재 비활성화되어 있습니다.",
+            "failure_kind": "disabled",
+        }
 
 
     async def _fortune_context_with_consent(self, user_id: int) -> str | None:
@@ -2873,6 +2949,11 @@ class AIHandler(commands.Cog):
                         user_id=message.author.id,
                         rag_context=rag_prompt,
                     )
+                    self._log_tool_execution_outcome(
+                        tool_name,
+                        result,
+                        log_extra,
+                    )
 
                     tool_results.append({
                         "step": idx,
@@ -2919,6 +3000,11 @@ class AIHandler(commands.Cog):
                         )
 
                     web_result = await self._execute_web_search_raw(refined_query, log_extra)
+                    self._log_tool_execution_outcome(
+                        "web_search",
+                        web_result,
+                        log_extra,
+                    )
                     self._mark_auto_web_search_used(message)
                     tool_results.append(
                         {

@@ -11,7 +11,12 @@ import pytest
 from discord.ext import commands
 
 import config
-from cogs.transfer_notice_cog import TransferDashboardView, TransferNoticeCog
+from cogs.transfer_notice_cog import (
+    TransferDashboardView,
+    TransferNoticeCog,
+    TransferOfficialLinkSelect,
+    TransferSchoolSelect,
+)
 from utils.privacy_consent import (
     TRANSFER_NOTICE_SCOPE,
     grant_consent,
@@ -170,7 +175,7 @@ async def test_dashboard_has_defense_in_depth_and_never_reads_guild_profile(
 
 
 @pytest.mark.asyncio
-async def test_dashboard_exposes_manual_official_links_without_auto_subscription(
+async def test_dashboard_lists_every_official_link_without_school_spotlight(
     tmp_path,
     monkeypatch,
 ):
@@ -187,21 +192,36 @@ async def test_dashboard_exposes_manual_official_links_without_auto_subscription
             for child in view.children
             if isinstance(child, discord.ui.Button) and child.url
         ]
+        official_link_selects = [
+            child
+            for child in view.children
+            if isinstance(child, TransferOfficialLinkSelect)
+        ]
 
-        assert {button.label for button in link_buttons} == {
-            "국립부경대학교 공식 공지",
-            "충남대학교 공식 공지",
+        assert link_buttons == []
+        assert len(official_link_selects) == 1
+        official_link_select = official_link_selects[0]
+        expected_names = {
+            source.university
+            for source in (*cog.sources.values(), *cog.manual_sources.values())
         }
-        assert all(button.url.startswith("https://") for button in link_buttons)
+        assert {option.label for option in official_link_select.options} == (
+            expected_names
+        )
+        assert len(official_link_select.options) == 22
         assert set(cog.sources) == set(
             option.value
             for child in view.children
-            if isinstance(child, discord.ui.Select)
+            if isinstance(child, TransferSchoolSelect)
             for option in child.options
         )
         assert not (set(cog.manual_sources) & set(cog.sources))
         embed = cog._dashboard_embed(set(), False)
-        assert "자동 접근 정책" in embed.description
+        assert "학교별 공식 공지 바로가기" in embed.description
+        assert not any(
+            source.university in embed.description
+            for source in cog.manual_sources.values()
+        )
     finally:
         await db.close()
 

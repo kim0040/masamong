@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 from types import SimpleNamespace
 
@@ -8,6 +10,39 @@ from utils.intent_analyzer import IntentAnalyzer
 
 def _build_handler_without_init() -> AIHandler:
     return AIHandler.__new__(AIHandler)
+
+
+def test_tool_outcome_logging_is_bounded_and_omits_result_content(caplog):
+    with caplog.at_level(logging.INFO):
+        AIHandler._log_tool_execution_outcome(
+            "web_search",
+            {
+                "result": "사용자 질문과 검색 본문은 로그에 남기면 안 됩니다.",
+                "source_urls": ["https://example.com/a", "https://example.com/b"],
+            },
+            {"trace_id": "tool-success"},
+        )
+        AIHandler._log_tool_execution_outcome(
+            "get_weather_forecast",
+            {
+                "error": "공급자 원문 오류도 로그에 복사하지 않습니다.",
+                "failure_kind": "empty_result",
+            },
+            {"trace_id": "tool-failure"},
+        )
+
+    rendered = "\n".join(record.getMessage() for record in caplog.records)
+    assert (
+        "tool=web_search outcome=succeeded source_count=2"
+        in rendered
+    )
+    assert (
+        "tool=get_weather_forecast outcome=failed "
+        "failure_kind=empty_result"
+        in rendered
+    )
+    assert "사용자 질문" not in rendered
+    assert "공급자 원문 오류" not in rendered
 
 
 def test_final_reasoning_progress_text_distinguishes_high_requests():
