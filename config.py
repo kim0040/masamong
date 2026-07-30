@@ -618,7 +618,7 @@ if REQUIRE_EXPLICIT_PROFILE:
             "MASAMONG_CPU_THREADS",
             "MASAMONG_EXECUTOR_WORKERS",
             "AI_MAX_CONCURRENT_PROCESSING",
-            "AI_QUEUE_WAIT_TIMEOUT_SECONDS",
+            "AI_QUEUE_MAX_SIZE",
             "LLM_MAX_CONCURRENT_CALLS",
             "LLM_ACQUIRE_TIMEOUT_SECONDS",
             "LLM_CALL_TIMEOUT_SECONDS",
@@ -632,7 +632,7 @@ if REQUIRE_EXPLICIT_PROFILE:
             "MASAMONG_CPU_THREADS": 64,
             "MASAMONG_EXECUTOR_WORKERS": 16,
             "AI_MAX_CONCURRENT_PROCESSING": 16,
-            "AI_QUEUE_WAIT_TIMEOUT_SECONDS": 30,
+            "AI_QUEUE_MAX_SIZE": 64,
             "LLM_MAX_CONCURRENT_CALLS": 16,
             "LLM_ACQUIRE_TIMEOUT_SECONDS": 60,
             "LLM_CALL_TIMEOUT_SECONDS": 300,
@@ -1106,15 +1106,21 @@ AI_MAX_CONCURRENT_PROCESSING = min(
         ),
     ),
 )
-# 실행 중 동시성뿐 아니라 semaphore 앞에서 기다리는 작업에도 시간 상한을 둔다.
-# Discord 이벤트 burst가 장시간 대기 task로 누적되는 것을 막는다.
-AI_QUEUE_WAIT_TIMEOUT_SECONDS = min(
-    30,
+# Discord 요청은 이벤트 task 자체를 semaphore 앞에 쌓지 않고 명시적인 FIFO
+# 대기열에 넣는다. maxsize는 "대기 중" 항목 수이며 실행 중 worker 수는 별도다.
+# 무제한 queue는 한 사용자의 burst만으로 메시지 객체와 상태 메시지가 계속 남을 수
+# 있으므로 프로필의 동시성에 비례한 작은 기본값과 절대 상한을 둔다.
+_ai_queue_size_default = max(8, AI_MAX_CONCURRENT_PROCESSING * 4)
+AI_QUEUE_MAX_SIZE = min(
+    64,
     max(
-        1,
+        AI_MAX_CONCURRENT_PROCESSING,
         as_int(
-            load_config_value("AI_QUEUE_WAIT_TIMEOUT_SECONDS", 5),
-            5,
+            load_config_value(
+                "AI_QUEUE_MAX_SIZE",
+                _ai_queue_size_default,
+            ),
+            _ai_queue_size_default,
         ),
     ),
 )

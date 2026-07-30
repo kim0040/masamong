@@ -147,6 +147,11 @@ the probe so the provider cannot remain permanently locked.
 `LLMClient` provides routing and main lanes, each with a primary and optional
 fallback. SDK retries are disabled.
 
+- Discord AI requests first enter a bounded global FIFO. Worker count is
+  `AI_MAX_CONCURRENT_PROCESSING` and waiting capacity is `AI_QUEUE_MAX_SIZE`.
+  Enqueueing and progress messages make no LLM, search, or image call. Each
+  accepted item is consumed once; a full queue rejects new work instead of
+  accumulating unbounded tasks.
 - bounded provider semaphore;
 - bounded admission and call timeouts;
 - atomic logical-request reservation across global, feature, guild/DM, and user

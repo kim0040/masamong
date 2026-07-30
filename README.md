@@ -64,8 +64,8 @@ python -m pip install -r requirements-cpu.txt
 - 최신·지역·금융·뉴스처럼 확인이 필요한 질문은 도구 조회가 성공해야 답변합니다.
   확인하지 못하면 추측을 사실처럼 말하지 않습니다.
 - LLM·이미지·검색 요청에는 기능·서버·사용자·DM 단위의 한도, timeout, 유한 재시도와
-  동시성 제한이 적용됩니다. 표시용 Discord 진행 상태는 별도 LLM 호출이나 과금을 만들지
-  않습니다.
+  동시성 제한이 적용됩니다. 동시에 들어온 대화는 유한 FIFO 대기열에서 접수 순서대로
+  처리하며, 표시용 Discord 진행 상태와 대기는 별도 LLM 호출이나 과금을 만들지 않습니다.
 - 지진 알림은 기상청 발표를 약 1분 간격으로 확인하며, 같은 지진군은 Discord 메시지를
   갱신해 중복 알림을 줄입니다. 재시작 후 이전 알림을 다시 보내지 않습니다.
 
@@ -100,6 +100,7 @@ PYTHONPATH=. \
 MASAMONG_CPU_THREADS=1
 MASAMONG_EXECUTOR_WORKERS=1
 AI_MAX_CONCURRENT_PROCESSING=1
+AI_QUEUE_MAX_SIZE=8
 LLM_MAX_CONCURRENT_CALLS=1
 LLM_CALL_TIMEOUT_SECONDS=120
 EMBEDDING_MAX_CONCURRENCY=1

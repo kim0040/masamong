@@ -27,6 +27,7 @@ class ToolRoutingDecision:
     plan: list[dict[str, Any]]
     source: str
     needs_memory: bool
+    references_shared_history: bool = False
     reasoning_level: str = "low"
     intent: str = ""
     context_digest: str = ""
@@ -127,6 +128,29 @@ class IntentAnalyzer:
         '우리 대화', '이전 대화', '방금 얘기', '아까 얘기', '기억나',
         '내 얘기', '우리 얘기', '저번에 말한', '앞에서 말한',
     ])
+    # 도메인/회사명을 나열하지 않고 한국어 담화 구조만 본다. 단순한
+    # "지구는 둥글잖아"와 달리 과거 시점·공동 화행 또는 지시 대상을
+    # 동반한 과거형 "~잖아"는 이전 대화를 이어가는 신호가 될 수 있다.
+    _SHARED_HISTORY_TEMPORAL_PATTERN = re.compile(
+        r"(?:그때|예전에|저번에|지난번에|아까)\s*"
+    )
+    _SHARED_HISTORY_SPEECH_ACT_PATTERN = re.compile(
+        r"(?:말|얘기|이야기|정|약속)했잖아"
+    )
+    _SHARED_HISTORY_PAST_ASSERTION_PATTERN = re.compile(
+        r"(?:했|됐|였|었|았|졌|갔|왔)잖아"
+    )
+    _SHARED_HISTORY_DEICTIC_PATTERN = re.compile(
+        r"(?:^|[\s,.!?~])(?:이거|그거|저거|얘네|걔네|우리|내가|우리가)"
+        r"(?:[\s,.!?~]|$)"
+    )
+    _PUBLIC_STATUS_INCIDENT_PATTERN = re.compile(
+        r"(?:서비스\s*)?(?:장애|먹통|접속\s*불가|서비스\s*중단|"
+        r"서버\s*다운|다운(?:됐|됨|이다|이야|인가|됐나))"
+    )
+    _CAUSAL_QUESTION_PATTERN = re.compile(
+        r"(?:원인|이유|왜\s*(?:그런|이런|이래|그래|발생|느린|안\s*되는))"
+    )
     _NO_SEARCH_PATTERNS = frozenset([
         '내 얘기', '우리 얘기', '너 얘기', '잡담만', '인사만'
     ])
@@ -220,6 +244,23 @@ class IntentAnalyzer:
             )
         )
 
+    @classmethod
+    def _looks_like_shared_history_reference(cls, query: str) -> bool:
+        """회사명 같은 도메인 키워드 없이 과거 공동 담화 참조만 보정합니다."""
+        text = re.sub(r"\s+", " ", str(query or "").strip().lower())
+        if not text:
+            return False
+        if any(hint in text for hint in cls._LOCAL_MEMORY_HINTS):
+            return True
+        if cls._SHARED_HISTORY_TEMPORAL_PATTERN.search(text):
+            return True
+        if cls._SHARED_HISTORY_SPEECH_ACT_PATTERN.search(text):
+            return True
+        return bool(
+            cls._SHARED_HISTORY_PAST_ASSERTION_PATTERN.search(text)
+            and cls._SHARED_HISTORY_DEICTIC_PATTERN.search(text)
+        )
+
     def _looks_like_external_fact_query(self, query: str) -> bool:
         """
         웹에서 사실 확인이 필요한 질의인지 휴리스틱으로 판별합니다.
@@ -239,6 +280,16 @@ class IntentAnalyzer:
         # 로컬/이전 대화 회상성 질문은 외부 웹검색 대상으로 보지 않는다.
         if any(kw in text for kw in self._LOCAL_MEMORY_HINTS):
             return False
+        # 현재 서비스 상태·장애는 특정 회사명을 하드코딩하지 않고도 공개
+        # 자료 확인이 필요한 외부 사건이다. 또한 "오늘/현재" 같은 실시간
+        # 표지와 원인 질문이 함께 있으면 내장 지식만으로 원인을 만들지 않는다.
+        if self._PUBLIC_STATUS_INCIDENT_PATTERN.search(text):
+            return True
+        if (
+            self._is_realtime_web_query(text)
+            and self._CAUSAL_QUESTION_PATTERN.search(text)
+        ):
+            return True
         if any(kw in text for kw in self._FACTUAL_WEB_QUERY_HINTS):
             return True
         return False
@@ -656,12 +707,17 @@ class IntentAnalyzer:
             plan,
             requires_external_evidence=requires_external_evidence,
         )
+        references_shared_history = self._looks_like_shared_history_reference(
+            query
+        )
         return ToolRoutingDecision(
             plan=plan,
             source=source,
             # 도구를 특정하지 못한 경우에는 기존 대화 품질을 보존하도록 RAG를
-            # 허용한다. 명시 도구 fallback은 과거 기억을 불필요하게 조회하지 않는다.
-            needs_memory=not bool(plan),
+            # 허용한다. 명시 도구 fallback도 공동 대화를 직접 가리키는 경우에는
+            # 공개 자료와 과거 대화가 서로 다른 근거이므로 기억을 함께 조회한다.
+            needs_memory=not bool(plan) or references_shared_history,
+            references_shared_history=references_shared_history,
             reasoning_level=(
                 config.LLM_DYNAMIC_REASONING_DEFAULT
                 if config.LLM_DYNAMIC_REASONING_ENABLED
@@ -847,7 +903,9 @@ class IntentAnalyzer:
             "도구가 불필요하면 tools=[]이며 최대 2개다. needs_memory는 장기기억 "
             "저장소를 별도로 검색할지 정하는 스위치이며, 제공된 최근 대화를 활용한다는 "
             "표시가 아니다. 최근 대화 안에 답변에 필요한 대상과 사실이 이미 있으면 "
-            "반드시 false다. 그보다 오래된 Discord/Kakao 기억이 답변의 정확도나 "
+            "보통 false다. 단, references_shared_history=true인 요청은 사용자가 "
+            "현재 문장에 일부 사실을 다시 적었더라도 과거 공동 대화의 근거와 연속성을 "
+            "확인해야 하므로 needs_memory=true다. 그보다 오래된 Discord/Kakao 기억이 답변의 정확도나 "
             "개인화에 도움이 되면 true다. 이전 합의·결정·취향·관계·사건뿐 아니라 공개 지식으로 "
             "알 수 없는 현재 사용자나 서버 구성원·지인 등 특정 인물이 누구인지, "
             "어떤 사람인지, 무엇을 좋아하는지 묻는 요청도 별도의 '전에/기억' 표현이 "
@@ -860,6 +918,17 @@ class IntentAnalyzer:
             "최근 대화에 대상과 필요한 내용이 이미 드러나 있으면 false이며, 단지 "
             "대화가 이어진다는 이유로 true를 쓰지 않는다. 그 내용을 최근 대화만으로 "
             "확정할 수 없을 때에만 기억 누락보다 관련도 필터링을 우선해 true로 둔다. "
+            "references_shared_history는 현재 요청이 어떤 사실·결정·사건을 봇이나 "
+            "서버 구성원과 이전에 함께 이야기한 내용으로 취급하는지 나타낸다. "
+            "'전에 말했던 내용'을 되묻는 명시적 회상뿐 아니라, 사용자가 '그때 이야기', "
+            "'말했듯', '했잖아'처럼 과거의 공동 인식을 전제로 이어 말하고 오래된 대화가 "
+            "그 전제의 출처나 맥락을 보강할 수 있으면 true다. 단순히 최근 발화에 답하거나 "
+            "누구나 아는 사실을 수사적으로 강조하는 경우는 false다. 이 값이 true이면 "
+            "needs_memory도 true여야 한다. 과거 대화는 그때 무엇을 말했는지 보여주는 "
+            "근거일 뿐 공개 세계의 사실 검증 자료는 아니다. 공개 기업·제품·서비스·사건에 "
+            "관해 사용자가 제시한 전제를 바탕으로 현재 원인·영향·진위를 설명한다면 "
+            "references_shared_history와 requires_external_evidence를 동시에 true로 두고 "
+            "web_search도 사용한다. 즉 기억은 과거 대화의 연속성에, 웹은 외부 사실 검증에 쓴다. "
             "needs_fortune_context는 DM 일반 대화에서 동의받아 "
             "저장한 직전 운세 내용을 실제로 참고해야 할 때만 true다. 사용자가 운세 "
             "내용을 이어 묻거나 그 운세를 바탕으로 조언을 요청한 경우가 아니면 false다. "
@@ -877,6 +946,7 @@ class IntentAnalyzer:
             f"{digest_instruction}\n"
             "출력 형식: "
             '{"intent":"짧은 의도","needs_memory":false,'
+            '"references_shared_history":false,'
             '"needs_fortune_context":false,'
             '"requires_external_evidence":false,'
             '"reasoning_level":"low",'
@@ -953,6 +1023,28 @@ class IntentAnalyzer:
                 if isinstance(needs_memory_raw, bool)
                 else not bool(plan)
             )
+            references_shared_history = (
+                parsed.get("references_shared_history")
+                if isinstance(
+                    parsed.get("references_shared_history"),
+                    bool,
+                )
+                else False
+            )
+            structurally_shared = self._looks_like_shared_history_reference(
+                query
+            )
+            if structurally_shared and not references_shared_history:
+                logger.info(
+                    "[라우팅보정] 과거 공동 대화 참조 신호를 복원합니다.",
+                    extra=log_extra,
+                )
+                references_shared_history = True
+            if references_shared_history:
+                # 공동 기억 참조는 최신 외부 사실 검증과 배타적이지 않다. 사용자가
+                # 현재 문장에 전제를 다시 적었더라도, 과거에 실제로 무엇을 말했는지
+                # 확인할 수 있어야 "기억한다"고 가장하지 않고 연속성을 살릴 수 있다.
+                needs_memory = True
             needs_fortune_context = (
                 parsed.get("needs_fortune_context")
                 if isinstance(parsed.get("needs_fortune_context"), bool)
@@ -1014,6 +1106,7 @@ class IntentAnalyzer:
             # 오래된 수치·요약을 사실 자료와 섞지 않는다.
             if (
                 requires_external_evidence
+                and not references_shared_history
                 and not any(
                     hint in (query or "").lower()
                     for hint in self._LOCAL_MEMORY_HINTS
@@ -1033,6 +1126,10 @@ class IntentAnalyzer:
                     bare_identity_question
                     or compaction_requested
                     or len(plan) > 1
+                    or (
+                        references_shared_history
+                        and requires_external_evidence
+                    )
                 ):
                     reasoning_level = "high"
             context_digest = ""
@@ -1043,12 +1140,13 @@ class IntentAnalyzer:
                     str(parsed.get("context_digest") or ""),
                 ).strip()[:digest_limit]
             logger.info(
-                "[의미라우터] intent=%s tools=%s needs_memory=%s "
+                "[의미라우터] intent=%s tools=%s needs_memory=%s shared_history=%s "
                 "fortune_context=%s external_evidence=%s reasoning=%s "
                 "digest_chars=%d",
                 intent or "-",
                 [item["tool_to_use"] for item in plan],
                 needs_memory,
+                references_shared_history,
                 needs_fortune_context,
                 requires_external_evidence,
                 reasoning_level or "fixed",
@@ -1059,6 +1157,7 @@ class IntentAnalyzer:
                 plan=plan,
                 source="llm",
                 needs_memory=needs_memory,
+                references_shared_history=references_shared_history,
                 reasoning_level=reasoning_level,
                 intent=intent,
                 context_digest=context_digest,

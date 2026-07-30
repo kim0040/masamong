@@ -83,7 +83,7 @@ def _write_env(path: Path, *, profile: str, token: str, database: str, db_user: 
                 "MASAMONG_CPU_THREADS=1",
                 "MASAMONG_EXECUTOR_WORKERS=1",
                 "AI_MAX_CONCURRENT_PROCESSING=1",
-                "AI_QUEUE_WAIT_TIMEOUT_SECONDS=5",
+                "AI_QUEUE_MAX_SIZE=8",
                 "LLM_MAX_CONCURRENT_CALLS=1",
                 "LLM_ACQUIRE_TIMEOUT_SECONDS=10",
                 "LLM_CALL_TIMEOUT_SECONDS=120",
