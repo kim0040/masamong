@@ -136,18 +136,68 @@ def extract_keywords(text: str, *, limit: int = 8) -> list[str]:
     return keywords
 
 
+_EXPLICIT_PREFERENCE_PATTERN = re.compile(
+    r"(?:"
+    r"(?:나는|난|저는|전|내가|제가|내\s*취향(?:은|이)?|제\s*취향(?:은|이)?)"
+    r".{0,80}?(?:좋아|싫어|선호|즐겨)"
+    r"|"
+    r"(?:좋아해|좋아함|좋아한다|싫어해|싫어함|싫어한다|선호해|선호함|즐겨\s*(?:먹|보|하))"
+    r")",
+    re.IGNORECASE,
+)
+_THIRD_PERSON_PREFERENCE_PATTERN = re.compile(
+    r"(?:너|넌|네가|니가|쟤|걔|그 사람|누가).{0,50}"
+    r"(?:좋아|싫어|선호|취향|즐겨)"
+    r"|(?:좋아|싫어|선호)(?:하네|하냐|하니|하나|한다며|하는구나)",
+    re.IGNORECASE,
+)
+_EXPLICIT_PLAN_PATTERN = re.compile(
+    r"(?:"
+    r"(?:내일|모레|다음\s*주|이번\s*주|주말|"
+    r"\d{1,2}\s*(?:월|일|시|분)|월요일|화요일|수요일|목요일|금요일|토요일|일요일)"
+    r".{0,80}?(?:약속|일정|예정|예약|만나|가야|해야|할게|하기로|준비)"
+    r"|"
+    r"(?:나는|난|저는|전|내가|제가).{0,80}?"
+    r"(?:할게|하기로|가야|해야|예정|예약|준비)"
+    r")",
+    re.IGNORECASE,
+)
+_ASSISTANT_COMMITMENT_PATTERN = re.compile(
+    r"(?:"
+    r"(?:내\s*선택|내\s*취향|나라면|나는|난|내가).{0,100}?"
+    r"(?:고르|선택|좋아|싫어|선호|편이야|쪽이야)"
+    r"|"
+    r"(?:고르라면|둘\s*중(?:에)?).{0,100}?(?:고르|선택)"
+    r")",
+    re.IGNORECASE,
+)
+
+
 def classify_memory_type(text: str, *, speaker_count: int, owner_specific: bool) -> str:
-    """대화 내용을 분석하여 메모리 유형(preference/plan/profile/event/shared_context/conversation)을 분류합니다."""
+    """대화 내용을 지속성이 있는 메모리 유형으로 보수적으로 분류합니다.
+
+    단순한 ``좋아``(동의), ``좋아하네``(상대방 평가), ``해야``(일반 조언)까지
+    개인 선호·계획으로 저장하면 검색 시 엉뚱한 개인화가 발생한다. 자기 진술과
+    구체적인 미래 표지가 있는 경우만 preference/plan으로 올립니다.
+    """
     lowered = (text or "").lower()
-    if any(keyword in lowered for keyword in ("좋아", "싫어", "선호", "취향", "자주", "즐겨")):
+    preference_match = bool(_EXPLICIT_PREFERENCE_PATTERN.search(lowered))
+    if preference_match and not (
+        owner_specific and _THIRD_PERSON_PREFERENCE_PATTERN.search(lowered)
+    ):
         return "preference"
-    if any(keyword in lowered for keyword in ("약속", "일정", "해야", "할게", "해야지", "준비", "예정")):
+    if _EXPLICIT_PLAN_PATTERN.search(lowered):
         return "plan"
     if any(keyword in lowered for keyword in ("출근", "퇴근", "학교", "회사", "직장", "시험", "면접")):
         return "profile" if owner_specific else "event"
     if speaker_count > 1 and not owner_specific:
         return "shared_context"
     return "conversation"
+
+
+def is_assistant_commitment(text: str) -> bool:
+    """봇이 자신의 선택·취향을 명시적으로 고정한 답변인지 판별합니다."""
+    return bool(_ASSISTANT_COMMITMENT_PATTERN.search(text or ""))
 
 
 def truncate_text(text: str, limit: int) -> str:
@@ -191,8 +241,6 @@ def merge_payload_to_turns(payload: Iterable[dict[str, Any]]) -> list[dict[str, 
     current: dict[str, Any] | None = None
 
     for item in payload:
-        if bool(item.get("is_bot")):
-            continue
         content = normalize_message_content(str(item.get("content") or ""))
         if not is_meaningful_text(content):
             continue
@@ -211,8 +259,14 @@ def merge_payload_to_turns(payload: Iterable[dict[str, Any]]) -> list[dict[str, 
 
         user_name = str(item.get("user_name") or "Unknown").strip() or "Unknown"
         created_at = str(item.get("created_at") or "")
+        is_bot = bool(item.get("is_bot"))
 
-        if current and current["user_id"] == user_id_int and current["user_name"] == user_name:
+        if (
+            current
+            and current["user_id"] == user_id_int
+            and current["user_name"] == user_name
+            and current["is_bot"] == is_bot
+        ):
             current["contents"].append(content)
             current["message_ids"].append(message_id_int)
             current["end_at"] = created_at
@@ -221,6 +275,7 @@ def merge_payload_to_turns(payload: Iterable[dict[str, Any]]) -> list[dict[str, 
         current = {
             "user_id": user_id_int,
             "user_name": user_name,
+            "is_bot": is_bot,
             "contents": [content],
             "message_ids": [message_id_int],
             "start_at": created_at,
@@ -238,6 +293,85 @@ def _build_context_lines(turns: list[dict[str, Any]], *, max_turns: int = 8, max
         merged = " ".join(turn["contents"])
         lines.append(f"{turn['user_name']}: {truncate_text(merged, max_line_chars)}")
     return lines
+
+
+def build_assistant_memory_unit(
+    payload: Iterable[dict[str, Any]],
+    *,
+    channel_id: int,
+    memory_scope: str,
+    max_summary_chars: int = 500,
+    max_context_chars: int = 1_600,
+) -> StructuredMemoryUnit | None:
+    """전송 완료된 봇 응답을 추가 LLM 호출 없이 검색 가능한 한 유닛으로 만듭니다.
+
+    Discord의 분할 메시지는 하나의 답변이므로 연속 청크를 합쳐 한 번만
+    임베딩합니다. 일반 답변도 ``assistant_response``로 보존하고, 명시적으로
+    자신의 선택·취향을 말한 답변은 ``assistant_commitment``로 표시합니다.
+    """
+    bot_turns = [
+        turn
+        for turn in merge_payload_to_turns(payload)
+        if bool(turn.get("is_bot"))
+    ]
+    if not bot_turns:
+        return None
+
+    message_ids = [
+        message_id
+        for turn in bot_turns
+        for message_id in turn["message_ids"]
+    ]
+    if not message_ids:
+        return None
+
+    merged = "\n".join(
+        " ".join(str(content) for content in turn["contents"])
+        for turn in bot_turns
+    )
+    if not is_meaningful_text(merged, min_chars=8):
+        return None
+
+    user_name = str(bot_turns[0].get("user_name") or "마사몽")
+    memory_type = (
+        "assistant_commitment"
+        if is_assistant_commitment(merged)
+        else "assistant_response"
+    )
+    raw_context = truncate_text(
+        f"{user_name}: {merged}",
+        max_context_chars,
+    )
+    summary_text = truncate_text(
+        f"{user_name}의 이전 답변: {merged}",
+        max_summary_chars,
+    )
+    timestamp_iso = str(bot_turns[-1].get("end_at") or "")
+    return StructuredMemoryUnit(
+        memory_id=(
+            f"assistant:{channel_id}:{message_ids[0]}:{message_ids[-1]}"
+        ),
+        anchor_message_id=message_ids[-1],
+        owner_user_id=None,
+        owner_user_name=user_name,
+        memory_scope=memory_scope,
+        memory_type=memory_type,
+        summary_text=summary_text,
+        memory_text=compose_memory_text(
+            summary_text,
+            raw_context,
+            limit=max(max_summary_chars, max_context_chars),
+            keywords=extract_keywords(merged),
+            speaker_names=[user_name],
+            memory_type=memory_type,
+            timestamp_iso=timestamp_iso,
+        ),
+        raw_context=raw_context,
+        source_message_ids=message_ids,
+        speaker_names=[user_name],
+        keywords=extract_keywords(merged),
+        timestamp_iso=timestamp_iso,
+    )
 
 
 def build_structured_memory_units(
@@ -303,14 +437,15 @@ def build_structured_memory_units(
         )
     ]
 
-    grouped_turns: dict[tuple[int | None, str], dict[str, Any]] = {}
+    grouped_turns: dict[tuple[int | None, str, bool], dict[str, Any]] = {}
     for turn in turns:
-        key = (turn["user_id"], turn["user_name"])
+        key = (turn["user_id"], turn["user_name"], bool(turn["is_bot"]))
         bucket = grouped_turns.setdefault(
             key,
             {
                 "user_id": turn["user_id"],
                 "user_name": turn["user_name"],
+                "is_bot": bool(turn["is_bot"]),
                 "contents": [],
                 "message_ids": [],
                 "end_at": turn["end_at"],
@@ -325,6 +460,11 @@ def build_structured_memory_units(
         compact = re.sub(r"[^A-Za-z0-9가-힣]", "", merged)
         if len(compact) < user_turn_min_chars:
             continue
+        if grouped["is_bot"] and not is_assistant_commitment(merged):
+            # 일반 봇 답변은 공유 대화 유닛에만 남기고, 사용자 개인 기억처럼
+            # 별도 복제하지 않는다. 명시적인 자기 선택만 assistant 전용
+            # 기억으로 만들어 이후 답변의 일관성을 보강한다.
+            continue
         owner_keywords = [
             token
             for token in extract_keywords(merged)
@@ -335,20 +475,29 @@ def build_structured_memory_units(
             f"{truncate_text(merged, max_summary_chars)}"
         )
         owner_raw_context = truncate_text(f"{grouped['user_name']}: {merged}", max_context_chars)
-        owner_memory_type = classify_memory_type(
-            merged,
-            speaker_count=1,
-            owner_specific=True,
+        owner_memory_type = (
+            "assistant_commitment"
+            if grouped["is_bot"]
+            else classify_memory_type(
+                merged,
+                speaker_count=1,
+                owner_specific=True,
+            )
         )
+        owner_scope = shared_scope if grouped["is_bot"] else user_scope
+        memory_prefix = "assistant" if grouped["is_bot"] else "user"
         units.append(
             StructuredMemoryUnit(
                 memory_id=(
-                    f"user:{grouped['user_id'] or 0}:{grouped['message_ids'][0]}:{grouped['message_ids'][-1]}"
+                    f"{memory_prefix}:{grouped['user_id'] or 0}:"
+                    f"{grouped['message_ids'][0]}:{grouped['message_ids'][-1]}"
                 ),
                 anchor_message_id=grouped["message_ids"][-1],
-                owner_user_id=grouped["user_id"],
+                owner_user_id=(
+                    None if grouped["is_bot"] else grouped["user_id"]
+                ),
                 owner_user_name=grouped["user_name"],
-                memory_scope=user_scope,
+                memory_scope=owner_scope,
                 memory_type=owner_memory_type,
                 summary_text=truncate_text(owner_summary, max_summary_chars),
                 memory_text=compose_memory_text(

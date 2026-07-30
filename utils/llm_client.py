@@ -151,6 +151,7 @@ class LLMClient:
         *,
         lane_name: str,
         log_extra: dict[str, Any] | None,
+        call_timeout_seconds: float | None = None,
     ) -> _ProviderResult:
         """물리 LLM 호출 하나에 동시성·대기·실행 시간 상한을 적용합니다.
 
@@ -161,6 +162,14 @@ class LLMClient:
         started_at = time.monotonic()
         queue_wait_ms = 0
         base_extra = dict(log_extra or {})
+        effective_call_timeout = max(
+            0.001,
+            float(
+                self._call_timeout_seconds
+                if call_timeout_seconds is None
+                else call_timeout_seconds
+            ),
+        )
 
         def outcome_extra(
             outcome: str,
@@ -225,7 +234,7 @@ class LLMClient:
 
                 result = await asyncio.wait_for(
                     _record_and_call(),
-                    timeout=self._call_timeout_seconds,
+                    timeout=effective_call_timeout,
                 )
                 duration_ms = round(
                     max(0.0, time.monotonic() - started_at) * 1000
@@ -278,7 +287,7 @@ class LLMClient:
                 if is_provider_timeout:
                     raise LLMProviderTimeoutError(
                         f"{lane_name} LLM provider 호출이 "
-                        f"{self._call_timeout_seconds:g}초 제한을 넘겼습니다."
+                        f"{effective_call_timeout:g}초 제한을 넘겼습니다."
                     ) from exc
                 raise
         finally:
@@ -556,6 +565,16 @@ class LLMClient:
     ) -> str | None:
         """단일 라우팅 레인 LLM 타겟을 호출하여 프롬프트 응답을 반환합니다."""
         provider = target["provider"]
+        routing_timeout = max(
+            0.001,
+            float(
+                getattr(
+                    config,
+                    "ROUTING_LLM_CALL_TIMEOUT_SECONDS",
+                    self._call_timeout_seconds,
+                )
+            ),
+        )
         effective_max_tokens = max(
             64,
             int(
@@ -573,7 +592,7 @@ class LLMClient:
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": effective_max_tokens,
                 "temperature": 0.0,
-                "timeout": self._call_timeout_seconds,
+                "timeout": routing_timeout,
                 "stream": False,
             }
             reasoning_effort = str(target.get("reasoning_effort") or "").strip()
@@ -587,6 +606,7 @@ class LLMClient:
                 _request_openai_routing,
                 lane_name=str(target.get("name") or "routing"),
                 log_extra=log_extra,
+                call_timeout_seconds=routing_timeout,
             )
             response_text = completion.choices[0].message.content
             return response_text.strip() if response_text else None
@@ -615,6 +635,7 @@ class LLMClient:
                 _request_gemini_routing,
                 lane_name=str(target.get("name") or "routing"),
                 log_extra=log_extra,
+                call_timeout_seconds=routing_timeout,
             )
             return (getattr(response, "text", "") or "").strip() or None
 
@@ -823,17 +844,38 @@ class LLMClient:
             final_response = None
             for target in targets:
                 try:
-                    call_kwargs: dict[str, Any] = {
-                        "system_prompt": system_prompt,
-                        "user_prompt": user_prompt,
-                        "log_extra": log_extra,
-                        "max_tokens": int(
+                    normalized_reasoning = str(
+                        reasoning_effort_override or ""
+                    ).strip().lower()
+                    if normalized_reasoning == "high":
+                        max_tokens = int(
+                            getattr(
+                                config,
+                                "MAIN_LLM_HIGH_MAX_TOKENS",
+                                config.MAIN_LLM_MAX_TOKENS,
+                            )
+                        )
+                    elif normalized_reasoning == "low":
+                        max_tokens = int(
+                            getattr(
+                                config,
+                                "MAIN_LLM_LOW_MAX_TOKENS",
+                                config.MAIN_LLM_MAX_TOKENS,
+                            )
+                        )
+                    else:
+                        max_tokens = int(
                             getattr(
                                 config,
                                 "MAIN_LLM_MAX_TOKENS",
                                 config.COMETAPI_MAX_TOKENS,
                             )
-                        ),
+                        )
+                    call_kwargs: dict[str, Any] = {
+                        "system_prompt": system_prompt,
+                        "user_prompt": user_prompt,
+                        "log_extra": log_extra,
+                        "max_tokens": max_tokens,
                     }
                     if reasoning_effort_override is not None:
                         call_kwargs["reasoning_effort_override"] = (
