@@ -38,13 +38,8 @@
 
 `internal/`은 사용자 안내가 아니라 유지보수 근거를 남기는 Git 추적 영역입니다. 측정값과
 결정 당시의 제약을 보존하되, 현재 제품의 사용법이나 배포 절차를 설명하는 기준 문서로는
-사용하지 않습니다.
-
-- [내부 문서 안내](internal/README.md)
-- [변경 이력](internal/CHANGELOG.md)
-- [기억 회수 실측 분석](internal/RAG_ANALYSIS.ko.md)
-- [기억 회수 개선 기록](internal/RAG_IMPROVEMENT_PLAN.ko.md)
-- [무삭제 기억 인덱스 이행 기준](internal/MEMORY_INDEX_MIGRATION.ko.md)
+사용하지 않습니다. 이 문서 허브와 루트 README에는 해당 기록을 나열하지 않으며,
+유지보수자는 저장소의 `docs/internal/`에서만 관리합니다.
 
 ## 문서 갱신 원칙
 
