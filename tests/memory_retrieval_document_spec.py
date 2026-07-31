@@ -69,6 +69,59 @@ def test_retrieval_document_uses_independent_summary_without_raw_context():
     assert rendered == "민수가 토요일 등산 계획을 취소했다."
 
 
+def test_retrieval_document_does_not_repeat_summary_contained_in_context():
+    """한 사람의 짧은 발화는 요약과 원문이 같은 문장이라 이어 붙이면 중복이다."""
+    utterance = "민수: 이번 주말 등산은 취소하고 다음 주로 미루자."
+
+    rendered = compose_memory_text(utterance, utterance, limit=500)
+
+    assert rendered == utterance
+    assert rendered.count("등산은 취소하고") == 1
+
+
+def test_retrieval_document_drops_truncated_summary_prefix_of_context():
+    """요약이 원문을 잘라낸 앞부분이면 원문만 남긴다."""
+    context = "민수: " + "부산 회의 준비 상황을 정리하면 " * 8
+    summary = compose_memory_text(context, "", limit=60)
+
+    rendered = compose_memory_text(summary, context, limit=1200)
+
+    assert rendered == compose_memory_text(context, "", limit=1200)
+    assert "…" not in rendered
+
+
+def test_retrieval_document_keeps_summary_that_adds_new_information():
+    """여러 화자의 공유 기억은 요약이 원문에 없는 참여자 정보를 담는다."""
+    summary = "민수, 지연의 대화: 부산 회의는 8월 3일이다."
+    context = "민수: 부산 회의는 8월 3일이야.\n지연: KTX로 가자."
+
+    rendered = compose_memory_text(summary, context, limit=1200)
+
+    assert rendered.startswith(summary)
+    assert "KTX로 가자" in rendered
+
+
+def test_short_user_memory_unit_is_not_stored_twice():
+    payload = [
+        {
+            "message_id": 501,
+            "user_id": 9,
+            "user_name": "민수",
+            "content": "이번 주말 등산은 취소하고 다음 주로 미루자.",
+            "is_bot": False,
+            "created_at": "2026-07-28T12:00:00+00:00",
+        }
+    ]
+
+    units = build_structured_memory_units(payload, channel_id=77)
+    owner_units = [unit for unit in units if unit.memory_scope == "user"]
+
+    assert owner_units, "개인 범위 유닛이 생성되어야 한다"
+    owner = owner_units[0]
+    assert owner.memory_text.count("등산은 취소하고") == 1
+    assert owner.memory_text == owner.raw_context
+
+
 @pytest.mark.asyncio
 async def test_overlong_memory_summary_prompt_prioritizes_retrieval_facts(
     monkeypatch,

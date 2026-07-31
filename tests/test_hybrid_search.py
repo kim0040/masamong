@@ -184,6 +184,115 @@ def test_identical_memory_blocks_are_deduplicated_without_source_ids():
     assert [entry["candidate_id"] for entry in selected] == ["first", "other"]
 
 
+def test_adjacent_sliding_windows_are_deduplicated_by_semantic_similarity():
+    """겹치는 이웃 윈도우는 원문 ID 포함률이 0.5라 ID 규칙만으로는 안 걸린다."""
+    near = np.array([1.0, 0.02], dtype=np.float32)
+    same_story = np.array([1.0, 0.05], dtype=np.float32)
+    other_story = np.array([0.2, 1.0], dtype=np.float32)
+
+    entries = [
+        {
+            "candidate_id": "window-1",
+            "dialogue_block": "민수: 부산 회의는 8월 3일이다. 지연: KTX로 가자.",
+            "source_message_ids": [1, 2, 3, 4, 5, 6],
+            "embedding_vector": near,
+        },
+        {
+            "candidate_id": "window-2-overlapping",
+            "dialogue_block": "지연: KTX로 가자. 민수: 숙소는 아직 미정이야.",
+            "source_message_ids": [4, 5, 6, 7, 8, 9],
+            "embedding_vector": same_story,
+        },
+        {
+            "candidate_id": "distinct-topic",
+            "dialogue_block": "재원: 오늘 점심은 국밥으로 하자.",
+            "source_message_ids": [40, 41],
+            "embedding_vector": other_story,
+        },
+    ]
+
+    selected = HybridSearchEngine._dedupe_overlapping_entries(entries)
+
+    assert [entry["candidate_id"] for entry in selected] == [
+        "window-1",
+        "distinct-topic",
+    ]
+
+
+def test_dedupe_falls_back_to_lexical_overlap_without_vectors():
+    """벡터가 없는 후보(사전 계산 점수만 온 Kakao 행)도 어휘로 걸러낸다."""
+    entries = [
+        {
+            "candidate_id": "kakao-1",
+            "dialogue_block": "민수: 이번 주말 등산은 취소하고 다음 주로 미루자.",
+        },
+        {
+            "candidate_id": "kakao-1-restated",
+            "dialogue_block": "민수: 이번 주말 등산은 취소하고 다음 주로 미루자!!",
+        },
+        {
+            "candidate_id": "kakao-2",
+            "dialogue_block": "지연: 새 노트북은 그램으로 결정했어.",
+        },
+    ]
+
+    selected = HybridSearchEngine._dedupe_overlapping_entries(entries)
+
+    assert [entry["candidate_id"] for entry in selected] == ["kakao-1", "kakao-2"]
+
+
+def test_dedupe_keeps_related_but_distinct_memories(monkeypatch):
+    """같은 주제의 다른 사실까지 지우면 회수량만 줄어든다."""
+    entries = [
+        {
+            "candidate_id": "plan-date",
+            "dialogue_block": "민수: 부산 회의는 8월 3일 오후 2시야.",
+            "embedding_vector": np.array([1.0, 0.0], dtype=np.float32),
+        },
+        {
+            "candidate_id": "plan-transport",
+            "dialogue_block": "지연: 자가용 말고 KTX로 가기로 했어.",
+            "embedding_vector": np.array([0.8, 0.6], dtype=np.float32),
+        },
+    ]
+
+    selected = HybridSearchEngine._dedupe_overlapping_entries(entries)
+
+    assert [entry["candidate_id"] for entry in selected] == [
+        "plan-date",
+        "plan-transport",
+    ]
+
+
+def test_dedupe_does_not_override_distinct_vectors_with_lexical_overlap():
+    """벡터가 서로 다르면 비슷한 문장 구조만으로 다른 사실을 지우지 않는다."""
+    entries = [
+        {
+            "candidate_id": "meeting-seoul",
+            "dialogue_block": (
+                "민수: 부산 회의는 8월 3일 오후 2시이고 "
+                "장소는 서울역 회의실이야."
+            ),
+            "embedding_vector": np.array([1.0, 0.0], dtype=np.float32),
+        },
+        {
+            "candidate_id": "meeting-busan",
+            "dialogue_block": (
+                "민수: 부산 회의는 8월 4일 오후 2시이고 "
+                "장소는 부산역 회의실이야."
+            ),
+            "embedding_vector": np.array([0.0, 1.0], dtype=np.float32),
+        },
+    ]
+
+    selected = HybridSearchEngine._dedupe_overlapping_entries(entries)
+
+    assert [entry["candidate_id"] for entry in selected] == [
+        "meeting-seoul",
+        "meeting-busan",
+    ]
+
+
 def test_embedding_and_bm25_for_same_message_merge_into_one_candidate(monkeypatch):
     monkeypatch.setattr(config, "SEARCH_QUERY_EXPANSION_ENABLED", False)
     engine = HybridSearchEngine(DummyDiscordStore(), None, None)

@@ -251,7 +251,11 @@ class HybridSearchEngine:
         # 슬라이딩 윈도우의 공유 기억과 사용자 기억은 같은 원문 메시지를
         # 포함할 수 있다. 점수가 높은 동일 근거가 top-k를 독점하면 새로운
         # 사실을 하나 덜 주는 동시에 같은 사실에 과도한 가중치를 주므로,
-        # 원문 ID 포함관계와 완전 동일 본문을 기준으로 한 번 더 다양화한다.
+        # 원문 ID 포함관계와 본문 유사도를 기준으로 한 번 더 다양화한다.
+        #
+        # 상대 점수 floor 앞뒤 어디에 두든 결과는 같다. floor는 최고점 대비
+        # 임계값이고 dedupe는 순서를 지키며 최고점 후보를 남기므로 두 연산이
+        # 교환 가능하다. 실측 ablation에서도 블록 수와 중복도가 동일했다.
         enriched = self._dedupe_overlapping_entries(enriched)
         # 상한은 config 파일의 top_k와 코드 상한 중 작은 쪽이다. 이미 배포된
         # 서버의 embedding config를 고치지 않아도 새 상한이 적용되게 한다.
@@ -423,14 +427,61 @@ class HybridSearchEngine:
             if str(item).strip()
         }
 
+    @staticmethod
+    def _content_shingles(text: str) -> frozenset[str]:
+        """어휘 중복 비교용 3-gram 집합을 만든다."""
+        compact = _WHITESPACE_PATTERN.sub("", str(text or "").casefold())
+        if len(compact) < 3:
+            return frozenset()
+        return frozenset(
+            compact[index : index + 3] for index in range(len(compact) - 2)
+        )
+
+    @staticmethod
+    def _shingle_overlap(left: frozenset[str], right: frozenset[str]) -> float:
+        """두 블록의 3-gram 자카드 유사도를 반환한다."""
+        if not left or not right:
+            return 0.0
+        union = len(left | right)
+        if union == 0:
+            return 0.0
+        return len(left & right) / union
+
     @classmethod
     def _dedupe_overlapping_entries(
         cls,
         entries: List[dict[str, Any]],
     ) -> List[dict[str, Any]]:
-        """순위를 유지하며 사실상 같은 원문에서 나온 기억 블록을 하나만 남깁니다."""
+        """순위를 유지하며 사실상 같은 내용을 말하는 기억 블록을 하나만 남깁니다.
+
+        원문 ID 포함관계 0.8은 같은 윈도우에서 갈라져 나온 공유/개인 유닛만
+        잡는다. 슬라이딩 윈도우는 기본 12개 메시지를 6개씩 겹쳐 만들므로
+        이웃한 두 윈도우는 원문의 절반을 공유하고도 포함률이 0.5에 그쳐 둘 다
+        살아남았고, 사용자에게는 같은 이야기가 두 번 보였다.
+
+        의미 유사도 하나만으로는 이를 가를 수 없다. 운영 기억 실측에서 원문이
+        실제로 겹치는 이웃 윈도우 쌍은 코사인 0.842였는데, 원문이 전혀 겹치지
+        않는 서로 다른 사실도 0.838~0.858까지 나왔다. 그래서 세 가지 근거를
+        나눠 쓴다.
+
+        - 원문 ID가 조금이라도 겹치면서 의미도 가까우면 같은 구간의 반복이다.
+        - 원문 ID가 전혀 겹치지 않으면 벡터가 거의 일치할 때만 중복으로 본다.
+        - 벡터가 없는 후보(사전 계산 점수만 온 Kakao 행)는 어휘 3-gram으로 본다.
+        """
+
+        def _ratio(name: str, default: float) -> float:
+            return max(0.0, min(1.0, float(getattr(config, name, default))))
+
+        # 원문이 겹치지 않는 서로 다른 사실을 지우지 않도록 높게 잡는다.
+        identical_ceiling = _ratio("RAG_MEMORY_DEDUPE_SIMILARITY", 0.93)
+        # 원문이 일부라도 겹치면 같은 구간일 가능성이 커서 기준을 낮춘다.
+        overlap_ceiling = _ratio("RAG_MEMORY_DEDUPE_OVERLAP_SIMILARITY", 0.80)
+        shingle_ceiling = _ratio("RAG_MEMORY_DEDUPE_SHINGLE", 0.55)
+
         selected: List[dict[str, Any]] = []
         selected_sources: list[set[str]] = []
+        selected_vectors: list[Any] = []
+        selected_shingles: list[frozenset[str]] = []
         selected_blocks: set[str] = set()
 
         for entry in entries:
@@ -444,26 +495,49 @@ class HybridSearchEngine:
             if normalized_block and normalized_block in selected_blocks:
                 continue
 
+            vector = entry.get("embedding_vector")
+            shingles = cls._content_shingles(entry.get("dialogue_block"))
+
             redundant = False
-            if source_ids:
-                for existing_ids in selected_sources:
-                    if not existing_ids:
-                        continue
-                    overlap = len(source_ids & existing_ids)
-                    # 공유 윈도우와 그 안의 사용자별 윈도우처럼 한쪽 원문이
-                    # 거의 전부 다른 쪽에 포함되면 같은 근거로 취급한다.
-                    containment = overlap / min(
+            for index in range(len(selected)):
+                existing_ids = selected_sources[index]
+                containment = 0.0
+                if source_ids and existing_ids:
+                    containment = len(source_ids & existing_ids) / min(
                         len(source_ids),
                         len(existing_ids),
                     )
-                    if containment >= 0.8:
+                # 공유 윈도우와 그 안의 사용자별 윈도우처럼 한쪽 원문이
+                # 거의 전부 다른 쪽에 포함되면 같은 근거로 취급한다.
+                if containment >= 0.8:
+                    redundant = True
+                    break
+
+                existing_vector = selected_vectors[index]
+                if vector is not None and existing_vector is not None:
+                    similarity = cls._cosine_similarity(vector, existing_vector)
+                    ceiling = (
+                        overlap_ceiling if containment > 0.0 else identical_ceiling
+                    )
+                    if similarity >= ceiling:
                         redundant = True
                         break
+
+                if (
+                    (vector is None or existing_vector is None)
+                    and cls._shingle_overlap(shingles, selected_shingles[index])
+                    >= shingle_ceiling
+                ):
+                    redundant = True
+                    break
+
             if redundant:
                 continue
 
             selected.append(entry)
             selected_sources.append(source_ids)
+            selected_vectors.append(vector)
+            selected_shingles.append(shingles)
             if normalized_block:
                 selected_blocks.add(normalized_block)
 
@@ -632,8 +706,8 @@ class HybridSearchEngine:
                 message = row.get("message") or ""
                 # Offline store returns 'score' (pre-calculated similarity) and might skip 'embedding'
                 similarity = row.get("score")
+                vector = self._to_vector(row.get("embedding"))
                 if similarity is None:
-                    vector = self._to_vector(row.get("embedding"))
                     if vector is not None:
                         similarity = self._cosine_similarity(query_vector, vector)
 
@@ -696,6 +770,7 @@ class HybridSearchEngine:
                         "source": "embedding",
                         "dialogue_messages": dialogue_messages,
                         "dialogue_block": dialogue_block,
+                        "embedding_vector": vector,
                         "db_path": row.get("db_path"),
                     }
                 )
@@ -827,6 +902,10 @@ class HybridSearchEngine:
                     "dialogue_block": dialogue_block,
                     "memory_scope": memory_scope,
                     "memory_type": memory_type,
+                    # 중복 제거 단계에서 블록끼리 의미 유사도를 다시 재지 않도록
+                    # 이미 읽은 벡터를 그대로 넘긴다. 추가 DB 조회나 임베딩
+                    # 호출을 만들지 않는다.
+                    "embedding_vector": vector,
                     "source_message_ids": sorted(
                         self._source_message_id_set(
                             row.get("source_message_ids")

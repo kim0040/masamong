@@ -1915,6 +1915,42 @@ RAG_MEMORY_RELATIVE_FLOOR = max(
     0.0,
     min(1.0, RAG_MEMORY_RELATIVE_FLOOR),
 )
+# 같은 이야기를 반복하는 기억 블록을 걸러내는 상한.
+#
+# 원문 ID 포함관계(0.8)는 한 윈도우에서 갈라진 공유/개인 유닛만 잡는다.
+# 슬라이딩 윈도우는 12개 메시지를 6개씩 겹쳐 만들므로 이웃 윈도우는 원문의
+# 절반을 공유하고도 포함률 0.5로 통과했다.
+#
+# 의미 유사도만으로는 이를 가를 수 없다. 운영 기억 실측에서 원문이 실제로
+# 겹치는 이웃 윈도우 쌍이 0.842였는데, 원문이 전혀 겹치지 않는 서로 다른
+# 사실도 0.838~0.858이 나왔다. 그래서 원문 겹침 여부에 따라 기준을 나눈다.
+#   - 원문이 조금이라도 겹치면: 0.80 이상이면 같은 구간의 반복
+#   - 원문이 전혀 겹치지 않으면: 0.93 이상, 즉 거의 동일한 벡터일 때만
+# 어휘 3-gram은 벡터가 없는 후보(사전 계산 점수만 온 Kakao 행)의 보조 기준이다.
+RAG_MEMORY_DEDUPE_SIMILARITY = max(
+    0.0,
+    min(
+        1.0,
+        as_float(load_config_value("RAG_MEMORY_DEDUPE_SIMILARITY", 0.93), 0.93),
+    ),
+)
+RAG_MEMORY_DEDUPE_OVERLAP_SIMILARITY = max(
+    0.0,
+    min(
+        1.0,
+        as_float(
+            load_config_value("RAG_MEMORY_DEDUPE_OVERLAP_SIMILARITY", 0.80),
+            0.80,
+        ),
+    ),
+)
+RAG_MEMORY_DEDUPE_SHINGLE = max(
+    0.0,
+    min(
+        1.0,
+        as_float(load_config_value("RAG_MEMORY_DEDUPE_SHINGLE", 0.55), 0.55),
+    ),
+)
 # 명시적인 기억 질문에서 Discord 최고점 하나가 카카오 후보를 상대 컷오프로
 # 전부 제거하지 않게 한다. 절대 의미 게이트와 어휘 겹침을 모두 통과한 다른
 # 출처의 최고 후보 한 건만 허용한다.
