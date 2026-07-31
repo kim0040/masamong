@@ -81,11 +81,12 @@ Discord message
   -> one final response
 ```
 
-The routing and main lanes use `openai/gpt-5.6-luna` through OpenRouter in the
-current Masamo profile. Routing uses low reasoning. The main lane selects
-`none`, `low`, or `high` in the same routing response according to the request;
-it never retries a lower level as a higher one. Requests are restricted to the
-OpenAI provider with provider fallbacks disabled. Keyword rules are an outage
+The routing lane uses `openai/gpt-5.6-luna` through OpenRouter with low
+reasoning. The main lane uses the official `deepseek-v4-flash` endpoint and
+selects `none`, `low`, or `high` in the same routing response. For Flash,
+`none/low` explicitly disables thinking and `high` enables it; a lower level is
+never retried as a higher one. OpenRouter routing is restricted to the OpenAI
+provider with provider fallbacks disabled. Keyword rules are an outage
 fallback, not the normal tool-selection mechanism. Long context is compacted
 inside the routing response, so compaction does not create another LLM request.
 

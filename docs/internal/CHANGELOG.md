@@ -29,10 +29,13 @@
 
 ### 변경
 
-- 텍스트 라우팅·최종 답변·학교 공지 분석을 OpenRouter
-  `openai/gpt-5.6-luna`로 전환하고 OpenAI 공급자만 허용. 라우팅은 `low`,
-  최종 답변은 같은 라우팅 결과의 `none/low/high`를 사용하며 낮은 단계 실패 뒤
-  재호출하지 않음. CometAPI 키와 Gemini native 경로는 이미지 생성 전용으로 유지
+- 도구 판단은 OpenRouter `openai/gpt-5.6-luna`에 유지하고 최종 대화·운세 출력은
+  공식 `deepseek-v4-flash`로 분리. `none/low`는 thinking을 명시적으로 끄고
+  `high`에서만 추론을 활성화해 짧은 대화의 지연·추론 토큰 낭비를 방지
+- 텍스트 라우팅·학교 공지 분석은 OpenRouter `openai/gpt-5.6-luna`와 OpenAI
+  공급자 제한을 유지. 최종 답변은 같은 라우팅 결과의 `none/low/high`를 사용하며
+  낮은 단계 실패 뒤 재호출하지 않음. CometAPI 키와 Gemini native 경로는 이미지
+  생성 전용으로 유지
 - 운영 RAG를 스코프가 분리된 의미 임베딩 및 TiDB 벡터 검색으로 정리
 - 저사양 운영 프로필에서 BM25/FTS5 생성·검색·자동 재구축을 명시적으로 금지
 - 최근 원문, 관련성 gate, 최대 기억 블록으로 불필요한 기억 주입을 차단
