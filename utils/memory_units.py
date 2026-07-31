@@ -208,6 +208,11 @@ def truncate_text(text: str, limit: int) -> str:
     return cleaned[: max(0, limit - 1)].rstrip() + "…"
 
 
+def _compact_for_containment(text: str) -> str:
+    """포함 관계 비교용으로 공백과 말줄임표를 제거한 형태를 만든다."""
+    return _WHITESPACE_RE.sub("", str(text or "")).rstrip("…")
+
+
 def compose_memory_text(
     summary_text: str,
     raw_context: str,
@@ -224,6 +229,12 @@ def compose_memory_text(
     E5의 관련 문서 분리 여유가 낮아졌다. 이 값들은 이미 별도 DB 열에
     보존하므로 벡터 입력에는 독립 요약과 화자 포함 원문만 넣는다. 라벨도
     제거해 의미 신호를 희석하지 않되, 요약 누락에 대비해 원문 근거는 남긴다.
+
+    한 사람의 짧은 발화로 만든 유닛은 요약과 원문이 같은 문장이다. 둘을
+    그대로 이으면 같은 내용이 벡터 본문과 프롬프트에 두 번 들어가, 흔한
+    표현의 가중치만 올라가고 기억 블록 예산도 절반이 낭비된다. 운영 기억
+    실측에서 개인 범위 유닛의 62%가 이 경우였으므로, 한쪽이 다른 쪽에
+    포함되면 더 많은 정보를 담은 쪽 하나만 남긴다.
     """
     # 호출 계약과 metadata 저장 코드를 단순하게 유지하기 위한 인자다.
     # 임베딩 본문에는 넣지 않고 StructuredMemoryUnit의 별도 열에 보존한다.
@@ -231,6 +242,13 @@ def compose_memory_text(
     summary = normalize_message_content(summary_text)
     context = normalize_message_content(raw_context)
     if summary and context:
+        compact_summary = _compact_for_containment(summary)
+        compact_context = _compact_for_containment(context)
+        if compact_summary and compact_context:
+            if compact_summary in compact_context:
+                return truncate_text(context, limit)
+            if compact_context in compact_summary:
+                return truncate_text(summary, limit)
         return truncate_text(f"{summary}\n{context}", limit)
     return truncate_text(summary or context, limit)
 
