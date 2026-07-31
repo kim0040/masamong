@@ -1067,7 +1067,7 @@ class LLMClient:
 
             return response_text.strip() if response_text else None
         except Exception as e:
-            logger.warning(f"[CometAPI-Fast] 호출 실패: {e}", extra=log_extra)
+            logger.warning(f"[RoutingLLM] 호출 실패: {e}", extra=log_extra)
             return None
 
     async def get_ai_completion(
@@ -1078,7 +1078,7 @@ class LLMClient:
     ) -> str | None:
         """외부 Cog에서 일반적인 AI 응답을 얻기 위한 공개 메서드.
 
-        CometAPI → Gemini fallback 순으로 시도합니다.
+        설정된 메인 레인 → 명시적으로 허용된 Gemini fallback 순으로 시도합니다.
         """
         import uuid
         log_extra = {'trace_id': f"gen_comp_{uuid.uuid4().hex[:4]}"}
