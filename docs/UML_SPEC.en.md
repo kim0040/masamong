@@ -21,7 +21,9 @@ flowchart TB
     Feature["Privacy / Weather / Fortune / Notice Cogs"]
     DB["TiDBConnection"]
     TiDB[("Profile TiDB")]
-    External["KMA / Search / Market / CometAPI"]
+    External["KMA / Search / Market"]
+    OpenRouter["OpenRouter<br/>OpenAI GPT-5.6 Luna"]
+    Comet["CometAPI<br/>image only"]
     Batch["School and transfer one-shots"]
     Local[("Masamo-only notice stores")]
 
@@ -30,10 +32,12 @@ flowchart TB
     Bot --> Feature
     AI --> Intent
     AI --> LLM
+    LLM --> OpenRouter
     AI --> Tools
     AI --> RAG
     Tools --> Health
     Tools --> External
+    Tools --> Comet
     RAG --> Search
     RAG --> DB
     LLM --> DB

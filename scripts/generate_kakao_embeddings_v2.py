@@ -38,9 +38,15 @@ try:
     import config
     # Attempt to import SemanticChunker from utils
     from utils.chunker import SemanticChunker, ChunkerConfig
+    from utils.openrouter import (
+        build_openrouter_extra_body,
+        is_openrouter_base_url,
+    )
 except ImportError:
     config = type('Config', (), {})
     SemanticChunker = None
+    build_openrouter_extra_body = None
+    is_openrouter_base_url = lambda _value: False
 
 # Configure Logging
 logging.basicConfig(
@@ -60,16 +66,24 @@ CHUNK_OVERLAP = 50       # Context overlap
 # Summarization Model Configs
 SUMMARIZATION_MODELS = {
     "1": {
-        "name": getattr(config, "KAKAO_SUMMARY_MODEL_STANDARD", "DeepSeek-V3.2-Exp-nothinking"),
+        "name": getattr(
+            config,
+            "KAKAO_SUMMARY_MODEL_STANDARD",
+            getattr(config, "LLM_MAIN_PRIMARY_MODEL", ""),
+        ),
         "price_input": 0.27,
         "price_output": 0.432,
-        "desc": "표준형 (DeepSeek V3.2)"
+        "desc": "표준형 (운영 텍스트 모델)"
     },
     "2": {
-        "name": getattr(config, "KAKAO_SUMMARY_MODEL_BUDGET", "gpt-5-nano-2025-08-07"),
+        "name": getattr(
+            config,
+            "KAKAO_SUMMARY_MODEL_BUDGET",
+            getattr(config, "LLM_MAIN_PRIMARY_MODEL", ""),
+        ),
         "price_input": 0.05,
         "price_output": 0.40,
-        "desc": "절약형 (GPT-5 Nano)"
+        "desc": "절약형 (운영 텍스트 모델)"
     }
 }
 EXCHANGE_RATE = 1470 
@@ -81,6 +95,7 @@ def resolve_summary_api_key(cli_key: str | None = None) -> str | None:
         cli_key
         or os.environ.get("KAKAO_SUMMARY_API_KEY")
         or os.environ.get("LLM_MAIN_PRIMARY_API_KEY")
+        or os.environ.get("OPENROUTER_API_KEY")
         or os.environ.get("COMETAPI_KEY")
         or getattr(config, "KAKAO_SUMMARY_API_KEY", None)
         or getattr(config, "LLM_MAIN_PRIMARY_API_KEY", None)
@@ -94,6 +109,7 @@ def resolve_summary_base_url(cli_base_url: str | None = None) -> str:
         cli_base_url
         or os.environ.get("KAKAO_SUMMARY_BASE_URL")
         or os.environ.get("LLM_MAIN_PRIMARY_BASE_URL")
+        or os.environ.get("OPENROUTER_BASE_URL")
         or os.environ.get("COMETAPI_BASE_URL")
         or getattr(config, "KAKAO_SUMMARY_BASE_URL", None)
         or getattr(config, "LLM_MAIN_PRIMARY_BASE_URL", None)
@@ -107,7 +123,13 @@ class KakaoSessionEmbedder:
         self.embedding_model_name = embedding_model_name
         self.summary_model_config = summary_model_config
         self.embedding_model = None
-        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self.base_url = str(base_url or "").rstrip("/")
+        self.client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=self.base_url,
+            max_retries=0,
+            timeout=120,
+        )
         
         # Initialize Chunker
         if SemanticChunker:
@@ -252,8 +274,27 @@ class KakaoSessionEmbedder:
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_prompt}
                         ],
-                        "extra_body": {"max_tokens": 400}
+                        "max_tokens": 400,
                     }
+                    if (
+                        build_openrouter_extra_body is not None
+                        and is_openrouter_base_url(self.base_url)
+                    ):
+                        api_args["extra_body"] = build_openrouter_extra_body(
+                            reasoning_effort="none",
+                            provider_only=getattr(
+                                config,
+                                "OPENROUTER_PROVIDER_ONLY",
+                                "openai",
+                            ),
+                            allow_fallbacks=False,
+                            require_parameters=True,
+                            data_collection=getattr(
+                                config,
+                                "OPENROUTER_DATA_COLLECTION",
+                                "",
+                            ),
+                        )
 
                     response = await self.client.chat.completions.create(**api_args)
                     summary = response.choices[0].message.content.strip()

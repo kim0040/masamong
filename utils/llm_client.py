@@ -44,6 +44,11 @@ except ImportError:
 
 from logger_config import logger
 from utils import db as db_utils
+from utils.openrouter import (
+    build_openrouter_extra_body,
+    build_openrouter_extra_headers,
+    is_openrouter_base_url,
+)
 
 
 _ProviderResult = TypeVar("_ProviderResult")
@@ -328,19 +333,68 @@ class LLMClient:
     ) -> str:
         """공유 target을 바꾸지 않고 이번 요청에 사용할 effort를 결정합니다."""
         configured = str(target.get("reasoning_effort") or "").strip().lower()
-        if configured not in {"low", "medium", "high", "max"}:
+        if configured not in {
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        }:
             configured = ""
         if override is None:
             return configured
         if not cls.supports_dynamic_reasoning(target.get("model")):
             return configured
         normalized_override = str(override or "").strip().lower()
-        # 라우터 계약 밖의 값은 고비용 수준으로 확대하지 않고 low로 내린다.
+        # 라우터 계약 밖의 값은 고비용 수준으로 확대하지 않고 none으로 내린다.
         return (
             normalized_override
-            if normalized_override in {"low", "high"}
-            else "low"
+            if normalized_override in {"none", "low", "high"}
+            else "none"
         )
+
+    @staticmethod
+    def _openrouter_request_options(
+        target: dict[str, str],
+        reasoning_effort: str,
+    ) -> dict[str, Any]:
+        """OpenRouter target에만 공급자 고정·추론 옵션을 추가합니다."""
+        if not is_openrouter_base_url(target.get("base_url")):
+            return {}
+        options: dict[str, Any] = {
+            "extra_body": build_openrouter_extra_body(
+                reasoning_effort=reasoning_effort,
+                provider_only=getattr(
+                    config,
+                    "OPENROUTER_PROVIDER_ONLY",
+                    "openai",
+                ),
+                allow_fallbacks=getattr(
+                    config,
+                    "OPENROUTER_ALLOW_FALLBACKS",
+                    False,
+                ),
+                require_parameters=getattr(
+                    config,
+                    "OPENROUTER_REQUIRE_PARAMETERS",
+                    True,
+                ),
+                data_collection=getattr(
+                    config,
+                    "OPENROUTER_DATA_COLLECTION",
+                    "",
+                ),
+            )
+        }
+        headers = build_openrouter_extra_headers(
+            app_url=getattr(config, "OPENROUTER_APP_URL", ""),
+            app_title=getattr(config, "OPENROUTER_APP_TITLE", "Masamong"),
+        )
+        if headers:
+            options["extra_headers"] = headers
+        return options
 
     @staticmethod
     def strip_mention_guard(text: Any) -> str:
@@ -489,9 +543,6 @@ class LLMClient:
                     {"role": "user", "content": user_prompt},
                 ],
                 "max_tokens": max_tokens,
-                "temperature": config.AI_TEMPERATURE,
-                "frequency_penalty": config.AI_FREQUENCY_PENALTY,
-                "presence_penalty": config.AI_PRESENCE_PENALTY,
                 "timeout": self._call_timeout_seconds,
                 "stream": False,
             }
@@ -499,7 +550,26 @@ class LLMClient:
                 target,
                 reasoning_effort_override,
             )
-            if reasoning_effort:
+            if is_openrouter_base_url(target.get("base_url")):
+                # GPT-5.6 Luna의 공식 지원 파라미터에는 sampling/penalty가
+                # 없으므로 require_parameters=true 요청에 포함하지 않습니다.
+                request_kwargs.update(
+                    self._openrouter_request_options(
+                        target,
+                        reasoning_effort,
+                    )
+                )
+            else:
+                request_kwargs.update(
+                    {
+                        "temperature": config.AI_TEMPERATURE,
+                        "frequency_penalty": config.AI_FREQUENCY_PENALTY,
+                        "presence_penalty": config.AI_PRESENCE_PENALTY,
+                    }
+                )
+            if reasoning_effort and not is_openrouter_base_url(
+                target.get("base_url")
+            ):
                 request_kwargs["reasoning_effort"] = reasoning_effort
                 if "deepseek-v4" in str(target["model"]).strip().lower():
                     request_kwargs["extra_body"] = {
@@ -591,12 +661,22 @@ class LLMClient:
                 "model": target["model"],
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": effective_max_tokens,
-                "temperature": 0.0,
                 "timeout": routing_timeout,
                 "stream": False,
             }
             reasoning_effort = str(target.get("reasoning_effort") or "").strip()
-            if reasoning_effort:
+            if is_openrouter_base_url(target.get("base_url")):
+                request_kwargs.update(
+                    self._openrouter_request_options(
+                        target,
+                        reasoning_effort,
+                    )
+                )
+            else:
+                request_kwargs["temperature"] = 0.0
+            if reasoning_effort and not is_openrouter_base_url(
+                target.get("base_url")
+            ):
                 request_kwargs["reasoning_effort"] = reasoning_effort
 
             async def _request_openai_routing():
@@ -798,7 +878,7 @@ class LLMClient:
     ) -> str | None:
         """메인 레인(primary/fallback)을 통해 응답을 생성합니다.
 
-        CometAPI Rate Limit 확인 → 프롬프트 길이 제한 → Primary/Fallback
+        계층형 LLM 한도 확인 → 프롬프트 길이 제한 → Primary/Fallback
         순차 호출 → 프롬프트 누출 필터 → 응답 반환.
 
         Args:
@@ -808,7 +888,7 @@ class LLMClient:
             model: 사용할 모델명 (None이면 기본값 사용)
             raise_on_bounded_failure: timeout/포화 상태를 상위 호출자에 전달해
                 별도 provider fallback 증폭을 차단할지 여부
-            reasoning_effort_override: 현재 요청에만 적용할 low/high 추론 수준.
+            reasoning_effort_override: 현재 요청에만 적용할 none/low/high 추론 수준.
                 None이면 target의 고정 설정을 사용합니다.
 
         Returns:
@@ -838,14 +918,16 @@ class LLMClient:
             )
 
             if self.debug_enabled:
-                self.debug(f"[CometAPI] system={self.truncate_for_debug(system_prompt)}", log_extra)
-                self.debug(f"[CometAPI] user={self.truncate_for_debug(user_prompt)}", log_extra)
+                self.debug(f"[MainLLM] system={self.truncate_for_debug(system_prompt)}", log_extra)
+                self.debug(f"[MainLLM] user={self.truncate_for_debug(user_prompt)}", log_extra)
 
             final_response = None
             for target in targets:
                 try:
                     normalized_reasoning = str(
-                        reasoning_effort_override or ""
+                        reasoning_effort_override
+                        if reasoning_effort_override is not None
+                        else target.get("reasoning_effort", "")
                     ).strip().lower()
                     if normalized_reasoning == "high":
                         max_tokens = int(
@@ -855,7 +937,7 @@ class LLMClient:
                                 config.MAIN_LLM_MAX_TOKENS,
                             )
                         )
-                    elif normalized_reasoning == "low":
+                    elif normalized_reasoning in {"none", "minimal", "low"}:
                         max_tokens = int(
                             getattr(
                                 config,
@@ -913,7 +995,7 @@ class LLMClient:
                 return None
 
             if self.debug_enabled:
-                self.debug(f"[CometAPI] 응답: {self.truncate_for_debug(final_response)}", log_extra)
+                self.debug(f"[MainLLM] 응답: {self.truncate_for_debug(final_response)}", log_extra)
 
             return final_response.strip() if final_response else None
 
@@ -923,9 +1005,9 @@ class LLMClient:
             return None
         except Exception as e:
             if APITimeoutError and isinstance(e, APITimeoutError):
-                logger.error(f"CometAPI 요청 시간 초과 ({config.AI_REQUEST_TIMEOUT}s)", extra=log_extra)
+                logger.error(f"메인 LLM 요청 시간 초과 ({config.AI_REQUEST_TIMEOUT}s)", extra=log_extra)
                 return None
-            logger.error(f"CometAPI 응답 생성 중 오류: {e}", extra=log_extra, exc_info=True)
+            logger.error(f"메인 LLM 응답 생성 중 오류: {e}", extra=log_extra, exc_info=True)
             return None
 
     async def fast_generate_text(

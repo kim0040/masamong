@@ -300,7 +300,7 @@ async def test_semantic_router_controls_tool_choice_without_keyword_override():
 
     assert decision.source == "llm"
     assert decision.needs_memory is True
-    assert decision.reasoning_level == "low"
+    assert decision.reasoning_level == "none"
     assert plan == [
         {
             "tool_to_use": "generate_image",
@@ -313,7 +313,7 @@ async def test_semantic_router_controls_tool_choice_without_keyword_override():
     assert "Examples:" not in captured["prompt"]
     assert "단어 포함 여부가 아니라" in captured["prompt"]
     assert "서버 구성원·지인" in captured["prompt"]
-    assert '"reasoning_level":"low"' in captured["prompt"]
+    assert '"reasoning_level":"none"' in captured["prompt"]
     assert "여러 제약을 동시에 풀거나" in captured["prompt"]
     assert captured["max_tokens"] == config.SEMANTIC_ROUTER_MAX_TOKENS
 

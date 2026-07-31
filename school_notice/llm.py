@@ -11,6 +11,10 @@ from zoneinfo import ZoneInfo
 import aiohttp
 
 from .storage import NoticeRepository
+from utils.openrouter import (
+    build_openrouter_extra_body,
+    is_openrouter_base_url,
+)
 
 
 class LLMError(RuntimeError):
@@ -31,16 +35,29 @@ class DeepSeekSettings:
     @classmethod
     def from_environment(cls) -> "DeepSeekSettings":
         shared_comet_key = os.environ.get("COMETAPI_KEY", "").strip()
+        shared_openrouter_key = os.environ.get(
+            "OPENROUTER_API_KEY",
+            "",
+        ).strip()
         api_key = (
             os.environ.get("SCHOOL_NOTICE_LLM_API_KEY", "").strip()
+            or shared_openrouter_key
             or shared_comet_key
             or os.environ.get("DEEPSEEK_API_KEY", "").strip()
         )
-        default_base_url = (
-            os.environ.get("COMETAPI_BASE_URL", "").strip()
-            if shared_comet_key
-            else ""
-        ) or "https://api.deepseek.com"
+        if shared_openrouter_key:
+            default_base_url = (
+                os.environ.get("OPENROUTER_BASE_URL", "").strip()
+                or "https://openrouter.ai/api/v1"
+            )
+            default_model = "openai/gpt-5.6-luna"
+        else:
+            default_base_url = (
+                os.environ.get("COMETAPI_BASE_URL", "").strip()
+                if shared_comet_key
+                else ""
+            ) or "https://api.deepseek.com"
+            default_model = "deepseek-v4-flash"
         return cls(
             api_key=api_key,
             base_url=os.environ.get(
@@ -49,7 +66,7 @@ class DeepSeekSettings:
             ).rstrip("/"),
             model=os.environ.get(
                 "SCHOOL_NOTICE_LLM_MODEL",
-                "deepseek-v4-flash",
+                default_model,
             ).strip(),
             timeout_seconds=float(
                 os.environ.get("SCHOOL_NOTICE_LLM_TIMEOUT_SECONDS", "45")
@@ -111,7 +128,7 @@ class DeepSeekClient:
 
     def _reserve(self, usage_date: date) -> None:
         if not self.configured:
-            raise LLMError("deepseek_api_key_missing")
+            raise LLMError("school_notice_llm_api_key_missing")
         if self.run_calls >= self.settings.max_calls_per_run:
             raise LLMError("llm_run_budget_exhausted")
         if self.consecutive_failures >= 3:
@@ -129,6 +146,51 @@ class DeepSeekClient:
             await self._session.close()
             self._session = None
 
+    def _build_payload(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+    ) -> dict[str, Any]:
+        """공급자별 지원 파라미터만 포함한 단일 JSON 요청을 구성합니다."""
+        payload: dict[str, Any] = {
+            "model": self.settings.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "response_format": {"type": "json_object"},
+            "max_tokens": self.settings.max_output_tokens,
+            "stream": False,
+        }
+        if is_openrouter_base_url(self.settings.base_url):
+            payload.update(
+                build_openrouter_extra_body(
+                    reasoning_effort=os.environ.get(
+                        "SCHOOL_NOTICE_LLM_REASONING_EFFORT",
+                        "low",
+                    ),
+                    provider_only=os.environ.get(
+                        "OPENROUTER_PROVIDER_ONLY",
+                        "openai",
+                    ),
+                    allow_fallbacks=False,
+                    require_parameters=True,
+                    data_collection=os.environ.get(
+                        "OPENROUTER_DATA_COLLECTION",
+                        "",
+                    ),
+                )
+            )
+        else:
+            payload.update(
+                {
+                    "thinking": {"type": "disabled"},
+                    "temperature": 0,
+                }
+            )
+        return payload
+
     async def _request(
         self,
         *,
@@ -137,18 +199,10 @@ class DeepSeekClient:
         usage_date: date,
     ) -> str:
         del usage_date  # API 예산은 과거 run_date가 아닌 실제 한국 날짜로 계산한다.
-        payload = {
-            "model": self.settings.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "response_format": {"type": "json_object"},
-            "thinking": {"type": "disabled"},
-            "temperature": 0,
-            "max_tokens": self.settings.max_output_tokens,
-            "stream": False,
-        }
+        payload = self._build_payload(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+        )
         headers = {
             "Authorization": f"Bearer {self.settings.api_key}",
             "Content-Type": "application/json",

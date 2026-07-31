@@ -1410,7 +1410,12 @@ class FortuneCog(commands.Cog):
                          'user_id': user_id,
                          'mode': f'fortune_{mode}',
                      },
-                     model=model_name
+                     model=model_name,
+                     reasoning_effort_override=(
+                         "high"
+                         if is_detail_request or mode in {"month", "year"}
+                         else "none"
+                     ),
                  )
                  
                  if response:

@@ -366,6 +366,64 @@ def test_quota_store_error_fails_closed_without_repeated_connection(
     assert connection_attempts == ["attempt"]
 
 
+def test_openrouter_fast_call_locks_openai_and_uses_low_reasoning(
+    monkeypatch,
+):
+    target = {
+        "provider": "openai_compat",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key": "secret",
+        "model": "openai/gpt-5.6-luna",
+        "reasoning_effort": "low",
+        "name": "routing.primary",
+    }
+    provider_calls = []
+
+    class Endpoint:
+        def create(self, **kwargs):
+            provider_calls.append(kwargs)
+            return _completion("answer")
+
+    class Quota:
+        def try_consume(self):
+            return True
+
+    monkeypatch.setattr(config, "OPENROUTER_PROVIDER_ONLY", "openai")
+    monkeypatch.setattr(config, "OPENROUTER_ALLOW_FALLBACKS", False)
+    monkeypatch.setattr(config, "OPENROUTER_REQUIRE_PARAMETERS", True)
+    monkeypatch.setattr(config, "OPENROUTER_DATA_COLLECTION", "")
+    monkeypatch.setattr(config, "OPENROUTER_APP_URL", "")
+    monkeypatch.setattr(config, "OPENROUTER_APP_TITLE", "Masamong")
+    monkeypatch.setattr(news_search, "_routing_targets", lambda: [target])
+    monkeypatch.setattr(
+        news_search,
+        "_get_fast_openai_client",
+        lambda *_args: SimpleNamespace(
+            chat=SimpleNamespace(completions=Endpoint())
+        ),
+    )
+
+    assert news_search._call_fast_model(
+        "prompt",
+        budget=news_search.FastLLMBudget(1),
+        quota_manager=Quota(),
+    ) == "answer"
+
+    assert len(provider_calls) == 1
+    call = provider_calls[0]
+    assert call["extra_body"]["provider"] == {
+        "only": ["openai"],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+    }
+    assert call["extra_body"]["reasoning"] == {
+        "effort": "low",
+        "exclude": True,
+    }
+    assert "temperature" not in call
+    assert "reasoning_effort" not in call
+
+
 def test_gemini_physical_call_has_output_cap_and_is_measured(monkeypatch):
     target = {
         "provider": "gemini_compat",

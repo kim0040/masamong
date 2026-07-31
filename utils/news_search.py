@@ -44,6 +44,11 @@ except ImportError:  # pragma: no cover
     APITimeoutError = None  # type: ignore
 
 import config
+from utils.openrouter import (
+    build_openrouter_extra_body,
+    build_openrouter_extra_headers,
+    is_openrouter_base_url,
+)
 from database.compat_db import TiDBSettings, rewrite_sql_for_tidb
 from logger_config import logger
 
@@ -480,12 +485,49 @@ def _call_fast_model(
                     "model": target["model"],
                     "messages": [{"role": "user", "content": normalized_prompt}],
                     "max_tokens": int(getattr(config, "ROUTING_LLM_MAX_TOKENS", 1024)),
-                    "temperature": 0.0,
                     "timeout": _fast_call_timeout_seconds(),
                     "stream": False,
                 }
                 reasoning_effort = str(target.get("reasoning_effort") or "").strip()
-                if reasoning_effort:
+                if is_openrouter_base_url(target.get("base_url")):
+                    request_kwargs["extra_body"] = build_openrouter_extra_body(
+                        reasoning_effort=reasoning_effort,
+                        provider_only=getattr(
+                            config,
+                            "OPENROUTER_PROVIDER_ONLY",
+                            "openai",
+                        ),
+                        allow_fallbacks=getattr(
+                            config,
+                            "OPENROUTER_ALLOW_FALLBACKS",
+                            False,
+                        ),
+                        require_parameters=getattr(
+                            config,
+                            "OPENROUTER_REQUIRE_PARAMETERS",
+                            True,
+                        ),
+                        data_collection=getattr(
+                            config,
+                            "OPENROUTER_DATA_COLLECTION",
+                            "",
+                        ),
+                    )
+                    headers = build_openrouter_extra_headers(
+                        app_url=getattr(config, "OPENROUTER_APP_URL", ""),
+                        app_title=getattr(
+                            config,
+                            "OPENROUTER_APP_TITLE",
+                            "Masamong",
+                        ),
+                    )
+                    if headers:
+                        request_kwargs["extra_headers"] = headers
+                else:
+                    request_kwargs["temperature"] = 0.0
+                if reasoning_effort and not is_openrouter_base_url(
+                    target.get("base_url")
+                ):
                     request_kwargs["reasoning_effort"] = reasoning_effort
                 completion = _run_bounded_fast_provider_call(
                     lambda: client.chat.completions.create(**request_kwargs),

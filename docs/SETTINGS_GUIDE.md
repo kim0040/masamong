@@ -34,7 +34,8 @@ cp .env.example .env
 | 변수 | 설명 | 예시 |
 |------|------|------|
 | `DISCORD_BOT_TOKEN` | Discord 봇 토큰 | `MTIzNDU2Nzg5...` |
-| `COMETAPI_KEY` | CometAPI 키 (라우팅 모델) | `sk-xxxx` |
+| `OPENROUTER_API_KEY` | OpenRouter 텍스트 LLM 키 | `sk-or-v1-...` |
+| `COMETAPI_KEY` | CometAPI 이미지 생성 키 | `sk-xxxx` |
 | `COMETAPI_IMAGE_API_KEY` | 이미지 키, 보통 `${COMETAPI_KEY}` 재사용 | `${COMETAPI_KEY}` |
 
 ### 1.2 LLM 레인 설정
@@ -43,24 +44,33 @@ cp .env.example .env
 
 | 레인 | 용도 | Primary 모델 | Fallback 모델 |
 |------|------|-------------|---------------|
-| **Routing** | 의도 분석, 쿼리 정제 | gpt-5.4-nano | 없음 |
-| **Main** | 최종 답변 생성 | deepseek-v4-flash | 없음 |
+| **Routing** | 의도 분석, 쿼리 정제 | GPT-5.6 Luna (`low`) | 없음 |
+| **Main** | 최종 답변 생성 | GPT-5.6 Luna (`none/low/high`) | 없음 |
 
 ```env
+# OpenRouter 공통 경계
+OPENROUTER_API_KEY=your_openrouter_api_key_here
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_PROVIDER_ONLY=openai
+OPENROUTER_ALLOW_FALLBACKS=false
+OPENROUTER_REQUIRE_PARAMETERS=true
+OPENROUTER_DATA_COLLECTION=deny
+
 # Routing 레인
 LLM_ROUTING_PRIMARY_PROVIDER=openai_compat
-LLM_ROUTING_PRIMARY_MODEL=gpt-5.4-nano
-LLM_ROUTING_PRIMARY_BASE_URL=${COMETAPI_BASE_URL}
-LLM_ROUTING_PRIMARY_API_KEY=${COMETAPI_KEY}
+LLM_ROUTING_PRIMARY_MODEL=openai/gpt-5.6-luna
+LLM_ROUTING_PRIMARY_BASE_URL=${OPENROUTER_BASE_URL}
+LLM_ROUTING_PRIMARY_API_KEY=${OPENROUTER_API_KEY}
+LLM_ROUTING_PRIMARY_REASONING_EFFORT=low
 
 # Main 레인
 LLM_MAIN_PRIMARY_PROVIDER=openai_compat
-LLM_MAIN_PRIMARY_MODEL=deepseek-v4-flash
-LLM_MAIN_PRIMARY_BASE_URL=${COMETAPI_BASE_URL}
-LLM_MAIN_PRIMARY_API_KEY=${COMETAPI_KEY}
+LLM_MAIN_PRIMARY_MODEL=openai/gpt-5.6-luna
+LLM_MAIN_PRIMARY_BASE_URL=${OPENROUTER_BASE_URL}
+LLM_MAIN_PRIMARY_API_KEY=${OPENROUTER_API_KEY}
 LLM_MAIN_FALLBACK_PROVIDER=none
 LLM_DYNAMIC_REASONING_ENABLED=true
-LLM_DYNAMIC_REASONING_DEFAULT=low
+LLM_DYNAMIC_REASONING_DEFAULT=none
 
 # 논리 LLM 호출의 계층형 안전 한도
 COMETAPI_RPM_LIMIT=40
@@ -83,9 +93,10 @@ LLM_FEATURE_RPD_LIMIT=2500
 후조건이 적용됩니다. 이는 답변 품질 안전장치이며 반복 라우팅이나 무한 재시도를 만들지
 않습니다. 활성 대화 컨텍스트와 routing JSON 출력 예산은 다음처럼 제한합니다.
 
-같은 routing JSON은 최종 답변의 `reasoning_level`도 `low/high` 중 하나로 정합니다.
-단순 대화·명확한 회상·단일 조회 결과 정리는 `low`, 여러 제약·충돌·모호성·긴 근거
-종합은 `high`입니다. 별도 난이도 판정 호출이나 low 실패 뒤 high 재호출은 없습니다.
+같은 routing JSON은 최종 답변의 `reasoning_level`도 `none/low/high` 중 하나로
+정합니다. 단순 대화·명확한 회상·단일 조회 결과 정리는 `none`, 짧은 비교·설명은
+`low`, 여러 제약·충돌·모호성·긴 근거 종합은 `high`입니다. 별도 난이도 판정 호출이나
+낮은 단계 실패 뒤 `high` 재호출은 없습니다.
 라우터가 값을 누락하거나 계약 밖의 값을 내면 `LLM_DYNAMIC_REASONING_DEFAULT`로 내리며,
 provider 장애 fallback도 같은 기본값을 사용합니다. 이 값은 현재 Discord 요청의
 지역 변수로만 전달되므로 다른 서버나 동시 요청의 모델 설정을 바꾸지 않습니다.
@@ -100,10 +111,17 @@ provider 장애 fallback도 같은 기본값을 사용합니다. 이 값은 현�
 edit·keepalive 경로가 생기지 않습니다.
 `LLM_DYNAMIC_REASONING_ENABLED=false`이면 기존
 `LLM_MAIN_PRIMARY_REASONING_EFFORT` 고정 설정으로 돌아갑니다.
-`low` 답변은 기본 2,048토큰, `high` 답변은 기존 8,192토큰 상한을 사용합니다.
+`none/low` 답변은 기본 2,048토큰, `high` 답변은 8,192토큰 상한을 사용합니다.
 이는 같은 최종 호출의 출력 예산만 조정하며 호출 횟수를 늘리지 않습니다. 의미
 라우터는 짧은 JSON 전용 25초 물리 timeout을 사용해, 장애 난 라우터가 메인 응답
 timeout 전체를 점유하지 않게 합니다.
+
+OpenRouter 요청에는 `provider.only=["openai"]`, `allow_fallbacks=false`,
+`require_parameters=true`가 함께 들어갑니다. 따라서 OpenRouter 안의 다른 공급자로
+우회하지 않으며, GPT-5.6 Luna가 지원하지 않는 sampling/penalty 파라미터도 보내지
+않습니다. `OPENROUTER_DATA_COLLECTION=deny`를 사용하면 데이터 수집을 허용하지 않는
+endpoint만 후보가 됩니다. OpenAI endpoint가 가용하지 않을 때는 다른 업체로 우회하지
+않고 해당 호출이 안전하게 실패합니다.
 
 ```env
 INTENT_LLM_ENABLED=true
@@ -198,6 +216,9 @@ TOOL_CIRCUIT_COOLDOWN_SECONDS=60
 사용량 예약 전에 요청을 중단합니다. 다른 이미지가 생성 중이면 API를 추가 호출하지
 않고 설정 시간까지 순서를 기다립니다. 공급자가 이미지 없이 응답해도 자동 재호출하지
 않으며, 안전 판정·종료 사유 같은 비식별 메타데이터만 로그에 남깁니다.
+텍스트 키를 OpenRouter로 바꿔도 `COMETAPI_IMAGE_API_KEY`는 기존 CometAPI 키를
+계속 가리켜야 합니다. 배포 전후에는 값 자체를 출력하지 말고 fingerprint로 분리를
+확인합니다.
 
 날씨·주식·장소 API는 실제 공급자 장애가 연속될 때만 해당 도구를 잠시 차단하고
 cooldown 뒤 사용자 요청 한 건으로 복구를 확인합니다. 존재하지 않거나 모호한 주식
@@ -403,9 +424,15 @@ MASAMONG_ENV_FILE=/etc/masamong/masamo.env \
 
 ### Q: AI가 응답하지 않아요
 
-1. `COMETAPI_KEY`가 설정되어 있는지 확인
+1. `OPENROUTER_API_KEY`와 두 LLM 레인의 base URL·model 설정 확인
 2. 최고 관리자의 `!관리` 패널에서 현재 서버와 현재 채널 상태 확인
 3. 보호된 채널 설정에서 해당 채널이 허용되어 있는지 확인
+
+### Q: 이미지만 생성되지 않아요
+
+1. `COMETAPI_IMAGE_API_KEY`가 기존 CometAPI 키를 가리키는지 확인
+2. `COMETAPI_IMAGE_BASE_URL=https://api.cometapi.com`인지 확인
+3. 텍스트용 `OPENROUTER_API_KEY`를 이미지 키에 넣지 않았는지 확인
 
 ### Q: 날씨 정보가 안 나와요
 
