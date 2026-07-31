@@ -79,6 +79,19 @@ def test_retrieval_document_does_not_repeat_summary_contained_in_context():
     assert rendered.count("등산은 취소하고") == 1
 
 
+def test_assistant_retrieval_document_does_not_repeat_same_answer_body():
+    body = "확인된 기록만 보면 부산 여행을 다녀왔다는 이야기가 있었어."
+
+    rendered = compose_memory_text(
+        f"마사몽의 이전 답변: {body}",
+        f"마사몽: {body}",
+        limit=1200,
+    )
+
+    assert rendered.count(body) == 1
+    assert rendered.startswith("마사몽:")
+
+
 def test_retrieval_document_drops_truncated_summary_prefix_of_context():
     """요약이 원문을 잘라낸 앞부분이면 원문만 남긴다."""
     context = "민수: " + "부산 회의 준비 상황을 정리하면 " * 8

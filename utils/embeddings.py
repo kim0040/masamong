@@ -301,6 +301,7 @@ async def count_embedding_tokens(text: str, *, add_special_tokens: bool = True) 
             payload,
             add_special_tokens=add_special_tokens,
             truncation=False,
+            verbose=False,
             return_attention_mask=False,
             return_token_type_ids=False,
         )
@@ -339,14 +340,19 @@ async def trim_text_to_embedding_token_limit(text: str, token_limit: int) -> str
         return payload
 
     def _sync_trim() -> str:
-        encoded = tokenizer(
+        untrimmed = tokenizer(
             payload,
             add_special_tokens=True,
             truncation=False,
+            verbose=False,
             return_attention_mask=False,
             return_token_type_ids=False,
         )
-        input_ids = encoded.get("input_ids") if isinstance(encoded, dict) else None
+        input_ids = (
+            untrimmed.get("input_ids")
+            if isinstance(untrimmed, dict)
+            else None
+        )
         if not isinstance(input_ids, list):
             return payload
         if input_ids and isinstance(input_ids[0], list):
@@ -355,7 +361,27 @@ async def trim_text_to_embedding_token_limit(text: str, token_limit: int) -> str
             ids = list(input_ids)
         if len(ids) <= limit:
             return payload
-        trimmed_ids = ids[:limit]
+        encoded = tokenizer(
+            payload,
+            add_special_tokens=True,
+            truncation=True,
+            max_length=limit,
+            verbose=False,
+            return_attention_mask=False,
+            return_token_type_ids=False,
+        )
+        trimmed_input_ids = (
+            encoded.get("input_ids") if isinstance(encoded, dict) else None
+        )
+        if not isinstance(trimmed_input_ids, list):
+            trimmed_ids = ids[:limit]
+        elif trimmed_input_ids and isinstance(trimmed_input_ids[0], list):
+            trimmed_ids = list(trimmed_input_ids[0])
+        else:
+            trimmed_ids = list(trimmed_input_ids)
+        # 경량 테스트 대역이나 일부 호환 토크나이저가 truncation 인자를
+        # 무시하더라도 최종 decode 입력은 반드시 상한 안에 둔다.
+        trimmed_ids = trimmed_ids[:limit]
         return tokenizer.decode(trimmed_ids, skip_special_tokens=True).strip()
 
     try:
@@ -380,11 +406,21 @@ async def get_embedding(text: str, prefix: str = "") -> np.ndarray | None:
     except RuntimeError as exc:
         logger.warning("임베딩 모델을 사용할 수 없어 생성을 건너뜁니다: %s", exc)
         return None
+    numpy_module = _get_numpy()
+    if numpy_module is None:
+        logger.warning("NumPy를 사용할 수 없어 임베딩 생성을 건너뜁니다.")
+        return None
     normalize = getattr(config, "LOCAL_EMBEDDING_NORMALIZE", True)
     loop = asyncio.get_running_loop()
 
-    # E5 모델의 경우 접두사 추가
-    final_text = f"{prefix}{text}"
+    # E5 모델의 경우 접두사를 포함한 전체 입력을 모델 한계 안으로 자른다.
+    # SentenceTransformer의 암묵적 절단에 맡기면 transformers 경고가 남고,
+    # 일부 백엔드에서는 최대 길이 초과가 실제 인덱싱 오류로 이어질 수 있다.
+    token_limit = await get_embedding_token_limit(reserve_tokens=0)
+    final_text = await trim_text_to_embedding_token_limit(
+        f"{prefix}{text}",
+        token_limit,
+    )
 
     def _sync_encode() -> np.ndarray:
         # [Safe] Truncation 인자를 제거 (모델이 지원하지 않음, 기본값에 맡김)
@@ -404,9 +440,9 @@ async def get_embedding(text: str, prefix: str = "") -> np.ndarray | None:
                 final_text,
                 normalize_embeddings=normalize,
             )
-        if not isinstance(vector, np.ndarray):
-            vector = np.asarray(vector)
-        return vector.astype(np.float32)
+        if not isinstance(vector, numpy_module.ndarray):
+            vector = numpy_module.asarray(vector)
+        return vector.astype(numpy_module.float32)
 
     try:
         async with _ENCODE_SEMAPHORE:

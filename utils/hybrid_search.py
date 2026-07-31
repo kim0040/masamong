@@ -23,6 +23,18 @@ from utils.reranker import Reranker
 _URL_PATTERN = re.compile(r"https?://\S+")
 _WHITESPACE_PATTERN = re.compile(r"\s+")
 _LEXICAL_TOKEN_PATTERN = re.compile(r"[0-9A-Za-z가-힣]{2,}")
+_RECENT_CONTEXT_REFERENCE_PATTERN = re.compile(
+    r"(?:^|[\s,.!?~])(?:이거|그거|저거|그건|이건|저건|걔|걔는|그\s*사람|"
+    r"그럼|그러면|아까|방금|앞에서|위에서|앞의|이전\s*(?:말|답변|내용)|"
+    r"다른\s*거|다른거|더\s*(?:알려|설명|자세히)|계속)(?:[\s,.!?~]|$)"
+)
+_RECENT_CONTEXT_ELLIPSIS_PATTERN = re.compile(
+    r"(?:^|\s)(?:왜|어때|어떰|어떻게|뭐였지|누구였지|설명해줘|"
+    r"자세히|더\s*말해줘)\s*[?!.~]*$"
+)
+_RECENT_CONTEXT_TOPIC_PARTICLE_PATTERN = re.compile(
+    r"^[0-9A-Za-z가-힣_.\-]{1,24}(?:은|는|도)\s*[?!.~]*$"
+)
 # 조사·호격이 붙은 고유명사도 원문 이름과 비교할 수 있게 원형 후보를 함께
 # 만든다. 특정 사용자명이나 기능 키워드가 아니라 한국어 문법 접미사만 다룬다.
 _KOREAN_QUERY_SUFFIXES = tuple(
@@ -550,7 +562,14 @@ class HybridSearchEngine:
         recent_messages: list[str] | None = None,
     ) -> List[str]:
         base = (query or "").strip()
-        context = self._compose_recent_context(recent_messages)  # 직전 대화 요약본
+        # 독립적인 새 질문에 직전 사용자/봇 발화를 통째로 붙이면, 확장 변형에서
+        # 직전 주제와 거의 같은 문서가 최고점이 되어 원질문과 무관한 기억을
+        # 주입할 수 있다. 지시어·생략형 후속 질문일 때만 최근 문맥을 결합한다.
+        context = (
+            self._compose_recent_context(recent_messages)
+            if self._query_needs_recent_context(base)
+            else ""
+        )
         seed = f"{base} {context}".strip() if context else base
 
         variants: List[str] = []
@@ -591,6 +610,18 @@ class HybridSearchEngine:
             _append(seed or base)
         limit = max(target, len(variants))
         return variants[:limit]
+
+    @staticmethod
+    def _query_needs_recent_context(query: str) -> bool:
+        """현재 문장만으로 빠진 대상을 복원해야 하는 후속 질문인지 판별합니다."""
+        text = re.sub(r"\s+", " ", str(query or "").strip().casefold())
+        if not text:
+            return False
+        if _RECENT_CONTEXT_REFERENCE_PATTERN.search(text):
+            return True
+        if _RECENT_CONTEXT_ELLIPSIS_PATTERN.search(text):
+            return True
+        return bool(_RECENT_CONTEXT_TOPIC_PARTICLE_PATTERN.fullmatch(text))
 
     async def _embedding_candidates(
         self,

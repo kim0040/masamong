@@ -793,6 +793,58 @@ async def test_bare_identity_question_prefers_scoped_memory_over_web():
     assert decision.reasoning_level == "high"
 
 
+@pytest.mark.asyncio
+async def test_scoped_person_profile_does_not_leak_into_public_web_search():
+    handler = _build_handler_without_init()
+    handler.use_cometapi = True
+
+    async def _fake_fast(*_args, **_kwargs):
+        return (
+            '{"intent":"서버 내부 인물의 스펙 브리핑","needs_memory":true,'
+            '"needs_fortune_context":false,'
+            '"requires_external_evidence":true,"reasoning_level":"low",'
+            '"tools":[{"tool":"web_search",'
+            '"params":{"query":"김재원 스펙"}}]}'
+        )
+
+    handler._cometapi_fast_generate_text = _fake_fast
+    decision = await handler._route_tools(
+        "김재원 스펙 브리핑해줘",
+        {"trace_id": "scoped-person-profile"},
+        history=[],
+    )
+
+    assert decision.plan == []
+    assert decision.needs_memory is True
+    assert decision.requires_external_evidence is False
+
+
+@pytest.mark.asyncio
+async def test_explicit_public_person_research_keeps_web_search():
+    handler = _build_handler_without_init()
+    handler.use_cometapi = True
+
+    async def _fake_fast(*_args, **_kwargs):
+        return (
+            '{"intent":"서버에서 언급된 인물의 공개 수상 기록 조사",'
+            '"needs_memory":true,"references_shared_history":true,'
+            '"requires_external_evidence":true,"reasoning_level":"high",'
+            '"tools":[{"tool":"web_search",'
+            '"params":{"query":"가천대 홍민석 ICPC 뉴스"}}]}'
+        )
+
+    handler._cometapi_fast_generate_text = _fake_fast
+    decision = await handler._route_tools(
+        "가천대 홍민석 ICPC 뉴스 찾아줘",
+        {"trace_id": "public-person-research"},
+        history=[],
+    )
+
+    assert [item["tool_to_use"] for item in decision.plan] == ["web_search"]
+    assert decision.needs_memory is True
+    assert decision.requires_external_evidence is True
+
+
 def test_described_or_explicitly_searched_identity_is_not_forced_local():
     assert not IntentAnalyzer._looks_like_bare_identity_question(
         "축구선수 호날두가 누구야?"

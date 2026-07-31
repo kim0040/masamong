@@ -54,6 +54,7 @@ def test_assistant_chunks_become_one_server_scoped_commitment():
     assert unit.owner_user_id is None
     assert unit.source_message_ids == [201, 202]
     assert "블랙시리즈" in unit.memory_text
+    assert unit.memory_text.count("내 선택은 AMG GT 블랙시리즈야.") == 1
 
 
 def test_memory_classifier_does_not_turn_banter_into_user_preference():

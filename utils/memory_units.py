@@ -209,8 +209,26 @@ def truncate_text(text: str, limit: int) -> str:
 
 
 def _compact_for_containment(text: str) -> str:
-    """포함 관계 비교용으로 공백과 말줄임표를 제거한 형태를 만든다."""
-    return _WHITESPACE_RE.sub("", str(text or "")).rstrip("…")
+    """포함 관계 비교용으로 화자 표지·공백·말줄임표를 제거합니다.
+
+    봇 응답은 요약에 ``이전 답변`` 출처 표지를, 원문에는 짧은 화자 표지를
+    붙여 저장한다. 표지는 다르지만 본문이 같을 때 두 번 이어 붙이지 않도록
+    비교할 때만 한 줄짜리 선두 표지를 제거한다. 실제 저장 열은 바꾸지 않는다.
+    """
+    normalized = str(text or "").strip()
+    normalized = re.sub(
+        r"^[^:\n]{1,64}의\s*이전\s*답변\s*:\s*",
+        "",
+        normalized,
+        count=1,
+    )
+    normalized = re.sub(
+        r"^[^:\n]{1,64}\s*:\s*",
+        "",
+        normalized,
+        count=1,
+    )
+    return _WHITESPACE_RE.sub("", normalized).rstrip("…")
 
 
 def compose_memory_text(
