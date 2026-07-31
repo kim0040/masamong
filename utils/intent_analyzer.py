@@ -178,6 +178,39 @@ class IntentAnalyzer:
         r"(?:서버|디스코드|discord|지인|대화\s*(?:속|내|기반)))",
         re.IGNORECASE,
     )
+    # 사용자가 직접 "찾아봐 달라"고 요청한 표현만 모은다. ``비교``·``발표``·
+    # ``소식``처럼 주제를 가리킬 뿐인 낱말은 여기 넣지 않는다. 그런 낱말은
+    # "나랑 너랑 성능 비교하면?" 같은 농담에도 그대로 들어 있기 때문이다.
+    _REQUESTED_WEB_LOOKUP_PATTERN = re.compile(
+        r"(?:웹\s*검색|인터넷\s*검색|검색(?:\s*좀|해\s*줘|해\s*봐|해서|해)|"
+        r"찾아\s*(?:줘|봐|보고|주라)|조사(?:\s*좀|해\s*줘|해\s*봐|해)|"
+        r"탐색해\s*줘|출처\s*(?:좀|알려|보여|줘)|링크\s*(?:좀|줘|알려)|"
+        r"팩트\s*체크)",
+        re.IGNORECASE,
+    )
+    # 라우터가 자연어로 적어 둔 의도가 잡담·장난인지 본다. 사실 질문의 의도는
+    # "가격 조회", "제원 비교", "발표 여부 확인"처럼 서술되므로 겹치지 않는다.
+    _CASUAL_INTENT_PATTERN = re.compile(
+        r"(?:잡담|인사|농담|장난|드립|말장난|놀리|리액션|공감|위로|응원|"
+        r"칭찬|투정|하소연|수다|역할극|상상|가정|창작|소설|시나리오|"
+        r"스토리|이어\s*쓰|다음\s*화|작문|대사\s*(?:작성|생성))",
+        re.IGNORECASE,
+    )
+    _CREATIVE_QUERY_PATTERN = re.compile(
+        r"(?:창작|소설|시나리오|스토리|역할극|이어\s*(?:서|써|쓰기)|"
+        r"다음\s*화|후속\s*편|대사\s*(?:써|작성|만들)|"
+        r"(?:이야기|글)\s*(?:써|만들|이어))",
+        re.IGNORECASE,
+    )
+    _LOCAL_BANTER_SUBJECT_PATTERN = re.compile(
+        r"(?:^|[\s,.!?~])(?:나|내가|내|너|네가|니가|넌|우리|마사몽)"
+        r"(?:$|[\s,.!?~]|이|가|은|는|랑|하고|의|한테)",
+        re.IGNORECASE,
+    )
+    _LOCAL_SCOPE_DEICTIC_PATTERN = re.compile(
+        r"(?:이|우리)\s*(?:서버|채널|디코|디스코드)",
+        re.IGNORECASE,
+    )
     _EXPLICIT_PUBLIC_LOOKUP_PATTERN = re.compile(
         r"(?:웹\s*검색|인터넷\s*검색|검색(?:해|해서|으로|해줘|해봐)?|"
         r"찾아(?:줘|봐|서)?|조사(?:해|해서|해줘)?|"
@@ -335,6 +368,80 @@ class IntentAnalyzer:
         return bool(
             cls._ASSISTANT_PERSISTENCE_PATTERN.search(text)
             or cls._looks_like_shared_history_reference(text)
+        )
+
+    @classmethod
+    def _looks_like_casual_intent(cls, intent: str) -> bool:
+        """라우터가 이 요청을 잡담·장난으로 해석했는지 봅니다."""
+        return bool(cls._CASUAL_INTENT_PATTERN.search(str(intent or "")))
+
+    @classmethod
+    def _looks_like_creative_query(cls, query: str) -> bool:
+        """창작·이어쓰기처럼 공개 사실 검증이 필요 없는 요청인지 봅니다."""
+        return bool(cls._CREATIVE_QUERY_PATTERN.search(str(query or "")))
+
+    @classmethod
+    def _looks_like_obvious_local_banter(cls, query: str) -> bool:
+        """라우터 장애 때도 1·2인칭 장난을 공개 사실 조회로 오인하지 않습니다.
+
+        정상 경로의 의미 판정을 대신하는 범용 분류기가 아니다. 라우터가 완전히
+        실패한 비상 경로에서만 사용하며, 외부 검색을 직접 요청한 표현은 제외한다.
+        """
+        text = str(query or "").strip()
+        if not text or cls._REQUESTED_WEB_LOOKUP_PATTERN.search(text):
+            return False
+        if cls._looks_like_creative_query(text):
+            return True
+        if cls._LOCAL_SCOPE_DEICTIC_PATTERN.search(text):
+            return True
+        if not cls._LOCAL_BANTER_SUBJECT_PATTERN.search(text):
+            return bool(re.search(r"(?:실화냐|뭐래|개웃|웃기|장난|드립)", text))
+        return bool(
+            cls._OBJECTIVE_COMPARISON_FACT_PATTERN.search(text)
+            or re.search(r"(?:ㅋㅋ|ㅎㅎ|실화냐|뭐래|놀려|장난|드립)", text)
+        )
+
+    @staticmethod
+    def _scope_name_tokens(scope_name: str) -> tuple[str, ...]:
+        """Discord 서버 표시명에서 현재 질의와 비교할 비식별 토큰을 만듭니다."""
+        ignored = {
+            "discord",
+            "디스코드",
+            "server",
+            "서버",
+            "channel",
+            "채널",
+            "공식",
+        }
+        tokens = {
+            token.casefold()
+            for token in re.findall(
+                r"[0-9A-Za-z가-힣]{2,}",
+                str(scope_name or ""),
+            )
+            if token.casefold() not in ignored
+        }
+        return tuple(sorted(tokens, key=len, reverse=True))
+
+    @classmethod
+    def _looks_like_current_scope_reference(
+        cls,
+        query: str,
+        scope_name: str,
+    ) -> bool:
+        """현재 Discord 서버 자체를 말하는 요청인지 표시명으로 판별합니다.
+
+        서버 이름은 런타임에서 받아 오며 특정 커뮤니티 이름을 코드에 넣지 않는다.
+        공개 검색을 명시한 경우에는 같은 이름이 있어도 웹 조회를 보존한다.
+        """
+        text = str(query or "").casefold()
+        if not text or cls._EXPLICIT_PUBLIC_LOOKUP_PATTERN.search(text):
+            return False
+        if cls._LOCAL_SCOPE_DEICTIC_PATTERN.search(text):
+            return True
+        return any(
+            token in text
+            for token in cls._scope_name_tokens(scope_name)
         )
 
     @classmethod
@@ -508,13 +615,39 @@ class IntentAnalyzer:
         intent: str = "",
         declared: Any = None,
     ) -> bool:
-        """라우터 응답 누락·오판 시에도 검증이 필요한 사실 질문을 보호합니다."""
+        """라우터 응답 누락·오판 시에도 검증이 필요한 사실 질문을 보호합니다.
+
+        보정에는 두 등급이 있다. 금융 질의와 사용자가 직접 조회를 요청한
+        표현은 그 자체로 외부 자료를 가리키므로 라우터 판단과 무관하게 항상
+        검증한다.
+
+        나머지 어휘 표는 정밀도가 낮다. ``스펙``·``기록``·``가격``·``출력``·
+        ``제원``·``비교``는 한국어 일상 대화에서 매우 흔해서, "야 너 스펙이
+        어떻게 됨?", "나 오늘 최고 기록 세웠다", "이 가격 실화냐고" 같은 농담도
+        전부 외부 검증 필수로 올라갔다. 그러면 조회할 공개 자료가 없으니
+        fail-closed 문구가 나가고, 사용자에게는 봇이 장난을 정색하고 거부한
+        것으로 보인다. 실측에서 장난 발화 15개 중 9개가 이 경로였다.
+
+        그렇다고 어휘 보정을 없애면 라우터가 사실 질문을 놓쳤을 때 막을 것이
+        사라진다. 그래서 라우터의 **두 출력이 모두** 잡담이라고 말할 때만
+        건너뛴다. ``requires_external_evidence=false``이면서 자연어 ``intent``도
+        잡담·농담·리액션으로 서술한 경우다. 실제 사실 질문의 intent는
+        "가격 조회", "제원 비교", "발표 여부 확인"처럼 쓰이므로 이 조건에
+        걸리지 않고 기존 안전망이 그대로 동작한다.
+        """
         if isinstance(declared, bool) and declared:
             return True
 
         semantic_text = f"{query}\n{intent}".strip()
+        # 표현 자체가 외부 자료를 가리키는 고정밀 보정: 라우터 판단과 무관.
         if self._looks_like_finance_query(semantic_text):
             return True
+        if self._REQUESTED_WEB_LOOKUP_PATTERN.search(query or ""):
+            return True
+
+        if declared is False and self._looks_like_casual_intent(intent):
+            return False
+
         if self._has_explicit_web_search_intent(query):
             return True
         if self._looks_like_external_fact_query(query):
@@ -824,13 +957,16 @@ class IntentAnalyzer:
         unavailable일 때 기존 명시 표현을 살려 기능 전체가 멈추는 것을 피한다.
         """
         plan = self._detect_tools_by_keyword(query)
+        obvious_casual = self._looks_like_obvious_local_banter(query)
+        fallback_intent = "창작·잡담" if obvious_casual else "fallback"
         requires_external_evidence = self._derive_external_evidence_requirement(
             query,
-            intent="fallback",
+            intent=fallback_intent,
+            declared=False if obvious_casual else None,
         )
         plan = self._enforce_evidence_tool_plan(
             query,
-            "fallback",
+            fallback_intent,
             plan,
             requires_external_evidence=requires_external_evidence,
         )
@@ -852,7 +988,7 @@ class IntentAnalyzer:
                 if config.LLM_DYNAMIC_REASONING_ENABLED
                 else ""
             ),
-            intent="fallback",
+            intent=fallback_intent,
             requires_external_evidence=requires_external_evidence,
         )
 
@@ -900,6 +1036,8 @@ class IntentAnalyzer:
         query: str,
         log_extra: dict,
         history: list | None = None,
+        *,
+        conversation_scope: str = "",
     ) -> ToolRoutingDecision:
         """현재 발화의 의미와 대화 흐름으로 도구 및 장기기억 필요성을 결정한다.
 
@@ -1010,6 +1148,21 @@ class IntentAnalyzer:
             if compaction_text
             else ""
         )
+        bounded_scope = re.sub(
+            r"\s+",
+            " ",
+            str(conversation_scope or ""),
+        ).strip()[:80]
+        scope_instruction = (
+            "현재 대화 범위는 Discord 서버이며 표시명은 "
+            f"{_json.dumps(bounded_scope, ensure_ascii=False)}이다. 이 표시명이나 "
+            "'이 서버/우리 서버'를 가리키는 구성원·밈·내부 사건·투표·설정 이야기는 "
+            "공개 웹 사건으로 바꾸지 말고 needs_memory=true, "
+            "requires_external_evidence=false로 둔다. 사용자가 공개 검색·기사·출처를 "
+            "직접 요청한 경우에만 웹을 쓴다.\n"
+            if bounded_scope
+            else "현재 대화 범위는 1:1 DM이다.\n"
+        )
         prompt = (
             "당신은 Discord 봇의 의미 기반 라우터다. 단어 포함 여부가 아니라 현재 "
             "요청의 목적과 최근 대화 흐름으로 판단한다. 답변은 쓰지 말고 JSON 객체 "
@@ -1036,6 +1189,11 @@ class IntentAnalyzer:
             "어려운 틈새 사실도 true다. 이때 적절한 조회 도구가 적어도 하나 있어야 "
             "하며, 모델의 기억만으로 답하지 않는다. 의견·창작·잡담·현재 대화나 "
             "장기기억 회상, 널리 확립된 안정적인 일반 상식은 false다. "
+            "장난·농담·놀리기·과장·가정('~라면', '만약'), 봇 자신이나 대화 참여자를 "
+            "소재로 한 말장난, 감정 표현과 리액션 요청도 false다. 이때는 조회할 "
+            "공개 자료가 애초에 없으므로 true로 두면 답을 못 하고 막힌다. "
+            "'스펙', '기록', '가격', '성능' 같은 단어가 들어 있어도 대상이 공개된 "
+            "제품·인물·사건이 아니라 우리끼리의 농담이면 false다. "
             "도구가 불필요하면 tools=[]이며 최대 2개다. needs_memory는 장기기억 "
             "저장소를 별도로 검색할지 정하는 스위치이며, 제공된 최근 대화를 활용한다는 "
             "표시가 아니다. 최근 대화 안에 답변에 필요한 대상과 사실이 이미 있으면 "
@@ -1091,6 +1249,7 @@ class IntentAnalyzer:
             '"reasoning_level":"none",'
             '"context_digest":"","tools":[{"tool":"도구명","params":{}}]}\n'
             f"현재 시각(KST): {now_kst}\n"
+            f"{scope_instruction}"
             f"{compaction_section}"
             f"최근 대화:\n{history_text}\n"
             f"현재 요청:\n{query}\n"
@@ -1192,6 +1351,10 @@ class IntentAnalyzer:
                 else False
             )
             intent = str(parsed.get("intent") or "")[:120]
+            current_scope_reference = self._looks_like_current_scope_reference(
+                query,
+                bounded_scope,
+            )
             # 짧은 이름 신원 질문은 라우팅 모델이 호출마다 웹 동명이인과 서버
             # 구성원 사이에서 흔들릴 수 있다. 특정 이름을 열거하지 않는 좁은
             # 형식 후조건으로 서버/DM 기억을 우선하고 잘못 계획된 웹 검색을
@@ -1204,14 +1367,24 @@ class IntentAnalyzer:
                 intent,
                 needs_memory=needs_memory,
             )
-            if bare_identity_question or scoped_person_memory:
+            if (
+                bare_identity_question
+                or scoped_person_memory
+                or current_scope_reference
+            ):
                 plan = [
                     item
                     for item in plan
                     if item.get("tool_to_use") != "web_search"
                 ]
                 needs_memory = True
-                if scoped_person_memory and not bare_identity_question:
+                if current_scope_reference:
+                    references_shared_history = True
+                    logger.info(
+                        "[라우팅보정] 현재 Discord 범위 이야기의 공개 웹 검색을 제거합니다.",
+                        extra=log_extra,
+                    )
+                elif scoped_person_memory and not bare_identity_question:
                     logger.info(
                         "[라우팅보정] 서버 범위 인물 기억 요청의 공개 웹 검색을 제거합니다.",
                         extra=log_extra,
@@ -1225,7 +1398,11 @@ class IntentAnalyzer:
                 for item in plan
             ):
                 needs_memory = True
-            if bare_identity_question or scoped_person_memory:
+            if (
+                bare_identity_question
+                or scoped_person_memory
+                or current_scope_reference
+            ):
                 requires_external_evidence = False
             else:
                 requires_external_evidence = self._derive_external_evidence_requirement(
