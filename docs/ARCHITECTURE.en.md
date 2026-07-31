@@ -75,12 +75,13 @@ Recent history is reused by routing, follow-up query contextualization, and the
 final prompt. A broken router falls back to a narrow keyword detector, but the
 same tool allowlist and cardinality limits still apply.
 
-Both text lanes use `openai/gpt-5.6-luna` through OpenRouter. The routing lane
-uses low reasoning. Its existing JSON also assigns the final lane `none`,
-`low`, or `high`; no lower-effort failure is regenerated at a higher effort.
-Every OpenRouter request allows only the OpenAI provider, disables provider
-fallbacks, and requires support for all sent parameters. Image generation
-remains on its separate CometAPI key and endpoint.
+The routing lane uses `openai/gpt-5.6-luna` through OpenRouter with low
+reasoning. Its existing JSON assigns the official `deepseek-v4-flash` final
+lane `none`, `low`, or `high`; no lower-effort failure is regenerated at a
+higher effort. Flash explicitly disables thinking for `none/low` and enables
+high thinking only for `high`. OpenRouter routing allows only the OpenAI
+provider, disables provider fallbacks, and requires support for all sent
+parameters. Image generation remains on its separate CometAPI key and endpoint.
 
 A provider-neutral style-fidelity contract is placed at the end of the final
 system prompt. It makes the selected channel `persona/rules` authoritative over

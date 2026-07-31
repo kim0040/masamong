@@ -325,6 +325,46 @@ class LLMClient:
             for marker in cls._DYNAMIC_REASONING_MODEL_MARKERS
         )
 
+    @staticmethod
+    def _is_deepseek_v4_model(model: Any) -> bool:
+        """공식 DeepSeek V4 모델 식별자인지 확인합니다."""
+        return "deepseek-v4" in str(model or "").strip().lower()
+
+    @classmethod
+    def _deepseek_v4_request_options(
+        cls,
+        model: Any,
+        reasoning_effort: Any,
+    ) -> tuple[dict[str, Any], bool]:
+        """DeepSeek V4의 thinking 토글과 실제 effort를 구성합니다.
+
+        DeepSeek V4는 ``reasoning_effort=none``을 비추론 요청으로 해석하지
+        않고 thinking이 기본 활성화됩니다. 또한 low/medium도 서버에서 high로
+        승격됩니다. 마사몽의 none/low는 짧고 빠른 대화라는 의미이므로 둘 다
+        명시적으로 thinking을 끄고, high 이상에서만 thinking을 켭니다.
+        """
+        if not cls._is_deepseek_v4_model(model):
+            return {}, False
+
+        effort = str(reasoning_effort or "").strip().lower()
+        if effort in {"max", "xhigh"}:
+            return (
+                {
+                    "reasoning_effort": "max",
+                    "extra_body": {"thinking": {"type": "enabled"}},
+                },
+                True,
+            )
+        if effort in {"high", "medium"}:
+            return (
+                {
+                    "reasoning_effort": "high",
+                    "extra_body": {"thinking": {"type": "enabled"}},
+                },
+                True,
+            )
+        return {"extra_body": {"thinking": {"type": "disabled"}}}, False
+
     @classmethod
     def resolve_reasoning_effort(
         cls,
@@ -559,6 +599,22 @@ class LLMClient:
                         reasoning_effort,
                     )
                 )
+            elif self._is_deepseek_v4_model(target.get("model")):
+                deepseek_options, deepseek_thinking_enabled = (
+                    self._deepseek_v4_request_options(
+                        target.get("model"),
+                        reasoning_effort,
+                    )
+                )
+                request_kwargs.update(deepseek_options)
+                if not deepseek_thinking_enabled:
+                    request_kwargs.update(
+                        {
+                            "temperature": config.AI_TEMPERATURE,
+                            "frequency_penalty": config.AI_FREQUENCY_PENALTY,
+                            "presence_penalty": config.AI_PRESENCE_PENALTY,
+                        }
+                    )
             else:
                 request_kwargs.update(
                     {
@@ -569,12 +625,8 @@ class LLMClient:
                 )
             if reasoning_effort and not is_openrouter_base_url(
                 target.get("base_url")
-            ):
+            ) and not self._is_deepseek_v4_model(target.get("model")):
                 request_kwargs["reasoning_effort"] = reasoning_effort
-                if "deepseek-v4" in str(target["model"]).strip().lower():
-                    request_kwargs["extra_body"] = {
-                        "thinking": {"type": "enabled"}
-                    }
 
             async def _request_openai_main():
                 return await client.chat.completions.create(**request_kwargs)
@@ -672,11 +724,21 @@ class LLMClient:
                         reasoning_effort,
                     )
                 )
+            elif self._is_deepseek_v4_model(target.get("model")):
+                deepseek_options, deepseek_thinking_enabled = (
+                    self._deepseek_v4_request_options(
+                        target.get("model"),
+                        reasoning_effort,
+                    )
+                )
+                request_kwargs.update(deepseek_options)
+                if not deepseek_thinking_enabled:
+                    request_kwargs["temperature"] = 0.0
             else:
                 request_kwargs["temperature"] = 0.0
             if reasoning_effort and not is_openrouter_base_url(
                 target.get("base_url")
-            ):
+            ) and not self._is_deepseek_v4_model(target.get("model")):
                 request_kwargs["reasoning_effort"] = reasoning_effort
 
             async def _request_openai_routing():

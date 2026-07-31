@@ -259,11 +259,19 @@ async def test_deepseek_dynamic_reasoning_is_request_local(monkeypatch):
         "name": "main.primary",
     }
 
-    low_result, high_result = await asyncio.gather(
+    none_result, low_result, high_result = await asyncio.gather(
         client.call_main_lane_target(
             target,
             system_prompt="system",
-            user_prompt="simple",
+            user_prompt="simple-none",
+            log_extra={"trace_id": "none"},
+            max_tokens=128,
+            reasoning_effort_override="none",
+        ),
+        client.call_main_lane_target(
+            target,
+            system_prompt="system",
+            user_prompt="simple-low",
             log_extra={"trace_id": "low"},
             max_tokens=128,
             reasoning_effort_override="low",
@@ -278,14 +286,64 @@ async def test_deepseek_dynamic_reasoning_is_request_local(monkeypatch):
         ),
     )
 
-    assert low_result == high_result == "answer"
-    assert len(calls) == 2
-    assert {call["reasoning_effort"] for call in calls} == {"low", "high"}
-    assert all(
-        call["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert none_result == low_result == high_result == "answer"
+    assert len(calls) == 3
+    by_prompt = {
+        call["messages"][1]["content"]: call
         for call in calls
-    )
+    }
+    for prompt in ("simple-none", "simple-low"):
+        call = by_prompt[prompt]
+        assert "reasoning_effort" not in call
+        assert call["extra_body"] == {"thinking": {"type": "disabled"}}
+        assert call["temperature"] == config.AI_TEMPERATURE
+        assert call["frequency_penalty"] == config.AI_FREQUENCY_PENALTY
+        assert call["presence_penalty"] == config.AI_PRESENCE_PENALTY
+
+    high_call = by_prompt["complex"]
+    assert high_call["reasoning_effort"] == "high"
+    assert high_call["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert "temperature" not in high_call
+    assert "frequency_penalty" not in high_call
+    assert "presence_penalty" not in high_call
     assert target["reasoning_effort"] == ""
+
+
+@pytest.mark.asyncio
+async def test_deepseek_routing_defaults_to_non_thinking(monkeypatch):
+    client = _configure_small_client(monkeypatch)
+    calls = []
+
+    class Endpoint:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            return _completion('{"tools":[]}')
+
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=Endpoint())
+    )
+    client.get_openai_client = lambda *_args: fake_client
+    target = {
+        "provider": "openai_compat",
+        "base_url": "https://api.deepseek.com",
+        "api_key": "secret",
+        "model": "deepseek-v4-flash",
+        "reasoning_effort": "low",
+        "name": "routing.primary",
+    }
+
+    assert await client.call_routing_lane_target(
+        target,
+        prompt="route",
+        log_extra={},
+        max_tokens=128,
+    ) == '{"tools":[]}'
+
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert call["temperature"] == 0.0
+    assert "reasoning_effort" not in call
 
 
 def test_dynamic_reasoning_rejects_unbounded_values_and_unsupported_models():
