@@ -171,6 +171,19 @@ class IntentAnalyzer:
         r"공식.{0,30}(?:수치|기록|발표))",
         re.IGNORECASE,
     )
+    _SCOPED_PERSON_INTENT_PATTERN = re.compile(
+        r"(?:(?:서버|디스코드|discord|현재\s*사용자|지인|대화\s*(?:속|내|기반))"
+        r".{0,28}(?:구성원|인물|사람|사용자|프로필|기억)|"
+        r"(?:구성원|인물|사람|사용자|프로필|기억).{0,28}"
+        r"(?:서버|디스코드|discord|지인|대화\s*(?:속|내|기반)))",
+        re.IGNORECASE,
+    )
+    _EXPLICIT_PUBLIC_LOOKUP_PATTERN = re.compile(
+        r"(?:웹\s*검색|인터넷\s*검색|검색(?:해|해서|으로|해줘|해봐)?|"
+        r"찾아(?:줘|봐|서)?|조사(?:해|해서|해줘)?|"
+        r"공개\s*(?:자료|정보|프로필)|뉴스|기사|출처|링크|공식\s*(?:자료|문서))",
+        re.IGNORECASE,
+    )
     _NO_SEARCH_PATTERNS = frozenset([
         '내 얘기', '우리 얘기', '너 얘기', '잡담만', '인사만'
     ])
@@ -262,6 +275,29 @@ class IntentAnalyzer:
                 str(query or ""),
                 flags=re.IGNORECASE,
             )
+        )
+
+    @classmethod
+    def _looks_like_scoped_person_memory_request(
+        cls,
+        query: str,
+        intent: str,
+        *,
+        needs_memory: bool,
+    ) -> bool:
+        """의미 라우터가 현재 Discord 범위의 인물 기억으로 해석했는지 봅니다.
+
+        이름이나 직함 목록을 코드에 넣지 않는다. 사용자가 공개 검색을 직접
+        요청하지 않았고, 라우터가 장기기억 필요성과 로컬 인물 범위를 함께
+        명시한 경우에만 적용한다. 따라서 같은 ``스펙`` 표현이라도 공개 인물·
+        제품 조회는 그대로 외부 검증 경로를 사용한다.
+        """
+        if not needs_memory:
+            return False
+        if cls._EXPLICIT_PUBLIC_LOOKUP_PATTERN.search(str(query or "")):
+            return False
+        return bool(
+            cls._SCOPED_PERSON_INTENT_PATTERN.search(str(intent or ""))
         )
 
     @classmethod
@@ -1155,6 +1191,7 @@ class IntentAnalyzer:
                 if isinstance(parsed.get("needs_fortune_context"), bool)
                 else False
             )
+            intent = str(parsed.get("intent") or "")[:120]
             # 짧은 이름 신원 질문은 라우팅 모델이 호출마다 웹 동명이인과 서버
             # 구성원 사이에서 흔들릴 수 있다. 특정 이름을 열거하지 않는 좁은
             # 형식 후조건으로 서버/DM 기억을 우선하고 잘못 계획된 웹 검색을
@@ -1162,13 +1199,23 @@ class IntentAnalyzer:
             bare_identity_question = self._looks_like_bare_identity_question(
                 query
             )
-            if bare_identity_question:
+            scoped_person_memory = self._looks_like_scoped_person_memory_request(
+                query,
+                intent,
+                needs_memory=needs_memory,
+            )
+            if bare_identity_question or scoped_person_memory:
                 plan = [
                     item
                     for item in plan
                     if item.get("tool_to_use") != "web_search"
                 ]
                 needs_memory = True
+                if scoped_person_memory and not bare_identity_question:
+                    logger.info(
+                        "[라우팅보정] 서버 범위 인물 기억 요청의 공개 웹 검색을 제거합니다.",
+                        extra=log_extra,
+                    )
             # 이미지 요청은 "아까 말한 철수", "네가 기억하는 나"처럼 짧은
             # 지시가 많다. 검색 결과는 범위·관련도 필터를 다시 통과하므로 모든
             # 이미지 요청에서 현재 DM/서버 기억 조회를 허용해도 무관한 기억을
@@ -1178,16 +1225,14 @@ class IntentAnalyzer:
                 for item in plan
             ):
                 needs_memory = True
-            intent = str(parsed.get("intent") or "")[:120]
-            requires_external_evidence = self._derive_external_evidence_requirement(
-                query,
-                intent=intent,
-                declared=(
-                    False
-                    if bare_identity_question
-                    else parsed.get("requires_external_evidence")
-                ),
-            )
+            if bare_identity_question or scoped_person_memory:
+                requires_external_evidence = False
+            else:
+                requires_external_evidence = self._derive_external_evidence_requirement(
+                    query,
+                    intent=intent,
+                    declared=parsed.get("requires_external_evidence"),
+                )
             if any(
                 item.get("tool_to_use")
                 in {

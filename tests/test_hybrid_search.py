@@ -88,7 +88,7 @@ async def test_query_variants_reuse_same_discord_database_rows(monkeypatch):
     )
 
     result = await engine.search(
-        "후속 질문",
+        "그럼 설명해줘",
         guild_id=123,
         channel_id=456,
         user_id=789,
@@ -99,6 +99,42 @@ async def test_query_variants_reuse_same_discord_database_rows(monkeypatch):
     assert len(result.query_variants) == 2
     assert store.structured_calls == 1
     assert store.legacy_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_independent_query_does_not_inherit_unrelated_recent_topic(
+    monkeypatch,
+):
+    monkeypatch.setattr(config, "SEARCH_QUERY_EXPANSION_ENABLED", False)
+    monkeypatch.setattr(config, "RAG_QUERY_REWRITE_VARIANTS", 3)
+    engine = HybridSearchEngine(DummyDiscordStore(), None, None)
+
+    variants = await engine._expand_query_variants(
+        "홍민석이 누구야?",
+        recent_messages=[
+            "K-패스 카드 다른 거 추천해줘",
+            "신한 K-패스 카드 혜택을 정리해줄게.",
+        ],
+    )
+
+    assert variants == ["홍민석이 누구야?"]
+    assert all("K-패스" not in variant for variant in variants)
+
+
+@pytest.mark.asyncio
+async def test_elliptical_followup_inherits_recent_topic(monkeypatch):
+    monkeypatch.setattr(config, "SEARCH_QUERY_EXPANSION_ENABLED", False)
+    monkeypatch.setattr(config, "RAG_QUERY_REWRITE_VARIANTS", 3)
+    engine = HybridSearchEngine(DummyDiscordStore(), None, None)
+
+    variants = await engine._expand_query_variants(
+        "어깨 사이즈는 어떰?",
+        recent_messages=["김재원 스펙 브리핑해줘"],
+    )
+
+    assert variants[0] == "어깨 사이즈는 어떰?"
+    assert len(variants) == 2
+    assert "김재원 스펙" in variants[1]
 
 
 @pytest.mark.asyncio
