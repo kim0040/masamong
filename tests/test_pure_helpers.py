@@ -95,11 +95,18 @@ class TestSplitMessageChunks:
 
         normalized = normalize_discord_text(text)
 
-        assert "첫 문장 ㅋㅋㅋㅋ" in normalized
-        assert "두 번째 ㅎㅎㅎㅎ" in normalized
+        # 10자 미만의 자연스러운 웃음은 길이를 억지로 줄이지 않는다.
+        assert "첫 문장 ㅋㅋㅋㅋㅋㅋㅋㅋ" in normalized
+        assert "두 번째 ㅎㅎㅎㅎㅎㅎ" in normalized
         assert "세 번째 ㅋㅋㅋㅋ" not in normalized
         # 사용자가 요청한 코드/원문 블록은 후처리로 훼손하지 않는다.
         assert "```text\nㅋㅋㅋㅋㅋㅋㅋㅋ\n```" in normalized
+
+    def test_laughter_run_is_capped_at_ten_characters(self):
+        assert normalize_discord_text("반응 " + ("ㅋ" * 9)) == "반응 " + ("ㅋ" * 9)
+        assert normalize_discord_text("반응 " + ("ㅋ" * 10)) == "반응 " + ("ㅋ" * 10)
+        assert normalize_discord_text("반응 " + ("ㅋ" * 11)) == "반응 " + ("ㅋ" * 10)
+        assert normalize_discord_text("반응 " + ("ㅎ" * 200)) == "반응 " + ("ㅎ" * 10)
 
     def test_code_block_is_not_rewritten_and_each_chunk_is_balanced(self):
         text = "```python\n" + ("print('# not a heading')\n" * 30) + "```"
