@@ -21,8 +21,9 @@ from .constants import DISCORD_MESSAGE_LIMIT, SPLIT_MESSAGE_CHUNK_SIZE
 _MARKDOWN_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*$")
 _MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^:?-{3,}:?$")
 _HTML_BREAK_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
-_LAUGHTER_RUN_RE = re.compile(r"(ㅋ{5,}|ㅎ{5,})")
+_LAUGHTER_RUN_RE = re.compile(r"(ㅋ{10,}|ㅎ{10,})")
 _LAUGHTER_MARKER_RE = re.compile(r"(?:ㅋ{2,}|ㅎ{2,})")
+_MAX_LAUGHTER_RUN_LENGTH = 10
 
 
 class DiscordProgress:
@@ -250,7 +251,7 @@ def normalize_discord_text(text: str) -> str:
         """생성 오류성 웃음 도배를 접되 코드블록은 호출부에서 제외합니다."""
         nonlocal laughter_markers
         collapsed = _LAUGHTER_RUN_RE.sub(
-            lambda match: match.group(0)[0] * 4,
+            lambda match: match.group(0)[0] * _MAX_LAUGHTER_RUN_LENGTH,
             raw_text,
         )
 
