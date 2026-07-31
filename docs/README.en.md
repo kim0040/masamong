@@ -125,7 +125,10 @@ deletes conversation or memory rows.
 Source details are revealed by the newspaper reaction and hidden again when the
 reaction is removed. Earthquake notices use formal shared wording; events in the
 same sequence update one Discord message instead of producing an endless stream.
-Server-specific personas are applied only inside that server.
+Server-specific personas are applied only inside that server. A model-neutral
+style contract keeps that persona ahead of a provider's default formal voice;
+laughter spam, repeated sentences, malformed endings, and typos from old bot
+turns are excluded from style continuity.
 
 Linkup usage is budgeted in USD. Each physical call is reserved before it starts,
 then finalized as billed, explicitly not billed, or conservatively assumed billed

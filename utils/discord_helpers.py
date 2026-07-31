@@ -21,6 +21,8 @@ from .constants import DISCORD_MESSAGE_LIMIT, SPLIT_MESSAGE_CHUNK_SIZE
 _MARKDOWN_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*$")
 _MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^:?-{3,}:?$")
 _HTML_BREAK_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_LAUGHTER_RUN_RE = re.compile(r"(ㅋ{5,}|ㅎ{5,})")
+_LAUGHTER_MARKER_RE = re.compile(r"(?:ㅋ{2,}|ㅎ{2,})")
 
 
 class DiscordProgress:
@@ -242,6 +244,24 @@ def normalize_discord_text(text: str) -> str:
     normalized_lines: list[str] = []
     plain_lines: list[str] = []
     in_code_fence = False
+    laughter_markers = 0
+
+    def normalize_laughter(raw_text: str) -> str:
+        """생성 오류성 웃음 도배를 접되 코드블록은 호출부에서 제외합니다."""
+        nonlocal laughter_markers
+        collapsed = _LAUGHTER_RUN_RE.sub(
+            lambda match: match.group(0)[0] * 4,
+            raw_text,
+        )
+
+        def limit_markers(match: re.Match[str]) -> str:
+            nonlocal laughter_markers
+            laughter_markers += 1
+            if laughter_markers <= 2:
+                return match.group(0)
+            return ""
+
+        return _LAUGHTER_MARKER_RE.sub(limit_markers, collapsed)
 
     def flush_plain() -> None:
         if plain_lines:
@@ -256,7 +276,7 @@ def normalize_discord_text(text: str) -> str:
         elif in_code_fence:
             normalized_lines.append(raw_line)
         else:
-            plain_lines.append(raw_line)
+            plain_lines.append(normalize_laughter(raw_line))
     flush_plain()
 
     result = "\n".join(normalized_lines).strip()
