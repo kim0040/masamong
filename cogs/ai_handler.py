@@ -1540,12 +1540,20 @@ class AIHandler(commands.Cog):
         """사용자의 의도와 대화 맥락을 분석하여 가장 적합한 도구와 최적화된 검색 파라미터를 결정합니다."""
         return await self._ensure_intent_analyzer()._detect_tools_by_llm(query, log_extra, history)
 
-    async def _route_tools(self, query: str, log_extra: dict, history: list = None):
+    async def _route_tools(
+        self,
+        query: str,
+        log_extra: dict,
+        history: list = None,
+        *,
+        conversation_scope: str = "",
+    ):
         """키워드가 아닌 의미 기반 라우팅 결과와 장기기억 필요 여부를 반환합니다."""
         return await self._ensure_intent_analyzer().route_tools(
             query,
             log_extra,
             history,
+            conversation_scope=conversation_scope,
         )
 
     @staticmethod
@@ -2180,8 +2188,23 @@ class AIHandler(commands.Cog):
         )
         final_rule = (
             "현재 질문에 먼저 직접 답하세요. 선택 컨텍스트는 관련될 때만 짧게 "
-            "활용하고 현재 사실처럼 단정하지 마세요. 질문과 직접 관련 없는 "
-            "사용자 취향·과거 사건은 친근감을 위한 소재로도 꺼내지 마세요."
+            "활용하고 현재 사실처럼 단정하지 마세요. 무관한 과거 사건을 "
+            "억지로 끌어오지는 말되, 지금 흐름에 자연스럽게 맞으면 짧게 "
+            "받아쳐도 됩니다.\n"
+            "농담·장난·과장·가정('~라면')에는 같이 받아치세요. 사실 확인이 "
+            "필요한 요청과 달리 여기에는 조회할 자료가 없는 것이 정상이므로, "
+            "확인이 안 됐다거나 답할 수 없다고 하지 말고 페르소나대로 "
+            "재치 있게 반응하세요. 놀림에는 놀림으로 되받고, 말도 안 되는 "
+            "설정에는 진지하게 정정하는 대신 장단을 맞춰 주세요. 다만 농담 "
+            "안에서도 실제 수치·날짜·기록을 사실처럼 지어내지는 마세요.\n"
+            "친구끼리 하는 잡담에서는 모든 문장에 근거·주의·불확실성 설명을 "
+            "붙이지 마세요. 확신이 덜한 서버 내부 기억이나 가벼운 추측은 "
+            "'내 기억엔', '아마', '~같은데?'처럼 자연스럽게 말하고, 사용자가 "
+            "정정하면 변명하지 말고 가볍게 인정한 뒤 대화를 이어가세요. "
+            "타인의 사적 신체·성적 이야기나 범죄 의혹처럼 당사자에게 피해가 "
+            "될 수 있는 주장은 사실이라고 맞장구치거나 새 내용을 보태지 마세요. "
+            "이때도 같은 경고를 반복하거나 길게 훈계하지 말고, 한 문장으로 선을 "
+            "그은 뒤 페르소나에 맞는 가벼운 받아치기나 다른 화제로 넘기세요."
         )
         if (
             not has_tools
@@ -2815,23 +2838,56 @@ class AIHandler(commands.Cog):
         response_text: str,
         *,
         has_external_evidence: bool,
+        creative_response: bool = False,
     ) -> str:
-        """실제 조회 없이 미래의 검색을 약속하는 무행동 응답을 차단합니다."""
+        """실제 조회 없이 미래의 검색을 약속하는 무행동 응답을 차단합니다.
+
+        예전에는 약속 표현이 한 번이라도 보이면 응답 전체를 고정 문구로
+        갈아치웠다. 그래서 "오 그거 재밌겠다ㅋㅋ 나도 한번 찾아볼게" 같은
+        잡담도 통째로 사라지고 해요체 안내문만 남아, 사용자에게는 봇이
+        대화를 끊고 정색한 것으로 보였다.
+
+        약속하지 않는다는 계약은 그 문장만 걷어내도 지켜진다. 약속 문장만
+        제거하고 나머지 대화는 그대로 두되, 남는 내용이 없으면 기존처럼
+        확인하지 못했다고 밝힌다.
+        """
         text = str(response_text or "").strip()
-        if not text or has_external_evidence:
+        if not text or has_external_evidence or creative_response:
             return text
+        # Discord 잡담은 문장 부호 없이 이어지는 경우가 많아 문장 단위로 자를 수
+        # 없다. 약속 표현이 실제로 차지하는 구간만 제거한다. 앞의 주어 조각까지
+        # 함께 잡아야 "나도"처럼 매달린 토막이 남지 않는다.
+        subject = r"(?:(?:내가|나도|난|나|제가|저도|저)\s*)?(?:한번\s*)?"
         promise_patterns = (
-            r"(?:내가\s*)?(?:한번\s*)?(?:찾아|검색해|알아|확인해|조사해)\s*볼게",
-            r"(?:찾아|검색해|알아|확인해|조사해)\s*보겠",
-            r"(?:찾아|검색해|알아|확인해|조사해)\s*드릴게",
+            rf"{subject}(?:찾아|검색해|알아|확인해|조사해)\s*볼게(?:요)?",
+            rf"{subject}(?:찾아|검색해|알아|확인해|조사해)\s*보겠(?:습니다|어요)?",
+            rf"{subject}(?:찾아|검색해|알아|확인해|조사해)\s*드릴게(?:요)?",
+            # "다음에 알려줄게"처럼 조회 동사 없이 미래 행동만 약속하는 형태도
+            # 실행되지 않는 약속이므로 같은 기준으로 다룬다.
+            r"(?:나중에|다음에|이따|곧|조만간)\s*\S{0,8}?"
+            r"(?:알려|말해|정리해|가져)\s*(?:줄게|드릴게|볼게)(?:요)?",
         )
         if not any(re.search(pattern, text) for pattern in promise_patterns):
             return text
-        return (
-            "이건 자료를 찾아봐야 하는데 지금 확인이 안 됐어요. "
-            "모르는 걸 지어내긴 싫어서 여기까지만 할게요. "
-            "잠시 뒤에 다시 물어봐 주세요."
-        )
+
+        remainder = text
+        for pattern in promise_patterns:
+            remainder = re.sub(pattern, " ", remainder)
+        # 약속 문장을 들어낸 자리에 남는 접속어와 빈 문장 부호를 정리한다.
+        remainder = re.sub(r"\s*(?:그리고|그래서|그럼|근데)\s*(?=[.!?~]|$)", "", remainder)
+        remainder = re.sub(r"\s*([.!?~,])\s*(?=[.!?~,])", "", remainder)
+        remainder = re.sub(r"^[\s.!?~,]+", "", remainder)
+        remainder = re.sub(r"\s+", " ", remainder).strip(" ,")
+        remainder = remainder.strip()
+
+        # 약속을 뺀 나머지가 사실상 없으면 안내문으로 대체한다. 'ㅋㅋ', 'ㅠㅠ'
+        # 같은 자모 표현도 Discord 대화에서는 의미를 가지므로 함께 센다.
+        if len(re.sub(r"[^0-9A-Za-z가-힣ㄱ-ㅎㅏ-ㅣ]", "", remainder)) < 6:
+            return (
+                "이건 자료를 확인해야 하는데 지금 확인이 안 됐어요. "
+                "잠시 뒤에 다시 물어봐 주세요."
+            )
+        return remainder
 
     @staticmethod
     def _split_message_chunks(text: str, chunk_size: int = 1900) -> list[str]:
@@ -3498,6 +3554,11 @@ class AIHandler(commands.Cog):
                 user_query,
                 log_extra,
                 history=history,
+                conversation_scope=(
+                    str(message.guild.name)
+                    if message.guild and getattr(message.guild, "name", None)
+                    else ""
+                ),
             )
             logger.info(
                 "에이전트 라우팅 완료: source=%s tools=%d "
@@ -3868,11 +3929,11 @@ class AIHandler(commands.Cog):
                         note="",
                     )
                     if finance_request
-                    else (
-                        "이건 자료를 찾아봐야 하는데 지금 확인이 안 됐어요. "
-                        "모르는 걸 지어내긴 싫어서 여기까지만 할게요. "
-                        "잠시 뒤에 다시 물어봐 주세요."
-                    )
+                    # 페르소나를 거치지 않는 공통 고정 문구라 말투를 특정 채널에
+                    # 맞출 수 없다. 다만 "모르는 걸 지어내긴 싫어서 여기까지만
+                    # 할게요"는 사용자가 요구하지도 않은 원칙을 선언하는 훈계조라
+                    # 거부처럼 읽혔다. 못 찾았다는 사실만 한 문장으로 남긴다.
+                    else "이건 자료를 확인해야 하는데 지금 못 찾았어요. 잠시 뒤에 다시 물어봐 주세요."
                 )
                 logger.warning(
                     "검증 필수 요청의 외부 자료가 없어 답변 생성을 fail-closed 처리합니다.",
@@ -4055,6 +4116,11 @@ class AIHandler(commands.Cog):
                     final_response_text,
                     has_external_evidence=self._has_verified_external_evidence(
                         non_local_tool_results
+                    ),
+                    creative_response=(
+                        self._ensure_intent_analyzer()._looks_like_creative_query(
+                            getattr(routing_decision, "intent", "")
+                        )
                     ),
                 )
 

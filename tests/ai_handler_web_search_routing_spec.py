@@ -1455,3 +1455,265 @@ def test_unexecuted_future_search_promise_is_replaced_but_verified_answer_is_kep
     assert "지금 확인이 안 됐어요" in replaced
     assert "찾아볼게" not in replaced
     assert kept == promise
+
+
+def _analyzer() -> IntentAnalyzer:
+    return object.__new__(IntentAnalyzer)
+
+
+# 어휘 표 보정이 장난까지 "검증 필수"로 올리면, 조회할 공개 자료가 없으므로
+# fail-closed 문구가 나가고 사용자에게는 봇이 농담을 거부한 것으로 보인다.
+_PLAYFUL_QUERIES = (
+    "야 너 스펙이 어떻게 됨?",
+    "우리 중에 누가 더 빠름?",
+    "나 오늘 최고 기록 세웠다 ㅋㅋ",
+    "이 가격 실화냐고",
+    "너 출력 좀 올려봐라",
+    "마사몽 제원 좀 알려줘 ㅋㅋ",
+    "야 나랑 너랑 성능 비교하면?",
+    "내 연애 기록 좀 평가해줘",
+)
+
+_FACTUAL_QUERIES = (
+    "아이폰 17 프로 가격 얼마야",
+    "M4랑 M3 성능 비교해줘",
+    "포르쉐 911 제로백 몇 초야",
+    "쏘나타 연비 얼마나 나옴?",
+)
+
+
+@pytest.mark.parametrize("query", _PLAYFUL_QUERIES)
+def test_playful_query_is_not_forced_into_external_verification(query):
+    """라우터가 잡담이라고 판정하면 어휘 표로 뒤집지 않는다."""
+    analyzer = _analyzer()
+
+    assert (
+        analyzer._derive_external_evidence_requirement(
+            query,
+            intent="인사/잡담",
+            declared=False,
+        )
+        is False
+    )
+
+
+@pytest.mark.parametrize("query", _PLAYFUL_QUERIES)
+def test_playful_query_still_guarded_when_router_output_is_missing(query):
+    """라우터 응답이 없으면 기존 어휘 안전망이 그대로 동작해야 한다."""
+    analyzer = _analyzer()
+
+    assert analyzer._derive_external_evidence_requirement(
+        query,
+        intent="",
+        declared=None,
+    )
+
+
+@pytest.mark.parametrize("query", _FACTUAL_QUERIES)
+def test_factual_query_keeps_verification_even_if_router_declines(query):
+    """의도가 사실 조회면 declared=False여도 어휘 안전망을 유지한다."""
+    analyzer = _analyzer()
+
+    assert analyzer._derive_external_evidence_requirement(
+        query,
+        intent="가격 조회",
+        declared=False,
+    )
+
+
+def test_finance_and_requested_lookup_ignore_casual_intent_claim():
+    """금융·명시적 조회 요청은 잡담 판정으로도 우회할 수 없다."""
+    analyzer = _analyzer()
+
+    for query in ("오늘 애플 주가 알려줘", "환율 지금 어때", "테슬라 소식 검색해줘"):
+        assert analyzer._derive_external_evidence_requirement(
+            query,
+            intent="장난",
+            declared=False,
+        ), query
+
+
+def test_topic_words_alone_are_not_treated_as_requested_lookup():
+    """'비교'·'발표' 같은 주제어는 사용자가 조회를 요청한 표현이 아니다."""
+    pattern = IntentAnalyzer._REQUESTED_WEB_LOOKUP_PATTERN
+
+    assert not pattern.search("야 나랑 너랑 성능 비교하면?")
+    assert not pattern.search("어제 발표 어땠음?")
+    assert pattern.search("이거 검색해줘")
+    assert pattern.search("출처 좀")
+
+
+def test_lookup_promise_removal_keeps_the_surrounding_conversation():
+    """약속 한 마디 때문에 잡담 전체가 안내문으로 바뀌면 안 된다."""
+    replaced = AIHandler._replace_unexecuted_lookup_promise(
+        "오 그거 재밌겠다ㅋㅋ 나도 한번 찾아볼게",
+        has_external_evidence=False,
+    )
+
+    assert replaced == "오 그거 재밌겠다ㅋㅋ"
+    assert "찾아볼게" not in replaced
+    assert "확인이 안 됐어요" not in replaced
+
+
+def test_lookup_promise_removal_handles_text_without_punctuation():
+    """Discord 잡담은 문장 부호가 없어도 약속 구간만 걷어내야 한다."""
+    replaced = AIHandler._replace_unexecuted_lookup_promise(
+        "헐 대박 개웃기네 오빠 그거 진짜임 나중에 알려줄게",
+        has_external_evidence=False,
+    )
+
+    assert "헐 대박 개웃기네" in replaced
+    assert "알려줄게" not in replaced
+
+
+def test_promise_only_response_still_discloses_missing_verification():
+    """약속만 있고 내용이 없으면 확인하지 못했다고 밝힌다."""
+    for promise in ("확인해볼게요.", "ㅇㅇ 내가 찾아볼게"):
+        replaced = AIHandler._replace_unexecuted_lookup_promise(
+            promise,
+            has_external_evidence=False,
+        )
+        assert "지금 확인이 안 됐어요" in replaced, promise
+
+
+def test_casual_reply_without_promise_is_untouched():
+    text = "ㅋㅋㅋ 뭐래 그건 나도 모르겠음"
+
+    assert (
+        AIHandler._replace_unexecuted_lookup_promise(
+            text,
+            has_external_evidence=False,
+        )
+        == text
+    )
+
+
+@pytest.mark.asyncio
+async def test_current_discord_scope_name_overrides_unrelated_public_search():
+    """현재 서버 이름을 말한 내부 떡밥은 동명의 공개 웹 사건으로 새면 안 된다."""
+    handler = _build_handler_without_init()
+    handler.use_cometapi = True
+    captured = {}
+
+    async def _fake_fast(prompt, *_args, **_kwargs):
+        captured["prompt"] = prompt
+        return (
+            '{"intent":"마사모 부정선거 논란에 대한 사실·경위 확인",'
+            '"needs_memory":false,"references_shared_history":false,'
+            '"requires_external_evidence":true,"reasoning_level":"low",'
+            '"tools":[{"tool":"web_search",'
+            '"params":{"query":"마사모 부정선거 논란"}}]}'
+        )
+
+    handler._cometapi_fast_generate_text = _fake_fast
+    decision = await handler._route_tools(
+        "마사모 부정선거 논란",
+        {"trace_id": "current-scope-banter"},
+        history=[],
+        conversation_scope="마사모",
+    )
+
+    assert decision.plan == []
+    assert decision.needs_memory is True
+    assert decision.references_shared_history is True
+    assert decision.requires_external_evidence is False
+    assert '"마사모"' in captured["prompt"]
+    assert "공개 웹 사건으로 바꾸지 말고" in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_explicit_public_lookup_keeps_web_even_for_current_scope_name():
+    handler = _build_handler_without_init()
+    handler.use_cometapi = True
+
+    async def _fake_fast(*_args, **_kwargs):
+        return (
+            '{"intent":"마사모 관련 공개 기사 검색",'
+            '"needs_memory":false,"references_shared_history":false,'
+            '"requires_external_evidence":true,"reasoning_level":"low",'
+            '"tools":[{"tool":"web_search",'
+            '"params":{"query":"마사모 관련 기사"}}]}'
+        )
+
+    handler._cometapi_fast_generate_text = _fake_fast
+    decision = await handler._route_tools(
+        "마사모 관련 기사 웹에서 검색해줘",
+        {"trace_id": "current-scope-public-lookup"},
+        history=[],
+        conversation_scope="마사모",
+    )
+
+    assert [item["tool_to_use"] for item in decision.plan] == ["web_search"]
+    assert decision.requires_external_evidence is True
+
+
+def test_creative_intent_is_not_reclassified_by_factual_vocabulary():
+    analyzer = _analyzer()
+    query = (
+        "과거 연애 기록과 두 사람의 성격 차이를 반영해서 "
+        "오피스물 소설 다음화 이어서 써줘"
+    )
+
+    assert (
+        analyzer._derive_external_evidence_requirement(
+            query,
+            intent="현대 오피스물 소설의 다음화 창작 이어쓰기",
+            declared=False,
+        )
+        is False
+    )
+
+
+def test_emergency_router_keeps_creative_request_off_the_web():
+    analyzer = _analyzer()
+    decision = analyzer._emergency_routing_decision(
+        "과거 연애 기록과 성격 차이를 반영해서 소설 다음화 이어서 써줘",
+        source="error_fallback",
+    )
+
+    assert decision.plan == []
+    assert decision.requires_external_evidence is False
+    assert decision.intent == "창작·잡담"
+
+
+def test_emergency_router_keeps_local_bot_banter_off_the_web():
+    analyzer = _analyzer()
+    decision = analyzer._emergency_routing_decision(
+        "야 너 스펙이 어떻게 됨? ㅋㅋ",
+        source="error_fallback",
+    )
+
+    assert decision.plan == []
+    assert decision.requires_external_evidence is False
+
+
+def test_creative_response_keeps_fictional_future_dialogue():
+    text = '현민이 말했다. "그 비밀은 나중에 알려줄게." 예은은 고개를 끄덕였다.'
+
+    assert (
+        AIHandler._replace_unexecuted_lookup_promise(
+            text,
+            has_external_evidence=False,
+            creative_response=True,
+        )
+        == text
+    )
+
+
+def test_main_prompt_allows_playful_uncertainty_without_repeated_lectures():
+    handler = _build_handler_without_init()
+    message = SimpleNamespace(
+        author=SimpleNamespace(display_name="질문자"),
+    )
+
+    prompt = handler._compose_main_prompt(
+        message,
+        user_query="마사모 부정선거 논란 ㅋㅋ",
+        rag_blocks=[],
+        tool_results_block=None,
+        recent_history=[],
+    )
+
+    assert "친구끼리 하는 잡담에서는 모든 문장에 근거" in prompt
+    assert "사용자가 정정하면 변명하지 말고 가볍게 인정" in prompt
+    assert "같은 경고를 반복하거나 길게 훈계하지 말고" in prompt
