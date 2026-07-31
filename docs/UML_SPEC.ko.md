@@ -26,7 +26,8 @@ flowchart TB
     KMA["KMA"]
     SearchAPI["Linkup / legacy search"]
     Market["Market providers"]
-    Comet["CometAPI"]
+    OpenRouter["OpenRouter<br/>OpenAI GPT-5.6 Luna"]
+    Comet["CometAPI<br/>image only"]
     Notice["School / transfer one-shot jobs"]
     Local[("Masamo-only notice stores")]
 
@@ -41,6 +42,7 @@ flowchart TB
     AI --> RAG
     AI --> LLM
     Intent --> LLM
+    LLM --> OpenRouter
     Tools --> Health
     Tools --> KMA
     Tools --> SearchAPI

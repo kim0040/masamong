@@ -333,16 +333,16 @@ def default_reasoning_effort_for_model(model: Any) -> str:
 
 def normalize_dynamic_reasoning_level(
     value: Any,
-    default: str = "low",
+    default: str = "none",
 ) -> str:
-    """요청 단위 동적 추론 수준을 운영에서 허용한 low/high로 제한합니다."""
-    normalized_default = as_str(default, "low").lower()
-    if normalized_default not in {"low", "high"}:
-        normalized_default = "low"
+    """요청 단위 동적 추론 수준을 none/low/high로 제한합니다."""
+    normalized_default = as_str(default, "none").lower()
+    if normalized_default not in {"none", "low", "high"}:
+        normalized_default = "none"
     normalized = as_str(value, normalized_default).lower()
     return (
         normalized
-        if normalized in {"low", "high"}
+        if normalized in {"none", "low", "high"}
         else normalized_default
     )
 
@@ -1253,6 +1253,37 @@ COMETAPI_MODEL = load_config_value('COMETAPI_MODEL', 'DeepSeek-V3.2-Exp-nothinki
 USE_COMETAPI = as_bool(load_config_value('USE_COMETAPI', 'true'))  # CometAPI 우선 사용
 ALLOW_DIRECT_GEMINI_FALLBACK = as_bool(load_config_value('ALLOW_DIRECT_GEMINI_FALLBACK', 'false'))
 
+# OpenRouter 텍스트 LLM 설정. 이미지 생성은 이 키를 사용하지 않고 아래의
+# COMETAPI_IMAGE_* 경계를 계속 사용합니다.
+OPENROUTER_API_KEY = as_str(load_config_value('OPENROUTER_API_KEY', ''), '')
+OPENROUTER_BASE_URL = as_str(
+    load_config_value('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'),
+    'https://openrouter.ai/api/v1',
+).rstrip("/")
+OPENROUTER_PROVIDER_ONLY = as_str(
+    load_config_value('OPENROUTER_PROVIDER_ONLY', 'openai'),
+    'openai',
+)
+OPENROUTER_ALLOW_FALLBACKS = as_bool(
+    load_config_value('OPENROUTER_ALLOW_FALLBACKS', 'false'),
+)
+OPENROUTER_REQUIRE_PARAMETERS = as_bool(
+    load_config_value('OPENROUTER_REQUIRE_PARAMETERS', 'true'),
+    True,
+)
+OPENROUTER_DATA_COLLECTION = as_str(
+    load_config_value('OPENROUTER_DATA_COLLECTION', ''),
+    '',
+).lower()
+OPENROUTER_APP_URL = as_str(
+    load_config_value('OPENROUTER_APP_URL', ''),
+    '',
+)
+OPENROUTER_APP_TITLE = as_str(
+    load_config_value('OPENROUTER_APP_TITLE', 'Masamong'),
+    'Masamong',
+)
+
 # Fast 모델 (웹 검색 중간 단계: 의도 분석, 키워드 생성, 기사 요약)
 # news/news_summarizer.py와 동일한 모델 사용
 FAST_MODEL_NAME = load_config_value('FAST_MODEL_NAME', 'gemini-3.1-flash-lite-preview')
@@ -1371,7 +1402,7 @@ LLM_DYNAMIC_REASONING_ENABLED = as_bool(
     True,
 )
 LLM_DYNAMIC_REASONING_DEFAULT = normalize_dynamic_reasoning_level(
-    load_config_value('LLM_DYNAMIC_REASONING_DEFAULT', 'low'),
+    load_config_value('LLM_DYNAMIC_REASONING_DEFAULT', 'none'),
 )
 
 LLM_MAIN_FALLBACK_PROVIDER = normalize_llm_provider(
@@ -1433,12 +1464,12 @@ KAKAO_SUMMARY_BASE_URL = as_str(
     _DEFAULT_KAKAO_SUMMARY_BASE_URL,
 )
 KAKAO_SUMMARY_MODEL_STANDARD = as_str(
-    load_config_value('KAKAO_SUMMARY_MODEL_STANDARD', 'DeepSeek-V3.2-Exp-nothinking'),
-    'DeepSeek-V3.2-Exp-nothinking',
+    load_config_value('KAKAO_SUMMARY_MODEL_STANDARD', LLM_MAIN_PRIMARY_MODEL),
+    LLM_MAIN_PRIMARY_MODEL,
 )
 KAKAO_SUMMARY_MODEL_BUDGET = as_str(
-    load_config_value('KAKAO_SUMMARY_MODEL_BUDGET', 'gpt-5-nano-2025-08-07'),
-    'gpt-5-nano-2025-08-07',
+    load_config_value('KAKAO_SUMMARY_MODEL_BUDGET', LLM_MAIN_PRIMARY_MODEL),
+    LLM_MAIN_PRIMARY_MODEL,
 )
 
 # DuckDuckGo 웹 검색 활성화 여부 (기본: 활성화)
@@ -2026,12 +2057,12 @@ STRUCTURED_USER_MEMORY_MIN_CHARS = max(4, as_int(load_config_value('STRUCTURED_U
 AI_INTENT_MODEL_NAME = as_str(load_config_value('AI_INTENT_MODEL_NAME', 'gemini-2.5-flash-lite'), 'gemini-2.5-flash-lite')
 AI_RESPONSE_MODEL_NAME = as_str(load_config_value('AI_RESPONSE_MODEL_NAME', 'gemini-2.5-flash'), 'gemini-2.5-flash')
 FORTUNE_MODEL_LITE = as_str(
-    load_config_value("FORTUNE_MODEL_LITE", "deepseek-v4-flash"),
-    "deepseek-v4-flash",
+    load_config_value("FORTUNE_MODEL_LITE", LLM_MAIN_PRIMARY_MODEL),
+    LLM_MAIN_PRIMARY_MODEL,
 )
 FORTUNE_MODEL_PRO = as_str(
-    load_config_value("FORTUNE_MODEL_PRO", "deepseek-v4-pro"),
-    "deepseek-v4-pro",
+    load_config_value("FORTUNE_MODEL_PRO", LLM_MAIN_PRIMARY_MODEL),
+    LLM_MAIN_PRIMARY_MODEL,
 )
 # 별자리 LLM 결과는 사용자별 정보가 아닌 KST 날짜·별자리 기준으로 공유한다.
 # 캐시/쿨다운/물리 호출 상한은 모두 잘못된 환경값으로 비활성화되지 않게

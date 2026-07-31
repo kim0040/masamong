@@ -436,12 +436,22 @@ def _check_profile(
                 "env 파일에 명시해야 합니다."
             )
         lane_key = "LLM_MAIN_PRIMARY_API_KEY"
-        if not env.get(lane_key, "") and not env.get("COMETAPI_KEY", ""):
+        if (
+            not env.get(lane_key, "")
+            and not env.get("OPENROUTER_API_KEY", "")
+            and not env.get("COMETAPI_KEY", "")
+        ):
             errors.append(
-                f"{label}: {lane_key} 또는 COMETAPI_KEY를 env 파일에 적어야 "
-                "합니다. 명시적 프로필은 상속 환경을 사용하지 않습니다."
+                f"{label}: {lane_key}, OPENROUTER_API_KEY 또는 COMETAPI_KEY를 "
+                "env 파일에 적어야 합니다. 명시적 프로필은 상속 환경을 "
+                "사용하지 않습니다."
             )
-        for credential_key in (lane_key, "COMETAPI_KEY", "KMA_API_KEY"):
+        for credential_key in (
+            lane_key,
+            "OPENROUTER_API_KEY",
+            "COMETAPI_KEY",
+            "KMA_API_KEY",
+        ):
             value = env.get(credential_key, "")
             if value and _is_placeholder(value):
                 errors.append(
@@ -671,7 +681,11 @@ def validate(first_path: Path, second_path: Path) -> tuple[list[str], list[str]]
     if first_ops_channel not in {"", "0"} and first_ops_channel == second_ops_channel:
         warnings.append("두 인스턴스가 같은 Discord 운영 로그 채널을 사용합니다.")
 
-    for shared_key in ("COMETAPI_KEY", "LINKUP_API_KEY"):
+    for shared_key in (
+        "OPENROUTER_API_KEY",
+        "COMETAPI_KEY",
+        "LINKUP_API_KEY",
+    ):
         left = first.get(shared_key, "")
         right = second.get(shared_key, "")
         if left and left == right and not _is_placeholder(left):

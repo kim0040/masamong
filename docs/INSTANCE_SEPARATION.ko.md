@@ -130,7 +130,8 @@ ls -la /srv/masamong/current/config.json
 ```
 
 경계 키(토큰·DB·TLS)와 저사양 제한값은 기동 시점에 fail-closed로 막힌다. 기능
-자격증명(`COMETAPI_KEY`/`LLM_*_API_KEY`, `KMA_API_KEY`, 활성 상태의
+자격증명(`OPENROUTER_API_KEY`/`LLM_*_API_KEY`, 이미지용 `COMETAPI_KEY`,
+`KMA_API_KEY`, 활성 상태의
 `LINKUP_API_KEY`)도 켜 둔 기능에 한해 기동 시점에 검증하므로, 값이 빠지면 사용자가
 봇을 부를 때가 아니라 배포 순간에 실패한다. key가 없는 인스턴스는
 `MASAMONG_DISABLED_COGS`로 해당 Cog를 빼는 것이 정직한 표현이다.

@@ -28,7 +28,7 @@ class ToolRoutingDecision:
     source: str
     needs_memory: bool
     references_shared_history: bool = False
-    reasoning_level: str = "low"
+    reasoning_level: str = "none"
     intent: str = ""
     context_digest: str = ""
     requires_external_evidence: bool = False
@@ -1035,21 +1035,24 @@ class IntentAnalyzer:
             "저장 운세만 있으면 답할 수 있는 요청에서는 needs_fortune_context=true, "
             "needs_memory=false다. 운세 외의 오래된 Discord/Kakao 사실도 함께 필요할 "
             "때만 두 값을 모두 true로 둔다.\n"
-            "reasoning_level은 최종 답변 모델의 요청 단위 추론 수준이다. 기본은 low다. "
-            "단순 잡담·번역·요약·명확한 사실 회상·단일 조회 결과 정리는 low다. "
-            "여러 제약을 동시에 풀거나, 복수 자료·기억의 충돌을 비교하거나, "
+            "reasoning_level은 최종 답변 모델의 요청 단위 추론 수준이며 "
+            "none, low, high 중 하나다. 기본은 none이다. 단순 잡담·번역·짧은 요약·"
+            "명확한 사실 회상·단일 조회 결과 정리는 none이다. 두세 사실을 비교하거나 "
+            "짧은 설명·조언을 논리적으로 구성할 때는 low다. 여러 제약을 동시에 풀거나, "
+            "복수 자료·기억의 충돌을 비교하거나, "
             "동명이인·지시 대상의 모호성을 해소하거나, 긴 대화 압축과 여러 근거를 "
             "종합해야만 정확히 답할 수 있으면 high다. 질문이 길거나 최신 정보라는 "
             "이유만으로 high를 쓰지 않는다. 최신성·사실성은 조회 도구와 "
             "requires_external_evidence로 해결하고, 조회 결과의 단순 정리는 low다. "
-            "low에서 시작한 뒤 재호출하거나 단계적으로 high로 올리는 계획은 만들지 않는다.\n"
+            "none이나 low에서 시작한 뒤 재호출하거나 단계적으로 high로 올리는 계획은 "
+            "만들지 않는다.\n"
             f"{digest_instruction}\n"
             "출력 형식: "
             '{"intent":"짧은 의도","needs_memory":false,'
             '"references_shared_history":false,'
             '"needs_fortune_context":false,'
             '"requires_external_evidence":false,'
-            '"reasoning_level":"low",'
+            '"reasoning_level":"none",'
             '"context_digest":"","tools":[{"tool":"도구명","params":{}}]}\n'
             f"현재 시각(KST): {now_kst}\n"
             f"{compaction_section}"

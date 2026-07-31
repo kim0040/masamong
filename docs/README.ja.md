@@ -18,7 +18,8 @@
 
 - **言語**: Python 3.10+
 - **フレームワーク**: `discord.py` >=2.7.1
-- **LLM**: CometAPI (OpenAI互換) + Gemini (オプション fallback)
+- **Text LLM**: OpenRouter GPT-5.6 Luna（OpenAIプロバイダー固定）
+- **画像**: CometAPI Gemini native
 - **DB**: TiDB (本番) / SQLite (開発)
 - **ライセンス**: MIT
 
@@ -29,7 +30,8 @@
 ### 前提条件
 - Python 3.10+
 - Discord Bot Token ([Developer Portal](https://discord.com/developers/applications))
-- CometAPI Key (または Gemini API Key)
+- OpenRouter API Key
+- 画像生成を使う場合のみCometAPI Key
 
 ### インストール
 
@@ -65,15 +67,22 @@ cp prompts.example.json prompts.json
 
 ```env
 DISCORD_BOT_TOKEN=your_token_here
-COMETAPI_KEY=your_cometapi_key
+OPENROUTER_API_KEY=your_openrouter_api_key
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_PROVIDER_ONLY=openai
+OPENROUTER_ALLOW_FALLBACKS=false
+COMETAPI_KEY=your_cometapi_image_key
 LLM_ROUTING_PRIMARY_PROVIDER=openai_compat
-LLM_ROUTING_PRIMARY_MODEL=gpt-5.4-nano
-LLM_ROUTING_PRIMARY_BASE_URL=https://api.cometapi.com/v1
-LLM_ROUTING_PRIMARY_API_KEY=${COMETAPI_KEY}
+LLM_ROUTING_PRIMARY_MODEL=openai/gpt-5.6-luna
+LLM_ROUTING_PRIMARY_BASE_URL=${OPENROUTER_BASE_URL}
+LLM_ROUTING_PRIMARY_API_KEY=${OPENROUTER_API_KEY}
+LLM_ROUTING_PRIMARY_REASONING_EFFORT=low
 LLM_MAIN_PRIMARY_PROVIDER=openai_compat
-LLM_MAIN_PRIMARY_MODEL=deepseek-v4-flash
-LLM_MAIN_PRIMARY_BASE_URL=https://api.cometapi.com/v1
-LLM_MAIN_PRIMARY_API_KEY=${COMETAPI_KEY}
+LLM_MAIN_PRIMARY_MODEL=openai/gpt-5.6-luna
+LLM_MAIN_PRIMARY_BASE_URL=${OPENROUTER_BASE_URL}
+LLM_MAIN_PRIMARY_API_KEY=${OPENROUTER_API_KEY}
+LLM_DYNAMIC_REASONING_DEFAULT=none
+COMETAPI_IMAGE_API_KEY=${COMETAPI_KEY}
 ```
 
 > **ヒント:** `python setup.py`を実行すると対話式セットアップウィザードが使えます。
@@ -144,7 +153,8 @@ TiDB Cloud Starterでは`TIDB_STARTER_FREE_PLAN_MODE=true`を使用し、構造�
 | 層 | 技術 |
 |----|------|
 | Botフレームワーク | discord.py >=2.7.1 |
-| LLMプロバイダ | CometAPI, Google Gemini |
+| Text LLMプロバイダ | OpenRouter（OpenAIのみ） |
+| 画像プロバイダ | CometAPI Gemini native |
 | LLMアーキテクチャ | Dual Lane (Routing + Main) with Primary/Fallback |
 | データベース | TiDB (本番), SQLite (開発) |
 | ベクトル検索 | SentenceTransformers + TiDB VECTOR(384) |

@@ -54,3 +54,34 @@ def test_school_notice_llm_reservation_has_hard_run_cap():
 
     assert client.run_calls == 2
     assert repository.reservations == 2
+
+
+def test_school_notice_openrouter_payload_locks_openai(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_PROVIDER_ONLY", "openai")
+    monkeypatch.setenv("SCHOOL_NOTICE_LLM_REASONING_EFFORT", "low")
+    client = DeepSeekClient(
+        _Repository(),
+        DeepSeekSettings(
+            api_key="test",
+            base_url="https://openrouter.ai/api/v1",
+            model="openai/gpt-5.6-luna",
+        ),
+    )
+
+    payload = client._build_payload(
+        system_prompt="system",
+        user_prompt="user",
+    )
+
+    assert payload["provider"] == {
+        "only": ["openai"],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+    }
+    assert payload["reasoning"] == {
+        "effort": "low",
+        "exclude": True,
+    }
+    assert payload["response_format"] == {"type": "json_object"}
+    assert "thinking" not in payload
+    assert "temperature" not in payload

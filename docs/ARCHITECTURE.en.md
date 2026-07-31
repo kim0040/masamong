@@ -75,6 +75,13 @@ Recent history is reused by routing, follow-up query contextualization, and the
 final prompt. A broken router falls back to a narrow keyword detector, but the
 same tool allowlist and cardinality limits still apply.
 
+Both text lanes use `openai/gpt-5.6-luna` through OpenRouter. The routing lane
+uses low reasoning. Its existing JSON also assigns the final lane `none`,
+`low`, or `high`; no lower-effort failure is regenerated at a higher effort.
+Every OpenRouter request allows only the OpenAI provider, disables provider
+fallbacks, and requires support for all sent parameters. Image generation
+remains on its separate CometAPI key and endpoint.
+
 ## Context harness
 
 The bot does not append the entire chat log:

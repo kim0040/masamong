@@ -73,6 +73,12 @@ async def test_main_output_cap_follows_existing_reasoning_decision(monkeypatch):
         "system",
         "user",
         {},
+        reasoning_effort_override="none",
+    ) == "완료"
+    assert await client.generate_content(
+        "system",
+        "user",
+        {},
         reasoning_effort_override="low",
     ) == "완료"
     assert await client.generate_content(
@@ -81,7 +87,7 @@ async def test_main_output_cap_follows_existing_reasoning_decision(monkeypatch):
         {},
         reasoning_effort_override="high",
     ) == "완료"
-    assert captured == [2048, 8192]
+    assert captured == [2048, 2048, 8192]
 
 
 @pytest.mark.asyncio
@@ -297,7 +303,7 @@ def test_dynamic_reasoning_rejects_unbounded_values_and_unsupported_models():
             deepseek_target,
             "unlimited",
         )
-        == "low"
+        == "none"
     )
     assert (
         LLMClient.resolve_reasoning_effort(
@@ -306,6 +312,118 @@ def test_dynamic_reasoning_rejects_unbounded_values_and_unsupported_models():
         )
         == ""
     )
+
+
+@pytest.mark.asyncio
+async def test_openrouter_main_locks_openai_and_uses_unified_reasoning(
+    monkeypatch,
+):
+    client = _configure_small_client(monkeypatch)
+    calls = []
+
+    class Endpoint:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            return _completion("answer")
+
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=Endpoint())
+    )
+    client.get_openai_client = lambda *_args: fake_client
+    monkeypatch.setattr(config, "OPENROUTER_PROVIDER_ONLY", "openai")
+    monkeypatch.setattr(config, "OPENROUTER_ALLOW_FALLBACKS", False)
+    monkeypatch.setattr(config, "OPENROUTER_REQUIRE_PARAMETERS", True)
+    monkeypatch.setattr(config, "OPENROUTER_DATA_COLLECTION", "")
+    monkeypatch.setattr(config, "OPENROUTER_APP_URL", "https://example.test")
+    monkeypatch.setattr(config, "OPENROUTER_APP_TITLE", "Masamong Test")
+    target = {
+        "provider": "openai_compat",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key": "secret",
+        "model": "openai/gpt-5.6-luna",
+        "reasoning_effort": "",
+        "name": "main.primary",
+    }
+
+    for effort in ("none", "high"):
+        assert (
+            await client.call_main_lane_target(
+                target,
+                system_prompt="system",
+                user_prompt="user",
+                log_extra={},
+                max_tokens=256,
+                reasoning_effort_override=effort,
+            )
+            == "answer"
+        )
+
+    assert len(calls) == 2
+    assert [
+        call["extra_body"]["reasoning"]["effort"]
+        for call in calls
+    ] == ["none", "high"]
+    for call in calls:
+        assert call["extra_body"]["provider"] == {
+            "only": ["openai"],
+            "allow_fallbacks": False,
+            "require_parameters": True,
+        }
+        assert call["extra_body"]["reasoning"]["exclude"] is True
+        assert call["extra_headers"] == {
+            "HTTP-Referer": "https://example.test",
+            "X-Title": "Masamong Test",
+        }
+        assert "reasoning_effort" not in call
+        assert "temperature" not in call
+        assert "frequency_penalty" not in call
+        assert "presence_penalty" not in call
+
+
+@pytest.mark.asyncio
+async def test_openrouter_routing_uses_configured_low_reasoning(
+    monkeypatch,
+):
+    client = _configure_small_client(monkeypatch)
+    calls = []
+
+    class Endpoint:
+        async def create(self, **kwargs):
+            calls.append(kwargs)
+            return _completion('{"tools":[]}')
+
+    client.get_openai_client = lambda *_args: SimpleNamespace(
+        chat=SimpleNamespace(completions=Endpoint())
+    )
+    monkeypatch.setattr(config, "OPENROUTER_PROVIDER_ONLY", "openai")
+    monkeypatch.setattr(config, "OPENROUTER_ALLOW_FALLBACKS", False)
+    monkeypatch.setattr(config, "OPENROUTER_REQUIRE_PARAMETERS", True)
+    monkeypatch.setattr(config, "OPENROUTER_DATA_COLLECTION", "")
+    monkeypatch.setattr(config, "OPENROUTER_APP_URL", "")
+    monkeypatch.setattr(config, "OPENROUTER_APP_TITLE", "Masamong")
+    target = {
+        "provider": "openai_compat",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key": "secret",
+        "model": "openai/gpt-5.6-luna",
+        "reasoning_effort": "low",
+        "name": "routing.primary",
+    }
+
+    assert await client.call_routing_lane_target(
+        target,
+        prompt="route",
+        log_extra={},
+        max_tokens=128,
+    ) == '{"tools":[]}'
+
+    assert calls[0]["extra_body"]["reasoning"] == {
+        "effort": "low",
+        "exclude": True,
+    }
+    assert calls[0]["extra_body"]["provider"]["only"] == ["openai"]
+    assert "reasoning_effort" not in calls[0]
+    assert "temperature" not in calls[0]
 
 
 @pytest.mark.asyncio

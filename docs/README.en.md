@@ -81,10 +81,13 @@ Discord message
   -> one final response
 ```
 
-The routing lane uses `gpt-5.4-nano` in the current Masamo profile and the main
-lane uses `deepseek-v4-flash`. Keyword rules are an outage fallback, not the
-normal tool-selection mechanism. Long context is compacted inside the routing
-response, so compaction does not create another LLM request.
+The routing and main lanes use `openai/gpt-5.6-luna` through OpenRouter in the
+current Masamo profile. Routing uses low reasoning. The main lane selects
+`none`, `low`, or `high` in the same routing response according to the request;
+it never retries a lower level as a higher one. Requests are restricted to the
+OpenAI provider with provider fallbacks disabled. Keyword rules are an outage
+fallback, not the normal tool-selection mechanism. Long context is compacted
+inside the routing response, so compaction does not create another LLM request.
 
 Current or niche factual questions are evidence-gated. If a required lookup
 fails, Masamong says it could not verify the answer instead of inventing market
