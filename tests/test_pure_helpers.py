@@ -83,6 +83,24 @@ class TestSplitMessageChunks:
         assert "• **기온** · 값: 21도" in normalized
         assert "• **강수** · 값: 없음" in normalized
 
+    def test_laughter_spam_is_limited_outside_code_blocks(self):
+        text = (
+            "첫 문장 ㅋㅋㅋㅋㅋㅋㅋㅋ\n"
+            "두 번째 ㅎㅎㅎㅎㅎㅎ\n"
+            "세 번째 ㅋㅋㅋㅋ\n"
+            "```text\n"
+            "ㅋㅋㅋㅋㅋㅋㅋㅋ\n"
+            "```"
+        )
+
+        normalized = normalize_discord_text(text)
+
+        assert "첫 문장 ㅋㅋㅋㅋ" in normalized
+        assert "두 번째 ㅎㅎㅎㅎ" in normalized
+        assert "세 번째 ㅋㅋㅋㅋ" not in normalized
+        # 사용자가 요청한 코드/원문 블록은 후처리로 훼손하지 않는다.
+        assert "```text\nㅋㅋㅋㅋㅋㅋㅋㅋ\n```" in normalized
+
     def test_code_block_is_not_rewritten_and_each_chunk_is_balanced(self):
         text = "```python\n" + ("print('# not a heading')\n" * 30) + "```"
 

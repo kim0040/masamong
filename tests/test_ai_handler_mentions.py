@@ -227,3 +227,44 @@ def test_configured_channel_wins_over_guild_fallback(monkeypatch):
 
     assert "이 채널만의 말투" in prompt
     assert "먼저 정의된 말투" not in prompt
+
+
+def test_final_system_prompts_keep_personas_isolated_with_shared_style_contract(
+    monkeypatch,
+):
+    handler, _ = _build_handler()
+    monkeypatch.setattr(
+        config,
+        "CHANNEL_AI_CONFIG",
+        {
+            456: {"persona": "A 서버 전용 반말", "rules": "A 규칙"},
+            654: {"persona": "B 서버 전용 해요체", "rules": "B 규칙"},
+        },
+    )
+    monkeypatch.setattr(config, "COMETAPI_SYSTEM_PROMPT_MAX_CHARS", 10_000)
+    _bot_with_channels(handler, {456: 123, 654: 987})
+    handler._get_custom_emoji_instruction = lambda guild, query: ""
+
+    message_a = SimpleNamespace(
+        channel=SimpleNamespace(id=456),
+        guild=SimpleNamespace(id=123),
+    )
+    message_b = SimpleNamespace(
+        channel=SimpleNamespace(id=654),
+        guild=SimpleNamespace(id=987),
+    )
+    prompt_a = handler._compose_main_system_prompt(
+        message_a,
+        user_query="설명해줘",
+    )
+    prompt_b = handler._compose_main_system_prompt(
+        message_b,
+        user_query="설명해줘",
+    )
+
+    assert "A 서버 전용 반말" in prompt_a
+    assert "B 서버 전용 해요체" not in prompt_a
+    assert "B 서버 전용 해요체" in prompt_b
+    assert "A 서버 전용 반말" not in prompt_b
+    assert prompt_a.count("### 말투 유지 계약") == 1
+    assert prompt_b.count("### 말투 유지 계약") == 1

@@ -1425,7 +1425,8 @@ class AIHandler(commands.Cog):
             f"- 자료로 확인되지 않은 수치·날짜·인용은 만들지 말고, 출처가 충돌하면 그 차이를 밝혀.\n"
             f"- 오늘/어제 같은 표현은 가능한 한 정확한 날짜로 풀어 써.\n"
             f"- 시스템 태그는 절대 노출하지 마.\n"
-            f"- 페르소나 말투를 반드시 유지해."
+            f"- 페르소나 말투를 반드시 유지해.\n\n"
+            f"{config.MODEL_STYLE_FIDELITY_PROMPT}"
         )
 
         user_prompt = (
@@ -2134,6 +2135,9 @@ class AIHandler(commands.Cog):
         )
         if emoji_instruction:
             system_sections.append(emoji_instruction)
+        # 모델별 기본 문체보다 채널 페르소나가 우선되도록 마지막 system
+        # 섹션에 둔다. 프롬프트 예산이 잘려도 keep="both"가 이 계약을 보존한다.
+        system_sections.append(config.MODEL_STYLE_FIDELITY_PROMPT)
 
         system_prompt = "\n\n".join(
             section.strip() for section in system_sections if section and section.strip()
@@ -4615,7 +4619,8 @@ class AIHandler(commands.Cog):
                 "- 필요 시 가벼운 이모지 한두 개만 사용하고, 과한 장식은 피한다.\n"
                 "- 마지막에는 자연스럽게 행동을 촉구하거나 격려하는 말을 덧붙인다.\n"
                 "- 절대로 @everyone, @here, <@&역할ID> 같은 멘션 태그를 사용하지 않는다. "
-                "메시지에 멘션을 포함하면 안 된다."
+                "메시지에 멘션을 포함하면 안 된다.\n\n"
+                f"{config.MODEL_STYLE_FIDELITY_PROMPT}"
             )
 
             user_prompt = (
@@ -4685,6 +4690,10 @@ class AIHandler(commands.Cog):
             system_prompt = self._get_channel_system_prompt(
                 int(channel.id),
                 guild_id=guild_id,
+            )
+            system_prompt = (
+                f"{system_prompt}\n\n"
+                f"{config.MODEL_STYLE_FIDELITY_PROMPT}"
             )
 
             # [FIX] 명령어로 호출된 경우 멘션 정책 무시 (가드 제거)

@@ -82,6 +82,15 @@ Every OpenRouter request allows only the OpenAI provider, disables provider
 fallbacks, and requires support for all sent parameters. Image generation
 remains on its separate CometAPI key and endpoint.
 
+A provider-neutral style-fidelity contract is placed at the end of the final
+system prompt. It makes the selected channel `persona/rules` authoritative over
+the model's default help-desk or textbook voice without copying a persona
+between guilds. Recent bot turns from the same channel may guide cadence only;
+facts, numeric claims, laughter spam, repeated sentences, malformed endings,
+and typos are not style examples. Before Discord delivery, deterministic
+normalization preserves code blocks while bounding excessive `ㅋㅋ/ㅎㅎ`
+markers. This adds no LLM call or billing.
+
 ## Context harness
 
 The bot does not append the entire chat log:

@@ -75,6 +75,56 @@ def test_persona_exists_only_in_system_role(monkeypatch):
     assert len(user_prompt) <= config.COMETAPI_USER_PROMPT_MAX_CHARS
 
 
+def test_main_system_prompt_ends_with_provider_neutral_style_contract(
+    monkeypatch,
+):
+    monkeypatch.setattr(config, "COMETAPI_SYSTEM_PROMPT_MAX_CHARS", 10_000)
+
+    handler = _handler()
+    handler._get_channel_system_prompt = (
+        lambda channel_id, guild_id=None: "SERVER_PERSONA\nSERVER_RULES"
+    )
+    handler._get_custom_emoji_instruction = lambda guild, query: ""
+
+    system_prompt = handler._compose_main_system_prompt(
+        _message(),
+        user_query="UML이 뭐야?",
+    )
+
+    assert system_prompt.count("### 말투 유지 계약") == 1
+    assert system_prompt.rfind("### 말투 유지 계약") > system_prompt.rfind(
+        "### 외부 자료 처리 규칙"
+    )
+    assert "고객센터, 교과서, 보고서처럼 딱딱한" in system_prompt
+    assert "최근 대화의 Bot 문장" in system_prompt
+    # 공용 계약은 특정 운영 서버의 고유 말투나 호칭을 하드코딩하지 않는다.
+    assert "마사모 서버" not in config.MODEL_STYLE_FIDELITY_PROMPT
+    assert "연사모" not in config.MODEL_STYLE_FIDELITY_PROMPT
+    assert "오빠" not in config.MODEL_STYLE_FIDELITY_PROMPT
+
+
+def test_style_contract_survives_tight_system_prompt_budget(monkeypatch):
+    monkeypatch.setattr(config, "COMETAPI_SYSTEM_PROMPT_MAX_CHARS", 700)
+
+    handler = _handler()
+    handler._get_channel_system_prompt = (
+        lambda channel_id, guild_id=None: (
+            "PERSONA_HEAD_SENTINEL " + ("P" * 3_000)
+        )
+    )
+    handler._get_custom_emoji_instruction = lambda guild, query: ""
+
+    system_prompt = handler._compose_main_system_prompt(
+        _message(),
+        user_query="짧은 질문",
+    )
+
+    assert len(system_prompt) <= 700
+    assert "PERSONA_HEAD_SENTINEL" in system_prompt
+    # keep="both"가 맨 뒤 계약의 핵심 안전 우선 문장을 보존한다.
+    assert "정확성·안전·개인정보 규칙" in system_prompt
+
+
 def test_main_prompt_keeps_digest_separate_from_recent_verbatim(monkeypatch):
     monkeypatch.setattr(config, "COMETAPI_USER_PROMPT_MAX_CHARS", 4_000)
 
