@@ -1,0 +1,19 @@
+# gitleaks custom config — extends the built-in default rules.
+# Docs: https://github.com/gitleaks/gitleaks#configuration
+# (파일명 gitleaks.toml 은 gitleaks-action 이 자동 감지함)
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Non-secret values: test fixtures and model-name defaults"
+paths = [
+  '''tests/fixtures/''',
+]
+regexes = [
+  '''123456789012345678''',            # fake Discord bot user ID used in tests
+  '''discord-123456789''',             # fake user_key used in tests
+  '''de8d551ad2b6989042bd4230''',      # fake dedup_key in fixture JSON
+  '''cb7e5d4867ba60c789e01a93''',      # fake dedup_key in fixture JSON
+  '''DeepSeek-V3\.2-Exp-nothinking''', # CometAPI model name (config default)
+]

@@ -170,8 +170,9 @@ profiles/*.yml
 
 examples/
 
-# GitHub 템플릿 (로컬 전용)
-.github/
+# GitHub 템플릿 (로컬 전용) — .github/workflows/ 만 예외로 추적 (gitleaks CI)
+.github/*
+!.github/workflows/
 
 # 테스트 데이터
 test_data/
