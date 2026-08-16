@@ -11,6 +11,7 @@
     "MSG_WEATHER_FETCH_ERROR": "😥 Failed to fetch weather information. Please try again later.",
     "MSG_WEATHER_TIMEOUT": "⏱️ Weather API timed out. Please try again in a moment.",
     "MSG_WEATHER_NO_DATA": "😥 No weather data available for the requested time/date.",
+    "MSG_KMA_API_DAILY_LIMIT_REACHED": "😥 I've used up today's weather API quota. Please ask again tomorrow.",
     "MSG_FORTUNE_ERROR": "I fell asleep reading your fortune. Please ask again!",
     "MSG_SUMMARY_ERROR": "I got a headache trying to summarize. Please try again.",
     "MSG_SUMMARY_NO_DATA": "Not enough conversation to summarize yet.",

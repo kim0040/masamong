@@ -25,6 +25,15 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
+# 분류되지 않은 오류가 같은 연결에서 이 횟수만큼 연속 발생하면 연결을 폐기한다.
+_UNCLASSIFIED_FAILURE_LIMIT = 5
+
+# 재연결이 실패했을 때 다음 시도까지의 최소 대기(초)와 상한. DB가 완전히 내려간
+# 동안 여러 background loop가 매 주기마다 TCP 연결을 새로 시도하면 원격 TiDB의
+# 연결 수/RU를 불필요하게 소모하므로 지수 백오프로 시도 간격을 넓힌다.
+_RECONNECT_BACKOFF_BASE_SECONDS = 2.0
+_RECONNECT_BACKOFF_MAX_SECONDS = 60.0
+
 
 class CompatDBError(aiosqlite.Error):
     """TiDB 에러를 aiosqlite 스타일로 감싸기 위한 기본 예외."""
@@ -322,6 +331,15 @@ class TiDBConnection:
         self.backend = "tidb"
         self._connected_at_monotonic: float | None = None
         self._transaction_dirty = False
+        # 연결이 더 이상 쓸 수 없다고 판정된 상태. 미확정 쓰기가 남아 있어도
+        # 서버 쪽 세션은 이미 사라졌으므로 다음 사용 시점에 반드시 재연결한다.
+        self._conn_broken = False
+        # 분류되지 않은 형태의 장애로 같은 연결이 계속 실패할 때를 대비한
+        # 백스톱. 연속 실패가 임계값을 넘으면 연결을 폐기 대상으로 본다.
+        self._consecutive_failures = 0
+        # 재연결 실패 시 지수 백오프 상태.
+        self._reconnect_failures = 0
+        self._reconnect_blocked_until: float | None = None
 
     async def connect(self) -> "TiDBConnection":
         """PyMySQL 연결을 생성하고 연결 시각을 기록합니다."""
@@ -330,6 +348,8 @@ class TiDBConnection:
         self._conn = await asyncio.to_thread(pymysql.connect, **self.settings.to_connect_kwargs())
         self._connected_at_monotonic = time.monotonic()
         self._transaction_dirty = False
+        self._conn_broken = False
+        self._consecutive_failures = 0
         return self
 
     def _is_connection_stale(self) -> bool:
@@ -340,9 +360,30 @@ class TiDBConnection:
 
     @staticmethod
     def _is_retryable_disconnect(exc: Exception) -> bool:
-        """예외 메시지/코드로 재연결 가능한 연결 끊김인지 판별합니다."""
+        """예외 타입/메시지/코드로 재연결 가능한 연결 끊김인지 판별합니다.
+
+        PyMySQL은 소켓이 이미 닫힌 연결에 명령을 보내면 코드도 메시지도 없는
+        ``InterfaceError(0, "")``를 던진다. 코드 집합만 검사하면 이 예외가 걸러지지
+        않아 죽은 연결을 영구히 재사용하게 되므로 타입으로 먼저 판정한다.
+        """
+        # InterfaceError는 드라이버 레벨에서 연결을 더 쓸 수 없다는 신호다.
+        if pymysql is not None and isinstance(exc, pymysql.err.InterfaceError):
+            return True
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+            return True
         msg = str(exc).lower()
-        if any(token in msg for token in ("lost connection", "server has gone away", "connection was killed", "connection reset")):
+        if any(
+            token in msg
+            for token in (
+                "lost connection",
+                "server has gone away",
+                "connection was killed",
+                "connection reset",
+                "broken pipe",
+                "already closed",
+                "connection is closed",
+            )
+        ):
             return True
         code = None
         if getattr(exc, "args", None):
@@ -351,6 +392,31 @@ class TiDBConnection:
             except Exception:
                 code = None
         return code in {2006, 2013, 2055}
+
+    def _note_failure(self, exc: Exception) -> bool:
+        """실행 실패를 기록하고 연결 폐기가 필요한지 판정합니다.
+
+        분류된 연결 끊김이면 즉시 폐기 대상으로 표시한다. 분류되지 않은
+        오류라도 같은 연결에서 연속으로 누적되면 알 수 없는 형태의 단절로 보고
+        폐기 대상으로 승격한다(미래의 새로운 wedge 형태에 대한 백스톱).
+        """
+        self._consecutive_failures += 1
+        if self._is_retryable_disconnect(exc):
+            self._conn_broken = True
+            return True
+        if self._consecutive_failures >= _UNCLASSIFIED_FAILURE_LIMIT:
+            logger.warning(
+                "동일 TiDB 연결에서 분류되지 않은 오류가 %d회 연속 발생해 "
+                "연결을 폐기 대상으로 표시합니다: %s",
+                self._consecutive_failures,
+                exc,
+            )
+            self._conn_broken = True
+        return False
+
+    def _note_success(self) -> None:
+        """정상 실행 시 연속 실패 카운터를 초기화합니다."""
+        self._consecutive_failures = 0
 
     def _reconnect_sync(self) -> None:
         """기존 연결을 닫고 새 PyMySQL 연결을 동기적으로 생성합니다."""
@@ -364,6 +430,42 @@ class TiDBConnection:
         self._conn = pymysql.connect(**self.settings.to_connect_kwargs())
         self._connected_at_monotonic = time.monotonic()
         self._transaction_dirty = False
+        self._conn_broken = False
+        self._consecutive_failures = 0
+
+    async def _reconnect_locked(self) -> None:
+        """지수 백오프를 적용해 재연결합니다.
+
+        반드시 ``self._lock``을 획득한 상태에서만 호출해야 한다. 재연결이
+        연속 실패하면 다음 시도까지 대기 구간을 두어, DB가 내려간 동안 여러
+        background loop가 매 주기 새 TCP 연결을 시도하는 것을 막는다.
+        """
+        now = time.monotonic()
+        blocked_until = self._reconnect_blocked_until
+        if blocked_until is not None and now < blocked_until:
+            raise CompatOperationalError(
+                "TiDB 재연결 백오프 중입니다. "
+                f"{blocked_until - now:.1f}초 후 다시 시도합니다."
+            )
+        try:
+            await asyncio.to_thread(self._reconnect_sync)
+        except Exception as exc:
+            self._reconnect_failures += 1
+            delay = min(
+                _RECONNECT_BACKOFF_MAX_SECONDS,
+                _RECONNECT_BACKOFF_BASE_SECONDS * (2 ** (self._reconnect_failures - 1)),
+            )
+            self._reconnect_blocked_until = time.monotonic() + delay
+            self._conn_broken = True
+            logger.warning(
+                "TiDB 재연결 실패(%d회 연속). %.1f초 후 재시도합니다: %s",
+                self._reconnect_failures,
+                delay,
+                exc,
+            )
+            raise CompatOperationalError(str(exc)) from exc
+        self._reconnect_failures = 0
+        self._reconnect_blocked_until = None
 
     async def _ensure_connected_locked(self) -> None:
         """연결 상태 점검/재연결.
@@ -381,8 +483,19 @@ class TiDBConnection:
         if self._conn is None:
             await self.connect()
             return
+        # 폐기 대상으로 표시된 연결은 미확정 쓰기가 남아 있어도 재연결한다.
+        # 서버 세션이 이미 사라져 트랜잭션도 함께 유실된 상태이므로, dirty를
+        # 이유로 재연결을 미루면 죽은 연결을 영구히 붙들게 된다.
+        if self._conn_broken:
+            if self._transaction_dirty:
+                logger.warning(
+                    "끊어진 TiDB 연결을 교체합니다. 미확정 트랜잭션은 서버 세션과 "
+                    "함께 유실되었으므로 호출자가 작업을 재시도해야 합니다."
+                )
+            await self._reconnect_locked()
+            return
         if self._is_connection_stale() and not self._transaction_dirty:
-            await asyncio.to_thread(self._reconnect_sync)
+            await self._reconnect_locked()
             return
 
     async def _enter_transaction_gate(self, *, starts_transaction: bool) -> bool:
@@ -464,23 +577,24 @@ class TiDBConnection:
                     self._transaction_dirty = True
                 try:
                     result = await asyncio.to_thread(self._execute_sync, sql, bind)
+                    self._note_success()
                     return result
                 except Exception as exc:
-                    if self._is_retryable_disconnect(exc):
+                    if self._note_failure(exc):
                         transaction_was_dirty = self._transaction_dirty
-                        try:
-                            await asyncio.to_thread(self._reconnect_sync)
-                        except Exception as retry_exc:  # pragma: no cover
-                            raise CompatOperationalError(str(retry_exc)) from retry_exc
+                        await self._reconnect_locked()
                         if retry_safe and not transaction_was_dirty:
                             try:
-                                return await asyncio.to_thread(
+                                result = await asyncio.to_thread(
                                     self._execute_sync,
                                     sql,
                                     bind,
                                 )
                             except Exception as retry_exc:  # pragma: no cover
+                                self._note_failure(retry_exc)
                                 raise CompatOperationalError(str(retry_exc)) from retry_exc
+                            self._note_success()
+                            return result
                         raise CompatOperationalError(
                             "연결 단절 시 쓰기 또는 진행 중 트랜잭션은 결과가 불확실하여 "
                             "자동 재실행하지 않았습니다."
@@ -521,12 +635,10 @@ class TiDBConnection:
             self._transaction_dirty = True
             try:
                 await asyncio.to_thread(self._executemany_sync, sql, values)
+                self._note_success()
             except Exception as exc:  # pragma: no cover
-                if self._is_retryable_disconnect(exc):
-                    try:
-                        await asyncio.to_thread(self._reconnect_sync)
-                    except Exception as retry_exc:
-                        raise CompatOperationalError(str(retry_exc)) from retry_exc
+                if self._note_failure(exc):
+                    await self._reconnect_locked()
                     raise CompatOperationalError(
                         "연결 단절 시 executemany 결과가 불확실하여 자동 재실행하지 않았습니다."
                     ) from exc
@@ -555,9 +667,10 @@ class TiDBConnection:
                 try:
                     await asyncio.to_thread(self._conn.commit)
                     self._transaction_dirty = False
+                    self._note_success()
                 except Exception as exc:  # pragma: no cover
-                    if self._is_retryable_disconnect(exc):
-                        await asyncio.to_thread(self._reconnect_sync)
+                    if self._note_failure(exc):
+                        await self._reconnect_locked()
                         raise CompatOperationalError(
                             "커밋 중 연결이 끊어져 결과가 불확실합니다. 멱등성 키나 "
                             "read-back 확인 없이 작업 전체를 자동 재시도하면 안 됩니다."
@@ -581,12 +694,19 @@ class TiDBConnection:
                 try:
                     await asyncio.to_thread(self._conn.rollback)
                     self._transaction_dirty = False
+                    self._note_success()
                 except Exception as exc:  # pragma: no cover
-                    if self._is_retryable_disconnect(exc):
-                        await asyncio.to_thread(self._reconnect_sync)
-                        raise CompatOperationalError(
-                            "롤백 중 연결이 끊어졌습니다. 연결은 복구되었지만 작업 재시도가 필요합니다."
-                        ) from exc
+                    if self._note_failure(exc):
+                        # 연결이 끊긴 시점에 서버 세션과 트랜잭션이 함께 사라졌다.
+                        # 롤백의 목적은 이미 달성됐으므로 연결만 새로 만들고
+                        # 정상 반환한다. 여기서 예외를 올리면 호출자의 정리
+                        # 경로가 매 주기 CRITICAL 로그를 남기게 된다.
+                        await self._reconnect_locked()
+                        logger.info(
+                            "연결이 끊긴 상태의 롤백 요청입니다. 트랜잭션은 서버 "
+                            "세션과 함께 이미 폐기되어 새 연결로 교체했습니다."
+                        )
+                        return
                     raise CompatOperationalError(str(exc)) from exc
         finally:
             if self._transaction_owner is task:

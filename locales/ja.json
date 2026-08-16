@@ -11,6 +11,7 @@
     "MSG_WEATHER_FETCH_ERROR": "😥 天気情報の取得に失敗した。ちょっと後にまた試してみて。",
     "MSG_WEATHER_TIMEOUT": "⏱️ 天気APIの応答が遅すぎてタイムアウトした。少し待ってからまた頼んで。",
     "MSG_WEATHER_NO_DATA": "😥 その時間/日付の天気情報はまだないか、取得できないよ。",
+    "MSG_KMA_API_DAILY_LIMIT_REACHED": "😥 今日の気象庁APIの利用回数を使い切っちゃった。明日また聞いてね。",
     "MSG_FORTUNE_ERROR": "占い読んでたら寝ちゃった。もう一回聞いてみて！",
     "MSG_SUMMARY_ERROR": "まとめようとしたら頭がパンクしそう。もう一回試してみて。",
     "MSG_SUMMARY_NO_DATA": "まとめるほど会話が溜まってないよ。",
