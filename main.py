@@ -140,6 +140,40 @@ class ReMasamongBot(commands.Bot):
         self.locked_users = set()
         self._guild_settings_cache: dict[int, dict[str, object]] = {}
         self._guild_control_cache = {}
+        self._db_health_task: asyncio.Task | None = None
+
+    async def _db_health_loop(self) -> None:
+        """DB 연결이 살아 있는지 주기적으로 확인하는 안전장치.
+
+        연결이 끊긴 뒤 재사용되지 못하면 봇은 살아 있는 것처럼 보이지만 DB에
+        의존하는 모든 기능이 조용히 실패한다(2026-08-10 장애). 실제 복구는
+        compat_db의 재연결 경로가 담당하고, 이 loop는 트래픽이 없는 시간대에도
+        그 경로가 확실히 한 번은 실행되도록 만드는 역할만 한다.
+
+        비용을 최소화하기 위해 `SELECT 1` 한 건만 사용하고, 실패해도 봇을
+        멈추지 않는다. 반복되는 실패 로그는 RepeatSuppressingFilter가 줄인다.
+        """
+        interval = config.DB_HEALTHCHECK_INTERVAL_SECONDS
+        await self.wait_until_ready()
+        while not self.is_closed():
+            await asyncio.sleep(interval)
+            db = self.db
+            if db is None:
+                continue
+            try:
+                async with db.execute("SELECT 1") as cursor:
+                    await cursor.fetchone()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # 다음 사용 시점에 반드시 새 연결을 잡도록 표시한다. 여기서
+                # 직접 재연결하지 않는 이유는 compat_db의 백오프/lock 규약을
+                # 우회하지 않기 위해서다.
+                if getattr(db, "backend", "sqlite") == "tidb":
+                    db._conn_broken = True
+                logger.warning(
+                    "DB 헬스체크 실패. 다음 사용 시점에 연결을 교체합니다: %s", exc
+                )
 
     async def _load_guild_settings_cache(self) -> None:
         """서버별 AI 정책을 한 번 읽어 메시지마다 원격 DB를 조회하지 않게 합니다."""
@@ -928,6 +962,14 @@ class ReMasamongBot(commands.Bot):
             self.db = await connect_main_db(config.DB_BACKEND, sqlite_path=self.db_path, tidb_settings=tidb_settings)
             self.db.row_factory = aiosqlite.Row # 결과를 딕셔너리처럼 접근 가능하게 설정
             logger.info("데이터베이스 연결 완료: backend=%s target=%s", config.DB_BACKEND, _format_storage_target())
+            if config.DB_HEALTHCHECK_INTERVAL_SECONDS > 0:
+                self._db_health_task = asyncio.create_task(
+                    self._db_health_loop(), name="db-health-check"
+                )
+                logger.info(
+                    "DB 헬스체크 활성화: 간격=%d초",
+                    config.DB_HEALTHCHECK_INTERVAL_SECONDS,
+                )
         except Exception as e:
             logger.critical(f"데이터베이스 연결 실패. 봇을 종료합니다: {e}", exc_info=True)
             raise RuntimeError("필수 데이터베이스 연결에 실패했습니다.") from e
@@ -1139,6 +1181,15 @@ class ReMasamongBot(commands.Bot):
             await close_ai_queue()
         if rag_manager is not None:
             await rag_manager.close()
+        db_health_task = getattr(self, "_db_health_task", None)
+        if (
+            db_health_task is not None
+            and db_health_task is not asyncio.current_task()
+            and not db_health_task.done()
+        ):
+            db_health_task.cancel()
+            await asyncio.gather(db_health_task, return_exceptions=True)
+            self._db_health_task = None
         discord_log_task = getattr(self, "_discord_log_task", None)
         if (
             discord_log_task is not None

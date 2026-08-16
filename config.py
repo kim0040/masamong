@@ -800,6 +800,13 @@ LOG_BACKUP_COUNT = max(
     1,
     as_int(load_config_value("MASAMONG_LOG_BACKUP_COUNT", 5), 5),
 )
+# 동일 위치의 반복 경고/오류를 이 시간(초) 동안 한 번만 남긴다. 지속 장애가
+# 나면 60초 주기 loop들이 매 주기 traceback을 남겨 디스크를 채우기 때문이다.
+# 0으로 두면 억제하지 않는다(창을 1초로 축소).
+LOG_REPEAT_SUPPRESS_WINDOW_SECONDS = max(
+    0,
+    as_int(load_config_value("MASAMONG_LOG_REPEAT_SUPPRESS_WINDOW_SECONDS", 600), 600),
+)
 DISCORD_LOG_QUEUE_MAXSIZE = max(
     10,
     as_int(load_config_value("MASAMONG_DISCORD_LOG_QUEUE_MAXSIZE", 500), 500),
@@ -976,6 +983,13 @@ TIDB_WRITE_TIMEOUT = max(
 TIDB_CONN_MAX_LIFETIME_SECONDS = max(
     60,
     as_int(load_config_value("MASAMONG_DB_CONN_MAX_LIFETIME_SECONDS", 600), 600),
+)
+# DB 연결 상태를 주기적으로 확인하는 간격(초). 0이면 비활성화한다.
+# 트래픽이 없는 시간대에도 죽은 연결을 조기에 감지해 교체하기 위한 안전장치다.
+# 쿼리 1건(`SELECT 1`)만 쓰므로 기본값 300초면 하루 288건, RU 부담이 없다.
+DB_HEALTHCHECK_INTERVAL_SECONDS = max(
+    0,
+    as_int(load_config_value("MASAMONG_DB_HEALTHCHECK_INTERVAL_SECONDS", 300), 300),
 )
 # TiDB Cloud Starter 무료 플랜 보호 모드. 월 사용량의 최종 기준은 Cloud
 # 콘솔이지만, 애플리케이션에서 큰 BLOB 후보 집합을 읽는 경로에는 보수적 상한을
@@ -3182,3 +3196,4 @@ MSG_WEATHER_API_KEY_MISSING = _locale_msg("MSG_WEATHER_API_KEY_MISSING")
 MSG_WEATHER_FETCH_ERROR = _locale_msg("MSG_WEATHER_FETCH_ERROR")
 MSG_WEATHER_TIMEOUT = _locale_msg("MSG_WEATHER_TIMEOUT")
 MSG_WEATHER_NO_DATA = _locale_msg("MSG_WEATHER_NO_DATA")
+MSG_KMA_API_DAILY_LIMIT_REACHED = _locale_msg("MSG_KMA_API_DAILY_LIMIT_REACHED")

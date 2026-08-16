@@ -22,6 +22,8 @@ from discord.ext import commands
 import traceback
 import json
 import re
+import threading
+import time
 
 import config
 
@@ -108,6 +110,86 @@ _discord_log_dropped = 0
 # Discord 봇 인스턴스를 저장하기 위한 전역 변수
 _bot_instance = None
 _discord_log_loop: asyncio.AbstractEventLoop | None = None
+
+class RepeatSuppressingFilter(logging.Filter):
+    """같은 위치에서 반복되는 동일 로그를 시간 창 단위로 축약합니다.
+
+    지속적인 장애(예: DB 연결 단절)가 나면 60초 주기 background loop들이 매
+    주기마다 전체 traceback을 남긴다. 2026-08-10 장애에서는 이 때문에 하루
+    37만 줄이 쌓여 journal이 1.2GB까지 늘고 디스크가 80%를 넘었다.
+
+    첫 발생은 traceback을 포함해 그대로 남기고, 같은 창 안의 반복은 억제한다.
+    창이 끝나면 다시 한 번 남기되 그동안 억제된 횟수를 메시지에 덧붙여,
+    "문제가 계속되고 있다"는 정보는 잃지 않으면서 로그량만 줄인다.
+
+    핸들러에 붙여야 한다. 로거에 붙이면 하위 로거에서 전파된 record에는
+    적용되지 않는다.
+    """
+
+    def __init__(
+        self,
+        window_seconds: float = 600.0,
+        level: int = logging.WARNING,
+        clock=time.monotonic,
+    ):
+        super().__init__()
+        self._window_seconds = max(1.0, float(window_seconds))
+        self._level = level
+        self._clock = clock
+        self._lock = threading.Lock()
+        # key -> [창 시작 시각, 억제된 횟수]
+        self._seen: dict[tuple, list] = {}
+
+    @staticmethod
+    def _key(record: logging.LogRecord) -> tuple:
+        return (
+            record.name,
+            record.levelno,
+            record.module,
+            record.funcName,
+            record.lineno,
+            str(record.msg),
+        )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # 정보성 로그는 그대로 통과시킨다. 폭증하는 건 경고/오류 계열이다.
+        if record.levelno < self._level:
+            return True
+
+        # 같은 record가 여러 핸들러를 거치므로 판정은 한 번만 하고 재사용한다.
+        # 그러지 않으면 첫 핸들러에서 바뀐 msg 때문에 키가 달라져 중복 집계된다.
+        cached = getattr(record, "_repeat_filter_decision", None)
+        if cached is not None:
+            return bool(cached)
+
+        key = self._key(record)
+        now = self._clock()
+        with self._lock:
+            entry = self._seen.get(key)
+            if entry is None or (now - entry[0]) >= self._window_seconds:
+                suppressed = entry[1] if entry is not None else 0
+                self._seen[key] = [now, 0]
+                # 오래된 항목이 무한히 쌓이지 않도록 창이 지난 키를 정리한다.
+                if len(self._seen) > 512:
+                    stale = [
+                        k
+                        for k, v in self._seen.items()
+                        if (now - v[0]) >= self._window_seconds
+                    ]
+                    for k in stale:
+                        self._seen.pop(k, None)
+                if suppressed:
+                    record.msg = (
+                        f"{record.msg} [직전 {self._window_seconds / 60:.0f}분간 "
+                        f"동일 오류 {suppressed}건 생략]"
+                    )
+                record._repeat_filter_decision = True
+                return True
+
+            entry[1] += 1
+            record._repeat_filter_decision = False
+            return False
+
 
 class ColoredFormatter(logging.Formatter):
     """
@@ -348,9 +430,16 @@ def setup_logger() -> logging.Logger:
     if logger.hasHandlers():
         logger.handlers.clear()
 
+    # 지속 장애 시 동일 로그가 매 주기 쌓여 디스크를 채우는 것을 막는다.
+    # 모든 핸들러가 같은 인스턴스를 공유해야 창/카운터가 한 벌로 관리된다.
+    repeat_filter = RepeatSuppressingFilter(
+        window_seconds=config.LOG_REPEAT_SUPPRESS_WINDOW_SECONDS
+    )
+
     # 1. 콘솔 핸들러 (가독성을 위한 색상 포맷)
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(ColoredFormatter())
+    console_handler.addFilter(repeat_filter)
     logger.addHandler(console_handler)
 
     # 2. 일반 로그 파일 핸들러 (분석을 위한 JSON 포맷)
@@ -365,6 +454,7 @@ def setup_logger() -> logging.Logger:
         if os.path.realpath(file_handler.baseFilename) != os.path.realpath(os.devnull):
             os.chmod(file_handler.baseFilename, 0o600)
         file_handler.setFormatter(JsonFormatter())
+        file_handler.addFilter(repeat_filter)
         logger.addHandler(file_handler)
     except Exception as e:
         print(f"**[심각] 일반 로그 파일 핸들러 설정 오류:** {e}", file=sys.stderr)
@@ -384,6 +474,7 @@ def setup_logger() -> logging.Logger:
             os.chmod(error_handler.baseFilename, 0o600)
         error_handler.setFormatter(JsonFormatter())
         error_handler.setLevel(logging.ERROR)
+        error_handler.addFilter(repeat_filter)
         logger.addHandler(error_handler)
     except Exception as e:
         print(f"**[심각] 오류 로그 파일 핸들러 설정 오류:** {e}", file=sys.stderr)

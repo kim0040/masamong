@@ -11,6 +11,7 @@
     "MSG_WEATHER_FETCH_ERROR": "😥 날씨를 가져오지 못했어요. 잠시 뒤에 다시 물어봐 주세요.",
     "MSG_WEATHER_TIMEOUT": "⏱️ 기상청 응답이 너무 느려서 멈췄어요. 조금 뒤에 다시 부탁해주세요.",
     "MSG_WEATHER_NO_DATA": "😥 그 시간대 날씨는 아직 나오지 않았어요.",
+    "MSG_KMA_API_DAILY_LIMIT_REACHED": "😥 오늘 기상청에 물어볼 수 있는 횟수를 다 썼어요. 내일 다시 물어봐 주세요.",
     "MSG_FORTUNE_ERROR": "운세를 보다가 깜빡 졸았어요. 다시 물어봐 주세요.",
     "MSG_SUMMARY_ERROR": "대화를 요약하다 머리에 쥐가 났어요. 다시 시도해주세요.",
     "MSG_SUMMARY_NO_DATA": "요약할 만한 대화가 아직 충분히 쌓이지 않았어요.",
