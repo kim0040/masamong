@@ -19,3 +19,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }} # Only required for Organizations, not personal accounts.
+          # gitleaks-action 은 --config 를 넘기지 않으므로 CLI 가 직접 읽는 이 환경변수로
+          # 허용목록 경로를 명시한다. 없으면 CLI 기본 설정으로 스캔해 오탐으로 실패한다.
+          GITLEAKS_CONFIG: .gitleaks.toml
