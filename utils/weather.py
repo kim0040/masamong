@@ -1185,8 +1185,68 @@ def format_mid_term_forecast(land_data: dict, temp_data: dict, day_offset: int, 
         logger.error(f"Mid-term format error: {e}")
         return f"{location} 중기예보 정보 처리 중 오류 발생."
 
+# 기상청 loc 문자열은 국내면 행정구역/해역명으로, 국외면 국가명으로 시작한다.
+# 좌표보다 이쪽이 기상청의 국내/국외 구분을 그대로 반영하므로 먼저 검사한다.
+_DOMESTIC_LOCATION_TOKENS = (
+    "서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종",
+    "경기", "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주",
+    "충청", "전라", "경상", "북한", "백령", "울릉", "독도", "흑산",
+    "서해", "동해", "남해", "황해",
+)
+_OVERSEAS_LOCATION_TOKENS = (
+    "일본", "중국", "대만", "타이완", "러시아", "필리핀", "인도네시아",
+    "몽골", "베트남", "미국", "알래스카", "칠레", "멕시코", "페루",
+    "뉴질랜드", "파푸아", "터키", "튀르키예", "네팔", "이란", "쿠릴",
+    "캄차카", "괌", "통가", "피지", "솔로몬", "바누아투",
+)
+
+# 한반도와 주변 해역을 위도 구간별 경도 범위로 근사한 경계. 단순 사각형으로는
+# 독도(37.2N/131.9E)를 담으면서 규슈(32.8N/130.7E)를 빼낼 수 없기 때문에
+# 위도대별로 경도 상한을 좁힌다. 각 구간은 (위도 하한, 위도 상한, 경도 하한, 경도 상한).
+_KOREA_LATITUDE_BANDS = (
+    (32.0, 34.0, 124.0, 128.5),   # 이어도·제주 및 남부 해역 (규슈 제외)
+    (34.0, 36.0, 124.0, 130.0),   # 남부 내륙·부산·포항 근해
+    (36.0, 39.0, 123.5, 132.0),   # 중부·백령도·울릉도·독도
+    (39.0, 43.0, 124.0, 131.0),   # 북한 지역
+)
+
+
+def is_domestic_earthquake(item: dict) -> bool:
+    """지진 통보문이 국내(한반도·주변 해역) 지진인지 판별합니다.
+
+    1순위는 기상청 위치명이다. 국내 통보는 행정구역/해역명으로, 국외 통보는
+    국가명으로 시작하므로 좌표보다 구분이 명확하다. 위치명으로 판단이 안 되면
+    진앙 좌표를 보고, 그마저 없으면 국내로 간주한다. 국내 하한이 더 낮으므로
+    분류 실패 시에는 알림을 보내는 쪽이 안전하다.
+    """
+    loc = str(item.get("loc") or "")
+    if any(token in loc for token in _OVERSEAS_LOCATION_TOKENS):
+        return False
+    if any(token in loc for token in _DOMESTIC_LOCATION_TOKENS):
+        return True
+
+    lat = _earthquake_coordinate(item, "lat")
+    lon = _earthquake_coordinate(item, "lon")
+    if lat is None or lon is None:
+        return True
+    return any(
+        lat_min <= lat <= lat_max and lon_min <= lon <= lon_max
+        for lat_min, lat_max, lon_min, lon_max in _KOREA_LATITUDE_BANDS
+    )
+
+
+def earthquake_alert_threshold(item: dict) -> float:
+    """해당 통보문에 적용할 알림 규모 하한을 반환합니다."""
+    if is_domestic_earthquake(item):
+        return float(getattr(config, "EARTHQUAKE_MIN_MAGNITUDE_DOMESTIC", 4.0))
+    return float(getattr(config, "EARTHQUAKE_MIN_MAGNITUDE_OVERSEAS", 7.0))
+
+
 async def get_recent_earthquakes(db: aiosqlite.Connection) -> list | None:
-    """최근 3일간의 지진 통보문을 조회합니다. (국내 영향권 한정)"""
+    """최근 3일간의 지진 통보문 중 알림 대상만 조회합니다.
+
+    '국내영향없음' 통보를 제외하고, 국내/국외별 규모 하한을 적용한다.
+    """
     now = datetime.now(KST)
     # API restriction: max 3 days
     from_date = (now - timedelta(days=2)).strftime("%Y%m%d")
@@ -1225,26 +1285,16 @@ async def get_recent_earthquakes(db: aiosqlite.Connection) -> list | None:
                 elif isinstance(item_value, dict):
                     items = [item_value]
         
-        # Filter Magnitude >= 2.0 (Domestic) and domestic check
-        filtered_items = []
+        candidates = []
         for item in items:
-            if not item: continue
-            
-            mt_val = item.get('mt')
-            rem_val = item.get('rem', '')
-            
-            # 1. '국내영향없음' 필터링 (해외 지진 제외)
-            if "국내영향없음" in rem_val:
+            if not item:
                 continue
-                
-            # 2. 국내 지진 규모 필터 (사용자 요청: 규모 4.0 이상 통보)
-            try:
-                if float(mt_val) >= 4.0:
-                    filtered_items.append(item)
-            except (TypeError, ValueError):
-                logger.debug(f"지진 규모 파싱 실패: mt={mt_val}")
-            
-        return filtered_items
+            # '국내영향없음' 통보는 규모와 무관하게 제외한다.
+            if "국내영향없음" in str(item.get('rem') or ''):
+                continue
+            candidates.append(item)
+
+        return filter_earthquakes_by_magnitude(candidates)
     except Exception:
         return None
 
@@ -1395,6 +1445,62 @@ def cluster_earthquake_events(
         else:
             matched_cluster.append(item)
     return clusters
+
+
+def filter_earthquakes_by_magnitude(items: list[dict]) -> list[dict]:
+    """국내/국외별 규모 하한을 적용해 알릴 통보문만 남깁니다.
+
+    하한은 개별 사건이 아니라 지진군 단위로 판정한다. 기준 지진(지진군 내 최대
+    규모)이 하한을 넘으면 같은 지진군의 후속 지진은 규모가 낮아도 함께 남긴다.
+    후속 지진은 새 메시지가 아니라 기존 알림의 수정으로 표시되므로, 알림 건수를
+    늘리지 않으면서 여진 경과를 보여줄 수 있다.
+    """
+    valid = [item for item in items or [] if isinstance(item, dict)]
+
+    # 발생시각을 못 읽는 통보문은 지진군으로 묶을 수 없으므로 개별 판정한다.
+    unclusterable = [
+        item for item in valid if earthquake_event_datetime(item) is None
+    ]
+    clusterable = [
+        item for item in valid if earthquake_event_datetime(item) is not None
+    ]
+
+    kept: list[dict] = []
+    for cluster in cluster_earthquake_events(
+        clusterable,
+        sequence_window_hours=getattr(
+            config, "EARTHQUAKE_SEQUENCE_WINDOW_HOURS", 72
+        ),
+        sequence_radius_km=getattr(config, "EARTHQUAKE_SEQUENCE_RADIUS_KM", 150),
+    ):
+        if not cluster:
+            continue
+        reference = max(cluster, key=_earthquake_magnitude)
+        threshold = earthquake_alert_threshold(reference)
+        if _earthquake_magnitude(reference) >= threshold:
+            kept.extend(cluster)
+            continue
+        logger.debug(
+            "지진 알림 하한 미달로 지진군 제외: max_mt=%s threshold=%s loc=%s events=%d",
+            reference.get("mt"),
+            threshold,
+            reference.get("loc"),
+            len(cluster),
+        )
+
+    for item in unclusterable:
+        threshold = earthquake_alert_threshold(item)
+        if _earthquake_magnitude(item) >= threshold:
+            kept.append(item)
+        else:
+            logger.debug(
+                "지진 알림 하한 미달로 제외: mt=%s threshold=%s loc=%s",
+                item.get("mt"),
+                threshold,
+                item.get("loc"),
+            )
+
+    return kept
 
 
 def get_earthquake_safety_tips(magnitude: float) -> str:
