@@ -2593,6 +2593,23 @@ EARTHQUAKE_SEQUENCE_MAX_DISPLAY_EVENTS = min(
         ),
     ),
 )
+# 지진 알림 규모 하한. 국내(한반도·주변 해역)는 실제 피해 가능성이 있는 4.0,
+# 국외는 한국에 유의미한 영향이 오는 7.0부터만 통보한다. 국외 중·소규모 지진은
+# 건수가 많지만 국내 피해로 이어지지 않아 알림 소음만 키운다.
+EARTHQUAKE_MIN_MAGNITUDE_DOMESTIC = min(
+    10.0,
+    max(
+        0.0,
+        as_float(load_config_value("EARTHQUAKE_MIN_MAGNITUDE_DOMESTIC", 4.0), 4.0),
+    ),
+)
+EARTHQUAKE_MIN_MAGNITUDE_OVERSEAS = min(
+    10.0,
+    max(
+        0.0,
+        as_float(load_config_value("EARTHQUAKE_MIN_MAGNITUDE_OVERSEAS", 7.0), 7.0),
+    ),
+)
 MORNING_GREETING_TIME = {
     "hour": as_int(load_config_value("MORNING_GREETING_HOUR", 7), 7),
     "minute": as_int(load_config_value("MORNING_GREETING_MINUTE", 30), 30),
