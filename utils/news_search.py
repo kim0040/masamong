@@ -512,6 +512,7 @@ def _call_fast_model(
                             "OPENROUTER_DATA_COLLECTION",
                             "",
                         ),
+                        zdr=getattr(config, "OPENROUTER_ZDR", False),
                     )
                     headers = build_openrouter_extra_headers(
                         app_url=getattr(config, "OPENROUTER_APP_URL", ""),

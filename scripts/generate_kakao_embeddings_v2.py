@@ -294,6 +294,7 @@ class KakaoSessionEmbedder:
                                 "OPENROUTER_DATA_COLLECTION",
                                 "",
                             ),
+                            zdr=getattr(config, "OPENROUTER_ZDR", False),
                         )
 
                     response = await self.client.chat.completions.create(**api_args)

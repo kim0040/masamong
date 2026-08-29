@@ -1311,6 +1311,20 @@ OPENROUTER_PROVIDER_ONLY = as_str(
     load_config_value('OPENROUTER_PROVIDER_ONLY', 'openai'),
     'openai',
 )
+OPENROUTER_ROUTING_PROVIDER_ONLY = as_str(
+    load_config_value(
+        'OPENROUTER_ROUTING_PROVIDER_ONLY',
+        OPENROUTER_PROVIDER_ONLY,
+    ),
+    OPENROUTER_PROVIDER_ONLY,
+)
+OPENROUTER_MAIN_PROVIDER_ONLY = as_str(
+    load_config_value(
+        'OPENROUTER_MAIN_PROVIDER_ONLY',
+        OPENROUTER_PROVIDER_ONLY,
+    ),
+    OPENROUTER_PROVIDER_ONLY,
+)
 OPENROUTER_ALLOW_FALLBACKS = as_bool(
     load_config_value('OPENROUTER_ALLOW_FALLBACKS', 'false'),
 )
@@ -1322,6 +1336,9 @@ OPENROUTER_DATA_COLLECTION = as_str(
     load_config_value('OPENROUTER_DATA_COLLECTION', ''),
     '',
 ).lower()
+OPENROUTER_ZDR = as_bool(
+    load_config_value('OPENROUTER_ZDR', 'false'),
+)
 OPENROUTER_APP_URL = as_str(
     load_config_value('OPENROUTER_APP_URL', ''),
     '',

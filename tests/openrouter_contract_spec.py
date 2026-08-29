@@ -22,6 +22,7 @@ def test_openrouter_provider_and_reasoning_contract_is_bounded():
         allow_fallbacks=False,
         require_parameters=True,
         data_collection="deny",
+        zdr=True,
     )
 
     assert normalize_provider_only(" OpenAI,openai ") == ("openai",)
@@ -31,6 +32,7 @@ def test_openrouter_provider_and_reasoning_contract_is_bounded():
             "allow_fallbacks": False,
             "require_parameters": True,
             "data_collection": "deny",
+            "zdr": True,
         },
         "reasoning": {
             "effort": "high",
@@ -47,6 +49,7 @@ def test_openrouter_unknown_reasoning_does_not_escalate():
 
     assert "reasoning" not in body
     assert body["provider"]["only"] == ["openai"]
+    assert "zdr" not in body["provider"]
 
 
 def test_openrouter_optional_headers_are_length_bounded():

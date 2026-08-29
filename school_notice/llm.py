@@ -180,6 +180,8 @@ class DeepSeekClient:
                         "OPENROUTER_DATA_COLLECTION",
                         "",
                     ),
+                    zdr=os.environ.get("OPENROUTER_ZDR", "false").strip().lower()
+                    in {"1", "true", "yes", "on"},
                 )
             )
         else:
