@@ -52,13 +52,12 @@ cp .env.example .env
 OPENROUTER_API_KEY=your_openrouter_api_key_here
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 OPENROUTER_PROVIDER_ONLY=openai
+OPENROUTER_ROUTING_PROVIDER_ONLY=openai
+OPENROUTER_MAIN_PROVIDER_ONLY=morph
 OPENROUTER_ALLOW_FALLBACKS=false
 OPENROUTER_REQUIRE_PARAMETERS=true
 OPENROUTER_DATA_COLLECTION=deny
-
-# 공식 DeepSeek 최종 출력 경계
-DEEPSEEK_API_KEY=your_deepseek_api_key_here
-DEEPSEEK_BASE_URL=https://api.deepseek.com
+OPENROUTER_ZDR=true
 
 # Routing 레인
 LLM_ROUTING_PRIMARY_PROVIDER=openai_compat
@@ -69,10 +68,12 @@ LLM_ROUTING_PRIMARY_REASONING_EFFORT=low
 
 # Main 레인
 LLM_MAIN_PRIMARY_PROVIDER=openai_compat
-LLM_MAIN_PRIMARY_MODEL=deepseek-v4-flash
-LLM_MAIN_PRIMARY_BASE_URL=${DEEPSEEK_BASE_URL}
-LLM_MAIN_PRIMARY_API_KEY=${DEEPSEEK_API_KEY}
+LLM_MAIN_PRIMARY_MODEL=deepseek/deepseek-v4-flash-0731
+LLM_MAIN_PRIMARY_BASE_URL=${OPENROUTER_BASE_URL}
+LLM_MAIN_PRIMARY_API_KEY=${OPENROUTER_API_KEY}
 LLM_MAIN_FALLBACK_PROVIDER=none
+FORTUNE_MODEL_LITE=deepseek/deepseek-v4-flash-0731
+FORTUNE_MODEL_PRO=deepseek/deepseek-v4-flash-0731
 LLM_DYNAMIC_REASONING_ENABLED=true
 LLM_DYNAMIC_REASONING_DEFAULT=none
 
@@ -123,14 +124,14 @@ timeout 전체를 점유하지 않게 합니다.
 Routing의 OpenRouter 요청에는 `provider.only=["openai"]`, `allow_fallbacks=false`,
 `require_parameters=true`가 함께 들어갑니다. 따라서 OpenRouter 안의 다른 공급자로
 우회하지 않으며, GPT-5.6 Luna가 지원하지 않는 sampling/penalty 파라미터도 보내지
-않습니다. `OPENROUTER_DATA_COLLECTION=deny`를 사용하면 데이터 수집을 허용하지 않는
-endpoint만 후보가 됩니다. OpenAI endpoint가 가용하지 않을 때는 다른 업체로 우회하지
-않고 해당 호출이 안전하게 실패합니다.
+않습니다. Main은 `OPENROUTER_MAIN_PROVIDER_ONLY=morph`로 Morph만 허용합니다.
+`OPENROUTER_DATA_COLLECTION=deny`와 `OPENROUTER_ZDR=true`를 함께 사용해 데이터 수집을
+허용하지 않고 보관하지 않는 endpoint만 후보로 삼습니다. 지정한 endpoint가 가용하지
+않을 때는 다른 업체로 우회하지 않고 해당 호출이 안전하게 실패합니다.
 
-Main의 공식 DeepSeek 요청은 `none/low`에서 thinking을 명시적으로 끄고 `high`에서만
-`reasoning_effort=high`와 thinking을 켭니다. DeepSeek가 `low`를 내부적으로 high로
-승격해 단순 대화까지 추론 토큰을 쓰는 일을 막기 위한 매핑입니다. 이 전환은 같은 최종
-호출의 옵션만 바꾸며 추가 호출이나 재시도를 만들지 않습니다.
+Main의 Morph DeepSeek 요청은 `none/low/high`를 OpenRouter의 요청별 reasoning 옵션으로
+전달합니다. 이 전환은 같은 최종 호출의 옵션만 바꾸며 추가 호출이나 재시도를 만들지
+않습니다.
 
 ```env
 INTENT_LLM_ENABLED=true

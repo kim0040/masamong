@@ -392,6 +392,7 @@ def test_openrouter_fast_call_locks_openai_and_uses_low_reasoning(
     monkeypatch.setattr(config, "OPENROUTER_ALLOW_FALLBACKS", False)
     monkeypatch.setattr(config, "OPENROUTER_REQUIRE_PARAMETERS", True)
     monkeypatch.setattr(config, "OPENROUTER_DATA_COLLECTION", "")
+    monkeypatch.setattr(config, "OPENROUTER_ZDR", True)
     monkeypatch.setattr(config, "OPENROUTER_APP_URL", "")
     monkeypatch.setattr(config, "OPENROUTER_APP_TITLE", "Masamong")
     monkeypatch.setattr(news_search, "_routing_targets", lambda: [target])
@@ -415,6 +416,7 @@ def test_openrouter_fast_call_locks_openai_and_uses_low_reasoning(
         "only": ["openai"],
         "allow_fallbacks": False,
         "require_parameters": True,
+        "zdr": True,
     }
     assert call["extra_body"]["reasoning"] == {
         "effort": "low",

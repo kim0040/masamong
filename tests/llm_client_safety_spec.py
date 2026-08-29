@@ -389,9 +389,11 @@ async def test_openrouter_main_locks_openai_and_uses_unified_reasoning(
     )
     client.get_openai_client = lambda *_args: fake_client
     monkeypatch.setattr(config, "OPENROUTER_PROVIDER_ONLY", "openai")
+    monkeypatch.setattr(config, "OPENROUTER_MAIN_PROVIDER_ONLY", "morph")
     monkeypatch.setattr(config, "OPENROUTER_ALLOW_FALLBACKS", False)
     monkeypatch.setattr(config, "OPENROUTER_REQUIRE_PARAMETERS", True)
     monkeypatch.setattr(config, "OPENROUTER_DATA_COLLECTION", "")
+    monkeypatch.setattr(config, "OPENROUTER_ZDR", True)
     monkeypatch.setattr(config, "OPENROUTER_APP_URL", "https://example.test")
     monkeypatch.setattr(config, "OPENROUTER_APP_TITLE", "Masamong Test")
     target = {
@@ -423,9 +425,10 @@ async def test_openrouter_main_locks_openai_and_uses_unified_reasoning(
     ] == ["none", "high"]
     for call in calls:
         assert call["extra_body"]["provider"] == {
-            "only": ["openai"],
+            "only": ["morph"],
             "allow_fallbacks": False,
             "require_parameters": True,
+            "zdr": True,
         }
         assert call["extra_body"]["reasoning"]["exclude"] is True
         assert call["extra_headers"] == {
@@ -454,9 +457,11 @@ async def test_openrouter_routing_uses_configured_low_reasoning(
         chat=SimpleNamespace(completions=Endpoint())
     )
     monkeypatch.setattr(config, "OPENROUTER_PROVIDER_ONLY", "openai")
+    monkeypatch.setattr(config, "OPENROUTER_ROUTING_PROVIDER_ONLY", "openai")
     monkeypatch.setattr(config, "OPENROUTER_ALLOW_FALLBACKS", False)
     monkeypatch.setattr(config, "OPENROUTER_REQUIRE_PARAMETERS", True)
     monkeypatch.setattr(config, "OPENROUTER_DATA_COLLECTION", "")
+    monkeypatch.setattr(config, "OPENROUTER_ZDR", True)
     monkeypatch.setattr(config, "OPENROUTER_APP_URL", "")
     monkeypatch.setattr(config, "OPENROUTER_APP_TITLE", "Masamong")
     target = {
@@ -480,6 +485,7 @@ async def test_openrouter_routing_uses_configured_low_reasoning(
         "exclude": True,
     }
     assert calls[0]["extra_body"]["provider"]["only"] == ["openai"]
+    assert calls[0]["extra_body"]["provider"]["zdr"] is True
     assert "reasoning_effort" not in calls[0]
     assert "temperature" not in calls[0]
 

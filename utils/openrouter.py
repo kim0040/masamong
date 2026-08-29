@@ -67,6 +67,7 @@ def build_openrouter_extra_body(
     allow_fallbacks: bool = False,
     require_parameters: bool = True,
     data_collection: Any = "",
+    zdr: bool = False,
 ) -> dict[str, Any]:
     """OpenRouter 전용 공급자 고정·추론 본문을 만듭니다."""
     providers = normalize_provider_only(provider_only)
@@ -75,6 +76,8 @@ def build_openrouter_extra_body(
         "allow_fallbacks": bool(allow_fallbacks),
         "require_parameters": bool(require_parameters),
     }
+    if zdr:
+        provider["zdr"] = True
     normalized_collection = str(data_collection or "").strip().lower()
     if normalized_collection in {"allow", "deny"}:
         provider["data_collection"] = normalized_collection

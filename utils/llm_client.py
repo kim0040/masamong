@@ -403,14 +403,24 @@ class LLMClient:
         """OpenRouter target에만 공급자 고정·추론 옵션을 추가합니다."""
         if not is_openrouter_base_url(target.get("base_url")):
             return {}
+        target_name = str(target.get("name") or "").strip().lower()
+        provider_only = getattr(config, "OPENROUTER_PROVIDER_ONLY", "openai")
+        if target_name.startswith("main."):
+            provider_only = getattr(
+                config,
+                "OPENROUTER_MAIN_PROVIDER_ONLY",
+                provider_only,
+            )
+        elif target_name.startswith("routing."):
+            provider_only = getattr(
+                config,
+                "OPENROUTER_ROUTING_PROVIDER_ONLY",
+                provider_only,
+            )
         options: dict[str, Any] = {
             "extra_body": build_openrouter_extra_body(
                 reasoning_effort=reasoning_effort,
-                provider_only=getattr(
-                    config,
-                    "OPENROUTER_PROVIDER_ONLY",
-                    "openai",
-                ),
+                provider_only=provider_only,
                 allow_fallbacks=getattr(
                     config,
                     "OPENROUTER_ALLOW_FALLBACKS",
@@ -426,6 +436,7 @@ class LLMClient:
                     "OPENROUTER_DATA_COLLECTION",
                     "",
                 ),
+                zdr=getattr(config, "OPENROUTER_ZDR", False),
             )
         }
         headers = build_openrouter_extra_headers(

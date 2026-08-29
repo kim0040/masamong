@@ -58,6 +58,7 @@ def test_school_notice_llm_reservation_has_hard_run_cap():
 
 def test_school_notice_openrouter_payload_locks_openai(monkeypatch):
     monkeypatch.setenv("OPENROUTER_PROVIDER_ONLY", "openai")
+    monkeypatch.setenv("OPENROUTER_ZDR", "true")
     monkeypatch.setenv("SCHOOL_NOTICE_LLM_REASONING_EFFORT", "low")
     client = DeepSeekClient(
         _Repository(),
@@ -77,6 +78,7 @@ def test_school_notice_openrouter_payload_locks_openai(monkeypatch):
         "only": ["openai"],
         "allow_fallbacks": False,
         "require_parameters": True,
+        "zdr": True,
     }
     assert payload["reasoning"] == {
         "effort": "low",
