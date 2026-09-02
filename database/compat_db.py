@@ -683,14 +683,45 @@ class TiDBConnection:
                 self._release_transaction_gate(None)
 
     async def rollback(self) -> None:
-        """현재 트랜잭션을 롤백합니다."""
+        """현재 트랜잭션을 롤백합니다.
+
+        롤백은 정리 경로이며, 사후 조건은 "이 연결의 미확정 쓰기가 나중에
+        commit되지 않는다"이다. 연결이 끊겼다면 서버 세션과 함께 트랜잭션도
+        사라졌으므로 그 사후 조건은 이미 충족돼 있다. 따라서 연결 문제로는
+        예외를 올리지 않는다. 살아 있는 연결이 롤백 자체를 거부한 경우에만
+        호출자에게 알린다.
+        """
         if self._conn is None:
             return
         task = asyncio.current_task()
         acquired_gate = await self._enter_transaction_gate(starts_transaction=False)
         try:
             async with self._lock:
-                await self._ensure_connected_locked()
+                # 이미 폐기 대상으로 표시된 연결에는 되돌릴 트랜잭션이 남아
+                # 있지 않다. 여기서 재연결까지 강제하면 백오프 구간에 걸려
+                # 호출자의 정리 경로가 매 주기 CRITICAL 로그를 남기므로,
+                # dirty 표시만 지우고 조용히 반환한다. 실제 재연결은 다음
+                # 쿼리 경로가 필요한 시점에 수행한다.
+                if self._conn_broken:
+                    self._transaction_dirty = False
+                    logger.info(
+                        "끊어진 TiDB 연결의 롤백 요청입니다. 트랜잭션은 서버 "
+                        "세션과 함께 이미 폐기되어 되돌릴 작업이 없습니다."
+                    )
+                    return
+                try:
+                    await self._ensure_connected_locked()
+                except CompatOperationalError as connect_error:
+                    # 재연결 백오프 등으로 서버에 닿지 못하는 상태다. 이
+                    # 경우에도 미확정 쓰기가 살아남을 수 없으므로 정리 경로를
+                    # 실패로 만들지 않는다.
+                    self._transaction_dirty = False
+                    logger.info(
+                        "롤백 시점에 TiDB에 연결할 수 없어 트랜잭션 정리를 "
+                        "건너뜁니다: %s",
+                        connect_error,
+                    )
+                    return
                 try:
                     await asyncio.to_thread(self._conn.rollback)
                     self._transaction_dirty = False
@@ -701,7 +732,17 @@ class TiDBConnection:
                         # 롤백의 목적은 이미 달성됐으므로 연결만 새로 만들고
                         # 정상 반환한다. 여기서 예외를 올리면 호출자의 정리
                         # 경로가 매 주기 CRITICAL 로그를 남기게 된다.
-                        await self._reconnect_locked()
+                        self._transaction_dirty = False
+                        try:
+                            await self._reconnect_locked()
+                        except CompatOperationalError as reconnect_error:
+                            # 백오프 구간이면 교체를 다음 쿼리 경로에 맡긴다.
+                            logger.info(
+                                "끊어진 연결의 롤백 후 재연결이 백오프 중입니다. "
+                                "다음 사용 시점에 교체합니다: %s",
+                                reconnect_error,
+                            )
+                            return
                         logger.info(
                             "연결이 끊긴 상태의 롤백 요청입니다. 트랜잭션은 서버 "
                             "세션과 함께 이미 폐기되어 새 연결로 교체했습니다."
