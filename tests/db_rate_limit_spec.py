@@ -352,3 +352,58 @@ async def test_dm_reservation_fails_closed_when_usage_store_is_missing():
         await db.close()
 
     assert result == (False, "usage_store_error", None)
+
+
+@pytest.mark.asyncio
+async def test_prune_api_call_log_keeps_rows_inside_retention(tmp_path):
+    """보존 기간 안의 행은 남기고 그보다 오래된 행만 지운다.
+
+    rate limit 조회는 최대 하루 창만 보므로, 기본 보존 기간(30일)은 판정에
+    영향을 주지 않으면서 무한 증가만 잘라낸다.
+    """
+    db_path = tmp_path / "prune.db"
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "CREATE TABLE api_call_log ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, api_type TEXT, called_at TEXT)"
+        )
+        now = datetime.now(timezone.utc)
+        rows = [
+            ("kma_daily", (now - timedelta(days=100)).isoformat()),
+            ("kma_daily", (now - timedelta(days=31)).isoformat()),
+            ("kma_daily", (now - timedelta(days=29)).isoformat()),
+            ("kma_daily", now.isoformat()),
+        ]
+        await db.executemany(
+            "INSERT INTO api_call_log (api_type, called_at) VALUES (?, ?)", rows
+        )
+        await db.commit()
+
+        await db_utils.prune_api_call_log(db, 30)
+
+        async with db.execute("SELECT COUNT(*) FROM api_call_log") as cursor:
+            remaining = (await cursor.fetchone())[0]
+    assert remaining == 2
+
+
+@pytest.mark.asyncio
+async def test_prune_api_call_log_disabled_keeps_everything(tmp_path):
+    """보존 일수가 0 이하이면 아무것도 지우지 않는다(무한 보존)."""
+    db_path = tmp_path / "prune_off.db"
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "CREATE TABLE api_call_log ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, api_type TEXT, called_at TEXT)"
+        )
+        old = (datetime.now(timezone.utc) - timedelta(days=999)).isoformat()
+        await db.execute(
+            "INSERT INTO api_call_log (api_type, called_at) VALUES (?, ?)",
+            ("kma_daily", old),
+        )
+        await db.commit()
+
+        await db_utils.prune_api_call_log(db, 0)
+
+        async with db.execute("SELECT COUNT(*) FROM api_call_log") as cursor:
+            remaining = (await cursor.fetchone())[0]
+    assert remaining == 1

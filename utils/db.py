@@ -908,6 +908,35 @@ async def prune_user_activity_log(db: aiosqlite.Connection, retention_days: int)
         logger.error(f"user_activity_log 정리 중 DB 오류: {e}", exc_info=True)
 
 
+async def prune_api_call_log(db: aiosqlite.Connection, retention_days: int):
+    """`api_call_log`에서 보존 기간을 넘긴 오래된 행을 삭제합니다.
+
+    이 테이블은 rate limit 기록 전용이고 모든 조회가 최대 하루(대개 1분/당일)
+    창만 본다. 그런데 지진 통보를 60초마다 조회하는 것만으로 하루 약 1,500행이
+    쌓여, 어떤 조회에도 쓰이지 않는 과거 행이 무한정 늘어난다. 보존 기간은
+    가장 긴 조회 창보다 훨씬 길게 두어 rate limit 판정에는 영향을 주지 않는다.
+
+    retention_days가 0 이하이면 비활성(무한 보존)입니다. called_at은 UTC
+    ISO8601로 저장되므로 문자열 비교로 안전하게 절단할 수 있습니다.
+    """
+    if not retention_days or retention_days <= 0:
+        return
+    try:
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=int(retention_days))
+        ).isoformat()
+        await db.execute("DELETE FROM api_call_log WHERE called_at < ?", (cutoff,))
+        await db.commit()
+        logger.info(
+            "api_call_log 보존정책 적용 완료: %d일 이전 삭제 (cutoff=%s)",
+            retention_days,
+            cutoff,
+        )
+    except Exception as e:
+        await _rollback_after_write_error(db, "api_call_log 보존정책 적용")
+        logger.error(f"api_call_log 정리 중 DB 오류: {e}", exc_info=True)
+
+
 # ========== 이미지 생성 Rate Limiting ==========
 
 async def check_image_user_limit(db: aiosqlite.Connection, user_id: int) -> tuple[bool, int]:

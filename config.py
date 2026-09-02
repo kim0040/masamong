@@ -2512,6 +2512,12 @@ RAG_ARCHIVING_CONFIG = {
     "activity_log_retention_days": as_int(
         load_config_value("USER_ACTIVITY_LOG_RETENTION_DAYS", 0), 0
     ),
+    # api_call_log 보존 일수. 0 이하이면 비활성(무한 보존).
+    # rate limit 조회는 최대 하루 창만 보므로 기본 30일은 판정에 영향이 없다.
+    # 지진 통보 60초 폴링만으로 하루 약 1,500행이 쌓이는 것을 여기서 잘라낸다.
+    "api_call_log_retention_days": as_int(
+        load_config_value("API_CALL_LOG_RETENTION_DAYS", 30), 30
+    ),
 }
 AI_CREATIVE_PROMPTS = {
     "fortune": "사용자 '{user_name}'를 위한 오늘의 운세를 재치있게 알려줘.",
