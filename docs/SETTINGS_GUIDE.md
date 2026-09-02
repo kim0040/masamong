@@ -58,6 +58,8 @@ OPENROUTER_ALLOW_FALLBACKS=false
 OPENROUTER_REQUIRE_PARAMETERS=true
 OPENROUTER_DATA_COLLECTION=deny
 OPENROUTER_ZDR=true
+OPENROUTER_MAIN_ZDR=true
+OPENROUTER_ROUTING_ZDR=false
 
 # Routing 레인
 LLM_ROUTING_PRIMARY_PROVIDER=openai_compat
@@ -125,9 +127,21 @@ Routing의 OpenRouter 요청에는 `provider.only=["openai"]`, `allow_fallbacks=
 `require_parameters=true`가 함께 들어갑니다. 따라서 OpenRouter 안의 다른 공급자로
 우회하지 않으며, GPT-5.6 Luna가 지원하지 않는 sampling/penalty 파라미터도 보내지
 않습니다. Main은 `OPENROUTER_MAIN_PROVIDER_ONLY=morph`로 Morph만 허용합니다.
-`OPENROUTER_DATA_COLLECTION=deny`와 `OPENROUTER_ZDR=true`를 함께 사용해 데이터 수집을
-허용하지 않고 보관하지 않는 endpoint만 후보로 삼습니다. 지정한 endpoint가 가용하지
-않을 때는 다른 업체로 우회하지 않고 해당 호출이 안전하게 실패합니다.
+`OPENROUTER_DATA_COLLECTION=deny`로 데이터 수집을 허용하는 endpoint는 어느 레인에서도
+후보에서 제외합니다. 지정한 endpoint가 가용하지 않을 때는 다른 업체로 우회하지 않고
+해당 호출이 안전하게 실패합니다.
+
+ZDR(Zero Data Retention)은 레인마다 요구 수준을 따로 정합니다. 대화 본문이 그대로
+나가는 Main은 `OPENROUTER_MAIN_ZDR=true`로 보관하지 않는 endpoint만 쓰고, 짧은 라우팅
+JSON만 만드는 Routing은 `OPENROUTER_ROUTING_ZDR=false`로 완화할 수 있습니다. 레인 값을
+비우면 전역 `OPENROUTER_ZDR`을 그대로 따릅니다.
+
+ZDR을 완화해도 데이터가 흘러갈 수 있는 범위는 좁혀둔 그대로입니다.
+`OPENROUTER_ROUTING_PROVIDER_ONLY`가 허용한 공급자 밖으로는 나가지 않고,
+`OPENROUTER_ALLOW_FALLBACKS=false`가 그 목록 밖으로의 우회를 막습니다. 전역 ZDR만
+켜둔 채 레인 모델이 ZDR endpoint를 갖고 있지 않으면 그 레인은 호출할 때마다
+`404 No endpoints found matching your data policy`로 실패하므로, 모델과 ZDR 요구를
+반드시 함께 확인합니다.
 
 Main의 Morph DeepSeek 요청은 `none/low/high`를 OpenRouter의 요청별 reasoning 옵션으로
 전달합니다. 이 전환은 같은 최종 호출의 옵션만 바꾸며 추가 호출이나 재시도를 만들지

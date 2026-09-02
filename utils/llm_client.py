@@ -62,6 +62,56 @@ class LLMProviderTimeoutError(TimeoutError):
     """실제 provider 요청이 제한 시간을 넘긴 경우."""
 
 
+def _coerce_positive_seconds(value: Any) -> float | None:
+    """재시도 지연 후보를 양수 초로 변환하고, 아니면 None을 반환합니다."""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    if seconds != seconds or seconds < 0:  # NaN 방어
+        return None
+    return seconds
+
+
+def rate_limit_retry_delay(exc: Exception, *, max_delay: float) -> float | None:
+    """429 응답이면 재시도까지 기다릴 초를, 아니면 ``None``을 반환합니다.
+
+    공급자가 공유 풀 혼잡으로 돌려주는 429는 보통 ``retry_after_seconds`` 1~2초를
+    함께 준다. 이 짧은 대기만 지키면 흡수되는 실패이므로, 폴백이 없는 레인에서도
+    한 번의 혼잡이 그대로 사용자 응답 실패가 되지 않게 한다. 429가 아닌 오류는
+    재시도하지 않는다(인증 오류·잘못된 모델 이름 등은 기다려도 낫지 않는다).
+    """
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status != 429 and type(exc).__name__ != "RateLimitError":
+        return None
+
+    delay: float | None = None
+
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if headers is not None:
+        try:
+            delay = _coerce_positive_seconds(headers.get("Retry-After"))
+        except Exception:
+            delay = None
+
+    if delay is None:
+        body = getattr(exc, "body", None)
+        if isinstance(body, dict):
+            error = body.get("error")
+            metadata = error.get("metadata") if isinstance(error, dict) else None
+            if isinstance(metadata, dict):
+                delay = _coerce_positive_seconds(
+                    metadata.get("retry_after_seconds")
+                )
+
+    if delay is None:
+        # 공급자가 대기 시간을 알려주지 않으면 짧은 고정 지연만 사용한다.
+        delay = 1.0
+    return max(0.0, min(delay, max_delay))
+
+
 class LLMClient:
     """OpenAI-compatible 및 Gemini-compatible LLM 레인 라우팅 클라이언트.
 
@@ -299,6 +349,45 @@ class LLMClient:
             if acquired:
                 self._provider_call_semaphore.release()
 
+    async def _call_with_rate_limit_retry(
+        self,
+        call_factory: Callable[[], Awaitable[_ProviderResult]],
+        *,
+        lane_name: str,
+        log_extra: dict[str, Any] | None = None,
+    ) -> _ProviderResult:
+        """429에 한해 공급자가 알려준 짧은 대기 뒤 같은 타깃을 다시 호출합니다.
+
+        재시도는 bounded 호출 바깥에서 이뤄지므로 대기 중에 provider 슬롯을
+        점유하지 않는다. 429가 아닌 오류는 즉시 호출자로 올린다.
+        """
+        max_retries = max(
+            0,
+            int(getattr(config, "LLM_RATE_LIMIT_MAX_RETRIES", 2)),
+        )
+        max_delay = float(
+            getattr(config, "LLM_RATE_LIMIT_MAX_DELAY_SECONDS", 5)
+        )
+        attempt = 0
+        while True:
+            try:
+                return await call_factory()
+            except Exception as exc:
+                delay = rate_limit_retry_delay(exc, max_delay=max_delay)
+                if delay is None or attempt >= max_retries:
+                    raise
+                attempt += 1
+                logger.warning(
+                    "LLM 공급자 혼잡으로 재시도합니다: lane=%s attempt=%d/%d "
+                    "delay=%.1fs",
+                    lane_name,
+                    attempt,
+                    max_retries,
+                    delay,
+                    extra=log_extra,
+                )
+                await asyncio.sleep(delay)
+
     @property
     def db(self):
         return self._db
@@ -405,18 +494,26 @@ class LLMClient:
             return {}
         target_name = str(target.get("name") or "").strip().lower()
         provider_only = getattr(config, "OPENROUTER_PROVIDER_ONLY", "openai")
+        # ZDR 요구 수준도 공급자 허용 목록과 같은 레인 단위로 결정한다. 레인
+        # override가 없으면(None) 전역 OPENROUTER_ZDR을 그대로 따른다.
+        zdr = getattr(config, "OPENROUTER_ZDR", False)
+        lane_zdr = None
         if target_name.startswith("main."):
             provider_only = getattr(
                 config,
                 "OPENROUTER_MAIN_PROVIDER_ONLY",
                 provider_only,
             )
+            lane_zdr = getattr(config, "OPENROUTER_MAIN_ZDR", None)
         elif target_name.startswith("routing."):
             provider_only = getattr(
                 config,
                 "OPENROUTER_ROUTING_PROVIDER_ONLY",
                 provider_only,
             )
+            lane_zdr = getattr(config, "OPENROUTER_ROUTING_ZDR", None)
+        if lane_zdr is not None:
+            zdr = bool(lane_zdr)
         options: dict[str, Any] = {
             "extra_body": build_openrouter_extra_body(
                 reasoning_effort=reasoning_effort,
@@ -436,7 +533,7 @@ class LLMClient:
                     "OPENROUTER_DATA_COLLECTION",
                     "",
                 ),
-                zdr=getattr(config, "OPENROUTER_ZDR", False),
+                zdr=zdr,
             )
         }
         headers = build_openrouter_extra_headers(
@@ -1036,9 +1133,13 @@ class LLMClient:
                         call_kwargs["reasoning_effort_override"] = (
                             reasoning_effort_override
                         )
-                    final_response = await self.call_main_lane_target(
-                        target,
-                        **call_kwargs,
+                    final_response = await self._call_with_rate_limit_retry(
+                        lambda: self.call_main_lane_target(
+                            target,
+                            **call_kwargs,
+                        ),
+                        lane_name=str(target.get("name") or "main"),
+                        log_extra=log_extra,
                     )
                 except (LLMAdmissionTimeoutError, LLMProviderTimeoutError) as lane_exc:
                     # 포화 상태에서 fallback까지 대기열에 추가하거나, 완료 여부가

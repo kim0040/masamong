@@ -1339,6 +1339,25 @@ OPENROUTER_DATA_COLLECTION = as_str(
 OPENROUTER_ZDR = as_bool(
     load_config_value('OPENROUTER_ZDR', 'false'),
 )
+# ZDR(Zero Data Retention)은 레인마다 요구 수준이 다르다. main 레인은 대화 본문을
+# 그대로 보내므로 ZDR 공급자만 쓰고, 라우팅 판단만 하는 routing 레인은 ZDR까지는
+# 요구하지 않는다. 대신 어느 레인이든 데이터가 흘러갈 수 있는 범위는
+# OPENROUTER_*_PROVIDER_ONLY 허용 목록과 allow_fallbacks=false로 고정한다.
+# 값을 주지 않으면 None으로 두고 호출 시점에 전역 OPENROUTER_ZDR을 따른다.
+
+
+def _optional_bool(key: str) -> bool | None:
+    """지정되지 않은 레인 override를 None으로 구분해 돌려줍니다."""
+    raw = load_config_value(key, None)
+    if raw is None:
+        return None
+    if isinstance(raw, str) and not raw.strip():
+        return None
+    return as_bool(raw)
+
+
+OPENROUTER_MAIN_ZDR = _optional_bool('OPENROUTER_MAIN_ZDR')
+OPENROUTER_ROUTING_ZDR = _optional_bool('OPENROUTER_ROUTING_ZDR')
 OPENROUTER_APP_URL = as_str(
     load_config_value('OPENROUTER_APP_URL', ''),
     '',
@@ -2341,6 +2360,23 @@ ROUTING_LLM_CALL_TIMEOUT_SECONDS = min(
             load_config_value("ROUTING_LLM_CALL_TIMEOUT_SECONDS", 25),
             25,
         ),
+    ),
+)
+# 공급자 공유 풀 혼잡(429)은 보통 retry_after 1~2초면 흡수된다. 폴백 공급자가
+# 없는 레인에서 한 번의 혼잡이 그대로 응답 실패가 되지 않도록 짧은 재시도만
+# 허용한다. 인증 오류·모델 없음 등 기다려도 낫지 않는 실패는 재시도하지 않는다.
+LLM_RATE_LIMIT_MAX_RETRIES = min(
+    3,
+    max(
+        0,
+        as_int(load_config_value("LLM_RATE_LIMIT_MAX_RETRIES", 2), 2),
+    ),
+)
+LLM_RATE_LIMIT_MAX_DELAY_SECONDS = min(
+    15,
+    max(
+        0,
+        as_int(load_config_value("LLM_RATE_LIMIT_MAX_DELAY_SECONDS", 5), 5),
     ),
 )
 # CometAPI 보호장치 (외부 LLM 과호출/과토큰 방지)

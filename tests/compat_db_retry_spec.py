@@ -545,3 +545,73 @@ async def test_production_wedge_sequence_recovers(monkeypatch):
     state["alive"] = True
     await db._execute_buffered("SELECT 1")
     assert db._conn_broken is False
+
+
+@pytest.mark.asyncio
+async def test_rollback_during_reconnect_backoff_does_not_raise(monkeypatch):
+    """재연결 백오프 중의 롤백은 호출자의 정리 경로를 실패로 만들지 않는다.
+
+    운영에서 관측된 형태다. TiDB 세션이 끊긴 뒤 예약 작업들이 동시에 정리
+    경로로 들어오면, 백오프 구간에 걸린 롤백이 CompatOperationalError를 올려
+    tick마다 CRITICAL 로그를 남겼다. 서버 세션과 함께 트랜잭션도 사라졌으므로
+    되돌릴 작업 자체가 없다.
+    """
+    db = _connection()
+    db._transaction_dirty = True
+    db._conn_broken = True
+    db._reconnect_blocked_until = time.monotonic() + 30
+    attempts = 0
+
+    def never_called_reconnect():
+        nonlocal attempts
+        attempts += 1
+
+    monkeypatch.setattr(db, "_reconnect_sync", never_called_reconnect)
+
+    await db.rollback()
+
+    assert db._transaction_dirty is False
+    # 백오프 구간을 존중하고 재연결을 시도하지 않는다.
+    assert attempts == 0
+    assert db._transaction_gate.locked() is False
+
+
+@pytest.mark.asyncio
+async def test_rollback_after_dead_socket_survives_failing_reconnect(monkeypatch):
+    """롤백 직후의 재연결이 실패해도 정리 경로는 성공으로 끝난다."""
+
+    class DeadConnection:
+        def rollback(self):
+            raise pymysql.err.InterfaceError(0, "")
+
+    db = _connection()
+    db._conn = DeadConnection()
+    db._transaction_dirty = True
+
+    def failing_reconnect():
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(db, "_reconnect_sync", failing_reconnect)
+
+    await db.rollback()
+
+    assert db._transaction_dirty is False
+    assert db._transaction_gate.locked() is False
+
+
+@pytest.mark.asyncio
+async def test_rollback_failure_on_live_connection_still_raises(monkeypatch):
+    """살아 있는 연결이 롤백을 거부하면 그대로 호출자에게 알린다."""
+
+    class PickyConnection:
+        def rollback(self):
+            raise pymysql.err.ProgrammingError(1064, "syntax error")
+
+    db = _connection()
+    db._conn = PickyConnection()
+    db._transaction_dirty = True
+
+    with pytest.raises(CompatOperationalError):
+        await db.rollback()
+
+    assert db._transaction_gate.locked() is False
