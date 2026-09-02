@@ -62,6 +62,12 @@ class LLMProviderTimeoutError(TimeoutError):
     """실제 provider 요청이 제한 시간을 넘긴 경우."""
 
 
+# 재시도 반복의 마지막 방어선. config가 어떤 값을 주더라도 물리 호출 횟수와
+# 대기 시간이 이 한도를 넘지 않는다.
+_RATE_LIMIT_RETRY_HARD_CAP = 3
+_RATE_LIMIT_DELAY_HARD_CAP_SECONDS = 15.0
+
+
 def _coerce_positive_seconds(value: Any) -> float | None:
     """재시도 지연 후보를 양수 초로 변환하고, 아니면 None을 반환합니다."""
     try:
@@ -361,12 +367,24 @@ class LLMClient:
         재시도는 bounded 호출 바깥에서 이뤄지므로 대기 중에 provider 슬롯을
         점유하지 않는다. 429가 아닌 오류는 즉시 호출자로 올린다.
         """
-        max_retries = max(
-            0,
-            int(getattr(config, "LLM_RATE_LIMIT_MAX_RETRIES", 2)),
-        )
-        max_delay = float(
-            getattr(config, "LLM_RATE_LIMIT_MAX_DELAY_SECONDS", 5)
+        # 상한은 config 로드 시점뿐 아니라 루프에서도 강제한다. 설정이 어떤
+        # 경로로 커지더라도 이 반복이 사용자 응답을 오래 붙들지 않아야 한다.
+        try:
+            configured_retries = int(
+                getattr(config, "LLM_RATE_LIMIT_MAX_RETRIES", 2)
+            )
+        except (TypeError, ValueError, OverflowError):
+            configured_retries = _RATE_LIMIT_RETRY_HARD_CAP
+        max_retries = min(_RATE_LIMIT_RETRY_HARD_CAP, max(0, configured_retries))
+        try:
+            configured_delay = float(
+                getattr(config, "LLM_RATE_LIMIT_MAX_DELAY_SECONDS", 5)
+            )
+        except (TypeError, ValueError, OverflowError):
+            configured_delay = _RATE_LIMIT_DELAY_HARD_CAP_SECONDS
+        max_delay = min(
+            _RATE_LIMIT_DELAY_HARD_CAP_SECONDS,
+            max(0.0, configured_delay),
         )
         attempt = 0
         while True:

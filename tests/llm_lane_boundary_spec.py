@@ -10,7 +10,11 @@ import asyncio
 import pytest
 
 import config
-from utils.llm_client import LLMClient, rate_limit_retry_delay
+from utils.llm_client import (
+    _RATE_LIMIT_RETRY_HARD_CAP,
+    LLMClient,
+    rate_limit_retry_delay,
+)
 
 
 def _options(client: LLMClient, target_name: str) -> dict:
@@ -196,3 +200,42 @@ async def test_non_rate_limit_error_is_not_retried(monkeypatch):
         )
 
     assert attempts == 1
+
+
+@pytest.mark.parametrize(
+    "hostile_value",
+    [10**9, float("inf"), float("nan"), None, "5", [], object()],
+)
+@pytest.mark.asyncio
+async def test_retry_loop_is_capped_regardless_of_config(
+    monkeypatch, hostile_value
+):
+    """설정값이 무엇이든 물리 호출 횟수는 하드캡을 넘지 않는다.
+
+    config.py도 값을 좁히지만, 사용자 응답 경로를 붙드는 반복이므로 상한을
+    루프에서도 강제한다. 여기서 막히지 않으면 잘못된 설정 하나가 429 응답마다
+    무한 재시도로 이어진다.
+    """
+    monkeypatch.setattr(
+        config, "LLM_RATE_LIMIT_MAX_RETRIES", hostile_value, raising=False
+    )
+    monkeypatch.setattr(
+        config, "LLM_RATE_LIMIT_MAX_DELAY_SECONDS", hostile_value, raising=False
+    )
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+    client = LLMClient()
+    attempts = 0
+
+    async def always_limited():
+        nonlocal attempts
+        attempts += 1
+        if attempts > 30:
+            raise AssertionError("재시도 반복이 끝나지 않았습니다")
+        raise _RateLimited(1)
+
+    with pytest.raises(_RateLimited):
+        await client._call_with_rate_limit_retry(
+            always_limited, lane_name="main.primary"
+        )
+
+    assert attempts <= _RATE_LIMIT_RETRY_HARD_CAP + 1
