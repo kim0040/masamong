@@ -248,12 +248,20 @@ async def test_maintenance_archive_first_tick_skips_then_runs_once(monkeypatch):
     async def prune(db, days):
         calls.append(("prune", db, days))
 
+    async def prune_api(db, days):
+        calls.append(("prune_api", db, days))
+
     monkeypatch.setattr("cogs.maintenance_cog.db_utils.archive_old_conversations", archive)
     monkeypatch.setattr("cogs.maintenance_cog.db_utils.prune_user_activity_log", prune)
+    monkeypatch.setattr("cogs.maintenance_cog.db_utils.prune_api_call_log", prune_api)
     monkeypatch.setattr(
         config,
         "RAG_ARCHIVING_CONFIG",
-        {"run_on_startup": False, "activity_log_retention_days": 30},
+        {
+            "run_on_startup": False,
+            "activity_log_retention_days": 30,
+            "api_call_log_retention_days": 30,
+        },
     )
     cog = _new_maintenance_cog()
 
@@ -261,7 +269,11 @@ async def test_maintenance_archive_first_tick_skips_then_runs_once(monkeypatch):
     assert calls == []
 
     await MaintenanceCog.archive_loop.coro(cog)
-    assert calls == [("archive", cog.bot.db), ("prune", cog.bot.db, 30)]
+    assert calls == [
+        ("archive", cog.bot.db),
+        ("prune", cog.bot.db, 30),
+        ("prune_api", cog.bot.db, 30),
+    ]
 
 
 @pytest.mark.asyncio

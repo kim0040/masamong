@@ -78,6 +78,11 @@ class MaintenanceCog(commands.Cog):
                 self.bot.db,
                 config.RAG_ARCHIVING_CONFIG.get("activity_log_retention_days", 0),
             )
+            # api_call_log 보존정책 적용 (config에서 0이면 비활성).
+            await db_utils.prune_api_call_log(
+                self.bot.db,
+                config.RAG_ARCHIVING_CONFIG.get("api_call_log_retention_days", 0),
+            )
             logger.info("정기 RAG 아카이빙 작업을 성공적으로 완료했습니다.")
         except Exception as e:
             try:
