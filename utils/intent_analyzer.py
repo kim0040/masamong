@@ -64,6 +64,14 @@ class IntentAnalyzer:
         'lg에너지', '셀트리온', '삼성바이오', '기아', '포스코',
     ])
     _STOCK_GENERAL_KEYWORDS = frozenset(['주가', '주식', '시세', '종가', '시가', '상장'])
+    # 지수·시황 어휘. "코스피 지금 몇이야"처럼 종목명도 '주가'도 없는 조회가
+    # 금융으로 인식되지 않아 지수 스냅샷 도구까지 닿지 못하던 것을 막는다.
+    _MARKET_INDEX_KEYWORDS = (
+        "국장", "미장", "한국 시장", "미국 시장", "주식 시장", "증권 시장",
+        "시장 흐름", "시장 동향", "시장 브리핑", "시황", "증시",
+        "코스피", "코스닥", "kospi", "kosdaq",
+        "나스닥", "nasdaq", "다우", "dow", "s&p", "sp500", "s&p 500",
+    )
     _EXCHANGE_KEYWORDS = frozenset([
         '환율', '달러', '엔화', '유로', 'usd', 'jpy', 'eur', 'krw', '환전',
         '코인', '비트코인', '이더리움', 'crypto', 'bitcoin', 'eth',
@@ -510,6 +518,8 @@ class IntentAnalyzer:
             return True
         if any(kw in query_lower for kw in self._EXCHANGE_KEYWORDS):
             return True
+        if any(kw in query_lower for kw in self._MARKET_INDEX_KEYWORDS):
+            return True
         if self._STOCK_TICKER_PATTERN.search(query_lower):
             return True
 
@@ -527,13 +537,7 @@ class IntentAnalyzer:
         if not text or not self._looks_like_finance_query(text):
             return False
 
-        index_or_market_terms = (
-            "국장", "미장", "한국 시장", "미국 시장", "주식 시장", "증권 시장",
-            "시장 흐름", "시장 동향", "시장 브리핑", "시황", "증시",
-            "코스피", "코스닥", "kospi", "kosdaq",
-            "나스닥", "nasdaq", "다우", "dow", "s&p", "sp500", "s&p 500",
-        )
-        if any(term in text for term in index_or_market_terms):
+        if any(term in text for term in self._MARKET_INDEX_KEYWORDS):
             return True
 
         news_terms = ("뉴스", "소식", "이슈", "동향", "브리핑", "주요")
@@ -544,6 +548,36 @@ class IntentAnalyzer:
             or bool(self._STOCK_TICKER_PATTERN.search(text))
         )
         return has_news_request and not has_named_stock
+
+    # 원화 기준 통화쌍. Yahoo FX 심볼은 키 없이 조회되므로 별도 환율 API 없이
+    # 같은 현재가 도구로 처리한다. 앞의 항목부터 확인해 "엔화"가 "화"만 겹치는
+    # 다른 통화보다 먼저 잡히게 둔다.
+    _FX_TICKERS = (
+        (("엔화", "엔화 환율", "원엔", "엔-원", "엔원", "jpy", "일본 돈"), "JPYKRW=X"),
+        (("유로", "eur"), "EURKRW=X"),
+        (("위안", "cny", "중국 돈"), "CNYKRW=X"),
+        (("파운드", "gbp"), "GBPKRW=X"),
+        (("달러", "usd", "원달러", "원-달러", "미국 돈"), "USDKRW=X"),
+    )
+    _FX_INTENT_MARKERS = ("환율", "환전", "환산", "원화로", "얼마", "시세")
+
+    @classmethod
+    def _fx_ticker_from_text(cls, query: str) -> str | None:
+        """원화 환율 조회로 답할 수 있는 질문이면 Yahoo 통화쌍을 돌려줍니다.
+
+        통화 이름만으로는 "달러 강세 이유" 같은 해설 요청까지 잡히므로 환율을
+        묻는 표현이 함께 있을 때만 통화쌍으로 본다. 통화를 특정하지 않은
+        "오늘 환율 어때"는 한국어 사용자의 기본인 원/달러로 본다.
+        """
+        text = str(query or "").casefold()
+        if not text:
+            return None
+        if not any(marker in text for marker in cls._FX_INTENT_MARKERS):
+            return None
+        for names, ticker in cls._FX_TICKERS:
+            if any(name in text for name in names):
+                return ticker
+        return "USDKRW=X" if "환율" in text else None
 
     @staticmethod
     def _stock_lookup_requires_web(query: str) -> bool:
@@ -608,6 +642,31 @@ class IntentAnalyzer:
             return "kr"
         return "global"
 
+    _CONCEPTUAL_FINANCE_MARKERS = (
+        "원리", "개념", "이유", "왜 ", "왜?", "차이", "의미", "구조",
+        "관점에서", "설명해", "무슨 뜻", "어떻게 되", "어떻게 돼",
+        "예시", "예를 들",
+    )
+    _LIVE_VALUE_MARKERS = (
+        "지금", "현재", "오늘", "실시간", "종가", "얼마야", "얼마임",
+        "얼마고", "몇이야", "몇임", "시세", "주가",
+    )
+
+    @classmethod
+    def _looks_like_conceptual_finance_query(cls, query: str) -> bool:
+        """현재값이 아니라 원리·이유를 묻는 금융 질문인지 봅니다.
+
+        현재값을 가리키는 표현이 하나라도 있으면 개념 질문으로 보지 않는다.
+        실측이 필요한 조회를 개념 설명으로 오인해 근거 없이 답하는 쪽이
+        개념 질문을 거부하는 쪽보다 위험하기 때문이다.
+        """
+        text = str(query or "").casefold()
+        if not text:
+            return False
+        if any(marker in text for marker in cls._LIVE_VALUE_MARKERS):
+            return False
+        return any(marker in text for marker in cls._CONCEPTUAL_FINANCE_MARKERS)
+
     def _derive_external_evidence_requirement(
         self,
         query: str,
@@ -641,7 +700,17 @@ class IntentAnalyzer:
         semantic_text = f"{query}\n{intent}".strip()
         # 표현 자체가 외부 자료를 가리키는 고정밀 보정: 라우터 판단과 무관.
         if self._looks_like_finance_query(semantic_text):
-            return True
+            # 다만 금융은 주제어 하나로 걸리는 범위가 넓다. "금리가 오르면
+            # 환율은 어떻게 돼?"처럼 원리를 묻는 질문까지 검증 필수로 올리면
+            # 조회할 현재값이 없어 "시세를 확인하지 못했어요"가 나가고,
+            # 사용자에게는 개념 질문을 거부한 것으로 보인다. 잡담 보정과 같은
+            # 기준으로, 라우터가 명시적으로 자료 불필요라고 판단한 개념 질문만
+            # 건너뛴다.
+            if not (
+                declared is False
+                and self._looks_like_conceptual_finance_query(query)
+            ):
+                return True
         if self._REQUESTED_WEB_LOOKUP_PATTERN.search(query or ""):
             return True
 
@@ -911,8 +980,83 @@ class IntentAnalyzer:
             })
             return tools  # 날씨 요청은 단일 도구로 처리
 
-        # 금융 관련 질문은 직접 시세 도구 대신 웹 검색으로 대체
+        # 금융 질문이라고 전부 web_search로 보내면 검증된 시세 도구가 살아 있어도
+        # 현재가를 뉴스 요약으로 답하게 된다. 지수·종목 실측으로 답할 수 있는
+        # 조회만 시세 도구로 보내고, 해설·전망·환율 환산처럼 단건 현재가로
+        # 답할 수 없는 요청은 기존대로 web_search가 맡는다.
         if self._looks_like_finance_query(query):
+            # "달러 강세인 이유", "금리가 오르면 환율은?"처럼 원리를 묻는 질문은
+            # 현재가를 조회해도 답이 되지 않는다. 시세 도구를 건너뛰어 불필요한
+            # 조회를 줄이고 해설 자료를 찾는 쪽으로 보낸다.
+            if self._looks_like_conceptual_finance_query(query):
+                logger.info(
+                    "금융 개념 질문 감지. query_chars=%d; web_search로 대체",
+                    len(query),
+                )
+                tools.append({
+                    'tool_to_use': 'web_search',
+                    'tool_name': 'web_search',
+                    'parameters': {
+                        'query': self._build_finance_news_query(query)
+                    }
+                })
+                return tools
+
+            if self._looks_like_market_brief_query(query):
+                logger.info(
+                    "시장 지수 조회 감지. query_chars=%d; get_market_snapshot 사용",
+                    len(query),
+                )
+                tools.append({
+                    'tool_to_use': 'get_market_snapshot',
+                    'tool_name': 'get_market_snapshot',
+                    'parameters': {
+                        'region': self._market_region_from_text(query)
+                    }
+                })
+                # 지수 숫자만으로는 왜 움직였는지 설명할 수 없어 출처도 함께 본다.
+                tools.append({
+                    'tool_to_use': 'web_search',
+                    'tool_name': 'web_search',
+                    'parameters': {
+                        'query': self._build_finance_news_query(query)
+                    }
+                })
+                return tools
+
+            # 환율은 Yahoo 통화쌍으로 실측된다. 환산 계산도 조회된 환율에
+            # 사용자가 준 금액을 곱하는 형태라 같은 도구로 근거를 만든다.
+            fx_ticker = self._fx_ticker_from_text(query)
+            if fx_ticker:
+                logger.info(
+                    "환율 조회 감지. query_chars=%d; get_stock_price(%s) 사용",
+                    len(query),
+                    fx_ticker,
+                )
+                tools.append({
+                    'tool_to_use': 'get_stock_price',
+                    'tool_name': 'get_stock_price',
+                    'parameters': {
+                        'symbol': fx_ticker,
+                        'user_query': query.strip(),
+                    }
+                })
+                return tools
+
+            if not self._stock_lookup_requires_web(query):
+                logger.info(
+                    "개별 종목 시세 조회 감지. query_chars=%d; get_stock_price 사용",
+                    len(query),
+                )
+                # 티커 해석은 도구가 맡고, 실패하면 ai_handler의 기존
+                # stock_failure -> web_search 보완 경로가 이어받는다.
+                tools.append({
+                    'tool_to_use': 'get_stock_price',
+                    'tool_name': 'get_stock_price',
+                    'parameters': {'user_query': query.strip()}
+                })
+                return tools
+
             logger.info(
                 "금융 관련 질문 감지. query_chars=%d; web_search로 대체",
                 len(query),

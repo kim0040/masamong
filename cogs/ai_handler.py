@@ -2771,6 +2771,26 @@ class AIHandler(commands.Cog):
         return values
 
     @classmethod
+    def _looks_like_hypothetical_calculation(cls, query_text: str) -> bool:
+        """단가·기준을 사용자가 직접 제시한 가정 계산 요청인지 봅니다.
+
+        "지금", "현재", "실시간"처럼 실제 시세를 가리키는 표현이 함께 있으면
+        가정 계산으로 보지 않는다. 조회가 필요한 질문을 가정으로 오인하면
+        지어낸 수치가 그대로 나가기 때문이다.
+        """
+        text = str(query_text or "").casefold()
+        if not text:
+            return False
+        if re.search(r"(?:지금|현재|오늘|실시간|시세|주가)", text):
+            return False
+        premise = re.search(
+            r"(?:라 ?치면|라고 ?치면|라 ?하면|라고 ?하면|이라면|기준으로|가정하[면고])",
+            text,
+        )
+        asks_amount = re.search(r"(?:얼마|계산|총액|합계)", text)
+        return bool(premise and asks_amount)
+
+    @classmethod
     def _unsupported_finance_numbers(
         cls,
         response_text: str,
@@ -2781,7 +2801,15 @@ class AIHandler(commands.Cog):
 
         환율 환산처럼 사용자가 준 금액과 조회된 환율을 곱하거나 나누어 얻는
         값은 원문에 그대로 없더라도 결정적 계산 결과로 인정합니다.
+
+        단가를 사용자가 직접 제시한 가정 계산은 검사 대상이 아닙니다. 시장
+        수치를 지어내는 것이 아니라 주어진 전제를 산술하는 것이고, 수치 추출이
+        ``1M``·``1300억`` 같은 단위를 버려서 맞는 계산까지 근거 없는 수치로
+        잡히기 때문입니다.
         """
+        if cls._looks_like_hypothetical_calculation(query_text):
+            return []
+
         response_values = cls._extract_significant_numbers(response_text)
         query_values = cls._extract_significant_numbers(query_text)
         evidence_values = cls._extract_significant_numbers(evidence_text)

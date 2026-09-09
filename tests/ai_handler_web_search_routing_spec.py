@@ -1136,11 +1136,36 @@ def test_visual_material_is_not_misclassified_as_opening_price():
 def test_finance_disambiguation_still_routes_real_stock_questions():
     handler = _build_handler_without_init()
 
+    # 개별 종목 현재가는 검증된 시세 도구로 간다. 뉴스 검색으로 대체하면
+    # 실측값 대신 기사 요약을 현재가처럼 답하게 된다.
     assert handler._looks_like_finance_query("애플 주가 알려줘") is True
     plan = handler._detect_tools_by_keyword("애플 주가 알려줘")
     assert plan
-    assert plan[0]["tool_to_use"] == "web_search"
-    assert "금융 뉴스" in plan[0]["parameters"]["query"]
+    assert plan[0]["tool_to_use"] == "get_stock_price"
+    assert plan[0]["parameters"]["user_query"] == "애플 주가 알려줘"
+
+
+def test_market_index_question_uses_snapshot_tool():
+    handler = _build_handler_without_init()
+
+    assert handler._looks_like_finance_query("코스피 지금 몇이야") is True
+    plan = handler._detect_tools_by_keyword("코스피 지금 몇이야")
+    tools = [item["tool_to_use"] for item in plan]
+    assert tools[0] == "get_market_snapshot"
+    assert plan[0]["parameters"]["region"] == "kr"
+    # 지수 숫자만으로는 등락 이유를 설명할 수 없어 출처도 함께 확인한다.
+    assert "web_search" in tools
+
+
+def test_finance_requests_beyond_single_quote_stay_on_web_search():
+    handler = _build_handler_without_init()
+
+    # 차트·과거 시세는 현재가 단건 도구의 범위 밖이라 계속 web_search가 맡는다.
+    for query in ("엔비디아 주가 차트 보여줘", "테슬라 과거 주가 추이 보여줘"):
+        plan = handler._detect_tools_by_keyword(query)
+        assert plan, query
+        assert plan[0]["tool_to_use"] == "web_search", query
+        assert "금융 뉴스" in plan[0]["parameters"]["query"]
 
 
 def test_stock_chart_request_is_redirected_to_web_capability():
@@ -1717,3 +1742,87 @@ def test_main_prompt_allows_playful_uncertainty_without_repeated_lectures():
     assert "친구끼리 하는 잡담에서는 모든 문장에 근거" in prompt
     assert "사용자가 정정하면 변명하지 말고 가볍게 인정" in prompt
     assert "같은 경고를 반복하거나 길게 훈계하지 말고" in prompt
+
+
+def test_conceptual_finance_question_is_not_forced_into_evidence_lookup():
+    """원리를 묻는 금융 질문이 시세 실패 문구로 거부되지 않는다."""
+    analyzer = _build_handler_without_init()._ensure_intent_analyzer()
+
+    assert analyzer._looks_like_conceptual_finance_query(
+        "일본금리가 상승하면 엔-원 환율이 올라가? 거시경제 관점에서"
+    ) is True
+    assert analyzer._derive_external_evidence_requirement(
+        "일본금리가 상승하면 엔-원 환율이 올라가? 거시경제 관점에서",
+        intent="거시경제 원리 설명 요청",
+        declared=False,
+    ) is False
+
+
+def test_current_value_question_still_requires_evidence():
+    """현재값을 묻는 표현이 있으면 개념 질문으로 완화하지 않는다."""
+    analyzer = _build_handler_without_init()._ensure_intent_analyzer()
+
+    assert analyzer._looks_like_conceptual_finance_query(
+        "삼성전자 지금 주가 얼마야? 이유도 설명해줘"
+    ) is False
+    assert analyzer._derive_external_evidence_requirement(
+        "삼성전자 지금 주가 얼마야? 이유도 설명해줘",
+        intent="현재가 조회",
+        declared=False,
+    ) is True
+
+
+def test_hypothetical_calculation_is_not_blocked_as_unsupported():
+    """단가를 사용자가 준 가정 계산은 근거 없는 수치로 막지 않는다."""
+    assert AIHandler._looks_like_hypothetical_calculation(
+        "1M 토큰에 100달러라 치면 1300억 토큰은 얼마야?"
+    ) is True
+    unsupported = AIHandler._unsupported_finance_numbers(
+        "1300억 토큰이면 13,000,000달러예요.",
+        "",
+        "1M 토큰에 100달러라 치면 1300억 토큰은 얼마야?",
+    )
+    assert unsupported == []
+
+
+def test_live_rate_question_is_not_treated_as_hypothetical():
+    """현재 시세를 가리키면 가정 계산으로 완화하지 않는다."""
+    assert AIHandler._looks_like_hypothetical_calculation(
+        "지금 환율 기준으로 100만달러는 얼마야?"
+    ) is False
+
+
+def test_fabricated_rate_is_still_blocked():
+    """조회 자료에도 질문에도 없는 환율 수치는 계속 차단한다."""
+    unsupported = AIHandler._unsupported_finance_numbers(
+        "지금 환율 1,417.5원이라 100만달러는 14억 1750만원이에요.",
+        "",
+        "100만달러는 원화로 얼마임",
+    )
+    assert unsupported
+
+
+def test_exchange_rate_question_uses_yahoo_currency_pair():
+    """환율 조회는 별도 환율 API 키 없이 통화쌍 현재가로 답한다."""
+    handler = _build_handler_without_init()
+
+    for query, ticker in (
+        ("오늘 환율 어때", "USDKRW=X"),
+        ("엔화 환율 알려줘", "JPYKRW=X"),
+        ("유로 환율", "EURKRW=X"),
+        ("100만달러는 원화로 얼마임", "USDKRW=X"),
+    ):
+        plan = handler._detect_tools_by_keyword(query)
+        assert plan, query
+        assert plan[0]["tool_to_use"] == "get_stock_price", query
+        assert plan[0]["parameters"]["symbol"] == ticker, query
+
+
+def test_currency_commentary_stays_on_web_search():
+    """통화 이름만 있는 해설 요청은 현재가 도구로 보내지 않는다."""
+    handler = _build_handler_without_init()
+
+    for query in ("달러 강세인 이유가 뭐야", "일본금리 상승하면 엔-원 환율이 올라가? 거시경제 관점에서"):
+        plan = handler._detect_tools_by_keyword(query)
+        assert plan, query
+        assert plan[0]["tool_to_use"] == "web_search", query
