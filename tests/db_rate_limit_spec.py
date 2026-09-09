@@ -407,3 +407,77 @@ async def test_prune_api_call_log_disabled_keeps_everything(tmp_path):
         async with db.execute("SELECT COUNT(*) FROM api_call_log") as cursor:
             remaining = (await cursor.fetchone())[0]
     assert remaining == 1
+
+
+@pytest_asyncio.fixture
+async def daily_quota_db():
+    db = await aiosqlite.connect(":memory:")
+    await db.executescript(
+        """
+        CREATE TABLE api_call_log (
+            log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            api_type TEXT NOT NULL,
+            called_at TEXT NOT NULL
+        );
+        CREATE TABLE system_counters (
+            counter_name TEXT PRIMARY KEY,
+            counter_value INTEGER NOT NULL,
+            last_reset_at TEXT
+        );
+        """
+    )
+    await db.commit()
+    try:
+        yield db
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_daily_quota_counts_without_writing_api_call_log(daily_quota_db):
+    """분당 폴링 성공이 api_call_log를 늘리지 않고 카운터만 올린다."""
+    for _ in range(5):
+        blocked = await db_utils.reserve_daily_api_quota(
+            daily_quota_db, "kma_daily", 10
+        )
+        assert blocked is False
+
+    async with daily_quota_db.execute(
+        "SELECT COUNT(*) FROM api_call_log"
+    ) as cursor:
+        assert (await cursor.fetchone())[0] == 0
+
+    async with daily_quota_db.execute(
+        "SELECT counter_value FROM system_counters WHERE counter_name LIKE ?",
+        ("kma_daily_%",),
+    ) as cursor:
+        assert (await cursor.fetchone())[0] == 5
+
+
+@pytest.mark.asyncio
+async def test_daily_quota_blocks_at_limit(daily_quota_db):
+    """한도에 도달하면 차단하고 카운터를 더 올리지 않는다."""
+    for _ in range(3):
+        assert await db_utils.reserve_daily_api_quota(
+            daily_quota_db, "kma_daily", 3
+        ) is False
+
+    assert await db_utils.reserve_daily_api_quota(
+        daily_quota_db, "kma_daily", 3
+    ) is True
+
+    async with daily_quota_db.execute(
+        "SELECT counter_value FROM system_counters WHERE counter_name LIKE ?",
+        ("kma_daily_%",),
+    ) as cursor:
+        assert (await cursor.fetchone())[0] == 3
+
+
+@pytest.mark.asyncio
+async def test_daily_quota_blocks_when_counter_store_is_missing():
+    """카운터 저장소 장애 시 호출을 열어두지 않고 안전하게 차단한다."""
+    db = await aiosqlite.connect(":memory:")
+    try:
+        assert await db_utils.reserve_daily_api_quota(db, "kma_daily", 10) is True
+    finally:
+        await db.close()
