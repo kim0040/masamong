@@ -68,6 +68,31 @@ def _should_log_kma_success(
     return should_log
 
 
+async def _record_kma_failure(
+    db: aiosqlite.Connection,
+    api_type: str,
+    reason: str,
+) -> None:
+    """KMA 호출 실패만 `api_call_log`에 남깁니다.
+
+    성공 호출은 일자 카운터로만 집계하므로, 이 테이블에 남는 kma_* 행은
+    전부 조사 가치가 있는 실패다. reason은 timeout/http/conn/api 네 값으로
+    고정해 카디널리티를 제한한다.
+    """
+    if db is None:
+        return
+    try:
+        await db_utils.log_api_call(db, f"kma_failure_{reason}")
+    except Exception:
+        # 실패 계측이 원래의 실패 응답 경로를 덮지 않게 한다.
+        logger.debug(
+            "KMA 실패 계측 기록 실패: type=%s reason=%s",
+            api_type,
+            reason,
+            exc_info=True,
+        )
+
+
 def _get_kma_http_session() -> requests.Session:
     """실행 스레드별 KMA 세션을 재사용해 TLS 연결 비용을 줄입니다.
 
@@ -154,9 +179,13 @@ async def _fetch_kma_api(
     api_key = get_kma_api_key()
     if not api_key: return {"error": True, "message": config.MSG_WEATHER_API_KEY_MISSING}
 
-    if await db_utils.check_api_rate_limit(db, 'kma_daily', 99999, config.KMA_API_DAILY_CALL_LIMIT):
+    # 지진 감시는 분당 1회로 상시 폴링해 호출당 api_call_log 행을 남기면
+    # 하루 1,440행이 쌓여 다른 계측을 묻는다. 한도 집계는 일자 카운터로 하고
+    # api_call_log에는 아래 실패 경로만 기록한다.
+    if await db_utils.reserve_daily_api_quota(
+        db, 'kma_daily', config.KMA_API_DAILY_CALL_LIMIT
+    ):
         return {"error": True, "message": config.MSG_KMA_API_DAILY_LIMIT_REACHED}
-    await db_utils.log_api_call(db, 'kma_daily')
 
     base_params: dict[str, str] = {}
     base_url = ""
@@ -293,6 +322,7 @@ async def _fetch_kma_api(
                                  logger.info(f"기상청 API: {endpoint} ({api_type}) 데이터가 현재 없습니다 (NO_DATA).")
                              else:
                                  logger.error(f"기상청 API 오류: {error_msg}")
+                                 await _record_kma_failure(db, api_type, "api")
                              return {"error": True, "message": error_msg}
 
                          return data.get('response', {}).get('body', {}).get('items')
@@ -305,6 +335,7 @@ async def _fetch_kma_api(
             except requests.exceptions.Timeout:
                 if attempt >= max_retries:
                     logger.error("기상청 API 요청이 재시도 후에도 시간 초과되었습니다.", exc_info=True)
+                    await _record_kma_failure(db, api_type, "timeout")
                     return {"error": True, "message": config.MSG_WEATHER_TIMEOUT}
                 logger.warning(f"기상청 API 요청이 시간 초과되었습니다. 재시도합니다... (시도 {attempt}/{max_retries})")
                 if retry_delay: await asyncio.sleep(retry_delay * attempt)
@@ -338,14 +369,16 @@ async def _fetch_kma_api(
                         api_type,
                         safe_url,
                     )
+                    await _record_kma_failure(db, api_type, "http")
                     return None # Return None to silently fail for optional data
-                
+
                 logger.error(
                     "기상청 API 요청 오류(status=%s, type=%s): %s",
                     status_code if status_code is not None else "unknown",
                     api_type,
                     safe_url,
                 )
+                await _record_kma_failure(db, api_type, "http")
                 return {"error": True, "message": config.MSG_WEATHER_FETCH_ERROR}
 
             except requests.exceptions.RequestException as e:
@@ -367,10 +400,12 @@ async def _fetch_kma_api(
                     e.__class__.__name__,
                     _masked_request_url(full_url, e),
                 )
+                await _record_kma_failure(db, api_type, "conn")
                 return {"error": True, "message": config.MSG_WEATHER_FETCH_ERROR}
 
     except Exception as e:
         logger.error(f"기상청 API 처리 중 예기치 않은 오류: {e}", exc_info=True)
+        await _record_kma_failure(db, api_type, "api")
         return {"error": True, "message": config.MSG_WEATHER_FETCH_ERROR}
 
 

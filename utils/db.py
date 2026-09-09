@@ -195,6 +195,69 @@ async def log_api_call(db: aiosqlite.Connection, api_type: str):
         logger.error(f"API 호출 기록 중 DB 오류 ({api_type}): {e}", exc_info=True)
 
 
+async def reserve_daily_api_quota(
+    db: aiosqlite.Connection,
+    api_type: str,
+    rpd_limit: int,
+) -> bool:
+    """일일 한도만 필요한 API의 호출 1회를 `system_counters`에 예약합니다.
+
+    분 단위 폴링처럼 호출당 `api_call_log` 행을 남기면 계측 테이블이 실제
+    분석 대상 데이터를 덮어버린다. 성공 호출은 KST 일자 카운터 1행으로만
+    집계하고, `api_call_log`에는 실패만 남겨 조사 가치를 유지한다.
+    한도에 도달했으면 True(차단), 여유가 있으면 카운트를 올리고 False.
+    """
+    today_key = f"{api_type}_{datetime.now(KST).strftime('%Y-%m-%d')}"
+    try:
+        async with db.execute(
+            "SELECT counter_value FROM system_counters WHERE counter_name = ?",
+            (today_key,),
+        ) as cursor:
+            row = await cursor.fetchone()
+
+        current_count = int(row[0] or 0) if row else 0
+        if current_count >= max(1, rpd_limit):
+            logger.warning(
+                "API 일일 호출 한도 도달: %s (%d/%d)",
+                api_type,
+                current_count,
+                rpd_limit,
+            )
+            return True
+
+        now_str = datetime.now(timezone.utc).isoformat()
+        if config.DB_BACKEND == "tidb":
+            query = """
+                INSERT INTO system_counters (
+                    counter_name, counter_value, last_reset_at
+                ) VALUES (?, 1, ?)
+                ON DUPLICATE KEY UPDATE
+                    counter_value = counter_value + 1,
+                    last_reset_at = VALUES(last_reset_at)
+            """
+        else:
+            query = """
+                INSERT INTO system_counters (
+                    counter_name, counter_value, last_reset_at
+                ) VALUES (?, 1, ?)
+                ON CONFLICT(counter_name) DO UPDATE SET
+                    counter_value = counter_value + 1,
+                    last_reset_at = excluded.last_reset_at
+            """
+        await db.execute(query, (today_key, now_str))
+        await db.commit()
+        return False
+    except Exception as exc:
+        await _rollback_after_write_error(db, f"일일 API 한도({api_type}) 예약")
+        logger.error(
+            "일일 API 한도 예약 중 DB 오류 (%s): %s",
+            api_type,
+            exc,
+            exc_info=True,
+        )
+        return True  # DB 오류 시 안전하게 요청 차단
+
+
 def _bounded_budget_feature(value: object) -> str:
     rendered = str(value or "unspecified").strip().casefold()
     rendered = _SAFE_BUDGET_FEATURE_RE.sub("_", rendered).strip("_")
