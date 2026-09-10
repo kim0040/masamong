@@ -391,6 +391,7 @@ async def test_openrouter_main_locks_openai_and_uses_unified_reasoning(
     monkeypatch.setattr(config, "OPENROUTER_PROVIDER_ONLY", "openai")
     monkeypatch.setattr(config, "OPENROUTER_MAIN_PROVIDER_ONLY", "morph")
     monkeypatch.setattr(config, "OPENROUTER_ALLOW_FALLBACKS", False)
+    monkeypatch.setattr(config, "OPENROUTER_MAIN_ALLOW_FALLBACKS", True)
     monkeypatch.setattr(config, "OPENROUTER_REQUIRE_PARAMETERS", True)
     monkeypatch.setattr(config, "OPENROUTER_DATA_COLLECTION", "")
     monkeypatch.setattr(config, "OPENROUTER_ZDR", True)
@@ -426,7 +427,7 @@ async def test_openrouter_main_locks_openai_and_uses_unified_reasoning(
     for call in calls:
         assert call["extra_body"]["provider"] == {
             "only": ["morph"],
-            "allow_fallbacks": False,
+            "allow_fallbacks": True,
             "require_parameters": True,
             "zdr": True,
         }

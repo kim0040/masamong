@@ -1358,6 +1358,9 @@ def _optional_bool(key: str) -> bool | None:
 
 OPENROUTER_MAIN_ZDR = _optional_bool('OPENROUTER_MAIN_ZDR')
 OPENROUTER_ROUTING_ZDR = _optional_bool('OPENROUTER_ROUTING_ZDR')
+OPENROUTER_MAIN_ALLOW_FALLBACKS = _optional_bool(
+    'OPENROUTER_MAIN_ALLOW_FALLBACKS'
+)
 OPENROUTER_APP_URL = as_str(
     load_config_value('OPENROUTER_APP_URL', ''),
     '',

@@ -55,6 +55,7 @@ OPENROUTER_PROVIDER_ONLY=openai
 OPENROUTER_ROUTING_PROVIDER_ONLY=openai
 OPENROUTER_MAIN_PROVIDER_ONLY=auto
 OPENROUTER_ALLOW_FALLBACKS=false
+OPENROUTER_MAIN_ALLOW_FALLBACKS=true
 OPENROUTER_REQUIRE_PARAMETERS=true
 OPENROUTER_DATA_COLLECTION=deny
 OPENROUTER_ZDR=true
@@ -96,8 +97,8 @@ LLM_FEATURE_RPD_LIMIT=2500
 ```
 
 `OPENROUTER_MAIN_PROVIDER_ONLY=auto`는 `provider.only`를 보내지 않아 OpenRouter가
-사용 가능한 공급자를 선택하게 합니다. Main의 `ZDR=true`, 데이터 수집 거부와 parameter
-호환성 검사는 그대로 적용됩니다.
+사용 가능한 공급자를 선택하게 합니다. Main만 공급자 fallback을 허용하되 `ZDR=true`,
+데이터 수집 거부와 parameter 호환성 검사는 그대로 적용됩니다.
 
 도구 선택은 정상적으로 routing 모델의 의미 판단을 사용하고, 키워드 감지는 provider
 장애 시 fallback에만 사용됩니다. 다만 라우터 JSON의

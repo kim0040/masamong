@@ -512,6 +512,7 @@ class LLMClient:
             return {}
         target_name = str(target.get("name") or "").strip().lower()
         provider_only = getattr(config, "OPENROUTER_PROVIDER_ONLY", "openai")
+        allow_fallbacks = getattr(config, "OPENROUTER_ALLOW_FALLBACKS", False)
         # ZDR 요구 수준도 공급자 허용 목록과 같은 레인 단위로 결정한다. 레인
         # override가 없으면(None) 전역 OPENROUTER_ZDR을 그대로 따른다.
         zdr = getattr(config, "OPENROUTER_ZDR", False)
@@ -523,6 +524,13 @@ class LLMClient:
                 provider_only,
             )
             lane_zdr = getattr(config, "OPENROUTER_MAIN_ZDR", None)
+            lane_allow_fallbacks = getattr(
+                config,
+                "OPENROUTER_MAIN_ALLOW_FALLBACKS",
+                None,
+            )
+            if lane_allow_fallbacks is not None:
+                allow_fallbacks = bool(lane_allow_fallbacks)
         elif target_name.startswith("routing."):
             provider_only = getattr(
                 config,
@@ -542,11 +550,7 @@ class LLMClient:
             "extra_body": build_openrouter_extra_body(
                 reasoning_effort=reasoning_effort,
                 provider_only=provider_only,
-                allow_fallbacks=getattr(
-                    config,
-                    "OPENROUTER_ALLOW_FALLBACKS",
-                    False,
-                ),
+                allow_fallbacks=allow_fallbacks,
                 require_parameters=getattr(
                     config,
                     "OPENROUTER_REQUIRE_PARAMETERS",
