@@ -1,4 +1,6 @@
-"""환율 질문 시나리오: 페어 해석, 도구 인자, 직접 렌더, 수치 가드."""
+"""환율 질문 시나리오: 페어 해석, 도구 인자, 대화 통합용 근거, 수치 가드."""
+
+from types import SimpleNamespace
 
 from cogs.ai_handler import AIHandler
 from utils.finance_query import (
@@ -123,6 +125,48 @@ def test_prompt_evidence_includes_hundred_yen_so_llm_rounding_can_pass():
         evidence,
         "환율 엔화 알려줘",
     ) == []
+
+
+def test_fx_conventional_hundred_yen_is_allowed_without_calculation_words():
+    """'얼마'가 없어도 1엔 시세의 100엔 표기는 근거 있는 환산으로 본다."""
+    evidence = (
+        "[get_stock_price] JPY/KRW (JPYKRW=X): 1 JPY = 9.1876 KRW\n"
+        "[get_stock_price] 역환율: 0.108842"
+    )
+    assert AIHandler._unsupported_finance_numbers(
+        "지금 엔화는 1엔에 9.1876원, 100엔이면 한 918원 정도야.",
+        evidence,
+        "환율 엔화 알려줘",
+    ) == []
+
+
+def test_equity_quote_does_not_allow_hundred_times_price():
+    evidence = "[get_stock_price] NVIDIA (NVDA): 180.25 USD, -1.20%"
+    unsupported = AIHandler._unsupported_finance_numbers(
+        "엔비디아 18025달러야.",
+        evidence,
+        "엔비디아 주가",
+    )
+    assert 18025.0 in unsupported
+
+
+def test_tool_results_are_prompted_for_persona_conversation():
+    handler = _handler()
+    prompt = handler._compose_main_prompt(
+        SimpleNamespace(
+            channel=SimpleNamespace(id=1),
+            guild=SimpleNamespace(id=2),
+            author=SimpleNamespace(display_name="유저"),
+        ),
+        user_query="환율 엔화 알려줘",
+        rag_blocks=[],
+        tool_results_block="[get_stock_price] 1 JPY = 9.1876 KRW",
+        fortune_context="운세 참고 문장",
+        recent_history=[{"role": "model", "parts": ["어제 그 얘기 계속할까"]}],
+    )
+    assert "페르소나" in prompt
+    assert "[운세 참고" in prompt
+    assert "[최근 대화" in prompt
 
 
 def test_number_guard_falls_back_to_verified_fx_not_empty_snapshot():
