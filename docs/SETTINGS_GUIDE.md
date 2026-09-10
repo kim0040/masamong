@@ -45,7 +45,7 @@ cp .env.example .env
 | 레인 | 용도 | Primary 모델 | Fallback 모델 |
 |------|------|-------------|---------------|
 | **Routing** | 의도 분석, 쿼리 정제 | GPT-5.6 Luna (`low`) | 없음 |
-| **Main** | 최종 답변 생성 | DeepSeek V4 Flash (`none/low/high`) | 없음 |
+| **Main** | 최종 답변 생성 | GLM 5.3 Flash (`low`) | 없음 |
 
 ```env
 # OpenRouter 공통 경계
@@ -53,7 +53,7 @@ OPENROUTER_API_KEY=your_openrouter_api_key_here
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 OPENROUTER_PROVIDER_ONLY=openai
 OPENROUTER_ROUTING_PROVIDER_ONLY=openai
-OPENROUTER_MAIN_PROVIDER_ONLY=morph
+OPENROUTER_MAIN_PROVIDER_ONLY=auto
 OPENROUTER_ALLOW_FALLBACKS=false
 OPENROUTER_REQUIRE_PARAMETERS=true
 OPENROUTER_DATA_COLLECTION=deny
@@ -94,6 +94,10 @@ LLM_DM_USER_RPD_LIMIT=120
 LLM_FEATURE_RPM_LIMIT=35
 LLM_FEATURE_RPD_LIMIT=2500
 ```
+
+`OPENROUTER_MAIN_PROVIDER_ONLY=auto`는 `provider.only`를 보내지 않아 OpenRouter가
+사용 가능한 공급자를 선택하게 합니다. Main의 `ZDR=true`, 데이터 수집 거부와 parameter
+호환성 검사는 그대로 적용됩니다.
 
 도구 선택은 정상적으로 routing 모델의 의미 판단을 사용하고, 키워드 감지는 provider
 장애 시 fallback에만 사용됩니다. 다만 라우터 JSON의

@@ -41,6 +41,23 @@ def test_openrouter_provider_and_reasoning_contract_is_bounded():
     }
 
 
+def test_openrouter_auto_provider_keeps_privacy_guards_without_provider_pin():
+    body = build_openrouter_extra_body(
+        provider_only="auto",
+        allow_fallbacks=False,
+        require_parameters=True,
+        data_collection="deny",
+        zdr=True,
+    )
+
+    assert body["provider"] == {
+        "allow_fallbacks": False,
+        "require_parameters": True,
+        "data_collection": "deny",
+        "zdr": True,
+    }
+
+
 def test_openrouter_unknown_reasoning_does_not_escalate():
     body = build_openrouter_extra_body(
         reasoning_effort="unlimited",
