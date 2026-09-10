@@ -12,6 +12,7 @@ import discord
 
 import config
 from logger_config import logger
+from utils.finance_query import format_quote_user_reply, looks_like_fx_quote
 from utils.tool_health import ToolTemporarilyUnavailable
 
 class AIToolRuntimeMixin:
@@ -266,6 +267,48 @@ class AIToolRuntimeMixin:
                     price = result.get("price")
                     currency = result.get("currency") or "통화 미상"
                     change_percent = result.get("change_percent")
+                    pair = result.get("pair") if isinstance(result.get("pair"), dict) else {}
+                    if looks_like_fx_quote(result):
+                        summary = str(result.get("summary") or "").strip()
+                        if not summary and isinstance(price, (int, float)):
+                            summary = f"{float(price):,.4f} {currency}"
+                        lines.append(
+                            f"[{name}] {result.get('name') or result.get('symbol')} "
+                            f"({result.get('symbol')}): {summary}"
+                        )
+                        base = str(pair.get("base") or "").upper()
+                        quote = str(pair.get("quote") or "").upper()
+                        rate = pair.get("rate")
+                        if (
+                            base == "JPY"
+                            and quote == "KRW"
+                            and isinstance(rate, (int, float))
+                        ):
+                            lines.append(
+                                f"[{name}] 100 JPY = {float(rate) * 100:,.2f} KRW"
+                            )
+                        elif isinstance(price, (int, float)):
+                            lines.append(
+                                f"[{name}] 1단위 환율: {float(price):,.4f} {currency}"
+                            )
+                        inverse = pair.get("inverse")
+                        if isinstance(inverse, (int, float)):
+                            lines.append(
+                                f"[{name}] 역환율: {float(inverse):,.6f}"
+                            )
+                        lines.extend(
+                            [
+                                (
+                                    f"[{name}] 조회 시각(KST): "
+                                    f"{result.get('checked_at_kst') or '알 수 없음'}"
+                                ),
+                                (
+                                    f"[{name}] 주의: 장중 수치는 바뀔 수 있으며 "
+                                    f"ExchangeRate-API의 최신 가용 값임"
+                                ),
+                            ]
+                        )
+                        continue
                     price_text = (
                         f"{float(price):,.2f} {currency}"
                         if isinstance(price, (int, float))
@@ -462,6 +505,22 @@ class AIToolRuntimeMixin:
             ]
         )
         return "\n".join(lines)
+
+    def _format_verified_quote_fallback(
+        self,
+        quote: dict[str, Any] | None,
+        snapshot: dict[str, Any] | None,
+        *,
+        query: str = "",
+        note: str = "",
+    ) -> str:
+        """시세 조회가 있으면 그 값을 쓰고, 없을 때만 지수 실패 문구를 씁니다."""
+        rendered = format_quote_user_reply(quote or {}, query)
+        if rendered:
+            if note:
+                return f"{rendered}\n{note}"
+            return rendered
+        return self._format_market_snapshot_fallback(snapshot, note=note)
 
     @classmethod
     def _unsupported_finance_numbers(

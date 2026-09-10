@@ -10,6 +10,9 @@ from utils.finance_query import detect_fx_pair, split_quote_query
 
 def test_fx_pairs_cover_krw_jpy_usd_and_crosses():
     assert detect_fx_pair("엔화 환율 알려줘") == ("JPY", "KRW")
+    assert detect_fx_pair("환율 엔화 알려줘") == ("JPY", "KRW")
+    assert detect_fx_pair("엔화 알려달라고") == ("JPY", "KRW")
+    assert detect_fx_pair("엔만") == ("JPY", "KRW")
     assert detect_fx_pair("한화로 달러 얼마야") == ("USD", "KRW")
     assert detect_fx_pair("달러 엔 환율") == ("USD", "JPY")
     assert detect_fx_pair("EUR/KRW") == ("EUR", "KRW")

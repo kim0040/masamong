@@ -24,6 +24,7 @@ from logger_config import logger
 from utils.api_handlers import finnhub, fx_rates, kakao
 from utils.finance_query import (
     detect_fx_pair,
+    is_kr_listing,
     kr_market_unsupported_result,
     split_quote_query,
 )
@@ -251,6 +252,10 @@ class ToolsCog(commands.Cog):
         ai_handler,
     ) -> str | dict:
         """Finnhub 무료 시세 + 공개 FX. Yahoo는 USE_YFINANCE일 때만 씁니다."""
+        if is_kr_listing(query_text) or is_kr_listing(direct_ticker):
+            logger.info("국내 상장 시세는 제공하지 않습니다.")
+            return kr_market_unsupported_result()
+
         fx_pair = detect_fx_pair(query_text) or detect_fx_pair(direct_ticker)
         if fx_pair:
             logger.info("FX 페어 확정: %s/%s", fx_pair[0], fx_pair[1])
@@ -300,6 +305,9 @@ class ToolsCog(commands.Cog):
             symbol=symbol,
             stock_name=stock_name,
         )
+        if is_kr_listing(query_text) or is_kr_listing(direct_ticker):
+            logger.info("국내 상장 시세는 제공하지 않습니다.")
+            return kr_market_unsupported_result()
         ai_handler = self.bot.get_cog("AIHandler")
         if not getattr(config, "USE_YFINANCE", False):
             return await self._quote_via_finnhub(
