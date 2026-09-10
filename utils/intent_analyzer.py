@@ -18,6 +18,7 @@ from typing import Any
 
 import config
 from logger_config import logger
+from utils.finance_query import detect_fx_pair, looks_like_ticker
 
 
 @dataclass(frozen=True)
@@ -52,17 +53,6 @@ class IntentAnalyzer:
         '덥다', '덥네', '더워', '춥다', '춥네', '추워', '따뜻해', '쌀쌀',
         '맑음', '맑다', '맑네', '흐리다', '구름', '안개',
     ])
-    _STOCK_US_KEYWORDS = frozenset([
-        '애플', 'apple', 'aapl', '테슬라', 'tesla', 'tsla',
-        '구글', 'google', 'googl', '엔비디아', 'nvidia', 'nvda',
-        '마이크로소프트', 'microsoft', 'msft', '아마존', 'amazon', 'amzn',
-        '맥도날드', '스타벅스', '코카콜라', '펩시', '넷플릭스',
-        '메타', '페이스북', '디즈니', '인텔', 'amd', '나이키', '코스트코', '버크셔',
-    ])
-    _STOCK_KR_KEYWORDS = frozenset([
-        '삼성전자', '현대차', 'sk하이닉스', '네이버', '카카오',
-        'lg에너지', '셀트리온', '삼성바이오', '기아', '포스코',
-    ])
     _STOCK_GENERAL_KEYWORDS = frozenset(['주가', '주식', '시세', '종가', '시가', '상장'])
     # 지수·시황 어휘. "코스피 지금 몇이야"처럼 종목명도 '주가'도 없는 조회가
     # 금융으로 인식되지 않아 지수 스냅샷 도구까지 닿지 못하던 것을 막는다.
@@ -74,19 +64,8 @@ class IntentAnalyzer:
     )
     _EXCHANGE_KEYWORDS = frozenset([
         '환율', '달러', '엔화', '유로', 'usd', 'jpy', 'eur', 'krw', '환전',
-        '코인', '비트코인', '이더리움', 'crypto', 'bitcoin', 'eth',
+        '코인', 'crypto', 'bitcoin', 'ethereum',
     ])
-    _FINANCE_INTENT_HINTS = frozenset([
-        '주가', '주식', '시세', '종가', '시가', '상장', '시총', '시가총액', '배당',
-        '증시', '나스닥', '뉴욕증시', '코스피', '코스닥', '투자', '실적', '매출',
-        '영업이익', 'per', 'pbr', 'eps', 'etf', 'fund', 'market cap',
-        '환율', '환전', '달러', '엔화', '유로', '코인', '비트코인', '이더리움',
-    ])
-    _STOCK_TICKER_PATTERN = re.compile(
-        r"\b(aapl|tsla|googl|nvda|msft|amzn|mcd|sbux|ko|pep|nflx|meta|dis|intc|amd|nke|cost|brk\.?b)\b",
-        re.IGNORECASE,
-    )
-    _FINANCE_KEYWORDS = _STOCK_US_KEYWORDS | _STOCK_KR_KEYWORDS | _STOCK_GENERAL_KEYWORDS | _EXCHANGE_KEYWORDS
     _DEPRECATED_FINANCE_TOOLS = frozenset([
         'get_krw_exchange_rate',
         'get_company_news',
@@ -520,16 +499,25 @@ class IntentAnalyzer:
             return True
         if any(kw in query_lower for kw in self._MARKET_INDEX_KEYWORDS):
             return True
-        if self._STOCK_TICKER_PATTERN.search(query_lower):
+        if detect_fx_pair(query):
             return True
+        return False
 
-        # 회사명만 있는 경우에는 금융 의도 힌트가 함께 있을 때만 금융으로 본다.
-        has_stock_entity = any(kw in query_lower for kw in self._STOCK_US_KEYWORDS) or any(
-            kw in query_lower for kw in self._STOCK_KR_KEYWORDS
-        )
-        if not has_stock_entity:
-            return False
-        return any(hint in query_lower for hint in self._FINANCE_INTENT_HINTS)
+    def _query_has_ticker_token(self, query: str) -> bool:
+        for token in re.findall(r"[A-Za-z][A-Za-z0-9.^:=-]{0,19}", query or ""):
+            if looks_like_ticker(token.upper()) and 1 < len(token) <= 6:
+                return True
+        return False
+
+    def _has_named_instrument(self, query: str) -> bool:
+        text = (query or "").lower()
+        if detect_fx_pair(query):
+            return True
+        if any(term in text for term in ("주가", "시세", "종가", "티커")):
+            return True
+        if any(term in text for term in self._EXCHANGE_KEYWORDS):
+            return True
+        return self._query_has_ticker_token(query)
 
     def _looks_like_market_brief_query(self, query: str) -> bool:
         """개별 종목이 아닌 시장 지수·시황 브리핑 요청인지 판별합니다."""
@@ -546,43 +534,8 @@ class IntentAnalyzer:
         # 섞인 "주요 통화 환율 확인"이 지수 브리핑으로 넘어가, 통화쌍 대신
         # 코스피·코스닥을 조회하고 있었다. 지목된 대상이 있으면 종목이든
         # 통화든 지수 브리핑이 아니다.
-        has_named_instrument = (
-            any(term in text for term in self._STOCK_US_KEYWORDS)
-            or any(term in text for term in self._STOCK_KR_KEYWORDS)
-            or any(term in text for term in self._EXCHANGE_KEYWORDS)
-            or bool(self._STOCK_TICKER_PATTERN.search(text))
-        )
+        has_named_instrument = self._has_named_instrument(query)
         return has_news_request and not has_named_instrument
-
-    # 원화 기준 통화쌍. Yahoo FX 심볼은 키 없이 조회되므로 별도 환율 API 없이
-    # 같은 현재가 도구로 처리한다. 앞의 항목부터 확인해 "엔화"가 "화"만 겹치는
-    # 다른 통화보다 먼저 잡히게 둔다.
-    _FX_TICKERS = (
-        (("엔화", "엔화 환율", "원엔", "엔-원", "엔원", "jpy", "일본 돈"), "JPYKRW=X"),
-        (("유로", "eur"), "EURKRW=X"),
-        (("위안", "cny", "중국 돈"), "CNYKRW=X"),
-        (("파운드", "gbp"), "GBPKRW=X"),
-        (("달러", "usd", "원달러", "원-달러", "미국 돈"), "USDKRW=X"),
-    )
-    _FX_INTENT_MARKERS = ("환율", "환전", "환산", "원화로", "얼마", "시세")
-
-    @classmethod
-    def _fx_ticker_from_text(cls, query: str) -> str | None:
-        """원화 환율 조회로 답할 수 있는 질문이면 Yahoo 통화쌍을 돌려줍니다.
-
-        통화 이름만으로는 "달러 강세 이유" 같은 해설 요청까지 잡히므로 환율을
-        묻는 표현이 함께 있을 때만 통화쌍으로 본다. 통화를 특정하지 않은
-        "오늘 환율 어때"는 한국어 사용자의 기본인 원/달러로 본다.
-        """
-        text = str(query or "").casefold()
-        if not text:
-            return None
-        if not any(marker in text for marker in cls._FX_INTENT_MARKERS):
-            return None
-        for names, ticker in cls._FX_TICKERS:
-            if any(name in text for name in names):
-                return ticker
-        return "USDKRW=X" if "환율" in text else None
 
     @staticmethod
     def _stock_lookup_requires_web(query: str) -> bool:
@@ -605,7 +558,7 @@ class IntentAnalyzer:
             "otc",
         )
         # 환율·환산은 한때 이 도구로 답할 수 없어 제외 대상이었다. 지금은
-        # Yahoo 통화쌍(USDKRW=X 등)이 같은 도구로 조회되므로 제외하면 안 된다.
+        # 같은 현재가 도구로 조회되므로 제외하면 안 된다.
         # 남은 항목은 단건 현재가로 실제로 답할 수 없는 요청들이다.
         return any(term in text for term in capability_terms)
 
@@ -1076,22 +1029,15 @@ class IntentAnalyzer:
                 })
                 return tools
 
-            # 환율은 Yahoo 통화쌍으로 실측된다. 환산 계산도 조회된 환율에
-            # 사용자가 준 금액을 곱하는 형태라 같은 도구로 근거를 만든다.
-            fx_ticker = self._fx_ticker_from_text(query)
-            if fx_ticker:
+            if detect_fx_pair(query):
                 logger.info(
-                    "환율 조회 감지. query_chars=%d; get_stock_price(%s) 사용",
+                    "환율 조회 감지. query_chars=%d; get_stock_price 사용",
                     len(query),
-                    fx_ticker,
                 )
                 tools.append({
                     'tool_to_use': 'get_stock_price',
                     'tool_name': 'get_stock_price',
-                    'parameters': {
-                        'symbol': fx_ticker,
-                        'user_query': query.strip(),
-                    }
+                    'parameters': {'user_query': query.strip()},
                 })
                 return tools
 
@@ -2167,43 +2113,3 @@ class IntentAnalyzer:
                     best_match = location
 
         return best_match
-
-    @staticmethod
-    def _extract_us_stock_symbol(query_lower: str) -> str | None:
-        """쿼리에서 미국 주식 심볼을 추출합니다."""
-        symbol_map = {
-            '애플': 'AAPL', 'apple': 'AAPL', 'aapl': 'AAPL',
-            '테슬라': 'TSLA', 'tesla': 'TSLA', 'tsla': 'TSLA',
-            '구글': 'GOOGL', 'google': 'GOOGL', 'googl': 'GOOGL',
-            '엔비디아': 'NVDA', 'nvidia': 'NVDA', 'nvda': 'NVDA',
-            '마이크로소프트': 'MSFT', 'microsoft': 'MSFT', 'msft': 'MSFT',
-            '아마존': 'AMZN', 'amazon': 'AMZN', 'amzn': 'AMZN',
-            '맥도날드': 'MCD', 'mcd': 'MCD',
-            '스타벅스': 'SBUX', 'sbux': 'SBUX',
-            '코카콜라': 'KO', 'coca-cola': 'KO', 'ko': 'KO',
-            '펩시': 'PEP', 'pepsi': 'PEP',
-            '넷플릭스': 'NFLX', 'netflix': 'NFLX',
-            '메타': 'META', '페이스북': 'META', 'meta': 'META',
-            '디즈니': 'DIS', 'disney': 'DIS',
-            '인텔': 'INTC', 'intel': 'INTC',
-            'amd': 'AMD',
-            '나이키': 'NKE', 'nike': 'NKE',
-            '코스트코': 'COST', 'costco': 'COST',
-            '버크셔': 'BRK.B', 'berkshire': 'BRK.B'
-        }
-        for keyword, symbol in symbol_map.items():
-            if keyword in query_lower:
-                return symbol
-        return None
-
-    def _extract_kr_stock_ticker(self, query_lower: str) -> str | None:
-        """쿼리에서 한국 주식 종목 코드를 추출합니다."""
-        ticker_map = {
-            '삼성전자': '005930', '현대차': '005380', 'sk하이닉스': '000660',
-            '네이버': '035420', '카카오': '035720', 'lg에너지': '373220',
-            '셀트리온': '068270', '삼성바이오': '207940', '기아': '000270', '포스코': '005490',
-        }
-        for keyword, ticker in ticker_map.items():
-            if keyword in query_lower:
-                return ticker
-        return None

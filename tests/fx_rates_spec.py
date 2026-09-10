@@ -85,3 +85,21 @@ async def test_keyed_latest_uses_bearer_and_conversion_rates(monkeypatch):
     assert result["status"] == "success"
     assert result["price"] == 8.719
     assert "1 JPY" in result["summary"]
+
+
+@pytest.mark.asyncio
+async def test_tools_cog_krw_rate_uses_exchangerate_api(monkeypatch):
+    from cogs.tools_cog import ToolsCog
+
+    class _FakeBot:
+        def get_cog(self, _name):
+            return None
+
+    async def fake_quote(base, quote):
+        assert base == "EUR"
+        assert quote == "KRW"
+        return {"status": "success", "summary": "1 EUR = 1,500.0000 KRW"}
+
+    monkeypatch.setattr(fx_rates, "get_fx_quote", fake_quote)
+    text = await ToolsCog(_FakeBot()).get_krw_exchange_rate("EUR")
+    assert "1 EUR" in text

@@ -36,11 +36,17 @@ match. See [INSTANCE_SEPARATION.ko.md](INSTANCE_SEPARATION.ko.md).
 ```text
 main.py                 startup, schema verification, Cog lifecycle
 config.py               profile resolution, feature and resource limits
+utils/rag_policy.py     BM25/FTS5 always off (cpu_only low-spec contract)
+cogs/ai_handler.py      queue, workers, conversation lifecycle
+cogs/ai_prompting.py    main-prompt budget assembly
+cogs/ai_tool_runtime.py tool execution and result normalization
 cogs/                   Discord commands, views, events, schedulers
 utils/llm_client.py      routing/main lanes and physical provider boundary
 utils/intent_analyzer.py semantic routing and context digest
 utils/rag_manager.py     history, windows, bounded embedding tasks
-utils/hybrid_search.py   semantic retrieval, scope alignment, relevance gate
+utils/hybrid_search.py   semantic retrieval (no BM25 calls)
+utils/weather_forecast.py single KMA entry for the weather tool
+utils/api_handlers/      Finnhub quotes, ExchangeRate-API FX, Yahoo index snapshot
 utils/db.py              atomic usage reservations and shared DB operations
 database/compat_db.py    SQLite/TiDB adapter and transaction ownership
 school_notice/           list/detail collection, analysis, digest generation
@@ -140,10 +146,10 @@ may reorder candidates but cannot bypass the semantic gate. TiDB vector search
 is used only when the column exists, the backfill is complete, and the feature
 flag is on; otherwise a bounded compatibility scan reads existing embeddings.
 
-The code can defensively consume an optional local lexical candidate source,
-but `config.py` sets `BM25_DATABASE_PATH=None`, and explicit production profiles
-must set `BM25_AUTO_REBUILD_ENABLED=false`. BM25 is therefore unreachable in
-the remote runtime.
+`utils/rag_policy.py` refuses BM25 even if a database path is still configured,
+so the FTS5 module is not imported on the cpu_only startup path. Explicit
+production profiles must also set `BM25_AUTO_REBUILD_ENABLED=false`. Masamo uses
+local embeddings only; the reranker stays off.
 
 ## Evidence-bearing tools
 
@@ -152,8 +158,9 @@ Timeout text, missing credentials, empty payloads, or status-less market data
 are normalized as errors, not evidence. Current, numeric, news, schedule, or
 local-facility questions fail closed when no successful source exists.
 
-Market answers combine an actual KOSPI/KOSDAQ or US-index snapshot with sourced
-news. Material numbers absent from the evidence are removed before sending.
+Market answers combine a US/global index snapshot (Yahoo) or a Finnhub US quote
+with sourced news. Korean listings are out of scope. Material numbers absent
+from the evidence are removed before sending.
 
 Each external provider has a circuit breaker. Consecutive failures enter a
 cooldown; one user request becomes the half-open probe. Cancellation abandons

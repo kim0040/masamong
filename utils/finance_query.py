@@ -8,6 +8,24 @@ import re
 _TICKER_RE = re.compile(r"^[A-Z0-9^][A-Z0-9.^=:-]{0,24}$")
 _FX_SYMBOL_RE = re.compile(r"^([A-Z]{3})([A-Z]{3})=X$")
 _ISO_PAIR_RE = re.compile(r"\b([A-Z]{3})\s*/\s*([A-Z]{3})\b")
+_ISO_4217 = frozenset({
+    "AED", "AFN", "ALL", "AMD", "ANG", "AOA", "ARS", "AUD", "AWG", "AZN",
+    "BAM", "BBD", "BDT", "BGN", "BHD", "BIF", "BMD", "BND", "BOB", "BRL",
+    "BSD", "BTN", "BWP", "BYN", "BZD", "CAD", "CDF", "CHF", "CLP", "CNY",
+    "COP", "CRC", "CUP", "CVE", "CZK", "DJF", "DKK", "DOP", "DZD", "EGP",
+    "ERN", "ETB", "EUR", "FJD", "FKP", "GBP", "GEL", "GHS", "GIP", "GMD",
+    "GNF", "GTQ", "GYD", "HKD", "HNL", "HRK", "HTG", "HUF", "IDR", "ILS",
+    "INR", "IQD", "IRR", "ISK", "JMD", "JOD", "JPY", "KES", "KGS", "KHR",
+    "KMF", "KRW", "KWD", "KYD", "KZT", "LAK", "LBP", "LKR", "LRD", "LSL",
+    "LYD", "MAD", "MDL", "MGA", "MKD", "MMK", "MNT", "MOP", "MRU", "MUR",
+    "MVR", "MWK", "MXN", "MYR", "MZN", "NAD", "NGN", "NIO", "NOK", "NPR",
+    "NZD", "OMR", "PAB", "PEN", "PGK", "PHP", "PKR", "PLN", "PYG", "QAR",
+    "RON", "RSD", "RUB", "RWF", "SAR", "SBD", "SCR", "SDG", "SEK", "SGD",
+    "SHP", "SLE", "SOS", "SRD", "SSP", "STN", "SVC", "SYP", "SZL", "THB",
+    "TJS", "TMT", "TND", "TOP", "TRY", "TTD", "TWD", "TZS", "UAH", "UGX",
+    "USD", "UYU", "UZS", "VES", "VND", "VUV", "WST", "XAF", "XCD", "XDR",
+    "XOF", "XPF", "YER", "ZAR", "ZMW",
+})
 
 _CURRENCY_ALIASES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("usd", "달러", "미국달러", "미국 달러", "미국돈", "미국 돈"), "USD"),
@@ -35,8 +53,15 @@ KR_MARKET_UNSUPPORTED = (
 
 
 def looks_like_ticker(value: str) -> bool:
+    """명시 티커만 통과시킵니다. 회사 영문명(NVIDIA, BITCOIN)은 검색에 맡깁니다."""
     text = str(value or "").strip().upper()
-    return bool(text) and bool(_TICKER_RE.fullmatch(text))
+    if not text or not _TICKER_RE.fullmatch(text):
+        return False
+    if any(mark in text for mark in (":", ".", "^", "=")) or any(
+        ch.isdigit() for ch in text
+    ):
+        return True
+    return 1 <= len(text) <= 5
 
 
 def is_kr_listing(symbol: str) -> bool:
@@ -87,6 +112,10 @@ def detect_fx_pair(query: str) -> tuple[str, str] | None:
                 found.append(code)
             break
 
+    for code in re.findall(r"\b([A-Z]{3})\b", text.upper()):
+        if code in _ISO_4217 and code not in found:
+            found.append(code)
+
     if "원" in text and "KRW" not in found and any(
         marker in text for marker in ("환율", "환전", "환산", "몇원", "몇 원")
     ):
@@ -94,15 +123,15 @@ def detect_fx_pair(query: str) -> tuple[str, str] | None:
 
     fx_intent = any(marker in text or marker in folded for marker in _FX_INTENT)
     if not found:
+        if fx_intent and "환율" in text:
+            return "USD", "KRW"
         return None
     if not fx_intent and set(found) <= {"KRW"}:
         return None
     if len(found) == 1:
         if found[0] == "KRW":
             return None
-        if fx_intent or found[0] != "KRW":
-            return found[0], "KRW"
-        return None
+        return found[0], "KRW"
     if "KRW" in found:
         foreign = next(code for code in found if code != "KRW")
         return foreign, "KRW"
@@ -114,3 +143,19 @@ def detect_fx_symbol(query: str) -> str | None:
     if not pair:
         return None
     return f"{pair[0]}{pair[1]}=X"
+
+
+def split_quote_query(
+    user_query: str | None = None,
+    symbol: str | None = None,
+    stock_name: str | None = None,
+) -> tuple[str, str]:
+    """시세 도구 인자를 (자연어, 명시 티커)로 나눕니다."""
+    raw_symbol = str(symbol or "").strip()
+    query_text = str(user_query or stock_name or raw_symbol or "").strip()
+    direct = raw_symbol.upper()
+    if direct and not looks_like_ticker(direct):
+        if not query_text:
+            query_text = raw_symbol
+        direct = ""
+    return query_text, direct

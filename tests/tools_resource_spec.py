@@ -412,3 +412,25 @@ async def test_image_model_contract_mismatch_never_reserves_usage(monkeypatch):
     # 횟수가 차감되지 않았다는 점이 사용자에게 분명히 전달돼야 한다.
     assert "횟수에서 빼지 않았" in result["error"]
     reserve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_kakao_fallback_uses_web_search_only(monkeypatch):
+    cog = ToolsCog(_FakeBot())
+
+    async def fake_web(query, page_size=5):
+        assert query == "전주 맛집"
+        assert page_size == 5
+        return [{"title": "제목", "contents": "내용"}]
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("Kakao blog/vclip must not run on low-spec fallback")
+
+    monkeypatch.setattr(tools_module.kakao, "search_web", fake_web)
+    monkeypatch.setattr(tools_module.kakao, "search_blog", forbidden)
+    monkeypatch.setattr(tools_module.kakao, "search_vclip", forbidden)
+
+    text = await cog.kakao_web_search("전주 맛집")
+    assert "웹 검색 결과" in text
+    assert "블로그" not in text
+    assert "동영상" not in text

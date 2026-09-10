@@ -9,6 +9,7 @@ Finnhub 금융 데이터 API 클라이언트.
 from __future__ import annotations
 import asyncio
 import re
+import time
 import requests
 from datetime import datetime, timedelta
 import config
@@ -21,53 +22,9 @@ from utils.finance_query import (
     looks_like_ticker,
 )
 
-# Popular company names/aliases to ticker symbol mapping
-# This helps the agent understand natural language queries
-ALIAS_TO_TICKER = {
-    # Top 40 US companies by market cap + common aliases
-    "nvidia": "NVDA", "엔비디아": "NVDA",
-    "microsoft": "MSFT", "마이크로소프트": "MSFT", "마소": "MSFT",
-    "apple": "AAPL", "애플": "AAPL",
-    "alphabet": "GOOGL", "알파벳": "GOOGL", "google": "GOOGL", "구글": "GOOGL",
-    "amazon": "AMZN", "아마존": "AMZN",
-    "meta platforms": "META", "meta": "META", "메타": "META", "facebook": "META", "페이스북": "META",
-    "broadcom": "AVGO", "브로드컴": "AVGO",
-    "tesla": "TSLA", "테슬라": "TSLA",
-    "berkshire hathaway": "BRK.B", "버크셔해서웨이": "BRK.B",
-    "jpmorgan chase": "JPM", "jp모건": "JPM",
-    "oracle": "ORCL", "오라클": "ORCL",
-    "walmart": "WMT", "월마트": "WMT",
-    "eli lilly": "LLY", "일라이릴리": "LLY",
-    "visa": "V", "비자": "V",
-    "mastercard": "MA", "마스터카드": "MA",
-    "netflix": "NFLX", "넷플릭스": "NFLX",
-    "exxon mobil": "XOM", "엑슨모빌": "XOM",
-    "costco": "COST", "코스트코": "COST",
-    "johnson & johnson": "JNJ", "존슨앤드존슨": "JNJ",
-    "home depot": "HD", "홈디포": "HD",
-    "palantir": "PLTR", "팔란티어": "PLTR",
-    "abbvie": "ABBV", "애브비": "ABBV",
-    "bank of america": "BAC", "뱅크오브아메리카": "BAC",
-    "procter & gamble": "PG", "프록터앤드갬블": "PG", "p&g": "PG",
-    "chevron": "CVX", "쉐브론": "CVX",
-    "unitedhealth group": "UNH", "유나이티드헬스": "UNH",
-    "general electric": "GE", "제너럴일렉트릭": "GE",
-    "coca-cola": "KO", "코카콜라": "KO",
-    "cisco": "CSCO", "시스코": "CSCO",
-    "wells fargo": "WFC", "웰스파고": "WFC",
-    "philip morris": "PM", "필립모리스": "PM",
-    "amd": "AMD", "advanced micro devices": "AMD",
-    "morgan stanley": "MS", "모건스탠리": "MS",
-    "goldman sachs": "GS", "골드만삭스": "GS",
-    "ibm": "IBM", "international business machines": "IBM",
-    "abbott laboratories": "ABT", "애보트": "ABT",
-    "salesforce": "CRM", "세일즈포스": "CRM",
-    "american express": "AXP", "아메리칸익스프레스": "AXP",
-    "linde": "LIN", "린데": "LIN",
-    "mcdonald's": "MCD", "맥도날드": "MCD",
-}
-
 BASE_URL = config.FINNHUB_BASE_URL
+_SEARCH_CACHE: dict[str, tuple[float, tuple[int, dict | list | None]]] = {}
+_SEARCH_CACHE_TTL_SEC = 10 * 60
 
 def _get_client():
     """API 키 존재 여부를 확인하고, 요청에 필요한 딕셔너리를 반환합니다."""
@@ -99,196 +56,17 @@ def _format_finnhub_news_data(symbol: str, news_items: list) -> str:
     headlines = [f"- {item['headline']} ({item['url']})" for item in news_items]
     return f"'{symbol}' 관련 최신 뉴스:\n" + "\n".join(headlines)
 
-async def _search_symbol(query: str) -> str | None:
-    """Search for a stock symbol using a query string."""
-    params = _get_client()
-    if not params:
-        return None
-    params['q'] = query
-
-    try:
-        with http.get_modern_tls_session() as session:
-            response = await asyncio.to_thread(session.get, f"{BASE_URL}/search", params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-
-        if data.get('result') and len(data['result']) > 0:
-            for item in data['result']:
-                if '.' not in item.get('symbol', '') and item.get('type') == 'Common Stock':
-                    logger.info(
-                        "Finnhub search: symbol found. symbol=%s query_chars=%d",
-                        item['symbol'],
-                        len(query),
-                    )
-                    return item['symbol']
-            first_result = data['result'][0]
-            logger.info(
-                "Finnhub search: falling back to first result. symbol=%s query_chars=%d",
-                first_result['symbol'],
-                len(query),
-            )
-            return first_result['symbol']
-
-        logger.warning(
-            "Finnhub search: no results. query_chars=%d",
-            len(query),
-        )
-        return None
-
-    except requests.exceptions.RequestException as e:
-        logger.error(
-            "Finnhub search API 요청 중 오류. query_chars=%d error=%s",
-            len(query),
-            e,
-            exc_info=True,
-        )
-        return None
-
 async def get_raw_stock_quote(symbol: str) -> dict | None:
-    """
-    Finnhub API로 해외 주식 시세를 조회하고, 주요 정보를 dict 형태로 반환합니다.
-    다른 도구에서 사용하기 위한 내부용 함수입니다.
-    """
-    params = _get_client()
-    if not params:
-        logger.error("Finnhub API 키가 설정되지 않아 get_raw_stock_quote를 실행할 수 없습니다.")
+    """시세 dict. 심볼 확정은 lookup_quote와 같은 검색 경로를 씁니다."""
+    result = await lookup_quote(symbol)
+    if result.get("status") != "success":
         return None
+    return {
+        "symbol": result.get("symbol"),
+        "price": result.get("price"),
+        "change": result.get("change"),
+    }
 
-    normalized_symbol = ALIAS_TO_TICKER.get(symbol.lower(), symbol).upper()
-    logger.info(f"Finnhub (raw): Original symbol '{symbol}' normalized to '{normalized_symbol}'")
-
-    async def _get_quote_for_symbol(ticker: str) -> dict | None:
-        """Internal function to fetch quote for a given ticker."""
-        params['symbol'] = ticker
-        with http.get_modern_tls_session() as session:
-            response = await asyncio.to_thread(session.get, f"{BASE_URL}/quote", params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        # 0, d=None은 유효하지 않은 응답으로 간주
-        if data.get('c') != 0 or data.get('d') is not None:
-            return data
-        return None
-
-    import re
-    from .. import http
-    # Lazily import kakao to avoid potential circular import issues at module level if any
-    from . import kakao 
-
-    async def _find_ticker_via_web(query: str) -> str | None:
-        """
-        Finnhub 검색 실패 시, 카카오 웹 검색을 통해 티커를 추론합니다.
-        예: '스타벅스 주식' -> 검색 결과 '...스타벅스(SBUX)...' -> 'SBUX' 추출
-        """
-        search_query = f"{query} 주식 티커"
-        logger.info(
-            "Finnhub: 티커 웹 검색을 실행합니다. query_chars=%d",
-            len(search_query),
-        )
-        
-        results = await kakao.search_web(search_query, page_size=3)
-        if not results:
-            return None
-            
-        # Regex patterns to find ticker
-        # 1. (SBUX) or (U) - Parentheses (High confidence)
-        # 2. Ticker: SBUX - Explicit label
-        # 3. SBUX (스타벅스) - Uppercase followed by query in parens
-        patterns = [
-            re.compile(r'\(([A-Z]{1,5})\)'), # (SBUX), (U)
-            re.compile(r'Ticker\s*[:\-]?\s*([A-Z]{1,5})', re.IGNORECASE), # Ticker: SBUX
-            re.compile(r'Symbol\s*[:\-]?\s*([A-Z]{1,5})', re.IGNORECASE), # Symbol: SBUX
-            re.compile(r'티커\s*[:\-는은]?\s*([A-Z]{1,5})'), # 티커는 SBUX
-            re.compile(r'종목코드\s*[:\-는은]?\s*([A-Z]{1,5})'), # 종목코드 SBUX
-            re.compile(r'심볼\s*[:\-는은]?\s*([A-Z]{1,5})'), # 심볼 SBUX
-            re.compile(r'([A-Z]{2,5})\s*\('), # SBUX ( - Requires 2+ chars
-        ]
-        
-        # Stopwords to avoid false positives
-        STOPWORDS = {
-            "NASDAQ", "NYSE", "ETF", "USA", "KRX", "KOSPI", "KOSDAQ", 
-            "CEO", "IPO", "TOP", "BEST", "NEW", "USD", "WEB", "APP",
-            "THE", "AND", "FOR", "INC", "CORP", "LTD", "PLC", "AG",
-            "EST", "GMT", "PST", "CST", "JST", "KST",
-            "OTT", "IT", "AI", "PER", "PBR", "ROE", "ROA", "EPS", 
-            "EBITDA", "EV", "BPS", "DIV", "YTD", "QQQ", "SPY"
-        }
-
-        for item in results:
-            title = item.get('title', '').replace('<b>', '').replace('</b>', '')
-            content = item.get('contents', '').replace('<b>', '').replace('</b>', '')
-            logger.debug(f"Finnhub Ticker Search: Checking Title: {title} / Content: {content}")
-            
-            # [Relevance Check] The result MUST contain the original query string (e.g. "스타벅스")
-            # to be considered a valid source for that company's ticker.
-            if query not in title and query not in content:
-                 logger.debug(f"Finnhub Web Fallback: 검색 결과에 '{query}'가 없어 건너뜁니다.")
-                 continue
-
-            # Combine title and content for search
-            text = f"{title} {content}"
-            
-            # Try patterns
-            candidates = []
-            for p in patterns:
-                matches = p.findall(text)
-                for m in matches:
-                     if m and m not in STOPWORDS:
-                         candidates.append(m)
-            
-            # If candidates found, pick the most frequent or first valid one
-            if candidates:
-                # Prioritize Pattern 1 (Parentheses) if possible.
-                p1_match = re.search(r'\(([A-Z]{2,5})\)', text)
-                if p1_match:
-                     found = p1_match.group(1)
-                     if found not in STOPWORDS:
-                         logger.info(f"Finnhub Web Fallback: 패턴 1로 티커 '{found}' 발견!")
-                         return found
-                
-                # If no parens match, take the first reasonable uppercase word
-                for c in candidates:
-                     logger.info(f"Finnhub Web Fallback: 후보 '{c}' 발견!")
-                     return c
-        
-        return None
-        
-        return None
-
-    try:
-        quote_data = await _get_quote_for_symbol(normalized_symbol)
-
-        # 첫 시도 실패 시, 심볼 검색 후 재시도
-        if not quote_data:
-            logger.info(f"Finnhub API에서 '{normalized_symbol}' 종목 정보를 찾지 못했습니다. 검색을 시도합니다.")
-            searched_symbol = await _search_symbol(symbol)
-            
-            # [Dynamic Fallback] Finnhub 검색도 실패하면 웹 검색 시도
-            if not searched_symbol:
-                 searched_symbol = await _find_ticker_via_web(symbol)
-
-            if searched_symbol and searched_symbol.lower() != normalized_symbol.lower():
-                logger.info(f"Finnhub: 검색된 Ticker '{searched_symbol}'(으)로 재시도합니다.")
-                quote_data = await _get_quote_for_symbol(searched_symbol)
-                normalized_symbol = searched_symbol
-
-        if not quote_data:
-            logger.warning(f"Finnhub: 최종적으로 '{symbol}'에 대한 정보를 찾지 못했습니다.")
-            return None
-
-        return {
-            "symbol": normalized_symbol,
-            "price": quote_data.get('c'),
-            "change": quote_data.get('d'),
-        }
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Finnhub API('{symbol}') 요청 중 오류: {e}", exc_info=True)
-        return None
-    except (ValueError, KeyError) as e:
-        logger.error(f"Finnhub API('{symbol}') 응답 파싱 중 오류: {e}", exc_info=True)
-        return None
-    except Exception as e:
-        logger.error(f"Finnhub API('{symbol}') 처리 중 예기치 않은 오류: {e}", exc_info=True)
-        return None
 
 async def get_stock_quote(symbol: str) -> str:
     """
@@ -313,8 +91,10 @@ async def get_company_news(symbol: str, count: int = 3) -> str:
     if not params:
         return f"'{symbol}' 관련 뉴스를 조회할 수 없습니다 (API 키 미설정)."
     
-    normalized_symbol = ALIAS_TO_TICKER.get(symbol.lower(), symbol).upper()
-    logger.info(f"Finnhub News: Original symbol '{symbol}' normalized to '{normalized_symbol}'")
+    normalized_symbol = await _search_listed_symbol(symbol)
+    if not normalized_symbol:
+        return f"'{symbol}' 관련 뉴스를 조회할 수 없습니다."
+    logger.info("Finnhub News: resolved symbol=%s", normalized_symbol)
     params['symbol'] = normalized_symbol
 
     today = datetime.now()
@@ -362,7 +142,9 @@ async def get_company_profile(symbol: str) -> dict | None:
     if not params:
         return None
     
-    normalized_symbol = ALIAS_TO_TICKER.get(symbol.lower(), symbol).upper()
+    normalized_symbol = await _search_listed_symbol(symbol)
+    if not normalized_symbol:
+        return None
     params['symbol'] = normalized_symbol
 
     try:
@@ -393,7 +175,9 @@ async def get_recommendation_trends(symbol: str) -> str:
     if not params:
         return ""
     
-    normalized_symbol = ALIAS_TO_TICKER.get(symbol.lower(), symbol).upper()
+    normalized_symbol = await _search_listed_symbol(symbol)
+    if not normalized_symbol:
+        return ""
     params['symbol'] = normalized_symbol
 
     try:
@@ -422,12 +206,6 @@ async def get_recommendation_trends(symbol: str) -> str:
         return "추천 트렌드 조회 실패"
 
 
-_CRYPTO_QUERY = (
-    (("비트코인", "bitcoin", "btc"), "BINANCE:BTCUSDT"),
-    (("이더리움", "ethereum", "eth"), "BINANCE:ETHUSDT"),
-)
-
-
 def _is_hangul(text: str) -> bool:
     return bool(re.search(r"[가-힣]", text or ""))
 
@@ -453,6 +231,21 @@ def _pick_search_hit(results: list[dict], *, query: str, search_term: str) -> di
             score += 40
         if is_kr_listing(symbol):
             continue
+        kind_upper = kind.upper()
+        is_crypto = (
+            "CRYPTO" in kind_upper
+            or symbol.startswith(("BINANCE:", "COINBASE:", "KRAKEN:"))
+        )
+        crypto_intent = any(
+            marker in query_text.casefold()
+            for marker in ("crypto", "coin", "bitcoin", "ethereum", "코인")
+        )
+        if crypto_intent and is_crypto:
+            score += 40
+        elif is_crypto:
+            score -= 25
+        elif crypto_intent and kind == "Common Stock":
+            score -= 30
         if not _is_hangul(query_text) and "." not in symbol:
             score += 20
         if symbol.endswith(".SS") or symbol.endswith(".SZ"):
@@ -464,19 +257,41 @@ def _pick_search_hit(results: list[dict], *, query: str, search_term: str) -> di
     return scored[0][1]
 
 
-def _detect_crypto_symbol(query: str) -> str | None:
-    folded = str(query or "").casefold()
-    text = str(query or "")
-    for aliases, symbol in _CRYPTO_QUERY:
-        if any(alias in folded or alias in text for alias in aliases):
-            return symbol
-    return None
+def _hangul_only(text: str) -> bool:
+    return _is_hangul(text) and not re.search(r"[A-Za-z]{2,}", text or "")
+
+
+async def _search_listed_symbol(query: str) -> str | None:
+    text = str(query or "").strip()
+    if not text or is_kr_listing(text):
+        return None
+    if looks_like_ticker(text.upper()) and " " not in text:
+        return text.upper()
+    if _hangul_only(text):
+        return None
+    status, payload = await _request_json("/search", {"q": text})
+    if status != 200 or not isinstance(payload, dict):
+        return None
+    hit = _pick_search_hit(
+        list(payload.get("result") or []),
+        query=text,
+        search_term=text,
+    )
+    symbol = str((hit or {}).get("symbol") or "").strip()
+    if not symbol or is_kr_listing(symbol):
+        return None
+    return symbol
 
 
 async def _request_json(path: str, extra: dict) -> tuple[int, dict | list | None]:
     params = _get_client()
     if not params:
         return 0, None
+    if path == "/search":
+        cache_key = str(extra.get("q") or "")
+        cached = _SEARCH_CACHE.get(cache_key)
+        if cached and cached[0] > time.monotonic():
+            return cached[1]
     params.update(extra)
     with http.get_modern_tls_session() as session:
         response = await asyncio.to_thread(
@@ -489,7 +304,13 @@ async def _request_json(path: str, extra: dict) -> tuple[int, dict | list | None
         payload = response.json()
     except ValueError:
         payload = None
-    return response.status_code, payload
+    result = (response.status_code, payload)
+    if path == "/search" and response.status_code == 200:
+        _SEARCH_CACHE[str(extra.get("q") or "")] = (
+            time.monotonic() + _SEARCH_CACHE_TTL_SEC,
+            result,
+        )
+    return result
 
 
 async def lookup_quote(
@@ -513,21 +334,23 @@ async def lookup_quote(
             "provider_failure": True,
         }
 
-    crypto = _detect_crypto_symbol(original)
     if is_kr_listing(original) or is_kr_listing(hint):
         return kr_market_unsupported_result()
 
     candidates: list[str] = []
-    if crypto:
-        candidates.append(crypto)
     if original and looks_like_ticker(original.upper()) and not is_kr_listing(original):
         candidates.append(original.upper())
-    if hint and looks_like_ticker(hint.replace(":", "A")) and not is_kr_listing(hint):
+    if hint and looks_like_ticker(hint) and not is_kr_listing(hint):
         candidates.append(hint)
     elif hint and ":" in hint:
         candidates.append(hint)
 
-    if original and not looks_like_ticker(original.upper()) and not crypto:
+    should_search = (
+        original
+        and not looks_like_ticker(original.upper())
+        and not _hangul_only(original)
+    )
+    if should_search:
         status, payload = await _request_json("/search", {"q": original})
         if status == 200 and isinstance(payload, dict):
             search_results = list(payload.get("result") or [])
@@ -580,7 +403,9 @@ async def lookup_quote(
             last_limited = symbol
             continue
         price = payload.get("c")
-        if not isinstance(price, (int, float)) or price == 0 and payload.get("d") is None:
+        if not isinstance(price, (int, float)) or (
+            price == 0 and payload.get("d") is None
+        ):
             continue
         source_url = f"https://finnhub.io/quote/{symbol}"
         logger.info("Finnhub 조회 성공: %s -> %s", symbol, price)
@@ -589,6 +414,7 @@ async def lookup_quote(
             "symbol": symbol,
             "name": symbol,
             "price": float(price),
+            "change": payload.get("d"),
             "currency": "USD",
             "change_percent": payload.get("dp"),
             "provider": "finnhub",

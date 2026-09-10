@@ -5,7 +5,7 @@ import pytest
 import config
 from cogs.tools_cog import ToolsCog
 from utils.api_handlers import finnhub, fx_rates
-from utils.finance_query import detect_fx_pair
+from utils.finance_query import detect_fx_pair, split_quote_query
 
 
 def test_fx_pairs_cover_krw_jpy_usd_and_crosses():
@@ -15,6 +15,19 @@ def test_fx_pairs_cover_krw_jpy_usd_and_crosses():
     assert detect_fx_pair("EUR/KRW") == ("EUR", "KRW")
     assert detect_fx_pair("USDKRW=X") == ("USD", "KRW")
     assert detect_fx_pair("엔비디아 주가") is None
+    assert detect_fx_pair("오늘 환율 어때") == ("USD", "KRW")
+    assert detect_fx_pair("THB 환율") == ("THB", "KRW")
+
+
+def test_split_quote_query_keeps_real_tickers_and_drops_names():
+    query, ticker = split_quote_query(user_query="엔비디아 주가", symbol="NVDA")
+    assert query == "엔비디아 주가"
+    assert ticker == "NVDA"
+    query, ticker = split_quote_query(symbol="엔비디아")
+    assert query == "엔비디아"
+    assert ticker == ""
+    query, ticker = split_quote_query(symbol="BINANCE:BTCUSDT")
+    assert ticker == "BINANCE:BTCUSDT"
 
 
 @pytest.mark.asyncio
@@ -103,3 +116,41 @@ async def test_tools_cog_routes_yen_to_fx_not_finnhub(monkeypatch):
     result = await cog.get_stock_price(user_query="엔화 환율 알려줘")
     assert result["status"] == "success"
     assert result["symbol"] == "JPYKRW=X"
+
+
+@pytest.mark.asyncio
+async def test_hangul_name_skips_empty_search(monkeypatch):
+    async def fake_request(path, extra):
+        raise AssertionError(f"한글 전용 질의는 검색하지 않습니다: {path}")
+
+    monkeypatch.setattr(finnhub, "_get_client", lambda: {"token": "x"})
+    monkeypatch.setattr(finnhub, "_request_json", fake_request)
+    result = await finnhub.lookup_quote("엔비디아 주가")
+    assert result["failure_kind"] == "invalid_symbol"
+
+
+@pytest.mark.asyncio
+async def test_crypto_search_prefers_exchange_symbol(monkeypatch):
+    async def fake_request(path, extra):
+        if path == "/search":
+            return 200, {
+                "result": [
+                    {
+                        "description": "Bitcoin USD",
+                        "symbol": "BINANCE:BTCUSDT",
+                        "type": "Crypto",
+                    },
+                    {
+                        "description": "Bitcoin Cash",
+                        "symbol": "BCH",
+                        "type": "Common Stock",
+                    },
+                ]
+            }
+        return 200, {"c": 64000.0, "d": 100.0, "dp": 0.15, "t": 1}
+
+    monkeypatch.setattr(finnhub, "_get_client", lambda: {"token": "x"})
+    monkeypatch.setattr(finnhub, "_request_json", fake_request)
+    result = await finnhub.lookup_quote("Bitcoin")
+    assert result["status"] == "success"
+    assert result["symbol"] == "BINANCE:BTCUSDT"

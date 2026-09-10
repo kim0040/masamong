@@ -1801,20 +1801,21 @@ def test_fabricated_rate_is_still_blocked():
     assert unsupported
 
 
-def test_exchange_rate_question_uses_yahoo_currency_pair():
-    """환율 조회는 별도 환율 API 키 없이 통화쌍 현재가로 답한다."""
+def test_exchange_rate_question_uses_quote_tool_without_guessing_symbol():
+    """환율 조회는 시세 도구로 보내되 통화쌍은 도구가 해석한다."""
     handler = _build_handler_without_init()
 
-    for query, ticker in (
-        ("오늘 환율 어때", "USDKRW=X"),
-        ("엔화 환율 알려줘", "JPYKRW=X"),
-        ("유로 환율", "EURKRW=X"),
-        ("100만달러는 원화로 얼마임", "USDKRW=X"),
+    for query in (
+        "오늘 환율 어때",
+        "엔화 환율 알려줘",
+        "유로 환율",
+        "100만달러는 원화로 얼마임",
+        "THB 환율",
     ):
         plan = handler._detect_tools_by_keyword(query)
         assert plan, query
         assert plan[0]["tool_to_use"] == "get_stock_price", query
-        assert plan[0]["parameters"]["symbol"] == ticker, query
+        assert plan[0]["parameters"] == {"user_query": query}, query
 
 
 def test_currency_commentary_stays_on_web_search():
@@ -1847,7 +1848,7 @@ def test_quote_tool_contract_covers_currency_pairs():
     assert "detect_fx_pair" in resolver
     assert "KRW" in resolver and "JPY" in resolver
 
-    search_term_prompt = Path("cogs/ai_handler.py").read_text(encoding="utf-8")
+    search_term_prompt = Path("cogs/ai_tool_runtime.py").read_text(encoding="utf-8")
     assert "Do not invent ticker symbols" in search_term_prompt
     assert "Charts, history, or unidentified names: NONE" in search_term_prompt
 

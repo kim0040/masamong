@@ -117,7 +117,8 @@ deletes conversation or memory rows.
 
 - KMA: observation, nowcast, forecasts, warnings, earthquakes, and on-demand
   official typhoon analysis/forecast
-- Finance: Finnhub/yfinance/KRX/EximBank with market-evidence validation
+- Finance: Finnhub US quotes, ExchangeRate-API FX, Yahoo US/global index snapshot.
+  Korean listings and KRX/EximBank live paths are unused.
 - Web/news: Linkup with semantic `fast`/`standard`/`deep` selection, one-step
   quality escalation, a bounded fallback, and visible source links
 - Places: Kakao Local
