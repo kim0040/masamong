@@ -8,12 +8,18 @@ Finnhub 금융 데이터 API 클라이언트.
 
 from __future__ import annotations
 import asyncio
+import re
 import requests
 from datetime import datetime, timedelta
 import config
 from logger_config import logger
 
 from .. import http
+from utils.finance_query import (
+    is_kr_listing,
+    kr_market_unsupported_result,
+    looks_like_ticker,
+)
 
 # Popular company names/aliases to ticker symbol mapping
 # This helps the agent understand natural language queries
@@ -414,3 +420,202 @@ async def get_recommendation_trends(symbol: str) -> str:
     except Exception as e:
         logger.error(f"Finnhub Recommendation API('{normalized_symbol}') 오류: {e}")
         return "추천 트렌드 조회 실패"
+
+
+_CRYPTO_QUERY = (
+    (("비트코인", "bitcoin", "btc"), "BINANCE:BTCUSDT"),
+    (("이더리움", "ethereum", "eth"), "BINANCE:ETHUSDT"),
+)
+
+
+def _is_hangul(text: str) -> bool:
+    return bool(re.search(r"[가-힣]", text or ""))
+
+
+def _pick_search_hit(results: list[dict], *, query: str, search_term: str) -> dict | None:
+    if not results:
+        return None
+    term = str(search_term or "").strip().upper()
+    query_text = str(query or "")
+    scored: list[tuple[int, dict]] = []
+    for item in results:
+        symbol = str(item.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        description = str(item.get("description") or "")
+        kind = str(item.get("type") or "")
+        score = 0
+        if kind == "Common Stock":
+            score += 30
+        if symbol.upper() == term:
+            score += 80
+        if term and term.casefold() in description.casefold():
+            score += 40
+        if is_kr_listing(symbol):
+            continue
+        if not _is_hangul(query_text) and "." not in symbol:
+            score += 20
+        if symbol.endswith(".SS") or symbol.endswith(".SZ"):
+            score -= 10
+        scored.append((score, item))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    if not scored or scored[0][0] <= 0:
+        return None
+    return scored[0][1]
+
+
+def _detect_crypto_symbol(query: str) -> str | None:
+    folded = str(query or "").casefold()
+    text = str(query or "")
+    for aliases, symbol in _CRYPTO_QUERY:
+        if any(alias in folded or alias in text for alias in aliases):
+            return symbol
+    return None
+
+
+async def _request_json(path: str, extra: dict) -> tuple[int, dict | list | None]:
+    params = _get_client()
+    if not params:
+        return 0, None
+    params.update(extra)
+    with http.get_modern_tls_session() as session:
+        response = await asyncio.to_thread(
+            session.get,
+            f"{BASE_URL}{path}",
+            params=params,
+            timeout=10,
+        )
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    return response.status_code, payload
+
+
+async def lookup_quote(
+    query: str,
+    *,
+    hint_symbol: str | None = None,
+) -> dict:
+    """검색+시세를 Finnhub 무료 엔드포인트로만 조회합니다.
+
+    호출은 search 0~1회 + quote 1회로 제한해 분당 60회 한도를 넘기지 않습니다.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    original = str(query or "").strip()
+    hint = str(hint_symbol or "").strip()
+    if not _get_client():
+        return {
+            "status": "error",
+            "error": "주식 정보를 조회할 수 없습니다 (API 키 미설정).",
+            "failure_kind": "provider_error",
+            "provider_failure": True,
+        }
+
+    crypto = _detect_crypto_symbol(original)
+    if is_kr_listing(original) or is_kr_listing(hint):
+        return kr_market_unsupported_result()
+
+    candidates: list[str] = []
+    if crypto:
+        candidates.append(crypto)
+    if original and looks_like_ticker(original.upper()) and not is_kr_listing(original):
+        candidates.append(original.upper())
+    if hint and looks_like_ticker(hint.replace(":", "A")) and not is_kr_listing(hint):
+        candidates.append(hint)
+    elif hint and ":" in hint:
+        candidates.append(hint)
+
+    if original and not looks_like_ticker(original.upper()) and not crypto:
+        status, payload = await _request_json("/search", {"q": original})
+        if status == 200 and isinstance(payload, dict):
+            search_results = list(payload.get("result") or [])
+            hit = _pick_search_hit(
+                search_results,
+                query=original,
+                search_term=original,
+            )
+            if hit and hit.get("symbol"):
+                candidates.append(str(hit["symbol"]))
+            elif any(
+                is_kr_listing(str(item.get("symbol") or ""))
+                for item in search_results
+            ):
+                return kr_market_unsupported_result()
+        elif status == 429:
+            return {
+                "status": "error",
+                "error": "시세 조회가 잠시 너무 많아요. 조금 뒤에 다시 물어봐 주세요.",
+                "failure_kind": "provider_error",
+                "provider_failure": True,
+            }
+
+    seen: set[str] = set()
+    unique_candidates: list[str] = []
+    for item in candidates:
+        key = item.upper()
+        if key in seen or is_kr_listing(item):
+            continue
+        seen.add(key)
+        unique_candidates.append(item)
+
+    last_limited = None
+    for symbol in unique_candidates:
+        status, payload = await _request_json("/quote", {"symbol": symbol})
+        if status == 403:
+            last_limited = symbol
+            logger.info("Finnhub 무료 플랜 범위 밖: %s", symbol)
+            continue
+        if status == 429:
+            return {
+                "status": "error",
+                "error": "시세 조회가 잠시 너무 많아요. 조금 뒤에 다시 물어봐 주세요.",
+                "failure_kind": "provider_error",
+                "provider_failure": True,
+            }
+        if status != 200 or not isinstance(payload, dict):
+            continue
+        if payload.get("error"):
+            last_limited = symbol
+            continue
+        price = payload.get("c")
+        if not isinstance(price, (int, float)) or price == 0 and payload.get("d") is None:
+            continue
+        source_url = f"https://finnhub.io/quote/{symbol}"
+        logger.info("Finnhub 조회 성공: %s -> %s", symbol, price)
+        return {
+            "status": "success",
+            "symbol": symbol,
+            "name": symbol,
+            "price": float(price),
+            "currency": "USD",
+            "change_percent": payload.get("dp"),
+            "provider": "finnhub",
+            "checked_at_kst": datetime.now(
+                timezone(timedelta(hours=9))
+            ).isoformat(timespec="seconds"),
+            "source_url": source_url,
+            "source_urls": [source_url],
+        }
+
+    if last_limited:
+        return {
+            "status": "error",
+            "error": (
+                "이 종목 시세는 Finnhub 무료 플랜 범위가 아니에요. "
+                "미국 상장 종목이나 티커로 다시 물어봐 주세요."
+            ),
+            "failure_kind": "plan_limited",
+            "provider_failure": False,
+            "symbol": last_limited,
+        }
+    return {
+        "status": "error",
+        "error": (
+            "정확한 종목을 파악하지 못했어요. "
+            "회사명이나 티커와 거래소를 함께 알려주세요."
+        ),
+        "failure_kind": "invalid_symbol",
+        "provider_failure": False,
+    }

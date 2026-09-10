@@ -258,7 +258,9 @@ cooldown 뒤 사용자 요청 한 건으로 복구를 확인합니다. 존재하
 
 ```env
 KMA_API_KEY=your_kma_api_key_here        # 기상청 API
-FINNHUB_API_KEY=your_finnhub_api_key_here  # 주식 API
+FINNHUB_API_KEY=your_finnhub_api_key_here  # 주식 API (무료 60 RPM, 미국·크립토 quote)
+EXCHANGE_RATE_API_KEY=your_exchange_rate_api_key_here  # 환율. 무료 월 1,500회, 일 1회 갱신
+USE_YFINANCE=false                         # true면 Yahoo 경로. 국내 상장·국장 지수는 제공하지 않음
 KAKAO_API_KEY=your_kakao_api_key_here      # 카카오 로컬 API
 ```
 

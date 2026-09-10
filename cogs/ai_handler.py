@@ -4825,67 +4825,57 @@ class AIHandler(commands.Cog):
             logger.error(f"Creative text 생성 중 최상위 오류: {e}", exc_info=True, extra=log_extra)
             return config.MSG_AI_ERROR
 
-    async def extract_ticker_with_llm(self, query: str) -> str | None:
-        """
-        사용자 자연어 쿼리에서 Yahoo Finance 호환 티커만 추출합니다.
-        예: "비트코인 얼마야?" -> "BTC-USD"
-            "삼성전자 주가" -> "005930.KS"
-            "애플 시세" -> "AAPL"
-        """
+    async def extract_finance_search_term_with_llm(self, query: str) -> str | None:
+        """시세 조회용 Yahoo 검색어만 뽑습니다. 티커를 지어내지 않습니다."""
         if not self.use_cometapi:
-             # CometAPI 없으면 사용 불가 (혹은 Gemini 폴백 가능하지만 생략)
-             return None
+            return None
 
         system_prompt = (
-            "Extract one Yahoo Finance compatible ticker from the request.\n"
+            "The user wants a live market quote. Return ONE Yahoo Finance search query.\n"
             "Rules:\n"
-            "1. Return ONLY the ticker symbol. Do not write any other text.\n"
-            "2. For Korean stocks, append '.KS' (KOSPI) or '.KQ' (KOSDAQ). e.g., Samsung -> 005930.KS\n"
-            "3. For US stocks, use the standard ticker. e.g., Apple -> AAPL\n"
-            "4. For crypto, use a hyphenated pair such as BTC-USD, ETH-USD, or USDT-USD.\n"
-            "5. For currency exchange rates, use the Yahoo FX pair '<BASE><QUOTE>=X'.\n"
-            "   The bot answers Korean users, so a rate asked against won is <BASE>KRW=X.\n"
-            "   e.g., USD/KRW -> USDKRW=X, JPY/KRW -> JPYKRW=X, EUR/KRW -> EURKRW=X,\n"
-            "   USD/JPY -> USDJPY=X. This covers questions that only convert an amount\n"
-            "   between currencies, because the rate is what the conversion needs.\n"
-            "6. Never invent an ADR or OTC ticker. If the exchange/listing is ambiguous, return NONE.\n"
-            "7. Charts, historical candles, price history and trends are NOT supported.\n"
-            "   Return NONE for those even when you can identify the company.\n"
-            "   Same for an unsupported private API, unless an exact listed ticker is explicit.\n"
-            "8. If the company or currency is not confidently identified, return NONE."
+            "1. Reply with only the search text. No quotes, no explanation.\n"
+            "2. Do not invent ticker symbols. Never output a made-up ticker.\n"
+            "3. If the user already wrote a ticker or FX pair, return that exact token.\n"
+            "4. Otherwise return the listed instrument's common English name\n"
+            "   (Samsung Electronics, NVIDIA, Kakao, SK hynix, Bitcoin, USD/KRW).\n"
+            "5. Korean nicknames must become the official English listed name,\n"
+            "   not a guessed ticker like SKHYNX.\n"
+            "6. Do not return Korean listings (.KS, .KQ). Those markets are out of scope.\n"
+            "7. Charts, history, or unidentified names: NONE."
         )
-        ticker_prompt = f"{system_prompt}\n\nQuery: {query}\nTicker:"
-        
+        search_prompt = f"{system_prompt}\n\nQuery: {query}\nSearch:"
+
         try:
-            ticker = await self._cometapi_fast_generate_text(
-                ticker_prompt,
+            raw = await self._cometapi_fast_generate_text(
+                search_prompt,
                 None,
-                log_extra={'mode': 'ticker_extraction'},
-                trace_key="ticker_extraction",
+                log_extra={'mode': 'finance_search_term'},
+                trace_key="finance_search_term",
                 max_tokens=24,
             )
-            if ticker and "NONE" not in ticker.upper():
-                clean_ticker = (
-                    ticker.strip()
-                    .splitlines()[0]
-                    .replace("'", "")
-                    .replace('"', "")
-                    .upper()
+            if not raw or "NONE" in raw.upper():
+                return None
+            term = (
+                raw.strip()
+                .splitlines()[0]
+                .replace("'", "")
+                .replace('"', "")
+                .strip()
+            )
+            if not term or len(term) > 80:
+                logger.warning(
+                    "금융 검색어 추출 응답 형식 거부. response_chars=%d",
+                    len(str(raw)),
                 )
-                if not re.fullmatch(
-                    r"[A-Z0-9^][A-Z0-9.^=-]{0,19}",
-                    clean_ticker,
-                ):
-                    logger.warning(
-                        "티커 추출 응답 형식 거부. response_chars=%d",
-                        len(str(ticker)),
-                    )
-                    return None
-                return clean_ticker
-            return None
+                return None
+            return term
         except Exception as e:
-            logger.error(f"Ticker extraction failed: {e}")
+            logger.error(f"Finance search-term extraction failed: {e}")
             return None
+
+    async def extract_ticker_with_llm(self, query: str) -> str | None:
+        """호환용 별칭. 실제 심볼 확정은 Yahoo 검색이 담당합니다."""
+        return await self.extract_finance_search_term_with_llm(query)
 
 
 

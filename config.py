@@ -123,7 +123,7 @@ from utils.locale import msg as _locale_msg, SUPPORTED_LANGUAGES, DEFAULT_LANGUA
 # 주식 제공자는 프로필별로 명시적으로 끌 수 있다. 설정 헬퍼 선언 전 구간이므로
 # 문자열을 직접 엄격하게 해석하고, 모호한 값은 활성화하지 않는다.
 USE_YFINANCE = str(
-    _direct_config_value("USE_YFINANCE", "true")
+    _direct_config_value("USE_YFINANCE", "false")
 ).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 # config.json 메모리 캐시 (매 호출마다 디스크 I/O 방지)
@@ -1751,6 +1751,10 @@ IMAGE_SAFETY_TOLERANCE = 0  # 가장 엄격한 수준 (0=strict, 5=permissive) -
 
 
 FINNHUB_API_KEY = load_config_value('FINNHUB_API_KEY', 'YOUR_FINNHUB_API_KEY')
+EXCHANGE_RATE_API_KEY = as_str(
+    load_config_value('EXCHANGE_RATE_API_KEY', ''),
+    '',
+)
 KAKAO_API_KEY = load_config_value('KAKAO_API_KEY', 'YOUR_KAKAO_API_KEY')
 KRX_API_KEY = load_config_value('KRX_API_KEY')
 EXIM_API_KEY_KR = load_config_value('EXIM_API_KEY_KR', 'YOUR_EXIM_API_KEY_KR')

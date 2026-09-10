@@ -633,10 +633,10 @@ class IntentAnalyzer:
             )
         ):
             return "kr"
-        # 한국어 봇에서 시장을 따로 지정하지 않은 "오늘 주식 소식"은 국장을
-        # 기본으로 보고, 해외 전체를 임의로 섞지 않는다.
+        # 한국어 봇에서 시장을 따로 지정하지 않은 "오늘 주식 소식"은
+        # 조회 가능한 미국 증시를 기본으로 본다. 국장은 제공하지 않는다.
         if re.search(r"[가-힣]", text):
-            return "kr"
+            return "us"
         return "global"
 
     _CONCEPTUAL_FINANCE_MARKERS = (
@@ -753,6 +753,7 @@ class IntentAnalyzer:
             if isinstance(item, dict)
         }
         inferred_market_region = self._market_region_from_text(semantic_text)
+        snapshot_supported = inferred_market_region != "kr"
         market_search_label = {
             "kr": "한국 증시(코스피·코스닥)",
             "us": "미국 증시(다우·S&P 500·나스닥)",
@@ -764,7 +765,7 @@ class IntentAnalyzer:
             else semantic_text
         )
 
-        if market_brief and "get_market_snapshot" not in names:
+        if market_brief and snapshot_supported and "get_market_snapshot" not in names:
             normalized.insert(
                 0,
                 {
@@ -800,7 +801,7 @@ class IntentAnalyzer:
         # 지수 스냅샷은 지수·시황 요청의 도구다. 브리핑이 아니라고 판정한
         # 요청에 남아 있으면 근거가 되지 못하면서 계획 상한(2개)만 차지해
         # 정작 필요한 도구를 밀어낸다.
-        if not market_brief and "get_market_snapshot" in names:
+        if (not market_brief or not snapshot_supported) and "get_market_snapshot" in names:
             normalized = [
                 item
                 for item in normalized
@@ -1051,18 +1052,21 @@ class IntentAnalyzer:
                 return tools
 
             if self._looks_like_market_brief_query(query):
-                logger.info(
-                    "시장 지수 조회 감지. query_chars=%d; get_market_snapshot 사용",
-                    len(query),
-                )
-                tools.append({
-                    'tool_to_use': 'get_market_snapshot',
-                    'tool_name': 'get_market_snapshot',
-                    'parameters': {
-                        'region': self._market_region_from_text(query)
-                    }
-                })
-                # 지수 숫자만으로는 왜 움직였는지 설명할 수 없어 출처도 함께 본다.
+                region = self._market_region_from_text(query)
+                if region != "kr":
+                    logger.info(
+                        "시장 지수 조회 감지. query_chars=%d; get_market_snapshot 사용",
+                        len(query),
+                    )
+                    tools.append({
+                        'tool_to_use': 'get_market_snapshot',
+                        'tool_name': 'get_market_snapshot',
+                        'parameters': {
+                            'region': region
+                        }
+                    })
+                # 국장은 지수 API를 쓰지 않는다. 지수 숫자만으로는 왜
+                # 움직였는지 설명할 수 없어 출처도 함께 본다.
                 tools.append({
                     'tool_to_use': 'web_search',
                     'tool_name': 'web_search',
@@ -1366,18 +1370,20 @@ class IntentAnalyzer:
             "deep은 먼저 찾은 URL을 다시 읽거나 여러 단계·여러 페이지를 순서대로 조사할 "
             "때만 사용한다. 비용과 지연 때문에 단순 최신 질문을 deep으로 올리지 않는다.\n"
             "- get_weather_forecast(location, day_offset): 지역 날씨, 오늘 0~10일 뒤\n"
-            "- get_market_snapshot(region): 주요 시장 지수의 검증된 최신 수치. "
-            "region은 kr, us, global 중 하나\n"
-            "- get_stock_price(symbol, user_query): Yahoo Finance의 현재가 단건 조회. "
-            "정확한 Yahoo 티커를 알 때 사용한다. 원화 환율도 이 도구로 조회한다. "
-            "symbol에 USDKRW=X, JPYKRW=X, EURKRW=X, CNYKRW=X, GBPKRW=X 같은 "
-            "통화쌍을 넣는다. ADR/OTC 상장 여부, 과거 일봉·차트·그래프, 특정 "
-            "서비스의 비공개 API 요청에는 사용하지 말고 web_search로 공식 공개 "
-            "자료를 확인한다\n"
+            "- get_market_snapshot(region): 미국·글로벌 주요 시장 지수의 검증된 최신 수치. "
+            "region은 us 또는 global. 코스피·코스닥·국장은 제공하지 않으므로 "
+            "한국 증시 질문은 web_search만 사용한다.\n"
+            "- get_stock_price(symbol, user_query): 미국 상장 종목·암호화폐 현재가와 "
+            "환율 조회. 국내 상장(.KS/.KQ)은 사용하지 않는다. "
+            "환율은 user_query로 맡겨도 되고, 알면 USDKRW=X, JPYKRW=X 같은 "
+            "통화쌍을 symbol에 넣는다. ADR/OTC 상장 여부, 과거 일봉·차트·그래프, "
+            "특정 서비스의 비공개 API 요청에는 사용하지 말고 web_search로 공식 "
+            "공개 자료를 확인한다\n"
             "- search_for_place(query, page_size): 음식점·카페·장소의 위치 검색\n"
             "- generate_image(prompt): 사용자가 새 이미지 생성을 요청한 경우만\n"
-            "시장 시황·주요 주식 뉴스는 get_market_snapshot과 web_search를 함께 "
-            "사용한다. 공개 자료로 검증해야 하는 최신 정보, 수치, 뉴스, 일정, "
+            "시장 시황·주요 주식 뉴스는 미국·글로벌이면 get_market_snapshot과 "
+            "web_search를 함께 사용한다. 국장·코스피·코스닥은 snapshot 없이 "
+            "web_search만 사용한다. 공개 자료로 검증해야 하는 최신 정보, 수치, 뉴스, 일정, "
             "가격, 사용자가 제시한 외부 사실의 진위는 requires_external_evidence=true로 "
             "둔다. 지역 제도·교통·시설의 유래나 변경처럼 내장 지식만으로 확신하기 "
             "어려운 틈새 사실도 true다. 이때 적절한 조회 도구가 적어도 하나 있어야 "
@@ -1894,7 +1900,7 @@ class IntentAnalyzer:
                         params = {"user_query": query[:300]}
                 elif name == "get_market_snapshot":
                     region = str(params.get("region") or "global").strip().lower()
-                    if region not in {"kr", "us", "global"}:
+                    if region not in {"us", "global"}:
                         region = "global"
                     params = {"region": region}
                 elif name == "search_for_place":
@@ -1949,7 +1955,7 @@ class IntentAnalyzer:
                 )
             elif name == "get_market_snapshot":
                 region = str(params.get("region") or "global").strip().lower()
-                if region not in {"kr", "us", "global"}:
+                if region not in {"us", "global"}:
                     region = "global"
                 params = {"region": region}
             elif name == "search_for_place":
