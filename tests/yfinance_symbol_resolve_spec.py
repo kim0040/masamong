@@ -7,6 +7,7 @@ import pytest
 import config
 from cogs.tools_cog import ToolsCog
 from utils.api_handlers import yfinance_handler
+from utils.finance_query import needs_listed_name_refinement
 
 
 def _quote(symbol, shortname, quote_type="EQUITY", exchange="NMS"):
@@ -45,6 +46,13 @@ def test_nvidia_primary_listing_beats_foreign_duplicates():
         search_term="NVIDIA",
     )
     assert picked["symbol"] == "NVDA"
+
+
+def test_hangul_company_queries_ask_llm_to_refine_the_listed_name():
+    assert needs_listed_name_refinement("엔비디아 주가") is True
+    assert needs_listed_name_refinement("스페이스x 주가는?") is True
+    assert needs_listed_name_refinement("NVDA") is False
+    assert needs_listed_name_refinement("백만 달러면 얼마야") is False
 
 
 def test_korean_listings_are_ignored():
@@ -141,6 +149,6 @@ async def test_get_stock_price_confirms_search_before_quote(monkeypatch):
 
     assert result["status"] == "success"
     assert result["symbol"] == "NVDA"
-    assert calls[0][0] == "엔비디아 지금 시세 얼마야"
-    assert calls[1][0] == "NVIDIA"
+    assert calls[0][0] == "NVIDIA"
+    assert len(calls) == 1
     handler.get_stock_info.assert_awaited_once_with("NVDA")

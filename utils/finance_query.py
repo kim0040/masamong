@@ -183,6 +183,25 @@ def detect_fx_symbol(query: str) -> str | None:
     return f"{pair[0]}{pair[1]}=X"
 
 
+def needs_listed_name_refinement(query: str, hint_symbol: str | None = None) -> bool:
+    """한글이 섞인 종목 질의는 검색 API 전에 LLM이 영문 상장명으로 정제한다.
+
+    티커·환율 질의는 API가 이미 해석하므로 LLM을 끼우지 않는다. 회사 목록을
+    코드에 쌓지 않는다.
+    """
+    text = str(query or "").strip()
+    if not text:
+        return False
+    hint = str(hint_symbol or "").strip()
+    if looks_like_ticker(text.upper()) and " " not in text:
+        return False
+    if hint and looks_like_ticker(hint.upper()):
+        return False
+    if detect_fx_pair(text):
+        return False
+    return bool(re.search(r"[가-힣]", text))
+
+
 def split_quote_query(
     user_query: str | None = None,
     symbol: str | None = None,

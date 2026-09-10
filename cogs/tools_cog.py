@@ -26,6 +26,7 @@ from utils.finance_query import (
     detect_fx_pair,
     is_kr_listing,
     kr_market_unsupported_result,
+    needs_listed_name_refinement,
     split_quote_query,
 )
 from utils import db as db_utils
@@ -245,6 +246,23 @@ class ToolsCog(commands.Cog):
             logger.info("yfinance 지수 스냅샷 핸들러 지연 로딩 완료")
             return self._yfinance_snapshot
 
+    async def _listed_search_term_from_llm(
+        self,
+        query_text: str,
+        direct_ticker: str,
+        ai_handler,
+    ) -> str | None:
+        """한글 종목명은 검색 API에 넣기 전에 LLM이 영문 상장명으로 고친다."""
+        if not ai_handler or not needs_listed_name_refinement(
+            query_text,
+            direct_ticker,
+        ):
+            return None
+        term = await ai_handler.extract_finance_search_term_with_llm(query_text)
+        if term:
+            logger.info("시세 검색어 LLM 정제 완료. term_chars=%d", len(term))
+        return term
+
     async def _quote_via_finnhub(
         self,
         query_text: str,
@@ -261,8 +279,13 @@ class ToolsCog(commands.Cog):
             logger.info("FX 페어 확정: %s/%s", fx_pair[0], fx_pair[1])
             return await fx_rates.get_fx_quote(fx_pair[0], fx_pair[1])
 
-        lookup = await finnhub.lookup_quote(
+        search_term = await self._listed_search_term_from_llm(
             query_text,
+            direct_ticker,
+            ai_handler,
+        )
+        lookup = await finnhub.lookup_quote(
+            search_term or query_text,
             hint_symbol=direct_ticker or None,
         )
         if (
@@ -270,17 +293,18 @@ class ToolsCog(commands.Cog):
             and lookup.get("failure_kind") == "invalid_symbol"
             and query_text
             and ai_handler
+            and not needs_listed_name_refinement(query_text, direct_ticker)
         ):
-            search_term = await ai_handler.extract_finance_search_term_with_llm(
+            retry_term = await ai_handler.extract_finance_search_term_with_llm(
                 query_text
             )
-            if search_term:
+            if retry_term:
                 logger.info(
                     "Finnhub: 영문 검색어로 재조회. term_chars=%d",
-                    len(search_term),
+                    len(retry_term),
                 )
                 lookup = await finnhub.lookup_quote(
-                    search_term,
+                    retry_term,
                     hint_symbol=None,
                 )
         if lookup.get("status") == "success":
@@ -322,26 +346,33 @@ class ToolsCog(commands.Cog):
             len(query_text),
             "yes" if direct_ticker else "no",
         )
-        resolved = await yfinance_handler.resolve_listed_symbol(
+        search_term = await self._listed_search_term_from_llm(
             query_text,
+            direct_ticker,
+            ai_handler,
+        )
+        resolved = await yfinance_handler.resolve_listed_symbol(
+            search_term or query_text,
             hint_symbol=direct_ticker or None,
+            original_query=query_text,
         )
         if (
             resolved.get("status") != "success"
             and resolved.get("failure_kind") == "invalid_symbol"
             and query_text
             and ai_handler
+            and not needs_listed_name_refinement(query_text, direct_ticker)
         ):
-            search_term = await ai_handler.extract_finance_search_term_with_llm(
+            retry_term = await ai_handler.extract_finance_search_term_with_llm(
                 query_text
             )
-            if search_term:
+            if retry_term:
                 logger.info(
                     "yfinance 모드: 영문 검색어로 재조회. term_chars=%d",
-                    len(search_term),
+                    len(retry_term),
                 )
                 resolved = await yfinance_handler.resolve_listed_symbol(
-                    search_term,
+                    retry_term,
                     original_query=query_text,
                 )
 

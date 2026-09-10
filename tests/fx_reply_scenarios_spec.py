@@ -72,6 +72,25 @@ def test_fx_user_reply_converts_amount_in_query():
     assert "918.76" in text
 
 
+def test_fx_scale_conversion_is_allowed_without_spoken_number_words():
+    """백만 같은 수사는 LLM이 풀고, 가드는 시세×10^n만 본다."""
+    evidence = (
+        "[get_stock_price] USD/KRW (USDKRW=X): 1 USD = 1338.8031 KRW\n"
+        "[get_stock_price] 역환율: 0.000747"
+    )
+    converted = 1_000_000 * 1338.8031
+    assert AIHandler._unsupported_finance_numbers(
+        f"백만 달러면 약 {converted:,.0f}원이야.",
+        evidence,
+        "백만 달러면 얼마야",
+    ) == []
+    assert AIHandler._unsupported_finance_numbers(
+        "백만 달러면 약 13억 3880만 원이야.",
+        evidence,
+        "백만 달러면 얼마야",
+    ) == []
+
+
 def test_looks_like_fx_quote_rejects_equity():
     assert looks_like_fx_quote(_JPY_QUOTE) is True
     assert looks_like_fx_quote(
