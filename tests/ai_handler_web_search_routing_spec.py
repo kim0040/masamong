@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 import pytest
 from types import SimpleNamespace
@@ -1826,3 +1827,102 @@ def test_currency_commentary_stays_on_web_search():
         plan = handler._detect_tools_by_keyword(query)
         assert plan, query
         assert plan[0]["tool_to_use"] == "web_search", query
+
+
+def _plan_tools(plan: list[dict]) -> list[str]:
+    return [str(item.get("tool_to_use") or "") for item in plan]
+
+
+def test_quote_tool_contract_covers_currency_pairs():
+    """라우터와 티커 해석기가 같은 심볼 공간을 알고 있어야 합니다.
+
+    운영 장애의 원인은 어휘 부족이 아니라 계약 불일치였다. 라우터 카탈로그는
+    환율을 web_search로 보내라고 적어 두었고, 티커 해석기는 통화쌍이라는
+    심볼 형식을 아예 몰라 어떤 표현으로 물어도 NONE을 냈다.
+    """
+    router_catalog = Path("utils/intent_analyzer.py").read_text(encoding="utf-8")
+    # 라우터가 환율을 web_search로 돌려보내던 지시가 남아 있으면 안 된다.
+    assert "환율 환산, ADR/OTC" not in router_catalog
+    assert "USDKRW=X" in router_catalog
+
+    resolver = Path("cogs/ai_handler.py").read_text(encoding="utf-8")
+    assert "<BASE><QUOTE>=X" in resolver
+    # 범위 밖 요청은 계속 거절해야 근거 없는 티커가 만들어지지 않는다.
+    assert (
+        "Charts, historical candles, price history and trends are NOT supported"
+        in resolver
+    )
+
+
+def test_missing_quote_tool_is_filled_without_guessing_the_symbol():
+    """시세 도구를 끼워 넣되 심볼은 어휘 표로 추측하지 않습니다.
+
+    통화·종목을 목록으로 나열하면 목록에 없는 표현이 들어오는 순간 같은
+    증상이 되돌아온다. 심볼 결정은 get_stock_price의 티커 해석기에 맡긴다.
+    """
+    analyzer = IntentAnalyzer(db=None, llm_client=None, tools_cog=None)
+
+    for query, intent in (
+        ("1달러가 몇원이야?", "현재 1달러의 원화 환율 조회"),
+        ("일본 여행 가는데 엔 얼마나 하지", "엔화 환율 조회"),
+        ("미국 돈 백만개면 우리 돈으로 얼마임", "달러 원화 환산"),
+    ):
+        plan = analyzer._enforce_evidence_tool_plan(
+            query, intent, [], requires_external_evidence=True
+        )
+        assert _plan_tools(plan)[0] == "get_stock_price", query
+        params = plan[0]["parameters"]
+        assert params == {"user_query": query}, query
+
+
+def test_currency_request_is_not_routed_to_the_index_snapshot():
+    """지목된 대상이 통화면 지수 브리핑이 아닙니다.
+
+    라우터가 쓴 intent에 '주요'가 섞인 '주요 통화 환율 확인'이 시황 브리핑으로
+    넘어가, 통화쌍 대신 코스피·코스닥 지수를 조회하던 회귀를 막습니다.
+    """
+    analyzer = IntentAnalyzer(db=None, llm_client=None, tools_cog=None)
+    query = "1달러 1유로 1엔이 각각 몇원인지 알아내"
+    plan = analyzer._enforce_evidence_tool_plan(
+        query,
+        "원화 기준 주요 통화 환율 확인",
+        [
+            {"tool_to_use": "get_market_snapshot", "parameters": {"region": "kr"}},
+            {"tool_to_use": "web_search", "parameters": {"query": "환율"}},
+        ],
+        requires_external_evidence=True,
+    )
+    tools = _plan_tools(plan)
+    assert "get_stock_price" in tools
+    # 지수 스냅샷은 통화쌍을 담지 않으므로 상한을 차지해서는 안 된다.
+    assert "get_market_snapshot" not in tools
+    assert "web_search" in tools
+
+
+def test_index_snapshot_survives_real_market_brief():
+    analyzer = IntentAnalyzer(db=None, llm_client=None, tools_cog=None)
+    for query, intent in (
+        ("오늘 국장 어때?", "한국 증시 시황 브리핑"),
+        ("나스닥 뉴스 있어?", "나스닥 시황 뉴스"),
+    ):
+        plan = analyzer._enforce_evidence_tool_plan(
+            query, intent, [], requires_external_evidence=True
+        )
+        assert "get_market_snapshot" in _plan_tools(plan), query
+
+
+def test_quote_tool_is_not_added_to_out_of_scope_finance_requests():
+    """개념 질문과 차트·과거 시세에는 현재가 도구를 붙이지 않습니다."""
+    analyzer = IntentAnalyzer(db=None, llm_client=None, tools_cog=None)
+    for query, intent in (
+        ("금리가 오르면 환율은 어떻게 돼?", "환율 결정 원리 설명"),
+        ("테슬라 과거 주가 추이 보여줘", "테슬라 과거 주가 추이 조회"),
+        ("애플 일봉 차트 보여줘", "애플 일봉 차트 요청"),
+    ):
+        plan = analyzer._enforce_evidence_tool_plan(
+            query,
+            intent,
+            [{"tool_to_use": "web_search", "parameters": {"query": query}}],
+            requires_external_evidence=True,
+        )
+        assert "get_stock_price" not in _plan_tools(plan), query

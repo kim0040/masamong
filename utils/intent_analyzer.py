@@ -542,12 +542,17 @@ class IntentAnalyzer:
 
         news_terms = ("뉴스", "소식", "이슈", "동향", "브리핑", "주요")
         has_news_request = any(term in text for term in news_terms)
-        has_named_stock = (
+        # 개별 종목만 예외로 두면 통화가 빠진다. 라우터가 쓴 intent에 "주요"가
+        # 섞인 "주요 통화 환율 확인"이 지수 브리핑으로 넘어가, 통화쌍 대신
+        # 코스피·코스닥을 조회하고 있었다. 지목된 대상이 있으면 종목이든
+        # 통화든 지수 브리핑이 아니다.
+        has_named_instrument = (
             any(term in text for term in self._STOCK_US_KEYWORDS)
             or any(term in text for term in self._STOCK_KR_KEYWORDS)
+            or any(term in text for term in self._EXCHANGE_KEYWORDS)
             or bool(self._STOCK_TICKER_PATTERN.search(text))
         )
-        return has_news_request and not has_named_stock
+        return has_news_request and not has_named_instrument
 
     # 원화 기준 통화쌍. Yahoo FX 심볼은 키 없이 조회되므로 별도 환율 API 없이
     # 같은 현재가 도구로 처리한다. 앞의 항목부터 확인해 "엔화"가 "화"만 겹치는
@@ -599,18 +604,10 @@ class IntentAnalyzer:
             "adr",
             "otc",
         )
-        conversion_terms = (
-            "환율",
-            "환산",
-            "환전",
-            "원화로",
-            "달러로",
-            "엔화로",
-            "유로로",
-        )
-        return any(term in text for term in capability_terms) or any(
-            term in text for term in conversion_terms
-        )
+        # 환율·환산은 한때 이 도구로 답할 수 없어 제외 대상이었다. 지금은
+        # Yahoo 통화쌍(USDKRW=X 등)이 같은 도구로 조회되므로 제외하면 안 된다.
+        # 남은 항목은 단건 현재가로 실제로 답할 수 없는 요청들이다.
+        return any(term in text for term in capability_terms)
 
     @staticmethod
     def _market_region_from_text(query: str) -> str:
@@ -799,6 +796,57 @@ class IntentAnalyzer:
                     continue
                 item["parameters"] = {"region": inferred_market_region}
                 break
+
+        # 지수 스냅샷은 지수·시황 요청의 도구다. 브리핑이 아니라고 판정한
+        # 요청에 남아 있으면 근거가 되지 못하면서 계획 상한(2개)만 차지해
+        # 정작 필요한 도구를 밀어낸다.
+        if not market_brief and "get_market_snapshot" in names:
+            normalized = [
+                item
+                for item in normalized
+                if str(
+                    (item or {}).get("tool_to_use")
+                    or (item or {}).get("tool_name")
+                    or ""
+                )
+                != "get_market_snapshot"
+            ]
+            names.discard("get_market_snapshot")
+            logger.warning(
+                "[도구보정] 시황 요청이 아니어서 지수 스냅샷을 제외합니다.",
+                extra=log_extra,
+            )
+
+        # 현재값을 묻는 금융 조회인데 계획에 시세 도구가 없으면 결정적으로
+        # 채운다. 검색 결과의 가격·환율은 출처마다 값과 기준일이 달라 금융 수치
+        # 검증에서 막히고, 사용자에게는 봇이 시세만 모르는 것처럼 보인다.
+        #
+        # 어떤 심볼인지는 여기서 정하지 않고 get_stock_price의 티커 해석기에
+        # 맡긴다. 통화·종목을 어휘 표로 나열해 두면 표에 없는 표현이 들어오는
+        # 순간 같은 증상이 그대로 되돌아온다.
+        if (
+            requires_external_evidence
+            and finance_query
+            and not market_brief
+            and "get_stock_price" not in names
+            # 원리·이유를 묻는 질문은 현재가를 조회해도 답이 되지 않는다.
+            and not self._looks_like_conceptual_finance_query(query)
+            # 차트·과거 시세처럼 단건 현재가로 답할 수 없는 요청은 제외한다.
+            and not self._stock_lookup_requires_web(semantic_text)
+        ):
+            normalized.insert(
+                0,
+                {
+                    "tool_to_use": "get_stock_price",
+                    "tool_name": "get_stock_price",
+                    "parameters": {"user_query": (query or "").strip()},
+                },
+            )
+            names.add("get_stock_price")
+            logger.warning(
+                "[도구보정] 금융 현재값 조회에 시세 도구를 추가합니다.",
+                extra=log_extra,
+            )
 
         # 시장 뉴스는 지수 스냅샷만으로 설명할 수 없으므로 공개 출처도 함께
         # 확인한다. 그 밖의 외부 사실 질문은 도구가 완전히 비었을 때만 검색한다.
@@ -1321,9 +1369,11 @@ class IntentAnalyzer:
             "- get_market_snapshot(region): 주요 시장 지수의 검증된 최신 수치. "
             "region은 kr, us, global 중 하나\n"
             "- get_stock_price(symbol, user_query): Yahoo Finance의 현재가 단건 조회. "
-            "정확한 Yahoo 티커를 알 때 사용한다. 환율 환산, ADR/OTC 상장 여부, "
-            "과거 일봉·차트·그래프, 특정 서비스의 비공개 API 요청에는 사용하지 "
-            "말고 web_search로 공식 공개 자료를 확인한다\n"
+            "정확한 Yahoo 티커를 알 때 사용한다. 원화 환율도 이 도구로 조회한다. "
+            "symbol에 USDKRW=X, JPYKRW=X, EURKRW=X, CNYKRW=X, GBPKRW=X 같은 "
+            "통화쌍을 넣는다. ADR/OTC 상장 여부, 과거 일봉·차트·그래프, 특정 "
+            "서비스의 비공개 API 요청에는 사용하지 말고 web_search로 공식 공개 "
+            "자료를 확인한다\n"
             "- search_for_place(query, page_size): 음식점·카페·장소의 위치 검색\n"
             "- generate_image(prompt): 사용자가 새 이미지 생성을 요청한 경우만\n"
             "시장 시황·주요 주식 뉴스는 get_market_snapshot과 web_search를 함께 "
