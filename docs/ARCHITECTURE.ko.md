@@ -38,11 +38,17 @@
 ```text
 main.py                 기동, 스키마 검증, Cog 수명주기
 config.py               프로필 해석, 기능 플래그, 자원·호출 상한
+utils/rag_policy.py     BM25/FTS5 전면 비활성 (cpu_only 저사양 계약)
+cogs/ai_handler.py      큐·워커·대화 수명주기
+cogs/ai_prompting.py    메인 프롬프트 예산 조립
+cogs/ai_tool_runtime.py 도구 실행·결과 정규화
 cogs/                   Discord 명령·메뉴·이벤트·스케줄러
 utils/llm_client.py      routing/main LLM 레인과 물리 호출 경계
 utils/intent_analyzer.py 의미 라우팅, 도구 계획, 컨텍스트 digest
 utils/rag_manager.py     대화 저장, 윈도우, 임베딩 백그라운드 작업
-utils/hybrid_search.py   의미 검색, 스코프 정렬, 관련도 관문
+utils/hybrid_search.py   의미 검색, 스코프 정렬, 관련도 관문 (BM25 호출 없음)
+utils/weather_forecast.py AI 날씨 도구 단일 KMA 진입
+utils/api_handlers/      Finnhub 시세, ExchangeRate-API 환율, Yahoo 지수 스냅샷
 utils/db.py              사용량 예약과 공통 DB 작업
 database/compat_db.py    SQLite/TiDB 호환과 TiDB 트랜잭션 소유권
 school_notice/           학교 공지 수집·상세 분석·digest 생성
@@ -205,10 +211,10 @@ flowchart TD
 - DB에 `embedding_vec`가 있고 전체 백필 검증과 기능 플래그가 모두 참일 때만 TiDB
   vector 경로를 쓴다. 아니면 기존 BLOB 후보를 제한된 수만 읽는 호환 경로를 쓴다.
 
-`utils/hybrid_search.py`에는 선택적 로컬 어휘 후보를 방어적으로 처리하는 코드가
-남아 있지만, 현재 `config.py`는 `BM25_DATABASE_PATH=None`으로 관리자 자체를 만들지
-않는다. 원격 프로필은 추가로 `BM25_AUTO_REBUILD_ENABLED=false`를 필수 검증한다.
-따라서 운영 서버에서는 BM25 검색·인덱스 생성·자동 재구축이 실행되지 않는다.
+`utils/hybrid_search.py`의 BM25 분기는 `utils/rag_policy.py`가 전 인스턴스에서
+거부한다. 경로 문자열이 남아 있어도 FTS5 모듈을 import하거나 검색하지 않는다.
+원격 프로필은 추가로 `BM25_AUTO_REBUILD_ENABLED=false`를 필수 검증한다.
+Masamo는 cpu_only 임베딩만 사용하고 리랭커는 끈다.
 
 ## 사실 확인과 도구
 
@@ -249,10 +255,11 @@ Linkup 비용 저장은 USD 기준이다. provider 호출 전 `reserved` 행을 
 실패하면 메시지당 도구 상한 안에서 공개 웹 검색을 최대 한 번만 사용하며 재귀하거나
 같은 공급자를 자동 재시도하지 않는다.
 
-주식 현재가 도구는 정확한 Yahoo Finance 티커의 최신 가용 값만 담당한다. 과거
-일봉·차트, ADR/OTC 상장 여부, 특정 서비스 API, 환율 환산은 기능 범위가 다르므로
-공개 웹 자료 경로로 전환한다. 환율 환산의 결과값은 사용자 금액과 확인된 환율의
-곱셈·나눗셈으로 재검산된 경우에만 원문에 없는 파생 숫자로 허용한다.
+주식 현재가 도구는 Finnhub 무료 시세(미국 주식·코인)와 ExchangeRate-API 환율을
+담당한다. 미국·글로벌 지수는 Yahoo 스냅샷 모듈만 쓴다. 국내 상장(.KS/.KQ)과 KRX
+시세는 조회하지 않는다. 과거 일봉·차트, ADR/OTC 상장 여부는 공개 웹 자료 경로로
+전환한다. 환율 환산의 결과값은 사용자 금액과 확인된 환율의 곱셈·나눗셈으로
+재검산된 경우에만 원문에 없는 파생 숫자로 허용한다.
 
 ## LLM 경계
 

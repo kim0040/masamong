@@ -37,6 +37,9 @@ class OptionalMlImportBlocker(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, OptionalMlImportBlocker())
 import cogs.ai_handler  # noqa: F401
 
+if "database.bm25_index" in sys.modules:
+    raise SystemExit("BM25 module imported on cpu_only startup path")
+
 heavy_modules = sorted(
     name
     for name in sys.modules

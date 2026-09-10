@@ -112,7 +112,7 @@ $env:PYTHONPATH="."; python main.py
 | **DM会話** | メンション不要の1:1会話 (5時間30回制限) |
 | **メモリ / RAG** | スコープ分離した意味埋め込み + TiDBベクトル検索 |
 | **天気** | KMA気象庁 リアルタイム/週間予報 + 地震通知 + `!날씨` |
-| **金融** | 株式(US/KR)、為替 — Finnhub, yfinance, KRX, EximBank |
+| **金融** | 米国株・暗号・為替。Finnhub + ExchangeRate-API。指数スナップショットのみ Yahoo。韓国上場は対象外 |
 | **Web検索** | リアルタイム検索 — Linkup API (主) / DuckDuckGo (代替) |
 | **画像生成** | `!이미지 <プロンプト>` — CometAPI Gemini Image |
 | **運勢** | 日/月/年 運勢 + 星座 + 購読 |
@@ -161,7 +161,7 @@ TiDB Cloud Starterでは`TIDB_STARTER_FREE_PLAN_MODE=true`を使用し、構造�
 | データベース | TiDB (本番), SQLite (開発) |
 | ベクトル検索 | SentenceTransformers + TiDB VECTOR(384) |
 | Web検索 | Linkup API, DuckDuckGo |
-| 金融 | Finnhub, yfinance, KRX, EximBank |
+| 金融 | Finnhub（米国株・暗号）, ExchangeRate-API（為替）, yfinance（米指数スナップショットのみ） |
 | 天気 | KMA (韓国気象庁) |
 
 ---

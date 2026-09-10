@@ -21,26 +21,16 @@ import time
 
 import config
 from logger_config import logger
-from utils.api_handlers import exchange_rate, finnhub, kakao
-from utils.api_handlers import fx_rates
-from utils.finance_query import detect_fx_pair
+from utils.api_handlers import finnhub, fx_rates, kakao
+from utils.finance_query import (
+    detect_fx_pair,
+    kr_market_unsupported_result,
+    split_quote_query,
+)
 from utils import db as db_utils
-from utils import coords as coords_utils
-from utils import weather as weather_utils
 from utils.constants import contains_nsfw
 from utils.tool_health import ToolHealthRegistry, ToolTemporarilyUnavailable
 from .weather_cog import WeatherCog
-
-
-_DIRECT_TICKER_FIXES = {
-    "USDTKRW": "USDT-USD",
-    "USDTUSD": "USDT-USD",
-    "BTCKRW": "BTC-KRW",
-    "BTCUSD": "BTC-USD",
-    "ETHKRW": "ETH-KRW",
-    "ETHUSD": "ETH-USD",
-}
-_KNOWN_FABRICATED_TICKERS = frozenset({"SKHYNX"})
 
 
 class ToolsCog(commands.Cog):
@@ -55,6 +45,8 @@ class ToolsCog(commands.Cog):
         self._news_search_loader_lock = asyncio.Lock()
         self._yfinance_handler = None
         self._yfinance_loader_lock = asyncio.Lock()
+        self._yfinance_snapshot = None
+        self._yfinance_snapshot_loader_lock = asyncio.Lock()
         self._image_generation_lock = asyncio.Lock()
         self.tool_health = ToolHealthRegistry(
             failure_threshold=config.TOOL_CIRCUIT_FAILURE_THRESHOLD,
@@ -215,59 +207,10 @@ class ToolsCog(commands.Cog):
         return f"현재 시간: {db_utils.get_current_time()}"
 
     async def get_weather_forecast(self, location: str = None, day_offset: int = 0) -> str:
-        """주어진 위치의 날씨 정보를 문자열로 반환합니다."""
+        """주어진 위치의 날씨 정보를 WeatherCog 단일 진입으로 반환합니다."""
         if not self.weather_cog:
             return "날씨 정보 모듈이 준비되지 않았습니다."
-        location_name = location or config.DEFAULT_LOCATION_NAME
-        
-        # Mid-term Forecast (3 ~ 10 days) - V2 (typ01)
-        if day_offset >= 3:
-            # [NEW] Weekly Weather Logic (Short-term + Mid-term)
-            # 1. Short-term (+1, +2 days)
-            coords = await coords_utils.get_coords_from_db(self.bot.db, location_name)
-            nx, ny = config.DEFAULT_NX, config.DEFAULT_NY
-            if coords: 
-                nx, ny = str(coords["nx"]), str(coords["ny"])
-                
-            short_term_data, mid_term_data = await asyncio.gather(
-                weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny),
-                self.weather_cog.get_mid_term_weather(day_offset, location_name),
-            )
-            short_term_summary = ""
-            if short_term_data and not short_term_data.get("error"):
-                 tomorrow_summary = weather_utils.format_short_term_forecast(short_term_data, "내일", 1)
-                 dayafter_summary = weather_utils.format_short_term_forecast(short_term_data, "모레", 2)
-                 short_term_summary = f"{tomorrow_summary}\n{dayafter_summary}"
-            
-            return f"--- [단기 예보 (내일/모레)] ---\n{short_term_summary}\n\n--- [중기 예보 (3일 후 ~ 10일 후)] ---\n{mid_term_data}"
-
-        coords = await coords_utils.get_coords_from_db(self.bot.db, location_name)
-        if not coords:
-            return f"'{location_name}' 지역의 날씨 정보는 아직 알 수 없습니다."
-        
-        nx, ny = str(coords["nx"]), str(coords["ny"])
-        
-        # [Refactor] Return Dict for AI Prompt Optimization
-        # 1. Current Weather
-        current_data, forecast_data = await asyncio.gather(
-            weather_utils.get_current_weather_from_kma(self.bot.db, nx, ny),
-            weather_utils.get_short_term_forecast_from_kma(self.bot.db, nx, ny),
-        )
-        current_str = weather_utils.format_current_weather(current_data) if current_data else "정보 없음"
-        
-        # 2. Short-term Forecast
-        items_list = []
-        if forecast_data and 'item' in forecast_data:
-            items_list = forecast_data['item']
-        
-        # Return structured data
-        return {
-            "location": location_name,
-            "current_weather": current_str,
-            "forecast_items": items_list,
-            # Fallback string for legacy handlers (optional, but AI handler looks for dict)
-            "summary": f"{location_name} 현재: {current_str}"
-        }
+        return await self.weather_cog.get_forecast_for_agent(location, day_offset)
 
     async def _load_yfinance_handler(self):
         """무거운 yfinance/pandas/numpy 계열을 실제 금융 요청 때 한 번만 로드합니다."""
@@ -284,6 +227,22 @@ class ToolsCog(commands.Cog):
             )
             logger.info("yfinance 핸들러 지연 로딩 완료")
             return self._yfinance_handler
+
+    async def _load_yfinance_snapshot(self):
+        """지수 스냅샷만 Yahoo에서 가져오므로 종목 핸들러와 로더를 분리합니다."""
+        if self._yfinance_snapshot is not None:
+            return self._yfinance_snapshot
+
+        async with self._yfinance_snapshot_loader_lock:
+            if self._yfinance_snapshot is not None:
+                return self._yfinance_snapshot
+
+            self._yfinance_snapshot = await asyncio.to_thread(
+                importlib.import_module,
+                "utils.api_handlers.yfinance_snapshot",
+            )
+            logger.info("yfinance 지수 스냅샷 핸들러 지연 로딩 완료")
+            return self._yfinance_snapshot
 
     async def _quote_via_finnhub(
         self,
@@ -335,164 +294,115 @@ class ToolsCog(commands.Cog):
         stock_name: str = None,
         user_query: str = None,
     ) -> str | dict:
-        """현재가 단건 조회. 기본 공급자는 Finnhub입니다.
-
-        Args:
-            symbol (str): (Legacy) 종목명 또는 티커 (예: "삼성전자", "AAPL", "NVDA")
-            stock_name (str): (Legacy) symbol의 별칭
-            user_query (str): 사용자의 자연어 질문
-        """
-        query_text = str(user_query or stock_name or symbol or "").strip()
-        direct_ticker = str(symbol or "").strip().upper()
-        direct_ticker = _DIRECT_TICKER_FIXES.get(
-            direct_ticker,
-            direct_ticker,
+        """현재가 단건 조회. 기본 공급자는 Finnhub입니다."""
+        query_text, direct_ticker = split_quote_query(
+            user_query=user_query,
+            symbol=symbol,
+            stock_name=stock_name,
         )
-        if direct_ticker in _KNOWN_FABRICATED_TICKERS:
-            direct_ticker = ""
-        if direct_ticker and not re.fullmatch(
-            r"[A-Z0-9^][A-Z0-9.^=:-]{0,24}",
-            direct_ticker,
-        ):
-            if not query_text:
-                query_text = str(symbol or stock_name or "").strip()
-            direct_ticker = ""
-
-        ai_handler = self.bot.get_cog('AIHandler')
-        if not getattr(config, 'USE_YFINANCE', False):
+        ai_handler = self.bot.get_cog("AIHandler")
+        if not getattr(config, "USE_YFINANCE", False):
             return await self._quote_via_finnhub(
                 query_text,
                 direct_ticker,
                 ai_handler,
             )
 
-        if getattr(config, 'USE_YFINANCE', False):
-            ai_handler = self.bot.get_cog('AIHandler')
-            query_text = str(user_query or stock_name or symbol or "").strip()
-            direct_ticker = str(symbol or "").strip().upper()
-            direct_ticker = _DIRECT_TICKER_FIXES.get(
-                direct_ticker,
-                direct_ticker,
+        yfinance_handler = await self._load_yfinance_handler()
+        logger.info(
+            "yfinance 모드: 상장 심볼 검색. query_chars=%d hint=%s",
+            len(query_text),
+            "yes" if direct_ticker else "no",
+        )
+        resolved = await yfinance_handler.resolve_listed_symbol(
+            query_text,
+            hint_symbol=direct_ticker or None,
+        )
+        if (
+            resolved.get("status") != "success"
+            and resolved.get("failure_kind") == "invalid_symbol"
+            and query_text
+            and ai_handler
+        ):
+            search_term = await ai_handler.extract_finance_search_term_with_llm(
+                query_text
             )
-            if direct_ticker in _KNOWN_FABRICATED_TICKERS:
-                direct_ticker = ""
-            if direct_ticker and not re.fullmatch(
-                r"[A-Z0-9^][A-Z0-9.^=-]{0,19}",
-                direct_ticker,
-            ):
-                if not query_text:
-                    query_text = str(symbol or stock_name or "").strip()
-                direct_ticker = ""
-
-            yfinance_handler = await self._load_yfinance_handler()
-            logger.info(
-                "yfinance 모드: 상장 심볼 검색. query_chars=%d hint=%s",
-                len(query_text),
-                "yes" if direct_ticker else "no",
-            )
-            resolved = await yfinance_handler.resolve_listed_symbol(
-                query_text,
-                hint_symbol=direct_ticker or None,
-            )
-            if (
-                resolved.get("status") != "success"
-                and resolved.get("failure_kind") == "invalid_symbol"
-                and query_text
-                and ai_handler
-            ):
-                search_term = await ai_handler.extract_finance_search_term_with_llm(
-                    query_text
-                )
-                if search_term:
-                    logger.info(
-                        "yfinance 모드: 영문 검색어로 재조회. term_chars=%d",
-                        len(search_term),
-                    )
-                    resolved = await yfinance_handler.resolve_listed_symbol(
-                        search_term,
-                        original_query=query_text,
-                    )
-
-            ticker = str(resolved.get("symbol") or "").strip().upper()
-            if resolved.get("status") == "success" and ticker:
-                logger.info(f"yfinance 티커 확정: {ticker}")
-                data = await yfinance_handler.get_stock_info(ticker)
-                if "error" in data:
-                    return data
+            if search_term:
                 logger.info(
-                    "get_stock_price 결과 생성 완료. ticker=%s",
-                    ticker,
+                    "yfinance 모드: 영문 검색어로 재조회. term_chars=%d",
+                    len(search_term),
                 )
+                resolved = await yfinance_handler.resolve_listed_symbol(
+                    search_term,
+                    original_query=query_text,
+                )
+
+        ticker = str(resolved.get("symbol") or "").strip().upper()
+        if resolved.get("status") == "success" and ticker:
+            logger.info("yfinance 티커 확정: %s", ticker)
+            data = await yfinance_handler.get_stock_info(ticker)
+            if "error" in data:
                 return data
-            if resolved.get("failure_kind") in {
-                "provider_timeout",
-                "provider_error",
-            }:
-                return resolved
-            return {
-                "status": "error",
-                "error": resolved.get("error") or (
-                    "정확한 종목을 파악하지 못했어요. "
-                    "회사명이나 티커와 거래소를 함께 알려주세요."
-                ),
-                "failure_kind": resolved.get("failure_kind") or "ambiguous_symbol",
-                "provider_failure": bool(resolved.get("provider_failure")),
-            }
+            logger.info(
+                "get_stock_price 결과 생성 완료. ticker=%s",
+                ticker,
+            )
+            return data
+        if resolved.get("failure_kind") in {
+            "provider_timeout",
+            "provider_error",
+        }:
+            return resolved
+        return {
+            "status": "error",
+            "error": resolved.get("error") or (
+                "정확한 종목을 파악하지 못했어요. "
+                "회사명이나 티커와 거래소를 함께 알려주세요."
+            ),
+            "failure_kind": resolved.get("failure_kind") or "ambiguous_symbol",
+            "provider_failure": bool(resolved.get("provider_failure")),
+        }
 
     async def get_market_snapshot(self, region: str = "global") -> dict:
         """미국·글로벌 주요 지수를 검증 가능한 구조화 데이터로 반환합니다."""
-        from utils.finance_query import kr_market_unsupported_result
-
         if str(region or "").strip().lower() == "kr":
             return kr_market_unsupported_result()
-        yfinance_handler = await self._load_yfinance_handler()
-        return await yfinance_handler.get_market_snapshot(region)
+        snapshot = await self._load_yfinance_snapshot()
+        return await snapshot.get_market_snapshot(region)
 
     async def get_company_news(self, stock_name: str, count: int = 3) -> str:
         """특정 종목(Ticker Symbol)에 대한 최신 뉴스를 조회합니다."""
         return await finnhub.get_company_news(stock_name, count)
 
     async def get_krw_exchange_rate(self, currency_code: str = "USD") -> str:
-        """특정 통화의 원화(KRW) 대비 환율을 조회합니다."""
-        return await exchange_rate.get_krw_exchange_rate(currency_code)
+        """특정 통화의 원화(KRW) 대비 환율을 ExchangeRate-API로 조회합니다."""
+        quote = await fx_rates.get_fx_quote(currency_code or "USD", "KRW")
+        if quote.get("status") == "success":
+            return str(quote.get("summary") or "")
+        return str(quote.get("error") or "환율을 가져오지 못했어요.")
 
     async def search_for_place(self, query: str, page_size: int = 5) -> str:
         """키워드로 장소를 검색합니다."""
         return await kakao.search_place_by_keyword(query, page_size=page_size)
 
     async def kakao_web_search(self, query: str) -> str:
-        """(폴백용) Kakao API로 웹/블로그/동영상을 검색하고 결과를 요약하여 반환합니다."""
-        logger.info("Kakao 통합 검색 실행. query_chars=%d", len(query))
-        
-        # [Rich Context] 웹, 블로그, 동영상을 병렬로 검색
-        web_task = kakao.search_web(query, page_size=5) # 늘어난 limit
-        blog_task = kakao.search_blog(query, page_size=3)
-        vclip_task = kakao.search_vclip(query, page_size=3)
-        
-        results = await asyncio.gather(web_task, blog_task, vclip_task, return_exceptions=True)
-        web_res, blog_res, vclip_res = results
-        
-        output_parts = []
-
-        # 1. Web Results
-        if isinstance(web_res, list) and web_res:
-            formatted = [f"{i}. {r.get('title', '제목 없음').replace('<b>','').replace('</b>','')}\n   - {r.get('contents', '내용 없음').replace('<b>','').replace('</b>','')[:200]}..." for i, r in enumerate(web_res, 1)]
-            output_parts.append(f"## 🌐 웹 검색 결과:\n" + "\n".join(formatted))
-        
-        # 2. Blog Results (Review/Experience)
-        if isinstance(blog_res, list) and blog_res:
-            formatted = [f"{i}. [블로그] {r.get('title', '').replace('<b>','').replace('</b>','')}\n   - {r.get('blogname', '')}: {r.get('contents', '').replace('<b>','').replace('</b>','')[:200]}..." for i, r in enumerate(blog_res, 1)]
-            output_parts.append(f"## 📝 블로그/후기 검색 결과:\n" + "\n".join(formatted))
-
-        # 3. Video Results
-        if isinstance(vclip_res, list) and vclip_res:
-            formatted = [f"{i}. [영상] {r.get('title', '').replace('<b>','').replace('</b>','')}\n   - {r.get('author', '저자')}: {r.get('url')}" for i, r in enumerate(vclip_res, 1)]
-            output_parts.append(f"## 🎬 동영상 검색 결과:\n" + "\n".join(formatted))
-
-        if not output_parts:
+        """(폴백용) Kakao 웹 검색만 수행합니다. 블로그·영상은 저사양에서 생략합니다."""
+        logger.info("Kakao 웹 검색 실행. query_chars=%d", len(query))
+        web_res = await kakao.search_web(query, page_size=5)
+        if isinstance(web_res, Exception):
+            logger.warning("Kakao 웹 검색 실패: %s", web_res)
             return f"'{query}'에 대한 카카오 검색 결과가 없습니다."
-            
-        return f"'{query}'에 대한 통합 검색 결과 (Kakao):\n\n" + "\n\n".join(output_parts)
+        if isinstance(web_res, list) and web_res:
+            formatted = [
+                f"{i}. {r.get('title', '제목 없음').replace('<b>','').replace('</b>','')}\n"
+                f"   - {r.get('contents', '내용 없음').replace('<b>','').replace('</b>','')[:200]}..."
+                for i, r in enumerate(web_res, 1)
+            ]
+            return (
+                f"'{query}'에 대한 웹 검색 결과 (Kakao):\n\n"
+                "## 🌐 웹 검색 결과:\n" + "\n".join(formatted)
+            )
+        return f"'{query}'에 대한 카카오 검색 결과가 없습니다."
 
     async def web_search_rag(
         self,
@@ -646,7 +556,7 @@ class ToolsCog(commands.Cog):
         우선순위:
           1) web_search_rag() (Linkup 우선 + legacy 폴백 내장)
           2) Google Custom Search API (config.GOOGLE_API_KEY & config.GOOGLE_CX)
-          3) kakao_web_search()로 폴백
+          3) kakao_web_search() — 웹 검색 1종만 (블로그·영상 병렬 호출 없음)
         """
         logger.info("웹 검색 실행. query_chars=%d", len(query))
         try:

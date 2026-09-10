@@ -445,8 +445,9 @@ BM25_AUTO_REBUILD_ENABLED=false
 열 저장소 5GiB, 월 5천만 RU다. SQL RU 이력은 당일 및 네트워크 egress가 누락될 수 있어
 Cloud 콘솔의 **Usage this month**가 최종 기준이다.
 
-운영 RAG는 의미 임베딩과 선택적 TiDB 벡터 검색을 사용한다. BM25/FTS5 관련 호환
-코드는 남아 있어도 `config.py`가 검색 관리자를 생성하지 않으며, 명시적 운영
+운영 RAG는 의미 임베딩과 선택적 TiDB 벡터 검색을 사용한다. BM25/FTS5는
+`utils/rag_policy.py`가 전 인스턴스에서 거부하며, cpu_only 기동 경로에서
+`database.bm25_index`를 import하지 않는다. 명시적 운영
 프로필은 `BM25_AUTO_REBUILD_ENABLED=false`가 아니면 검증에 실패한다. 따라서
 저사양 서버에서 BM25 인덱스 생성·조회·자동 재구축이 실행되지 않는다.
 

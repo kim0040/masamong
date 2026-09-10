@@ -1880,8 +1880,10 @@ EMBEDDING_ENABLED = as_bool(
     load_config_value("EMBEDDING_ENABLED", _embedding_enabled_default),
     _embedding_enabled_default,
 )
-# BM25는 현재 운영 정책상 사용하지 않음 (로컬/서버 공통 비활성화)
-BM25_ENABLED = False
+# BM25는 저사양 cpu_only 운영 정책상 전 인스턴스 비활성화 (utils.rag_policy)
+from utils.rag_policy import bm25_runtime_enabled as _bm25_runtime_enabled
+
+BM25_ENABLED = _bm25_runtime_enabled()
 BM25_DATABASE_PATH = None
 LOCAL_EMBEDDING_MODEL_NAME = EMBED_CONFIG.get("embedding_model_name", "dragonkue/multilingual-e5-small-ko-v2")
 LOCAL_EMBEDDING_DEVICE = EMBED_CONFIG.get("embedding_device")

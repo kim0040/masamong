@@ -104,6 +104,16 @@ class WeatherCog(commands.Cog):
             config.CHANNEL_AI_CONFIG.get(int(channel_id), {}).get("allowed", False)
         )
 
+    async def get_forecast_for_agent(
+        self,
+        location: str | None = None,
+        day_offset: int = 0,
+    ) -> str | dict:
+        """AI 도구용 예보. KMA 호출은 이 Cog와 weather_forecast 모듈만 탑니다."""
+        from utils.weather_forecast import build_agent_forecast
+
+        return await build_agent_forecast(self, location, day_offset)
+
     async def get_mid_term_weather(self, day_offset: int, location_name: str) -> str:
         """공식 JSON 중기예보에서 지정 날짜를 조회합니다."""
         try:

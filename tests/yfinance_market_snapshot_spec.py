@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from utils.api_handlers import yfinance_handler
+from utils.api_handlers import yfinance_handler, yfinance_snapshot
 
 
 @pytest.mark.asyncio
@@ -87,9 +87,9 @@ async def test_market_snapshot_batches_indices_and_calculates_changes(monkeypatc
         captured["kwargs"] = kwargs
         return frame
 
-    monkeypatch.setattr(yfinance_handler.yf, "download", _fake_download)
+    monkeypatch.setattr(yfinance_snapshot.yf, "download", _fake_download)
 
-    result = await yfinance_handler.get_market_snapshot("us")
+    result = await yfinance_snapshot.get_market_snapshot("us")
 
     assert result["status"] == "success"
     assert result["region"] == "us"
@@ -105,8 +105,8 @@ async def test_kr_market_snapshot_is_unsupported(monkeypatch):
     def _fake_download(*_args, **_kwargs):
         raise AssertionError("국장 지수는 조회하면 안 됩니다")
 
-    monkeypatch.setattr(yfinance_handler.yf, "download", _fake_download)
-    result = await yfinance_handler.get_market_snapshot("kr")
+    monkeypatch.setattr(yfinance_snapshot.yf, "download", _fake_download)
+    result = await yfinance_snapshot.get_market_snapshot("kr")
     assert result["failure_kind"] == "unsupported_market"
 
 
@@ -127,12 +127,12 @@ async def test_market_snapshot_rejects_unknown_region_without_extra_indices(
     )
 
     monkeypatch.setattr(
-        yfinance_handler.yf,
+        yfinance_snapshot.yf,
         "download",
         lambda *_args, **_kwargs: frame,
     )
 
-    result = await yfinance_handler.get_market_snapshot("invalid")
+    result = await yfinance_snapshot.get_market_snapshot("invalid")
 
     assert result["region"] == "global"
     assert len(result["indices"]) == 3

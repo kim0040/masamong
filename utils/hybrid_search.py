@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""하이브리드 검색(임베딩 + BM25)과 재순위화 파이프라인을 제공하는 모듈."""
+"""의미 임베딩 검색과 선택적 재순위화. BM25/FTS5는 저사양 정책으로 호출하지 않습니다."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from logger_config import logger
 from utils.chunker import SemanticChunker, ChunkerConfig
 from utils.embeddings import DiscordEmbeddingStore, KakaoEmbeddingStore, get_embedding
 from utils.query_rewriter import expand_query
+from utils.rag_policy import should_run_bm25_search
 from utils.reranker import Reranker
 
 # 성능 최적화: 정규식 패턴 컴파일 (모듈 레벨에서 한 번만)
@@ -106,13 +107,13 @@ class HybridSearchResult:
 
 
 class HybridSearchEngine:
-    """BM25 + 임베딩 결합 검색을 처리하는 엔진."""
+    """임베딩 의미 검색 엔진. BM25는 정책상 비활성입니다."""
 
     def __init__(
         self,
         discord_store: DiscordEmbeddingStore,
         kakao_store: KakaoEmbeddingStore | None,
-        bm25_manager: BM25IndexManager | None,
+        bm25_manager: Any | None,
         *,
         reranker: Reranker | None = None,
         chunker: SemanticChunker | None = None,
@@ -214,15 +215,18 @@ class HybridSearchEngine:
                 # 임베딩 후보는 가중치 계산을 위해 랭크를 기록한다.
                 self._merge_candidate(candidate_map, entry, source="embedding", rank=rank)
 
-            bm25_entries = await self._bm25_candidates(
-                variant,
-                guild_id=guild_id,
-                channel_id=channel_id,
-                dialogue_cache=dialogue_cache,
-            )
-            for rank, entry in enumerate(bm25_entries[: self.bm25_top_n]):
-                # BM25 후보도 동일한 후보 맵에 합산한다.
-                self._merge_candidate(candidate_map, entry, source="bm25", rank=rank)
+            if should_run_bm25_search(
+                manager=self.bm25_manager,
+                enabled=getattr(config, "BM25_ENABLED", False),
+            ):
+                bm25_entries = await self._bm25_candidates(
+                    variant,
+                    guild_id=guild_id,
+                    channel_id=channel_id,
+                    dialogue_cache=dialogue_cache,
+                )
+                for rank, entry in enumerate(bm25_entries[: self.bm25_top_n]):
+                    self._merge_candidate(candidate_map, entry, source="bm25", rank=rank)
 
         if not candidate_map:
             return HybridSearchResult(entries=[], query_variants=variants, top_score=0.0)

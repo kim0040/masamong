@@ -31,6 +31,7 @@ cp emb_config.example.json emb_config.json
 - 외부 사실·시장 수치는 성공한 도구 근거가 없으면 생성하지 않는다.
 - LLM·이미지·웹 검색 호출은 timeout, 유한 retry, 동시성, 계층형 할당량을 거친다.
 - 운영 저사양 프로필에서는 BM25/FTS5를 만들거나 조회하지 않는다.
+  cpu_only 설치에서도 `database.bm25_index`를 기동 시 import하지 않는다.
 - 비밀키, 토큰, DB 주소·계정·암호, 실제 사용자 개인정보를 Git에 기록하지 않는다.
 
 ## 구현 원칙
