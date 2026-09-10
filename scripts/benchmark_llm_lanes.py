@@ -106,8 +106,13 @@ def _memory_fidelity_validator(text: str) -> tuple[int, list[str]]:
         "date": "8월 3일" in text or "8/3" in text,
         "time": "14:00" in text or "오후 2시" in text,
         "place": "부산역" in text,
-        "negation": "자가용" in text and ("않" in text or "안 " in text),
-        "unresolved": "ktx" in normalized and "미정" in text,
+        "negation": "자가용" in text
+        and any(token in text for token in ("않", "안 ", "미사용", "사용하지", "쓰지")),
+        "unresolved": "ktx" in normalized
+        and any(
+            token in text
+            for token in ("미정", "정하지 않", "정해지지 않", "결정하지 않")
+        ),
         "discord_format": "|---" not in text and "<table" not in normalized,
         "concise": 0 < len(text) <= 1_200,
     }
@@ -119,7 +124,7 @@ def _weather_validator(text: str) -> tuple[int, list[str]]:
     normalized = text.lower()
     checks = {
         "rain": "70" in text,
-        "umbrella": "우산" in text,
+        "umbrella": "우산" in text or "챙기" in text,
         "no_fake_failure": "조회 실패" not in text,
         "discord_format": "|---" not in text and "<table" not in normalized,
         "concise": 0 < len(text) <= 1_200,
@@ -133,10 +138,59 @@ def _failure_honesty_validator(text: str) -> tuple[int, list[str]]:
     checks = {
         "states_failure": any(
             token in text
-            for token in ("확인하지 못", "조회하지 못", "불러오지 못", "실패")
+            for token in (
+                "확인하지 못",
+                "조회하지 못",
+                "불러오지 못",
+                "가져오지 못",
+                "조회할 수 없",
+                "확인할 수 없",
+                "실패",
+            )
         ),
         "offers_retry": "다시" in text or "잠시 후" in text,
         "no_invented_temperature": re.search(r"\d+(?:\.\d+)?\s*도", text) is None,
+        "discord_format": "|---" not in text and "<table" not in normalized,
+        "concise": 0 < len(text) <= 1_200,
+    }
+    score = round(sum(checks.values()) / len(checks) * 100)
+    return score, [name for name, passed in checks.items() if not passed]
+
+
+def _fx_grounding_validator(text: str) -> tuple[int, list[str]]:
+    """조회된 환율을 그대로 써서 환산했는지 봅니다.
+
+    운영에서 가장 많이 깨진 유형이라 레인 비교에 포함한다. 도구가 준 환율을
+    두고 다른 값을 지어내면 금융 수치 검증에서 답변 전체가 막힌다.
+    """
+    normalized = text.lower()
+    compact = text.replace(" ", "")
+    checks = {
+        "uses_given_rate": "1,338" in text or "1338" in compact,
+        "states_amount": any(
+            token in compact
+            for token in ("13억", "1,338,780,000", "1338780000")
+        ),
+        "no_stale_rate": not any(
+            token in text for token in ("1,370", "1,400", "1,300원")
+        ),
+        "discord_format": "|---" not in text and "<table" not in normalized,
+        "concise": 0 < len(text) <= 1_200,
+    }
+    score = round(sum(checks.values()) / len(checks) * 100)
+    return score, [name for name, passed in checks.items() if not passed]
+
+
+def _parallel_reasoning_validator(text: str) -> tuple[int, list[str]]:
+    """비례로 착각하기 쉬운 문제에서 병렬 조건을 읽어내는지 봅니다."""
+    normalized = text.lower()
+    compact = text.replace(" ", "")
+    checks = {
+        "correct_answer": "5시간" in compact,
+        "rejects_naive_scaling": not any(
+            token in compact
+            for token in ("정답은40시간", "답은40시간", "40시간이걸립니다", "40시간걸립니다")
+        ),
         "discord_format": "|---" not in text and "<table" not in normalized,
         "concise": 0 < len(text) <= 1_200,
     }
@@ -183,6 +237,34 @@ MAIN_CASES = (
         ),
         _failure_honesty_validator,
     ),
+    MainCase(
+        "fx_grounding",
+        (
+            "Discord 봇의 최종 답변을 한국어로 작성한다. 도구 결과의 수치를 "
+            "최우선 사실로 사용하고 다른 환율을 만들지 않는다. 표와 HTML은 "
+            "쓰지 않는다."
+        ),
+        (
+            "[도구 실행 결과]\n"
+            "[get_stock_price] USD/KRW (USDKRW=X): 1,338.78 KRW, -0.05%\n"
+            "[get_stock_price] 조회 시각(KST): 2026-09-10 10:41\n"
+            "[현재 질문]\n100만 달러면 원화로 얼마야?"
+        ),
+        _fx_grounding_validator,
+    ),
+    MainCase(
+        "parallel_reasoning",
+        (
+            "Discord 봇의 최종 답변을 한국어로 작성한다. 문제의 조건을 그대로 "
+            "읽고 답한다. 표와 HTML은 쓰지 않는다."
+        ),
+        (
+            "[현재 질문]\n빨래 5장을 햇볕에 널어 말리는 데 5시간이 걸려. "
+            "같은 곳에 동시에 널 수 있다면 빨래 40장을 말리는 데는 몇 시간이 "
+            "걸릴까?"
+        ),
+        _parallel_reasoning_validator,
+    ),
 )
 
 
@@ -220,11 +302,16 @@ def _candidate_target(
     model: str,
     reasoning_effort: str,
     name: str,
+    provider_only: str = "",
 ) -> dict[str, str]:
     target = deepcopy(base_target)
     target["name"] = name
     target["model"] = model
     target["reasoning_effort"] = reasoning_effort
+    # 후보 모델이 현직 모델과 같은 공급자에서 서비스되지 않으면 레인의 공급자
+    # 고정을 그대로 쓸 수 없다. 비워 두면 기존처럼 레인 설정을 따른다.
+    if provider_only:
+        target["provider_only"] = provider_only
     return target
 
 
@@ -363,12 +450,14 @@ async def run(args: argparse.Namespace) -> int:
         model=args.candidate_routing_model,
         reasoning_effort=args.reasoning_effort,
         name="routing.candidate",
+        provider_only=args.candidate_provider_only,
     )
     candidate_main = _candidate_target(
         current_main,
         model=args.candidate_main_model,
         reasoning_effort=args.reasoning_effort,
         name="main.candidate",
+        provider_only=args.candidate_provider_only,
     )
     route_pairs = (current_routing, candidate_routing)
     main_pairs = (current_main, candidate_main)
@@ -494,6 +583,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--candidate-main-model",
         default="deepseek-v4-pro",
+    )
+    parser.add_argument(
+        "--candidate-provider-only",
+        default="",
+        help=(
+            "후보 모델에만 적용할 OpenRouter 공급자 고정. "
+            "비우면 레인 설정을 그대로 따른다."
+        ),
     )
     parser.add_argument(
         "--reasoning-effort",

@@ -530,6 +530,12 @@ class LLMClient:
                 provider_only,
             )
             lane_zdr = getattr(config, "OPENROUTER_ROUTING_ZDR", None)
+        # target이 공급자를 직접 지정하면 레인 기본값보다 우선한다. 후보 모델을
+        # 비교할 때 현직 모델의 공급자 고정을 그대로 물려받으면 요청이 404로
+        # 막혀, 모델 품질이 아니라 설정 제약을 측정하게 된다.
+        target_provider_only = str(target.get("provider_only") or "").strip()
+        if target_provider_only:
+            provider_only = target_provider_only
         if lane_zdr is not None:
             zdr = bool(lane_zdr)
         options: dict[str, Any] = {
