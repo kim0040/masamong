@@ -70,12 +70,17 @@ def build_openrouter_extra_body(
     zdr: bool = False,
 ) -> dict[str, Any]:
     """OpenRouter 전용 공급자 고정·추론 본문을 만듭니다."""
-    providers = normalize_provider_only(provider_only)
+    auto_provider = (
+        isinstance(provider_only, str)
+        and provider_only.strip().lower() in {"auto", "any", "*"}
+    )
+    providers = () if auto_provider else normalize_provider_only(provider_only)
     provider: dict[str, Any] = {
-        "only": list(providers),
         "allow_fallbacks": bool(allow_fallbacks),
         "require_parameters": bool(require_parameters),
     }
+    if providers:
+        provider["only"] = list(providers)
     if zdr:
         provider["zdr"] = True
     normalized_collection = str(data_collection or "").strip().lower()
