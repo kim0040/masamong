@@ -43,7 +43,45 @@ _CURRENCY_ALIASES: tuple[tuple[tuple[str, ...], str], ...] = (
 
 _FX_INTENT = (
     "환율", "환전", "환산", "fx", "exchange rate", "얼마", "몇원", "몇 원",
+    "알려", "시세", "해줘", "궁금",
 )
+_YEN_TOKEN_RE = re.compile(
+    r"(?<![가-힣])(?:엔화|엔만|엔(?=[은는을를이가\s,.\?!]|$))"
+)
+_AMOUNT_RE = re.compile(
+    r"(\d[\d,]*(?:\.\d+)?)\s*(만|억)?\s*"
+    r"(달러|엔화|엔|유로|파운드|위안|원|usd|jpy|eur|gbp|cny|krw)?",
+    re.IGNORECASE,
+)
+_AMOUNT_CURRENCY = {
+    "달러": "USD",
+    "엔화": "JPY",
+    "엔": "JPY",
+    "유로": "EUR",
+    "파운드": "GBP",
+    "위안": "CNY",
+    "원": "KRW",
+    "usd": "USD",
+    "jpy": "JPY",
+    "eur": "EUR",
+    "gbp": "GBP",
+    "cny": "CNY",
+    "krw": "KRW",
+}
+_CURRENCY_KO = {
+    "USD": "달러",
+    "JPY": "엔",
+    "EUR": "유로",
+    "GBP": "파운드",
+    "CNY": "위안",
+    "KRW": "원",
+    "AUD": "호주달러",
+    "CAD": "캐나다달러",
+    "CHF": "프랑",
+    "HKD": "홍콩달러",
+    "SGD": "싱가포르달러",
+    "THB": "바트",
+}
 
 
 KR_MARKET_UNSUPPORTED = (
@@ -101,7 +139,7 @@ def detect_fx_pair(query: str) -> tuple[str, str] | None:
     for aliases, code in _CURRENCY_ALIASES:
         for alias in aliases:
             if alias == "엔":
-                if not re.search(r"(?<![가-힣])엔(?![가-힣])", text):
+                if not _YEN_TOKEN_RE.search(text):
                     continue
             elif alias.isascii():
                 if alias not in folded:
@@ -159,3 +197,131 @@ def split_quote_query(
             query_text = raw_symbol
         direct = ""
     return query_text, direct
+
+
+def looks_like_fx_quote(result: dict | None) -> bool:
+    """성공한 시세 결과가 환율인지 판별합니다."""
+    if not isinstance(result, dict) or result.get("status") != "success":
+        return False
+    if result.get("provider") == "exchangerate-api":
+        return True
+    pair = result.get("pair")
+    if isinstance(pair, dict) and pair.get("base") and pair.get("quote"):
+        return True
+    symbol = str(result.get("symbol") or "").replace(" ", "").upper()
+    return bool(_FX_SYMBOL_RE.fullmatch(symbol))
+
+
+def _format_fx_amount(value: float) -> str:
+    text = f"{float(value):,.4f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _query_conversion_lines(
+    query: str,
+    base: str,
+    quote: str,
+    rate: float,
+) -> list[str]:
+    """질문에 금액이 있으면 조회된 환율로만 환산합니다."""
+    if rate == 0:
+        return []
+    lines: list[str] = []
+    seen: set[str] = set()
+    for match in _AMOUNT_RE.finditer(str(query or "")):
+        raw_number = float(match.group(1).replace(",", ""))
+        scale = match.group(2) or ""
+        if scale == "만":
+            raw_number *= 10_000
+        elif scale == "억":
+            raw_number *= 100_000_000
+        word = (match.group(3) or "").casefold()
+        source = _AMOUNT_CURRENCY.get(word) or _AMOUNT_CURRENCY.get(
+            (match.group(3) or "").upper()
+        )
+        if source is None:
+            if 1900 <= raw_number <= 2100:
+                continue
+            source = base
+        if source == base:
+            converted = raw_number * float(rate)
+            target = quote
+        elif source == quote:
+            converted = raw_number / float(rate)
+            target = base
+        else:
+            continue
+        label = (
+            f"{_format_fx_amount(raw_number)} {_CURRENCY_KO.get(source, source)} = "
+            f"{_format_fx_amount(converted)} {_CURRENCY_KO.get(target, target)}"
+        )
+        if label in seen:
+            continue
+        seen.add(label)
+        lines.append(label)
+        if len(lines) >= 3:
+            break
+    return lines
+
+
+def format_fx_user_reply(result: dict, query: str = "") -> str:
+    """LLM 없이 조회된 환율만 사용자에게 보여 줍니다."""
+    pair = result.get("pair") if isinstance(result.get("pair"), dict) else {}
+    symbol = str(result.get("symbol") or "").replace(" ", "").upper()
+    parsed = _FX_SYMBOL_RE.fullmatch(symbol)
+    base = str(pair.get("base") or (parsed.group(1) if parsed else "")).upper()
+    quote = str(
+        pair.get("quote") or (parsed.group(2) if parsed else result.get("currency") or "")
+    ).upper()
+    rate = pair.get("rate")
+    if not isinstance(rate, (int, float)):
+        rate = result.get("price")
+    if not base or not quote or not isinstance(rate, (int, float)):
+        return ""
+    inverse = pair.get("inverse")
+    if not isinstance(inverse, (int, float)) and float(rate) != 0:
+        inverse = 1.0 / float(rate)
+    base_ko = _CURRENCY_KO.get(base, base)
+    quote_ko = _CURRENCY_KO.get(quote, quote)
+    lines = [
+        f"{base_ko}-{quote_ko} 환율이에요. "
+        f"1{base_ko} = {_format_fx_amount(float(rate))}{quote_ko}."
+    ]
+    if base == "JPY" and quote == "KRW":
+        lines.append(
+            f"한국에서 자주 쓰는 기준으로는 100엔 = "
+            f"{float(rate) * 100:,.2f}원이에요."
+        )
+    elif isinstance(inverse, (int, float)):
+        lines.append(
+            f"거꾸로 보면 1{quote_ko} = {_format_fx_amount(float(inverse))}{base_ko}."
+        )
+    lines.extend(_query_conversion_lines(query, base, quote, float(rate)))
+    checked = str(result.get("checked_at_kst") or "").strip()
+    if checked:
+        lines.append(f"조회 시각(KST): {checked}")
+    return "\n".join(lines)
+
+
+def format_quote_user_reply(result: dict, query: str = "") -> str:
+    """성공한 시세 조회를 LLM 없이 렌더링합니다."""
+    if looks_like_fx_quote(result):
+        return format_fx_user_reply(result, query)
+    if not isinstance(result, dict) or result.get("status") != "success":
+        return ""
+    price = result.get("price")
+    if not isinstance(price, (int, float)):
+        return ""
+    name = result.get("name") or result.get("symbol") or "종목"
+    currency = result.get("currency") or ""
+    change = result.get("change_percent")
+    change_text = (
+        f", {float(change):+.2f}%"
+        if isinstance(change, (int, float))
+        else ""
+    )
+    lines = [f"{name} 현재가 {float(price):,.2f} {currency}{change_text}."]
+    checked = str(result.get("checked_at_kst") or "").strip()
+    if checked:
+        lines.append(f"조회 시각(KST): {checked}")
+    return "\n".join(lines)

@@ -1208,7 +1208,7 @@ def test_plain_current_stock_request_keeps_quote_tool():
         {
             "tool_to_use": "get_stock_price",
             "tool_name": "get_stock_price",
-            "parameters": {"symbol": "AAPL"},
+            "parameters": {"symbol": "AAPL", "user_query": "애플 현재 주가 알려줘"},
         }
     ]
 
@@ -1808,9 +1808,15 @@ def test_exchange_rate_question_uses_quote_tool_without_guessing_symbol():
     for query in (
         "오늘 환율 어때",
         "엔화 환율 알려줘",
+        "환율 엔화 알려줘",
+        "엔화 알려달라고",
         "유로 환율",
         "100만달러는 원화로 얼마임",
         "THB 환율",
+        "100엔이면 얼마야",
+        "달러 환율",
+        "USD/JPY",
+        "JPYKRW=X",
     ):
         plan = handler._detect_tools_by_keyword(query)
         assert plan, query
@@ -1910,6 +1916,7 @@ def test_index_snapshot_survives_real_market_brief():
         tools = _plan_tools(plan)
         if "국장" in query:
             assert "get_market_snapshot" not in tools, query
+            assert "get_stock_price" not in tools, query
             assert "web_search" in tools, query
         else:
             assert "get_market_snapshot" in tools, query
@@ -1930,3 +1937,38 @@ def test_quote_tool_is_not_added_to_out_of_scope_finance_requests():
             requires_external_evidence=True,
         )
         assert "get_stock_price" not in _plan_tools(plan), query
+
+
+def test_kr_market_is_not_auto_routed_to_quote_or_us_snapshot():
+    """국장·코스피·국내 상장 티커는 시세 도구를 건너뛰고 웹검색만 씁니다."""
+    handler = _build_handler_without_init()
+    analyzer = IntentAnalyzer(db=None, llm_client=None, tools_cog=None)
+
+    for query in (
+        "오늘 국장 어때?",
+        "코스피 지금 몇이야",
+        "005930.KS 주가 알려줘",
+    ):
+        plan = handler._detect_tools_by_keyword(query)
+        assert _plan_tools(plan) == ["web_search"], query
+
+        enforced = analyzer._enforce_evidence_tool_plan(
+            query,
+            "한국 증시 조회",
+            [{"tool_to_use": "get_stock_price", "parameters": {"user_query": query}}],
+            requires_external_evidence=True,
+        )
+        assert "get_stock_price" not in _plan_tools(enforced), query
+        assert "get_market_snapshot" not in _plan_tools(enforced), query
+        assert "web_search" in _plan_tools(enforced), query
+
+    rewritten = handler._sanitize_tool_plan(
+        "오늘 국장 어때",
+        [{"tool_to_use": "get_market_snapshot", "parameters": {"region": "kr"}}],
+        rag_top_score=0.0,
+        log_extra=None,
+        trust_llm=True,
+    )
+    assert _plan_tools(rewritten) == ["web_search"]
+    assert rewritten[0]["parameters"]["query"]
+

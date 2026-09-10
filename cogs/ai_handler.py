@@ -57,6 +57,7 @@ from utils import db as db_utils
 from utils.constants import DM_LIMIT_COUNT, DM_LIMIT_WINDOW_HOURS
 from utils.llm_client import LLMClient
 from utils.intent_analyzer import IntentAnalyzer
+from utils.finance_query import format_quote_user_reply, looks_like_fx_quote
 from utils.tool_health import ToolTemporarilyUnavailable
 from utils.rag_manager import RAGManager
 from utils.discord_helpers import (
@@ -2555,6 +2556,10 @@ class AIHandler(AIPromptMixin, AIToolRuntimeMixin, commands.Cog):
                 non_local_tool_results,
                 "get_market_snapshot",
             )
+            stock_quote_result = self._successful_tool_result(
+                non_local_tool_results,
+                "get_stock_price",
+            )
             web_search_result = self._successful_tool_result(
                 non_local_tool_results,
                 "web_search",
@@ -2597,6 +2602,18 @@ class AIHandler(AIPromptMixin, AIToolRuntimeMixin, commands.Cog):
                 )
                 logger.warning(
                     "시장 뉴스 검색 실패로 검증 지수만 직접 렌더링합니다.",
+                    extra=log_extra,
+                )
+            elif (
+                looks_like_fx_quote(stock_quote_result)
+                and not web_search_result
+            ):
+                guarded_response = format_quote_user_reply(
+                    stock_quote_result,
+                    user_query,
+                )
+                logger.info(
+                    "환율 조회 결과를 직접 렌더링해 최종 답변 LLM을 생략합니다.",
                     extra=log_extra,
                 )
 
@@ -2783,8 +2800,10 @@ class AIHandler(AIPromptMixin, AIToolRuntimeMixin, commands.Cog):
                             len(unsupported_numbers),
                             extra=log_extra,
                         )
-                        final_response_text = self._format_market_snapshot_fallback(
+                        final_response_text = self._format_verified_quote_fallback(
+                            stock_quote_result,
                             market_snapshot_result,
+                            query=user_query,
                             note=(
                                 "뉴스 요약에서 원자료로 확인되지 않는 수치가 감지되어 "
                                 "해당 내용은 제외했어요."

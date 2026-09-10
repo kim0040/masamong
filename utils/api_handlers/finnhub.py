@@ -326,6 +326,8 @@ async def lookup_quote(
 
     original = str(query or "").strip()
     hint = str(hint_symbol or "").strip()
+    if is_kr_listing(original) or is_kr_listing(hint):
+        return kr_market_unsupported_result()
     if not _get_client():
         return {
             "status": "error",
@@ -333,9 +335,6 @@ async def lookup_quote(
             "failure_kind": "provider_error",
             "provider_failure": True,
         }
-
-    if is_kr_listing(original) or is_kr_listing(hint):
-        return kr_market_unsupported_result()
 
     candidates: list[str] = []
     if original and looks_like_ticker(original.upper()) and not is_kr_listing(original):

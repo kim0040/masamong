@@ -18,7 +18,7 @@ from typing import Any
 
 import config
 from logger_config import logger
-from utils.finance_query import detect_fx_pair, looks_like_ticker
+from utils.finance_query import detect_fx_pair, is_kr_listing, looks_like_ticker
 
 
 @dataclass(frozen=True)
@@ -479,6 +479,20 @@ class IntentAnalyzer:
             return False
         return any(token in query_lower for token in self._REALTIME_WEB_QUERY_HINTS)
 
+    def _quote_tool_parameters(self, query: str, params: dict | None) -> dict:
+        """시세 도구는 원문 질의를 항상 남기고, 티커는 힌트만 둡니다."""
+        params = params or {}
+        user_query = str(params.get("user_query") or query or "").strip()[:300]
+        out: dict[str, str] = {}
+        if user_query:
+            out["user_query"] = user_query
+        symbol = str(params.get("symbol") or "").strip().upper()
+        if symbol and re.fullmatch(r"[A-Z0-9^][A-Z0-9.^=-]{0,19}", symbol):
+            out["symbol"] = symbol
+        if not out:
+            out["user_query"] = (query or "")[:300]
+        return out
+
     def _looks_like_finance_query(self, query: str) -> bool:
         """회사명 단독 언급 오탐을 줄이기 위해 금융 의도 문맥까지 함께 확인합니다."""
         query_lower = (query or "").lower().strip()
@@ -537,9 +551,31 @@ class IntentAnalyzer:
         has_named_instrument = self._has_named_instrument(query)
         return has_news_request and not has_named_instrument
 
-    @staticmethod
-    def _stock_lookup_requires_web(query: str) -> bool:
+    _KR_MARKET_MARKERS = (
+        "국장", "국내 상장", "국내주식", "국내 주식", "한국 주식", "한국주식",
+        "한국 증시", "한국증시", "한국 시장", "코스피", "코스닥", "kospi",
+        "kosdaq", "한국거래소", "유가증권", "코넥스",
+    )
+
+    @classmethod
+    def _looks_like_kr_market_query(cls, query: str, symbol: str = "") -> bool:
+        """국내 증시·국내 상장 티커는 시세 도구 범위 밖입니다."""
+        if is_kr_listing(query) or is_kr_listing(symbol):
+            return True
+        text = str(query or "")
+        folded = text.casefold()
+        if any(marker in text or marker in folded for marker in cls._KR_MARKET_MARKERS):
+            return True
+        for token in re.findall(r"[A-Za-z0-9.^:=-]{1,24}", text):
+            if is_kr_listing(token):
+                return True
+        return False
+
+    @classmethod
+    def _stock_lookup_requires_web(cls, query: str, symbol: str = "") -> bool:
         """현재가 단건 도구의 범위를 벗어나는 금융 요청을 식별합니다."""
+        if cls._looks_like_kr_market_query(query, symbol):
+            return True
         text = str(query or "").casefold()
         capability_terms = (
             "그래프",
@@ -561,6 +597,33 @@ class IntentAnalyzer:
         # 같은 현재가 도구로 조회되므로 제외하면 안 된다.
         # 남은 항목은 단건 현재가로 실제로 답할 수 없는 요청들이다.
         return any(term in text for term in capability_terms)
+
+    def _rewrite_out_of_scope_finance_tool(
+        self,
+        name: str,
+        query: str,
+        params: dict | None,
+    ) -> tuple[str, dict]:
+        """국장·차트처럼 시세 도구로 답할 수 없으면 웹검색으로 바꿉니다."""
+        params = params or {}
+        symbol = str(params.get("symbol") or "")
+        if name == "get_stock_price" and self._stock_lookup_requires_web(query, symbol):
+            builder = (
+                self._build_finance_news_query
+                if self._looks_like_kr_market_query(query, symbol)
+                else self._build_finance_lookup_query
+            )
+            return "web_search", {"query": builder(query)}
+        if name == "get_market_snapshot":
+            region = str(params.get("region") or "global").strip().lower()
+            if region == "kr" or self._looks_like_kr_market_query(query):
+                return "web_search", {
+                    "query": self._build_finance_news_query(query)
+                }
+            if region not in {"us", "global"}:
+                region = "global"
+            return name, {"region": region}
+        return name, params
 
     @staticmethod
     def _market_region_from_text(query: str) -> str:
@@ -601,6 +664,25 @@ class IntentAnalyzer:
         "지금", "현재", "오늘", "실시간", "종가", "얼마야", "얼마임",
         "얼마고", "몇이야", "몇임", "시세", "주가",
     )
+
+    @staticmethod
+    def _weather_day_offset(query: str, raw_offset: Any = None) -> int:
+        """질문의 내일/모레를 도구 인자보다 우선합니다."""
+        text = str(query or "")
+        if "내일" in text:
+            offset = 1
+        elif "모레" in text:
+            offset = 2
+        elif "글피" in text:
+            offset = 3
+        elif any(token in text for token in ("다음주", "이번주", "주말", "일주일")):
+            offset = 3
+        else:
+            try:
+                offset = int(raw_offset or 0)
+            except (TypeError, ValueError, OverflowError):
+                offset = 0
+        return min(10, max(0, offset))
 
     @classmethod
     def _looks_like_conceptual_finance_query(cls, query: str) -> bool:
@@ -768,6 +850,23 @@ class IntentAnalyzer:
             names.discard("get_market_snapshot")
             logger.warning(
                 "[도구보정] 시황 요청이 아니어서 지수 스냅샷을 제외합니다.",
+                extra=log_extra,
+            )
+
+        if self._looks_like_kr_market_query(semantic_text) and "get_stock_price" in names:
+            normalized = [
+                item
+                for item in normalized
+                if str(
+                    (item or {}).get("tool_to_use")
+                    or (item or {}).get("tool_name")
+                    or ""
+                )
+                != "get_stock_price"
+            ]
+            names.discard("get_stock_price")
+            logger.warning(
+                "[도구보정] 국장 요청에서 시세 도구를 제외합니다.",
                 extra=log_extra,
             )
 
@@ -965,20 +1064,13 @@ class IntentAnalyzer:
         if any(kw in query_lower for kw in self._WEATHER_KEYWORDS):
             location = self._extract_location_from_query(query) or '광양'
 
-            day_offset = 0
-            if "내일" in query:
-                day_offset = 1
-            elif "모레" in query:
-                day_offset = 2
-            elif "글피" in query:
-                day_offset = 3
-            elif any(kw in query for kw in ["다음주", "이번주", "주말", "일주일"]):
-                day_offset = 3  # Start of mid-term forecast
-
             tools.append({
                 'tool_to_use': 'get_weather_forecast',
                 'tool_name': 'get_weather_forecast',
-                'parameters': {'location': location, 'day_offset': day_offset}
+                'parameters': {
+                    'location': location,
+                    'day_offset': self._weather_day_offset(query),
+                }
             })
             return tools  # 날씨 요청은 단일 도구로 처리
 
@@ -1320,7 +1412,8 @@ class IntentAnalyzer:
             "region은 us 또는 global. 코스피·코스닥·국장은 제공하지 않으므로 "
             "한국 증시 질문은 web_search만 사용한다.\n"
             "- get_stock_price(symbol, user_query): 미국 상장 종목·암호화폐 현재가와 "
-            "환율 조회. 국내 상장(.KS/.KQ)은 사용하지 않는다. "
+            "환율 조회. 국내 상장(.KS/.KQ)·국장·코스피·코스닥·한국 주식은 "
+            "사용하지 말고 web_search로 공개 자료를 확인한다. "
             "환율은 user_query로 맡겨도 되고, 알면 USDKRW=X, JPYKRW=X 같은 "
             "통화쌍을 symbol에 넣는다. ADR/OTC 상장 여부, 과거 일봉·차트·그래프, "
             "특정 서비스의 비공개 API 요청에는 사용하지 말고 web_search로 공식 "
@@ -1809,46 +1902,23 @@ class IntentAnalyzer:
                             self._extract_location_from_query(query)
                             or config.DEFAULT_LOCATION_NAME
                         )
-                    try:
-                        day_offset = int(params.get("day_offset", 0))
-                    except (TypeError, ValueError, OverflowError):
-                        day_offset = 0
                     params = {
                         "location": location[:80],
-                        "day_offset": min(10, max(0, day_offset)),
+                        "day_offset": self._weather_day_offset(
+                            query,
+                            params.get("day_offset"),
+                        ),
                     }
                 elif name == "get_stock_price":
-                    if self._stock_lookup_requires_web(query):
-                        name = "web_search"
-                        params = {
-                            "query": self._build_finance_lookup_query(query)
-                        }
-                        logger.info(
-                            "[도구보정] 현재가 도구 범위를 벗어난 요청을 "
-                            "web_search로 전환",
-                            extra=log_extra,
-                        )
-                        append_candidate(
-                            {
-                                "tool_to_use": name,
-                                "tool_name": name,
-                                "parameters": params,
-                            }
-                        )
-                        continue
-                    symbol = str(params.get("symbol") or "").strip().upper()
-                    if symbol and re.fullmatch(
-                        r"[A-Z0-9^][A-Z0-9.^=-]{0,19}",
-                        symbol,
-                    ):
-                        params = {"symbol": symbol}
-                    else:
-                        params = {"user_query": query[:300]}
+                    name, params = self._rewrite_out_of_scope_finance_tool(
+                        name, query, params
+                    )
+                    if name == "get_stock_price":
+                        params = self._quote_tool_parameters(query, params)
                 elif name == "get_market_snapshot":
-                    region = str(params.get("region") or "global").strip().lower()
-                    if region not in {"us", "global"}:
-                        region = "global"
-                    params = {"region": region}
+                    name, params = self._rewrite_out_of_scope_finance_tool(
+                        name, query, params
+                    )
                 elif name == "search_for_place":
                     place_query_text = str(
                         params.get("query") or query
@@ -1892,18 +1962,15 @@ class IntentAnalyzer:
                 return []
 
             if name == "get_stock_price":
-                symbol = str(params.get("symbol") or "").strip().upper()
-                params = (
-                    {"symbol": symbol}
-                    if symbol
-                    and re.fullmatch(r"[A-Z0-9^][A-Z0-9.^=-]{0,19}", symbol)
-                    else {"user_query": query[:300]}
+                name, params = self._rewrite_out_of_scope_finance_tool(
+                    name, query, params
                 )
+                if name == "get_stock_price":
+                    params = self._quote_tool_parameters(query, params)
             elif name == "get_market_snapshot":
-                region = str(params.get("region") or "global").strip().lower()
-                if region not in {"us", "global"}:
-                    region = "global"
-                params = {"region": region}
+                name, params = self._rewrite_out_of_scope_finance_tool(
+                    name, query, params
+                )
             elif name == "search_for_place":
                 place_query_text = str(
                     params.get("query") or query
@@ -1952,19 +2019,13 @@ class IntentAnalyzer:
                 # 날씨/장소는 전용 도구 우선 (웹검색 남용 방지)
                 if weather_query:
                     location = self._extract_location_from_query(query) or "광양"
-                    day_offset = 0
-                    if "내일" in query:
-                        day_offset = 1
-                    elif "모레" in query:
-                        day_offset = 2
-                    elif "글피" in query:
-                        day_offset = 3
-                    elif any(token in query for token in ("다음주", "이번주", "주말", "일주일")):
-                        day_offset = 3
                     candidate = {
                         "tool_to_use": "get_weather_forecast",
                         "tool_name": "get_weather_forecast",
-                        "parameters": {"location": location, "day_offset": day_offset},
+                        "parameters": {
+                            "location": location,
+                            "day_offset": self._weather_day_offset(query),
+                        },
                     }
                     append_candidate(candidate)
                     logger.info("[도구보정] web_search -> get_weather_forecast 전환", extra=log_extra)
