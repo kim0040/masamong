@@ -57,7 +57,6 @@ from utils import db as db_utils
 from utils.constants import DM_LIMIT_COUNT, DM_LIMIT_WINDOW_HOURS
 from utils.llm_client import LLMClient
 from utils.intent_analyzer import IntentAnalyzer
-from utils.finance_query import format_quote_user_reply, looks_like_fx_quote
 from utils.tool_health import ToolTemporarilyUnavailable
 from utils.rag_manager import RAGManager
 from utils.discord_helpers import (
@@ -2539,12 +2538,6 @@ class AIHandler(AIPromptMixin, AIToolRuntimeMixin, commands.Cog):
             finance_request = intent_analyzer._looks_like_finance_query(
                 semantic_request
             )
-            market_brief_request = (
-                finance_request
-                and intent_analyzer._looks_like_market_brief_query(
-                    semantic_request
-                )
-            )
             requires_external_evidence = bool(
                 getattr(
                     routing_decision,
@@ -2559,10 +2552,6 @@ class AIHandler(AIPromptMixin, AIToolRuntimeMixin, commands.Cog):
             stock_quote_result = self._successful_tool_result(
                 non_local_tool_results,
                 "get_stock_price",
-            )
-            web_search_result = self._successful_tool_result(
-                non_local_tool_results,
-                "web_search",
             )
             guarded_response = ""
             terminal_stage = "answer"
@@ -2588,35 +2577,6 @@ class AIHandler(AIPromptMixin, AIToolRuntimeMixin, commands.Cog):
                     "검증 필수 요청의 외부 자료가 없어 답변 생성을 fail-closed 처리합니다.",
                     extra=log_extra,
                 )
-            elif (
-                market_brief_request
-                and market_snapshot_result
-                and not web_search_result
-            ):
-                guarded_response = self._format_market_snapshot_fallback(
-                    market_snapshot_result,
-                    note=(
-                        "관련 뉴스는 못 가져와서 확인된 지수만 정리했어요. "
-                        "뉴스 내용은 따로 지어내지 않았어요."
-                    ),
-                )
-                logger.warning(
-                    "시장 뉴스 검색 실패로 검증 지수만 직접 렌더링합니다.",
-                    extra=log_extra,
-                )
-            elif (
-                looks_like_fx_quote(stock_quote_result)
-                and not web_search_result
-            ):
-                guarded_response = format_quote_user_reply(
-                    stock_quote_result,
-                    user_query,
-                )
-                logger.info(
-                    "환율 조회 결과를 직접 렌더링해 최종 답변 LLM을 생략합니다.",
-                    extra=log_extra,
-                )
-
             if (
                 len(non_local_tool_results) == 1
                 and non_local_tool_results[0].get("tool_name")
@@ -2724,7 +2684,9 @@ class AIHandler(AIPromptMixin, AIToolRuntimeMixin, commands.Cog):
                 context_digest=routing_decision.context_digest,
             )
 
-            # 답변 생성
+            # 답변 생성. 도구 성공 결과는 메인 모델이 채널 말투·최근 대화·
+            # 기억과 함께 대화로 녹인다. 검증 자료가 아예 없을 때만 고정
+            # 문구로 LLM을 건너뛴다.
             final_response_text = guarded_response
             web_only_summary = ""
             if (
@@ -2735,23 +2697,12 @@ class AIHandler(AIPromptMixin, AIToolRuntimeMixin, commands.Cog):
             ):
                 web_only_summary = str(non_local_tool_results[0]["result"]["summary"]).strip()
 
-            # 웹 검색 단독이면서 RAG가 없으면 기존처럼 요약을 그대로 재사용한다.
-            # 단, RAG가 있으면 최종 모델에서 검색결과+기억을 함께 보고 관련될 때만 반영하도록 재합성한다.
             if final_response_text:
                 logger.info(
                     "검증 안전 응답을 사용해 최종 답변 LLM 호출을 생략합니다.",
                     extra=log_extra,
                 )
-            elif web_only_summary and not rag_blocks:
-                final_response_text = web_only_summary
-                logger.info("웹 검색 단독 결과를 최종 답변으로 재사용합니다.", extra=log_extra)
             else:
-                if web_only_summary and rag_blocks:
-                    logger.info(
-                        "웹 검색 단독 + RAG 컨텍스트가 있어 최종 답변을 재합성합니다. (rag_blocks=%d)",
-                        len(rag_blocks),
-                        extra=log_extra,
-                    )
                 if self.use_cometapi:
                     final_response_text = await self._cometapi_generate_content(
                         system_prompt,
@@ -2768,6 +2719,13 @@ class AIHandler(AIPromptMixin, AIToolRuntimeMixin, commands.Cog):
                     main_response = await self._safe_generate_content(main_model, main_prompt, log_extra)
                     if main_response:
                         final_response_text = main_response.text.strip()
+
+                if not final_response_text and web_only_summary:
+                    final_response_text = web_only_summary
+                    logger.info(
+                        "메인 답변 생성 실패로 웹 검색 요약을 폴백합니다.",
+                        extra=log_extra,
+                    )
 
             if final_response_text:
                 # 멘션 제거 및 후처리

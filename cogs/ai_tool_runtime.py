@@ -557,8 +557,26 @@ class AIToolRuntimeMixin:
                 re.IGNORECASE,
             )
         )
+        fx_evidence = bool(
+            re.search(
+                r"(?:100 JPY|역환율|1단위 환율|JPYKRW|USDKRW|EURKRW|=X)",
+                str(evidence_text or ""),
+                re.IGNORECASE,
+            )
+        )
 
         derived_values: list[float] = []
+        if fx_evidence:
+            derived_values.extend((10.0, 100.0, 1000.0))
+            for rate in evidence_values[:40]:
+                if rate == 0:
+                    continue
+                abs_rate = abs(rate)
+                # 엔화처럼 단가가 작은 페어는 100엔·1000엔 관용 표기를 허용한다.
+                if abs_rate < 50:
+                    derived_values.extend((rate * 100, rate * 10, rate * 1000))
+                elif abs_rate < 200:
+                    derived_values.extend((rate * 100, rate * 10))
         if calculation_query:
             for principal in query_values[:8]:
                 if principal == 0:
@@ -582,7 +600,7 @@ class AIToolRuntimeMixin:
                 for known in known_values
             ):
                 continue
-            if calculation_query and any(
+            if derived_values and any(
                 abs(value - derived) <= max(
                     1.0,
                     abs(derived) * 0.0005,

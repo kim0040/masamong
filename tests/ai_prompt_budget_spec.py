@@ -45,6 +45,7 @@ def test_main_prompt_reserves_question_and_tool_before_optional_context(monkeypa
     assert "TOOL_RESULT_SENTINEL: 17도" in prompt
     assert "[현재 질문]" in prompt
     assert "[도구 실행 결과 (최우선 정보)]" in prompt
+    assert "페르소나" in prompt
 
 
 def test_persona_exists_only_in_system_role(monkeypatch):
