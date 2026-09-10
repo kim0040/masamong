@@ -1856,7 +1856,8 @@ def test_quote_tool_contract_covers_currency_pairs():
 
     search_term_prompt = Path("cogs/ai_tool_runtime.py").read_text(encoding="utf-8")
     assert "Do not invent ticker symbols" in search_term_prompt
-    assert "Charts, history, or unidentified names: NONE" in search_term_prompt
+    assert "Do not answer NONE just because you" in search_term_prompt
+    assert "Charts, history, or no identifiable instrument: NONE" in search_term_prompt
 
 
 def test_missing_quote_tool_is_filled_without_guessing_the_symbol():

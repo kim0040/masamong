@@ -1806,9 +1806,11 @@ class AIHandler(AIPromptMixin, AIToolRuntimeMixin, commands.Cog):
     def _extract_significant_numbers(text: str) -> list[float]:
         """금융 답변의 지수·가격·비율처럼 검증할 가치가 큰 수치를 추출합니다."""
         values: list[float] = []
+        scaled_eok: list[float] = []
+        scaled_man: list[float] = []
         pattern = re.compile(
             r"(?<![\w])([+-]?\d[\d,]*(?:\.\d+)?)"
-            r"(\s*(?:%|포인트|p\b|원\b|달러|usd\b|krw\b|조\b|억\b))?",
+            r"(\s*(?:%|포인트|p\b|원\b|달러|usd\b|krw\b|조\b|억\b|만\b))?",
             re.IGNORECASE,
         )
         for match in pattern.finditer(str(text or "")):
@@ -1818,9 +1820,25 @@ class AIHandler(AIPromptMixin, AIToolRuntimeMixin, commands.Cog):
                 value = float(raw.replace(",", ""))
             except ValueError:
                 continue
+            unit_cf = unit.casefold()
+            if unit_cf.startswith("만"):
+                value *= 10_000
+                scaled_man.append(value)
+                continue
+            if unit_cf.startswith("억"):
+                value *= 100_000_000
+                scaled_eok.append(value)
+                continue
+            if unit_cf.startswith("조"):
+                value *= 1_000_000_000_000
             # 날짜의 월/일, 목록 번호, "2분기" 같은 작은 정수는 제외한다.
             if unit or "." in raw or "," in raw or abs(value) >= 100:
                 values.append(value)
+        if scaled_eok and scaled_man:
+            values.append(scaled_eok[0] + scaled_man[0])
+        else:
+            values.extend(scaled_eok)
+            values.extend(scaled_man)
         return values
 
     @classmethod
@@ -2758,15 +2776,16 @@ class AIHandler(AIPromptMixin, AIToolRuntimeMixin, commands.Cog):
                             len(unsupported_numbers),
                             extra=log_extra,
                         )
-                        final_response_text = self._format_verified_quote_fallback(
+                        guarded_quote = self._format_verified_quote_fallback(
                             stock_quote_result,
                             market_snapshot_result,
                             query=user_query,
-                            note=(
-                                "뉴스 요약에서 원자료로 확인되지 않는 수치가 감지되어 "
-                                "해당 내용은 제외했어요."
-                            ),
+                            note="",
                         )
+                        # 조회값이 있을 때만 교체한다. 웹 자료로 이미 말한 답을
+                        # 빈 시세 실패 문구로 지우지 않는다.
+                        if guarded_quote and "지금 시세를 제대로 확인하지 못했어요" not in guarded_quote:
+                            final_response_text = guarded_quote
                 
                 # 이미지 생성 결과가 있으면 Discord 파일로 전송
                 image_result = next((res for res in tool_results if res.get("tool_name") == "generate_image"), None)

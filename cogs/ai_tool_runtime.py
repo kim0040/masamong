@@ -12,7 +12,10 @@ import discord
 
 import config
 from logger_config import logger
-from utils.finance_query import format_quote_user_reply, looks_like_fx_quote
+from utils.finance_query import (
+    format_quote_user_reply,
+    looks_like_fx_quote,
+)
 from utils.tool_health import ToolTemporarilyUnavailable
 
 class AIToolRuntimeMixin:
@@ -546,51 +549,29 @@ class AIToolRuntimeMixin:
         query_values = cls._extract_significant_numbers(query_text)
         evidence_values = cls._extract_significant_numbers(evidence_text)
         known_values = [*evidence_values, *query_values]
-        calculation_query = bool(
-            re.search(
-                r"(?:환산|환전|계산|얼마|바꾸면|곱하면|나누면)",
-                str(query_text or ""),
-            )
-            and re.search(
-                r"(?:환율|원화|달러|엔화|유로|usd|krw|jpy|eur)",
-                str(query_text or ""),
-                re.IGNORECASE,
-            )
-        )
         fx_evidence = bool(
-            re.search(
-                r"(?:100 JPY|역환율|1단위 환율|JPYKRW|USDKRW|EURKRW|=X)",
-                str(evidence_text or ""),
-                re.IGNORECASE,
-            )
+            re.search(r"(?:=X|역환율|1단위 환율)", str(evidence_text or ""))
         )
 
-        derived_values: list[float] = []
+        principals = [value for value in query_values[:8] if value != 0]
         if fx_evidence:
-            derived_values.extend((10.0, 100.0, 1000.0))
+            # 십·백·천·만·백만처럼 10의 거듭제곱 관용 단위. 단어 목록이 아니다.
+            scale_principals = [float(10 ** scale) for scale in range(10)]
+            principals.extend(scale_principals)
+            known_values.extend(scale_principals)
+
+        derived_values: list[float] = []
+        for principal in principals:
             for rate in evidence_values[:40]:
                 if rate == 0:
                     continue
-                abs_rate = abs(rate)
-                # 엔화처럼 단가가 작은 페어는 100엔·1000엔 관용 표기를 허용한다.
-                if abs_rate < 50:
-                    derived_values.extend((rate * 100, rate * 10, rate * 1000))
-                elif abs_rate < 200:
-                    derived_values.extend((rate * 100, rate * 10))
-        if calculation_query:
-            for principal in query_values[:8]:
-                if principal == 0:
-                    continue
-                for rate in evidence_values[:40]:
-                    if rate == 0:
-                        continue
-                    derived_values.extend(
-                        (
-                            principal * rate,
-                            principal / rate,
-                            principal * rate / 100,
-                        )
+                derived_values.extend(
+                    (
+                        principal * rate,
+                        principal / rate,
+                        principal * rate / 100,
                     )
+                )
 
         unsupported: list[float] = []
         for value in response_values:
@@ -993,7 +974,10 @@ class AIToolRuntimeMixin:
             "5. Korean nicknames must become the official English listed name,\n"
             "   not a guessed ticker like SKHYNX.\n"
             "6. Do not return Korean listings (.KS, .KQ). Those markets are out of scope.\n"
-            "7. Charts, history, or unidentified names: NONE."
+            "7. If the user named a company or product, return its common English\n"
+            "   listed name. Do not answer NONE just because you think it is private\n"
+            "   or newly listed.\n"
+            "8. Charts, history, or no identifiable instrument: NONE."
         )
         search_prompt = f"{system_prompt}\n\nQuery: {query}\nSearch:"
 
