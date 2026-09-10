@@ -615,9 +615,9 @@ async def test_market_news_router_cannot_skip_verified_market_tools():
         "web_search",
     ]
     assert decision.reasoning_level == "high"
-    assert decision.plan[0]["parameters"]["region"] == "kr"
+    assert decision.plan[0]["parameters"]["region"] == "us"
     search_query = decision.plan[1]["parameters"]["query"]
-    assert "대상 시장: 한국 증시" in search_query
+    assert "대상 시장: 미국 증시" in search_query
     assert "기준일:" in search_query
     assert "거래소" in search_query
     assert "커뮤니티" in search_query
@@ -1063,20 +1063,20 @@ async def test_ticker_extraction_uses_fast_bounded_lane():
         trace_key,
         max_tokens,
     ):
-        assert "Never invent an ADR" in prompt
+        assert "Do not invent ticker symbols" in prompt
         assert model is None
-        assert log_extra["mode"] == "ticker_extraction"
-        assert trace_key == "ticker_extraction"
+        assert log_extra["mode"] == "finance_search_term"
+        assert trace_key == "finance_search_term"
         assert max_tokens == 24
-        return "AAPL"
+        return "NVIDIA"
 
     handler._cometapi_fast_generate_text = _fast
 
-    ticker = await handler.extract_ticker_with_llm(
-        "애플 현재 주가 알려줘"
+    term = await handler.extract_finance_search_term_with_llm(
+        "엔비디아 현재 주가 알려줘"
     )
 
-    assert ticker == "AAPL"
+    assert term == "NVIDIA"
 
 
 def test_external_evidence_predicate_rejects_empty_or_error_results():
@@ -1152,10 +1152,8 @@ def test_market_index_question_uses_snapshot_tool():
     assert handler._looks_like_finance_query("코스피 지금 몇이야") is True
     plan = handler._detect_tools_by_keyword("코스피 지금 몇이야")
     tools = [item["tool_to_use"] for item in plan]
-    assert tools[0] == "get_market_snapshot"
-    assert plan[0]["parameters"]["region"] == "kr"
-    # 지수 숫자만으로는 등락 이유를 설명할 수 없어 출처도 함께 확인한다.
-    assert "web_search" in tools
+    assert tools == ["web_search"]
+    assert "금융 뉴스" in plan[0]["parameters"]["query"]
 
 
 def test_finance_requests_beyond_single_quote_stay_on_web_search():
@@ -1845,13 +1843,13 @@ def test_quote_tool_contract_covers_currency_pairs():
     assert "환율 환산, ADR/OTC" not in router_catalog
     assert "USDKRW=X" in router_catalog
 
-    resolver = Path("cogs/ai_handler.py").read_text(encoding="utf-8")
-    assert "<BASE><QUOTE>=X" in resolver
-    # 범위 밖 요청은 계속 거절해야 근거 없는 티커가 만들어지지 않는다.
-    assert (
-        "Charts, historical candles, price history and trends are NOT supported"
-        in resolver
-    )
+    resolver = Path("utils/finance_query.py").read_text(encoding="utf-8")
+    assert "detect_fx_pair" in resolver
+    assert "KRW" in resolver and "JPY" in resolver
+
+    search_term_prompt = Path("cogs/ai_handler.py").read_text(encoding="utf-8")
+    assert "Do not invent ticker symbols" in search_term_prompt
+    assert "Charts, history, or unidentified names: NONE" in search_term_prompt
 
 
 def test_missing_quote_tool_is_filled_without_guessing_the_symbol():
@@ -1908,7 +1906,12 @@ def test_index_snapshot_survives_real_market_brief():
         plan = analyzer._enforce_evidence_tool_plan(
             query, intent, [], requires_external_evidence=True
         )
-        assert "get_market_snapshot" in _plan_tools(plan), query
+        tools = _plan_tools(plan)
+        if "국장" in query:
+            assert "get_market_snapshot" not in tools, query
+            assert "web_search" in tools, query
+        else:
+            assert "get_market_snapshot" in tools, query
 
 
 def test_quote_tool_is_not_added_to_out_of_scope_finance_requests():

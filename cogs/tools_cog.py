@@ -21,7 +21,9 @@ import time
 
 import config
 from logger_config import logger
-from utils.api_handlers import exchange_rate, finnhub, kakao, krx
+from utils.api_handlers import exchange_rate, finnhub, kakao
+from utils.api_handlers import fx_rates
+from utils.finance_query import detect_fx_pair
 from utils import db as db_utils
 from utils import coords as coords_utils
 from utils import weather as weather_utils
@@ -30,20 +32,6 @@ from utils.tool_health import ToolHealthRegistry, ToolTemporarilyUnavailable
 from .weather_cog import WeatherCog
 
 
-def is_korean(text: str) -> bool:
-    """텍스트에 한글이 포함되어 있는지 확인하는 유틸리티 함수입니다."""
-    if not text:
-        return False
-    return bool(re.search("[\uac00-\ud7a3]", text))
-
-
-_YAHOO_TICKER_ALIASES = (
-    (("삼성전자",), "005930.KS"),
-    (("sk하이닉스", "에스케이하이닉스"), "000660.KS"),
-    (("비트코인", "bitcoin"), "BTC-USD"),
-    (("이더리움", "ethereum"), "ETH-USD"),
-    (("테더", "tether", "usdt"), "USDT-USD"),
-)
 _DIRECT_TICKER_FIXES = {
     "USDTKRW": "USDT-USD",
     "USDTUSD": "USDT-USD",
@@ -297,79 +285,138 @@ class ToolsCog(commands.Cog):
             logger.info("yfinance 핸들러 지연 로딩 완료")
             return self._yfinance_handler
 
+    async def _quote_via_finnhub(
+        self,
+        query_text: str,
+        direct_ticker: str,
+        ai_handler,
+    ) -> str | dict:
+        """Finnhub 무료 시세 + 공개 FX. Yahoo는 USE_YFINANCE일 때만 씁니다."""
+        fx_pair = detect_fx_pair(query_text) or detect_fx_pair(direct_ticker)
+        if fx_pair:
+            logger.info("FX 페어 확정: %s/%s", fx_pair[0], fx_pair[1])
+            return await fx_rates.get_fx_quote(fx_pair[0], fx_pair[1])
+
+        lookup = await finnhub.lookup_quote(
+            query_text,
+            hint_symbol=direct_ticker or None,
+        )
+        if (
+            lookup.get("status") != "success"
+            and lookup.get("failure_kind") == "invalid_symbol"
+            and query_text
+            and ai_handler
+        ):
+            search_term = await ai_handler.extract_finance_search_term_with_llm(
+                query_text
+            )
+            if search_term:
+                logger.info(
+                    "Finnhub: 영문 검색어로 재조회. term_chars=%d",
+                    len(search_term),
+                )
+                lookup = await finnhub.lookup_quote(
+                    search_term,
+                    hint_symbol=None,
+                )
+        if lookup.get("status") == "success":
+            logger.info(
+                "get_stock_price 결과 생성 완료. ticker=%s",
+                lookup.get("symbol"),
+            )
+            return lookup
+        if lookup.get("failure_kind") == "unsupported_market":
+            logger.info("국내 상장 시세는 제공하지 않습니다.")
+        return lookup
+
     async def get_stock_price(
         self,
         symbol: str = None,
         stock_name: str = None,
         user_query: str = None,
     ) -> str | dict:
-        """정확한 Yahoo 티커의 최신 가용 현재가를 조회합니다.
+        """현재가 단건 조회. 기본 공급자는 Finnhub입니다.
 
         Args:
             symbol (str): (Legacy) 종목명 또는 티커 (예: "삼성전자", "AAPL", "NVDA")
             stock_name (str): (Legacy) symbol의 별칭
-            user_query (str): (New) 사용자의 자연어 질문 (yfinance 모드에서 티커 추출에 사용)
+            user_query (str): 사용자의 자연어 질문
         """
+        query_text = str(user_query or stock_name or symbol or "").strip()
+        direct_ticker = str(symbol or "").strip().upper()
+        direct_ticker = _DIRECT_TICKER_FIXES.get(
+            direct_ticker,
+            direct_ticker,
+        )
+        if direct_ticker in _KNOWN_FABRICATED_TICKERS:
+            direct_ticker = ""
+        if direct_ticker and not re.fullmatch(
+            r"[A-Z0-9^][A-Z0-9.^=:-]{0,24}",
+            direct_ticker,
+        ):
+            if not query_text:
+                query_text = str(symbol or stock_name or "").strip()
+            direct_ticker = ""
+
+        ai_handler = self.bot.get_cog('AIHandler')
+        if not getattr(config, 'USE_YFINANCE', False):
+            return await self._quote_via_finnhub(
+                query_text,
+                direct_ticker,
+                ai_handler,
+            )
+
         if getattr(config, 'USE_YFINANCE', False):
             ai_handler = self.bot.get_cog('AIHandler')
-            ticker = None
-            
+            query_text = str(user_query or stock_name or symbol or "").strip()
             direct_ticker = str(symbol or "").strip().upper()
             direct_ticker = _DIRECT_TICKER_FIXES.get(
                 direct_ticker,
                 direct_ticker,
             )
             if direct_ticker in _KNOWN_FABRICATED_TICKERS:
-                return {
-                    "status": "error",
-                    "error": (
-                        "요청한 종목의 정확한 상장 티커를 확인하지 못했어요. "
-                        "회사명과 거래소를 함께 알려주세요."
-                    ),
-                    "failure_kind": "invalid_symbol",
-                    "provider_failure": False,
-                }
-            if direct_ticker and re.fullmatch(
+                direct_ticker = ""
+            if direct_ticker and not re.fullmatch(
                 r"[A-Z0-9^][A-Z0-9.^=-]{0,19}",
                 direct_ticker,
             ):
-                ticker = direct_ticker
-            elif user_query and ai_handler:
-                query_lower = str(user_query).casefold()
-                ticker = next(
-                    (
-                        alias
-                        for names, alias in _YAHOO_TICKER_ALIASES
-                        if any(name in query_lower for name in names)
-                    ),
-                    None,
+                if not query_text:
+                    query_text = str(symbol or stock_name or "").strip()
+                direct_ticker = ""
+
+            yfinance_handler = await self._load_yfinance_handler()
+            logger.info(
+                "yfinance 모드: 상장 심볼 검색. query_chars=%d hint=%s",
+                len(query_text),
+                "yes" if direct_ticker else "no",
+            )
+            resolved = await yfinance_handler.resolve_listed_symbol(
+                query_text,
+                hint_symbol=direct_ticker or None,
+            )
+            if (
+                resolved.get("status") != "success"
+                and resolved.get("failure_kind") == "invalid_symbol"
+                and query_text
+                and ai_handler
+            ):
+                search_term = await ai_handler.extract_finance_search_term_with_llm(
+                    query_text
                 )
-                if ticker:
+                if search_term:
                     logger.info(
-                        "yfinance 정규화 사전에서 티커 확정: %s",
-                        ticker,
+                        "yfinance 모드: 영문 검색어로 재조회. term_chars=%d",
+                        len(search_term),
                     )
-                else:
-                    logger.info(
-                        "yfinance 모드: 티커 추출 시도. query_chars=%d",
-                        len(user_query),
+                    resolved = await yfinance_handler.resolve_listed_symbol(
+                        search_term,
+                        original_query=query_text,
                     )
-                    ticker = await ai_handler.extract_ticker_with_llm(
-                        user_query
-                    )
-            elif symbol or stock_name:
-                # If direct symbol passed (legacy path), assume it might be a ticker or need extraction check
-                # Ideally, extract_ticker_with_llm can handle "삼성전자" too.
-                # But for safety, let's treat it as query if it's not a clear ticker.
-                candidate = symbol or stock_name
-                if ai_handler:
-                    ticker = await ai_handler.extract_ticker_with_llm(candidate)
-            
-            if ticker:
+
+            ticker = str(resolved.get("symbol") or "").strip().upper()
+            if resolved.get("status") == "success" and ticker:
                 logger.info(f"yfinance 티커 확정: {ticker}")
-                yfinance_handler = await self._load_yfinance_handler()
                 data = await yfinance_handler.get_stock_info(ticker)
-                
                 if "error" in data:
                     return data
                 logger.info(
@@ -377,81 +424,27 @@ class ToolsCog(commands.Cog):
                     ticker,
                 )
                 return data
-            else:
-                return {
-                    "status": "error",
-                    "error": (
-                        "정확한 종목을 파악하지 못했어요. "
-                        "회사명이나 티커와 거래소를 함께 알려주세요."
-                    ),
-                    "failure_kind": "ambiguous_symbol",
-                    "provider_failure": False,
-                }
-
-
-        # [Legacy Logic] Finnhub / KRX
-        # ... (Existing implementation below)
-        target_symbol = symbol or stock_name
-        if not target_symbol:
-            return "❌ 오류: 조회할 주식 이름이나 티커가 제공되지 않았습니다."
-
-        symbol = target_symbol # Normalize variable name
-        
-        logger.info(f"주식 정보 조회 실행: '{symbol}'")
-
-        # 1. 국내 주식 (KRX)
-        if is_korean(symbol):
-             logger.info(f"'{symbol}'은(는) 한글명이므로 KRX API를 호출합니다.")
-             krx_result = await krx.get_stock_price(symbol)
-             
-             # KRX 성공 판단: 에러 메시지가 없어야 함
-             # "찾을 수 없습니다", "API 키 미설정", "오류" 등이 포함되면 실패로 간주
-             failure_keywords = ["찾을 수 없습니다", "API 키", "오류", "설정되지 않았습니다"]
-             if not any(k in krx_result for k in failure_keywords):
-                 return krx_result
-             
-             logger.info(f"KRX에서 '{symbol}' 조회 실패({krx_result}). 해외 주식(Finnhub) 검색으로 전환합니다.")
-        
-        # 2. 해외 주식 (Finnhub) - Rich Context (or Fallback from KRX)
-        # [Rich Context] 4가지 정보를 병렬로 조회
-        price_task = finnhub.get_stock_quote(symbol)
-        profile_task = finnhub.get_company_profile(symbol)
-        news_task = finnhub.get_company_news(symbol, count=3)
-        reco_task = finnhub.get_recommendation_trends(symbol)
-        
-        results = await asyncio.gather(price_task, profile_task, news_task, reco_task, return_exceptions=True)
-        price_res, profile_res, news_res, reco_res = results
-        
-        # Price (필수)
-        if isinstance(price_res, str) and "찾을 수 없습니다" in price_res:
-             # 만약 KRX에서도 실패했고 Finnhub에서도 실패했다면
-             if is_korean(symbol):
-                 return f"'{symbol}'에 대한 정보를 국내(KRX) 및 해외(Finnhub) 시장 모두에서 찾을 수 없습니다."
-             return price_res # 시세조차 없으면 종료
-        
-        output_parts = [f"## 💰 시세 정보:\n{price_res}"]
-
-        # Company Profile
-        if isinstance(profile_res, dict):
-            mcap = f"{profile_res.get('market_cap', 0):,.0f}" if profile_res.get('market_cap') else "N/A"
-            profile_str = (f"- 기업명: {profile_res.get('name')}\n"
-                           f"- 산업: {profile_res.get('industry')}\n"
-                           f"- 시가총액: ${mcap} Million\n"
-                           f"- 웹사이트: {profile_res.get('website')}")
-            output_parts.append(f"## 🏢 기업 개요:\n{profile_str}")
-
-        # Recommendation Trends
-        if isinstance(reco_res, str) and "실패" not in reco_res:
-            output_parts.append(f"## 📊 애널리스트 투자의견:\n{reco_res}")
-
-        # News
-        if isinstance(news_res, str) and "찾을 수 없습니다" not in news_res:
-            output_parts.append(f"## 📰 관련 뉴스:\n{news_res}")
-            
-        return f"'{symbol}'에 대한 종합 주식 리포트 (Finnhub):\n\n" + "\n\n".join(output_parts)
+            if resolved.get("failure_kind") in {
+                "provider_timeout",
+                "provider_error",
+            }:
+                return resolved
+            return {
+                "status": "error",
+                "error": resolved.get("error") or (
+                    "정확한 종목을 파악하지 못했어요. "
+                    "회사명이나 티커와 거래소를 함께 알려주세요."
+                ),
+                "failure_kind": resolved.get("failure_kind") or "ambiguous_symbol",
+                "provider_failure": bool(resolved.get("provider_failure")),
+            }
 
     async def get_market_snapshot(self, region: str = "global") -> dict:
-        """한국·미국 주요 지수를 검증 가능한 구조화 데이터로 반환합니다."""
+        """미국·글로벌 주요 지수를 검증 가능한 구조화 데이터로 반환합니다."""
+        from utils.finance_query import kr_market_unsupported_result
+
+        if str(region or "").strip().lower() == "kr":
+            return kr_market_unsupported_result()
         yfinance_handler = await self._load_yfinance_handler()
         return await yfinance_handler.get_market_snapshot(region)
 

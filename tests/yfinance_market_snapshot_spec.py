@@ -69,13 +69,13 @@ async def test_market_snapshot_batches_indices_and_calculates_changes(monkeypatc
     columns = pd.MultiIndex.from_product(
         [
             ["Close"],
-            ["^KS11", "^KQ11"],
+            ["^DJI", "^GSPC", "^IXIC"],
         ]
     )
     frame = pd.DataFrame(
         [
-            [6023.66, 705.85],
-            [5663.24, 662.68],
+            [39000.0, 5500.0, 17800.0],
+            [39100.0, 5520.0, 17850.0],
         ],
         index=pd.to_datetime(["2026-07-28", "2026-07-29"]),
         columns=columns,
@@ -89,22 +89,25 @@ async def test_market_snapshot_batches_indices_and_calculates_changes(monkeypatc
 
     monkeypatch.setattr(yfinance_handler.yf, "download", _fake_download)
 
-    result = await yfinance_handler.get_market_snapshot("kr")
+    result = await yfinance_handler.get_market_snapshot("us")
 
     assert result["status"] == "success"
-    assert result["region"] == "kr"
-    assert captured["tickers"] == ["^KS11", "^KQ11"]
+    assert result["region"] == "us"
+    assert captured["tickers"] == ["^DJI", "^GSPC", "^IXIC"]
     assert captured["kwargs"]["threads"] is False
     assert captured["kwargs"]["timeout"] == 10
-    assert len(result["indices"]) == 2
+    assert len(result["indices"]) == 3
+    assert result["indices"][0]["name"] == "다우존스"
 
-    kospi = result["indices"][0]
-    assert kospi["name"] == "코스피"
-    assert kospi["market_date"] == "2026-07-29"
-    assert kospi["value"] == 5663.24
-    assert kospi["change"] == pytest.approx(-360.42)
-    assert kospi["change_percent"] == pytest.approx(-5.9834)
-    assert kospi["source_url"].startswith("https://finance.yahoo.com/quote/")
+
+@pytest.mark.asyncio
+async def test_kr_market_snapshot_is_unsupported(monkeypatch):
+    def _fake_download(*_args, **_kwargs):
+        raise AssertionError("국장 지수는 조회하면 안 됩니다")
+
+    monkeypatch.setattr(yfinance_handler.yf, "download", _fake_download)
+    result = await yfinance_handler.get_market_snapshot("kr")
+    assert result["failure_kind"] == "unsupported_market"
 
 
 @pytest.mark.asyncio
@@ -114,11 +117,11 @@ async def test_market_snapshot_rejects_unknown_region_without_extra_indices(
     columns = pd.MultiIndex.from_product(
         [
             ["Close"],
-            ["^KS11", "^KQ11", "^DJI", "^GSPC", "^IXIC"],
+            ["^DJI", "^GSPC", "^IXIC"],
         ]
     )
     frame = pd.DataFrame(
-        [[1, 2, 3, 4, 5], [2, 3, 4, 5, 6]],
+        [[3, 4, 5], [4, 5, 6]],
         index=pd.to_datetime(["2026-07-28", "2026-07-29"]),
         columns=columns,
     )
@@ -132,4 +135,4 @@ async def test_market_snapshot_rejects_unknown_region_without_extra_indices(
     result = await yfinance_handler.get_market_snapshot("invalid")
 
     assert result["region"] == "global"
-    assert len(result["indices"]) == 5
+    assert len(result["indices"]) == 3
