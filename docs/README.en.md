@@ -1,5 +1,15 @@
 # Masamong user and operator guide
 
+> [!WARNING]
+> **No longer supported or updated (2026-10-13)**
+>
+> This repository (Masamong 1) is no longer updated. Bug fixes, security patches and new features continue in its successor, **[Masamong2](https://github.com/kim0040/masamong2)**, a rewrite in Go with an admin console (GUI), memory search and multiple AI providers. That repository is private for now; the link works once it is public.
+>
+> - The code stays here as a record and reference only. New installs are not recommended.
+> - Issues and pull requests are no longer accepted.
+> - Existing installs keep running, but nothing here will follow dependency or external API changes. Masamong2 can import the old bot's personal settings.
+> - On 2026-10-13 the Git history was rewritten to remove real Discord IDs and log files that had been committed by mistake. If you cloned before that, clone again.
+
 [한국어](README.ko.md) | English | [日本語](README.ja.md)
 
 Masamong is a Korean-first Discord assistant. It can hold conversations, use

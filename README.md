@@ -1,5 +1,25 @@
 # Masamong (마사몽)
 
+> [!WARNING]
+> **지원·업데이트 중단 (2026-10-13)**
+>
+> 이 저장소(마사몽 1)는 더 이상 업데이트하지 않습니다. 버그 수정, 보안 패치, 새 기능은 모두 후속 프로젝트 **[마사몽2](https://github.com/kim0040/masamong2)**에서 이어집니다. 마사몽2는 Go로 새로 만든 버전으로, 관리 콘솔(GUI)·기억 검색·여러 AI 공급자를 지원합니다. 저장소는 현재 비공개이며, 공개되면 위 링크에서 볼 수 있습니다.
+>
+> - 이 코드는 기록과 참고용으로만 남겨 둡니다. 새로 설치하는 것은 권하지 않습니다.
+> - 이슈와 PR은 더 이상 받지 않습니다.
+> - 이미 운영 중인 설치는 당장 멈추지 않지만, 의존성이나 외부 API가 바뀌어도 대응하지 않습니다. 마사몽2로 옮기면 이전 봇의 개인 설정을 가져올 수 있습니다.
+> - 2026-10-13에 Git 기록을 다시 써서, 예전에 실수로 올라간 실제 Discord ID와 로그 파일을 지웠습니다. 그 전에 clone했다면 새로 clone하세요.
+
+> [!WARNING]
+> **No longer supported or updated (2026-10-13)**
+>
+> This repository (Masamong 1) is no longer updated. Bug fixes, security patches and new features continue in its successor, **[Masamong2](https://github.com/kim0040/masamong2)**, a rewrite in Go with an admin console (GUI), memory search and multiple AI providers. That repository is private for now; the link works once it is public.
+>
+> - The code stays here as a record and reference only. New installs are not recommended.
+> - Issues and pull requests are no longer accepted.
+> - Existing installs keep running, but nothing here will follow dependency or external API changes. Masamong2 can import the old bot's personal settings.
+> - On 2026-10-13 the Git history was rewritten to remove real Discord IDs and log files that had been committed by mistake. If you cloned before that, clone again.
+
 마사몽은 Discord에서 대화하고, 필요한 과거 맥락을 찾아보고, 날씨·재난·학교 공지처럼
 놓치기 쉬운 정보를 챙겨주는 한국어 중심 봇입니다. 사용자는 자연어로 요청할 수 있고,
 개인 설정이 필요한 기능은 DM에서 확인과 동의를 거쳐 사용할 수 있습니다.
